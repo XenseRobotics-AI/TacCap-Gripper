@@ -132,6 +132,7 @@ struct ForcePositionConfig {
     float position_kp          = 20.0f;  // safe current-position/endpoint hold
     float position_kd          = 1.0f;
     float brake_distance_rad   = 0.10f;  // switch close velocity -> clamped PD
+    float close_endpoint_tolerance_rad = 0.03f;
     // Consecutive confirming status frames. At motor_stream_hz = 100 the
     // firmware's 30 ms stall_hold_ms is 3 frames.
     unsigned contact_samples   = 3;

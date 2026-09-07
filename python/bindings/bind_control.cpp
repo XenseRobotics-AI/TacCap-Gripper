@@ -148,6 +148,8 @@ void bind_control(py::module_& m) {
         .def_readwrite("position_kp",          &ForcePositionConfig::position_kp)
         .def_readwrite("position_kd",          &ForcePositionConfig::position_kd)
         .def_readwrite("brake_distance_rad",   &ForcePositionConfig::brake_distance_rad)
+        .def_readwrite("close_endpoint_tolerance_rad",
+                       &ForcePositionConfig::close_endpoint_tolerance_rad)
         .def_readwrite("contact_samples",      &ForcePositionConfig::contact_samples)
         .def_readwrite("startup_guard_ms",     &ForcePositionConfig::startup_guard_ms)
         .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms)

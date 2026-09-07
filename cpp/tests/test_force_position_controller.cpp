@@ -87,6 +87,52 @@ TEST(ForcePositionPolicy, RuntimeTargetSelectsDirectionAndTorque) {
     EXPECT_FLOAT_EQ(arrived.target_pos, 0.6f);
 }
 
+TEST(ForcePositionPolicy, CloseEndpointArrivalKeepsForceHold) {
+    ForcePositionConfig cfg;
+    cfg.close_position = 0.0f;
+    cfg.grasp_torque_nm = 1.0f;
+    cfg.startup_guard_ms = 1000;
+    cfg.contact_samples = 3;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.2f), now);
+    p.set_target(sample(0.2f), cfg.close_position, cfg.grasp_torque_nm, now);
+
+    const auto holding = p.step(sample(0.0f), now);
+
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_FLOAT_EQ(holding.kp, 0.0f);
+    EXPECT_FLOAT_EQ(holding.kd, 0.0f);
+    EXPECT_FLOAT_EQ(holding.target_torque, -1.0f);
+    EXPECT_FLOAT_EQ(holding.target_pos, 0.0f);
+
+    ForcePositionPolicy already_closed(GripperPosition::from_travel(1.0f), cfg);
+    already_closed.reset(sample(0.0f), now);
+    already_closed.set_target(sample(0.0f), cfg.close_position, cfg.grasp_torque_nm, now);
+    const auto already_holding = already_closed.step(sample(0.0f), now);
+    EXPECT_EQ(already_closed.state(), ForcePositionState::HoldingForce);
+    EXPECT_FLOAT_EQ(already_holding.target_torque, -1.0f);
+}
+
+TEST(ForcePositionPolicy, LowTorqueArrestNearCloseEndpointKeepsForceHold) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    cfg.startup_guard_ms = 0;
+    cfg.contact_samples = 3;
+    cfg.close_endpoint_tolerance_rad = 0.03f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.2f), now);
+    p.set_target(sample(0.2f), cfg.close_position, cfg.grasp_torque_nm, now);
+
+    const auto c = p.step(sample(0.002f, 0.01f, 0.06f), now);
+
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_FLOAT_EQ(c.kp, 0.0f);
+    EXPECT_FLOAT_EQ(c.kd, 0.0f);
+    EXPECT_FLOAT_EQ(c.target_torque, -1.0f);
+}
+
 TEST(ForcePositionPolicy, RuntimeTargetContactUsesDynamicTorque) {
     ForcePositionConfig cfg;
     cfg.startup_guard_ms = 0;
