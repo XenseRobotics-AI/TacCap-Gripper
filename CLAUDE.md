@@ -133,6 +133,46 @@ means firmware hasn't burned the SN yet, or firmware < V1.6. The raw V4L2
 bringup probes were removed in the example cleanup; use `v4l2-ctl --list-devices`
 directly if you need to go below the MCU.
 
+## 从爪现场排查（实测得来，别再重走）
+
+**设备路径永远用 `/dev/serial/by-id/`，不要写死 `/dev/ttyACM1`。** 每次重新枚举
+内核都可能换 minor：实测见过 `ttyACM1 → ttyACM2`，脚本里写死的路径会一直等不
+到设备，或者对着旧 fd 写出 `IoError: Input/output error`。`find_follower()`
+返回的 `mcu_device` 就是稳定的 by-id 路径。
+
+**判断"是否真的断电重插"看枚举时间戳**，不要凭记忆：
+```bash
+stat -c '%y' /dev/serial/by-id/usb-1a86_USB_Dual_Serial_*-if02
+```
+OTA 的 bank-swap 软复位会在**同一秒**重新枚举；物理重插则晚十几秒以上。这条
+拦下过好几次"以为拔过了其实没拔"的过早测量。
+
+**"power-cycle" 指断 24V，不只是拔 USB。** 24V 是独立电源；拔 USB 只重启
+MCU 和 CH343，电机一直带电。两次"OTA 后只拔 USB"的开机出现了自动标定卡死或
+读到中途值，三次断过 24V 的都正常 —— 相关性，未做对照实验证实，但代价是断一次
+电，没必要赌。**切换电机协议也必须断 24V**，MCU 重启不生效。
+
+**读状态前要等自动标定跑完（约 9–10 秒）。** 标定期间读到的是中途值：位置在
+−1.23 和 0 之间任意一点，`stop_reason` 还停在 3(CLEAR_FAULT)。判据是
+`stop_reason == 1` 且位置连续两次不变。更糟的是在标定期间发命令（尤其
+`switch_protocol`，内含 350ms `HAL_Delay` 和一次 `rb_flush`）会干扰它。
+
+**`/dev/ttyACM0`(if00) 不是固件 DEBUG 口。** 把日志开到 DEBUG +
+`output_mask=0x01` 之后 if00 十四秒零字节。日志走物理 UART7，没引到 USB，要看
+只能上硬件串口探头。另外 `LOG_BAUDRATE` 是 **921600**，DESIGN.md 写的 115200
+是过时的（DESIGN.md 整体停在 v1.1，从爪相关内容一概不可信）。
+
+**本机电机固件低于 1.0.5.0.4，缺一批能力**（手册对这些命令都标了版本门槛）：
+MIT Command 12/13/14/15（保存/主动上报/读参数/写参数）一律不应答。后果是
+**MIT 模式下读不到任何电机参数**，型号版本、`vBus`、`boardTemp` 都要切私有协议
+才能读。`0x7028`(canTimeout) 存得下、读得回、跨断电保持，但**电机不执行它** ——
+实测使能后静默 6 秒（指令5 间隔 1000ms，远超 200ms 阈值）电机始终停在 Motor
+模式。详见 `can_motor.c` 文件头的实测记录。
+
+**电机规格的单一真值源是 `App/drivers/motor_spec.c`**（EL05 数据取自 260713 版
+官方说明书）。母线 24V，实测 `0x701C VBUS = 24.21V`。改量程、力矩↔电流换算、
+温度限、堵转额定都改那里，不要再往 `can_motor.c` 里加常数。
+
 ## Commit convention
 - Conventional commits with subsystem scope:
   `feat(protocol): ...`, `fix(parser): ...`, `test: ...`, `chore: ...`,
@@ -228,7 +268,9 @@ archive format never changes (keeps historical greps parseable).
   that looks entirely healthy — right version, stream running, counters clean —
   while quietly dropping status frames. Measured: 35-39 lost per 60s run after
   OTA alone, zero after a replug, same unit and firmware both ways. Any number
-  you take before replugging is suspect.
+  you take before replugging is suspect. **从爪上"power-cycle"指断 24V，不是
+  只拔 USB** —— 24V 独立供电，拔 USB 时电机一直带电；判断是否真的重插看枚举
+  时间戳，见「从爪现场排查」。
 - Any change under `third_party/firmware/` or to the firmware-protocol
   mirror headers in `cpp/include/taccap/protocol/`.
 - `git push --force*` to `main` (the only remote here is GitHub `origin`).
