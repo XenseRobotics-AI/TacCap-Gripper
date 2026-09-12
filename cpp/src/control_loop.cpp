@@ -78,6 +78,8 @@ void ControlLoop::start() {
         std::lock_guard<std::mutex> lk(mu_);
         target_ = here;
         obs_ = GripperObservation{};   // reset; first stream frame marks it valid
+        obs_time_  = std::chrono::steady_clock::now();  // staleness runs from now
+        stale_safe_ = false;
         stall_clamped_ = false;
         stall_since_   = {};
         torque_capped_ = false;
@@ -116,6 +118,26 @@ void ControlLoop::stop() {
     }
     running_.store(false, std::memory_order_release);
 
+    // LEAVE THE MOTOR DISABLED, not merely commanded to zero.
+    //
+    // A zero-stiffness frame de-energizes nothing: the motor stays enabled and
+    // the firmware's host watchdog starts counting. At 300 ms with no target
+    // update it fires T1, which holds zero speed via the firmware's VELOCITY
+    // path -- and that switches the motor's run mode out from under whatever
+    // comes next. Measured: every controller shutdown produced stop_reason=6
+    // (HOST_TIMEOUT) within 500 ms, and a later session then commanded a motor
+    // whose run mode no longer matched what the MCU believed, so its frames
+    // were silently ignored while target_seq/applied_seq advanced normally and
+    // last_error stayed 0. The jaw simply did not move, and nothing in the
+    // stack said why.
+    //
+    // Disabling is also the honest end state: once this controller is stopped
+    // nothing is regulating the jaw, so holding it energized only invites the
+    // watchdog to make that decision for us.
+    try { g_.motor().disable(); }
+    catch (const std::exception& e) {
+        logger()->warn("ControlLoop: motor disable on stop failed: {}", e.what());
+    }
     if (sub_active_) {
         g_.motor().off(sub_);
         sub_active_ = false;
@@ -234,7 +256,15 @@ void ControlLoop::guard_stall_(const MotorStatusSample& s,
                            std::abs(s.actual_vel)    <= cfg_.stall_vel_radps;
     if (!candidate) {
         stall_since_ = {};
-        stalled_.store(false, std::memory_order_relaxed);
+        // stalled() means "the clamp is holding the effective target back", not
+        // "the jaw is stalling right now". Those diverge immediately: clamping
+        // the target to where the jaw actually is drops the position error to
+        // ~0, so the torque falls back under stall_torque_nm on the very next
+        // frame -- that is the clamp WORKING. Storing false here made the flag
+        // blink once and then read false for the entire time the gripper was
+        // still clamped. The clamp is released by clamped_target_(), and that
+        // is the only place the flag may be cleared.
+        stalled_.store(stall_clamped_, std::memory_order_relaxed);
         return;
     }
     if (stall_since_.time_since_epoch().count() == 0) {
@@ -279,7 +309,67 @@ float ControlLoop::clamped_target_() noexcept {
 void ControlLoop::run_() {
     if (cfg_.phase == SubmitPhase::StreamLocked) run_stream_locked_();
     else                                         run_free_();
+    {
+        // The loop is no longer maintaining obs_, so it is no longer an
+        // observation. Nothing else clears it: a failed submit (a dropped USB
+        // link surfaces as SerialBus::write: Input/output error) breaks straight
+        // out of the phase loop, so guard_stale_() never runs again and a caller
+        // polling observation() would keep reading the last frame as live, with
+        // only age_ms rising to give it away.
+        std::lock_guard<std::mutex> lk(mu_);
+        obs_.valid = false;
+    }
     running_.store(false, std::memory_order_release);
+}
+
+bool ControlLoop::guard_stale_() {
+    if (cfg_.status_timeout_ms == 0) return false;
+
+    float raw = 0.0f;
+    bool  entering = false;
+    bool  dropped_cap = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        const auto now = std::chrono::steady_clock::now();
+        const bool stale = now - obs_time_ >=
+            std::chrono::milliseconds(cfg_.status_timeout_ms);
+        if (!stale) {
+            if (stale_safe_) {
+                stale_safe_ = false;
+                logger()->info("ControlLoop: motor-status stream recovered, "
+                               "resuming impedance control");
+            }
+            return false;
+        }
+        if (stale_safe_) return true;     // already safed; stay off the wire
+        stale_safe_ = true;
+        entering    = true;
+        obs_.valid  = false;              // it is history now, not an observation
+        // A latched ceiling is released only by evidence FROM the status stream,
+        // so a stream that dies while it is engaged would pin the motor at
+        // rated_torque_nm with nothing left that could ever let go.
+        if (torque_capped_) {
+            torque_capped_ = false;
+            cap_since_     = {};
+            torque_capped_pub_.store(false, std::memory_order_relaxed);
+            dropped_cap = true;
+        }
+        raw = obs_.raw_pos;               // last known; zero gains make it inert
+    }
+
+    if (entering) {
+        logger()->error(
+            "ControlLoop: no motor-status frame in {} ms. Commanding zero "
+            "torque and holding off the wire until the stream resumes{}",
+            cfg_.status_timeout_ms,
+            dropped_cap ? " (a latched torque ceiling was released: it could "
+                          "not have been released without status frames)" : "");
+        try { g_.motor().submit_impedance(raw, 0.0f, 0.0f, 0.0f); }
+        catch (const std::exception& e) {
+            logger()->error("ControlLoop: zero-torque safe frame failed: {}", e.what());
+        }
+    }
+    return true;
 }
 
 bool ControlLoop::submit_once_() {
@@ -346,6 +436,7 @@ void ControlLoop::run_free_() {
         std::this_thread::sleep_until(deadline);
         if (stop_flag_.load(std::memory_order_acquire)) break;
 
+        if (guard_stale_()) continue;
         if (!submit_once_()) break;
         note_rate_(window_count, window_start);
 
@@ -366,6 +457,7 @@ void ControlLoop::run_stream_locked_() {
     bool warned = false;
 
     while (!stop_flag_.load(std::memory_order_acquire)) {
+        bool have_tick = false;
         {
             std::unique_lock<std::mutex> lk(tick_mu_);
             // The timeout is a liveness backstop, not a rate: if the stream
@@ -378,27 +470,30 @@ void ControlLoop::run_stream_locked_() {
             if (stop_flag_.load(std::memory_order_acquire)) break;
             if (!tick_) {
                 // No status frames means no doorbell means nothing is ever
-                // submitted -- the gripper just holds its last target and looks
-                // dead. The usual cause is a caller who had already started
-                // streaming without StreamSrc::MotorStatus, in which case
-                // start_motor_stream_() rode their config instead of setting
-                // ours. Say so rather than sitting there silently.
+                // submitted. guard_stale_() has already safed the motor by now;
+                // this says WHY there are no frames, which it cannot. The usual
+                // cause is a caller who had already started streaming without
+                // StreamSrc::MotorStatus, in which case start_motor_stream_()
+                // rode their config instead of setting ours.
                 if (++silent >= 20 && !warned) {   // ~2 s
                     warned = true;
                     logger()->error(
                         "ControlLoop: no motor-status frames in 2s, so the "
-                        "stream-locked submitter has nothing to fire on and the "
-                        "gripper is holding its last target. Is StreamSrc::"
-                        "MotorStatus enabled on the stream this loop is riding? "
-                        "Use SubmitPhase::FreeRunning if you must drive without "
-                        "the status stream.");
+                        "stream-locked submitter has nothing to fire on. Is "
+                        "StreamSrc::MotorStatus enabled on the stream this loop "
+                        "is riding? Use SubmitPhase::FreeRunning if you must "
+                        "drive without the status stream.");
                 }
-                continue;
+            } else {
+                tick_ = false;
+                silent = 0;
+                warned = false;
+                have_tick = true;
             }
-            tick_ = false;
-            silent = 0;
-            warned = false;
         }
+        // Outside tick_mu_: guard_stale_() takes mu_, and nothing may hold both.
+        if (guard_stale_()) continue;
+        if (!have_tick) continue;
         if (!submit_once_()) break;
         note_rate_(window_count, window_start);
     }

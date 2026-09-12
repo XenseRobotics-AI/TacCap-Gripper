@@ -8,7 +8,7 @@
 // Those are exactly the paths a hardware bring-up would exercise last and
 // trust most, so they are driven here against a fake follower firmware.
 
-#include "pty_helper.hpp"
+#include "fake_follower.hpp"
 
 #include <taccap/force_position_controller.hpp>
 #include <taccap/follower_gripper.hpp>
@@ -25,172 +25,13 @@
 namespace tx = xense::taccap;
 namespace tp = xense::taccap::protocol;
 
+using taccap_test::FakeFollower;
 using taccap_test::Pty;
+using taccap_test::open_follower;
+using taccap_test::wait_for;
 
-namespace {
-
-std::vector<uint8_t> pod_bytes(const void* p, std::size_t n) {
-    std::vector<uint8_t> out(n);
-    std::memcpy(out.data(), p, n);
-    return out;
-}
-
-// Minimal follower firmware: answers the handful of commands
-// FollowerGripper's constructor and ForcePositionController::start() issue,
-// pushes motor-status DATA frames while "streaming", and records the MIT
-// impedance frames the controller submits.
-class FakeFollower {
-public:
-    FakeFollower(Pty& pty, uint8_t major = 1, uint8_t minor = 1, uint8_t patch = 6)
-        : pty_(pty), fw_major_(major), fw_minor_(minor), fw_patch_(patch) {
-        status_.actual_pos = 0.60f;
-        status_.control_mode = 0;
-        thread_ = std::thread([this] { run_(); });
-    }
-    ~FakeFollower() {
-        stop_.store(true);
-        if (thread_.joinable()) thread_.join();
-    }
-
-    // Stop answering the status stream without stopping the responder: this is
-    // what a wedged firmware looks like to the host.
-    void freeze_stream(bool frozen) { frozen_.store(frozen); }
-
-    void set_status(float pos, float vel, float torque) {
-        std::lock_guard<std::mutex> lk(mu_);
-        status_.actual_pos = pos;
-        status_.actual_vel = vel;
-        status_.actual_torque = torque;
-    }
-
-    std::optional<tp::MotorImpedanceCtrl> last_submit() const {
-        std::lock_guard<std::mutex> lk(mu_);
-        return last_submit_;
-    }
-    unsigned submit_count() const { return submits_.load(); }
-
-private:
-    void run_() {
-        auto next_status = std::chrono::steady_clock::now();
-        while (!stop_.load()) {
-            if (auto f = pty_.expect_frame(5)) handle_(*f);
-
-            const auto now = std::chrono::steady_clock::now();
-            if (streaming_.load() && !frozen_.load() && now >= next_status) {
-                next_status = now + std::chrono::milliseconds(10);
-                std::lock_guard<std::mutex> lk(mu_);
-                pty_.send_data(0, tp::Cmd::GetMotorStatus,
-                               pod_bytes(&status_, sizeof(status_)));
-            }
-        }
-    }
-
-    void handle_(const xense::taccap::bus::Frame& f) {
-        switch (f.cmd) {
-            case tp::Cmd::GetVersion: {
-                const tp::FirmwareVersion v{fw_major_, fw_minor_, fw_patch_, 0};
-                pty_.send_response(f.seq, f.cmd, pod_bytes(&v, sizeof(v)));
-                return;
-            }
-            case tp::Cmd::GetSn: {
-                const std::string sn = "TCGU01A28Z0001s";
-                pty_.send_response(f.seq, f.cmd,
-                                   std::vector<uint8_t>(sn.begin(), sn.end()));
-                return;
-            }
-            case tp::Cmd::GetGripperConfig: {
-                tp::GripperConfig c{};
-                c.magic = 0x47435047UL;
-                c.version = 1;
-                c.flags = tp::GripperConfigFlag::Valid;
-                c.max_open_rad = 1.30f;
-                c.min_open_rad = 0.0f;
-                pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
-                return;
-            }
-            case tp::Cmd::GetGripperAutoCalConfig: {
-                tp::GripperAutoCalConfig c{};
-                c.magic = 0x4743414CUL;
-                c.version = 1;
-                c.flags = tp::GripperAutoCalFlag::Valid;
-                // The firmware's own tuned numbers, so the controller's
-                // advisory cross-check sees a realistic device.
-                c.close_stall_torque_nm = 0.35f;
-                c.open_stall_torque_nm = 0.35f;
-                c.close_speed_rad_s = 0.25f;
-                c.open_speed_rad_s = 0.35f;
-                c.stall_hold_ms = 30;
-                pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
-                return;
-            }
-            case tp::Cmd::MotorGetStartupLimitTorque: {
-                const float limit = 6.0f;
-                pty_.send_response(f.seq, f.cmd, pod_bytes(&limit, sizeof(limit)));
-                return;
-            }
-            case tp::Cmd::GetMotorStatus: {
-                std::lock_guard<std::mutex> lk(mu_);
-                pty_.send_response(f.seq, f.cmd,
-                                   pod_bytes(&status_, sizeof(status_)));
-                return;
-            }
-            case tp::Cmd::StartStream:
-                streaming_.store(true);
-                pty_.send_ack_ok(f.seq, f.cmd);
-                return;
-            case tp::Cmd::StopStream:
-                streaming_.store(false);
-                pty_.send_ack_ok(f.seq, f.cmd);
-                return;
-            case tp::Cmd::MotorImpedanceCtrl: {
-                // Fire-and-forget: no ACK, exactly like the real firmware.
-                if (f.payload.size() >= sizeof(tp::MotorImpedanceCtrl)) {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    tp::MotorImpedanceCtrl c{};
-                    std::memcpy(&c, f.payload.data(), sizeof(c));
-                    last_submit_ = c;
-                }
-                submits_.fetch_add(1);
-                return;
-            }
-            default:
-                pty_.send_nack(f.seq, tp::ErrorCode::InvalidCmd);
-                return;
-        }
-    }
-
-    Pty& pty_;
-    uint8_t fw_major_, fw_minor_, fw_patch_;
-    std::thread thread_;
-    std::atomic<bool> stop_{false};
-    std::atomic<bool> streaming_{false};
-    std::atomic<bool> frozen_{false};
-    std::atomic<unsigned> submits_{0};
-    mutable std::mutex mu_;
-    tp::MotorStatus status_{};
-    std::optional<tp::MotorImpedanceCtrl> last_submit_;
-};
-
-std::unique_ptr<tx::FollowerGripper> open_follower(const Pty& pty) {
-    tx::FollowerGripper::Config cfg;
-    cfg.mcu_device = pty.slave_path();
-    cfg.ack_timeout_ms = 300;
-    cfg.max_retries = 1;
-    return std::make_unique<tx::FollowerGripper>(cfg);
-}
-
-// Spin until `pred` or the deadline. Returns whether it held.
-template <typename Pred>
-bool wait_for(Pred pred, std::chrono::milliseconds budget) {
-    const auto deadline = std::chrono::steady_clock::now() + budget;
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (pred()) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return pred();
-}
-
-}  // namespace
+// The fake firmware and its helpers live in fake_follower.hpp so the
+// ControlLoop tests can drive the same device.
 
 TEST(ForcePositionControllerPty, StartSeedsPositionHoldAndSubmitsPerStatusFrame) {
     Pty pty;
@@ -341,4 +182,149 @@ TEST(FollowerFirmwareGate, AllowOutdatedFirmwareOpensAnyway) {
     cfg.max_retries = 1;
     cfg.allow_outdated_firmware = true;
     EXPECT_NO_THROW({ tx::FollowerGripper g(cfg); });
+}
+
+// A dead stream must invalidate the observation, not just the state.
+//
+// snapshot().observation.valid was set true on the first sample and never set
+// back, so a caller polling it saw a live-looking reading -- plausible
+// position, plausible torque -- long after the cable came out. Only `state`
+// gave it away, which meant "is the gripper still there" could not be answered
+// from the observation itself.
+TEST(ForcePositionControllerPty, StaleStreamInvalidatesTheObservation) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    tx::ForcePositionConfig cfg;
+    cfg.status_timeout_ms = 120;
+    tx::ForcePositionController c(*g, cfg);
+    c.start();
+    ASSERT_TRUE(wait_for([&] { return c.snapshot().observation.valid; },
+                         std::chrono::milliseconds(1000)));
+
+    fw.freeze_stream(true);
+    ASSERT_TRUE(wait_for([&] { return !c.snapshot().observation.valid; },
+                         std::chrono::milliseconds(1000)))
+        << "observation stayed valid after the status stream died";
+    EXPECT_EQ(c.state(), tx::ForcePositionState::Fault);
+    c.stop();
+}
+
+// Caller commands must not put a frame on the wire by themselves.
+//
+// set_target()/release()/hold_position() used to apply the command and submit
+// on the CALLER's thread, at whatever moment that thread called in. The MCU
+// drops bytes out of a status frame it is transmitting when host traffic
+// overlaps it, so those writes cost telemetry frames. They are now queued and
+// applied on the status doorbell instead.
+TEST(ForcePositionControllerPty, CallerCommandDoesNotSubmitOffPhase) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    tx::ForcePositionConfig cfg;
+    cfg.status_timeout_ms = 2000;   // keep the stream "alive" while frozen
+    tx::ForcePositionController c(*g, cfg);
+    c.start();
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() >= 2; },
+                         std::chrono::milliseconds(1000)));
+
+    // Silence the doorbell without going stale, so anything that reaches the
+    // wire from here can only have come from the caller's thread.
+    fw.freeze_stream(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const unsigned before = fw.submit_count();
+
+    c.set_target(0.0f, 0.35f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    EXPECT_EQ(fw.submit_count(), before)
+        << "set_target() submitted on the caller's thread instead of waiting "
+           "for the next status frame";
+
+    // And it must not be lost either: the queued target applies as soon as the
+    // stream resumes.
+    fw.freeze_stream(false);
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() > before; },
+                         std::chrono::milliseconds(1000)))
+        << "the queued target never reached the wire after the stream resumed";
+    c.stop();
+}
+
+// A stale stream must invalidate the observation NO MATTER HOW the policy got
+// into Fault.
+//
+// Reported from the field: the console showed a plausible position and a
+// 1.540 Nm torque next to `age=10553.7ms` and
+// `fault: submit failed: SerialBus::write: Input/output error`. Ten seconds of
+// frozen numbers presented as live readings.
+//
+// The invalidation was gated on `stale && state != Fault`, i.e. it only ran
+// when staleness was what CAUSED the fault. When the USB link drops, the submit
+// error faults the policy first -- within one status period, well inside the
+// 350 ms staleness timeout -- so by the time the stream is judged stale the
+// policy is already in Fault, the branch is skipped, and the observation stays
+// "valid" forever. The one case the flag exists for is the one case it missed.
+TEST(ForcePositionControllerPty, StaleStreamInvalidatesObservationEvenWhenAlreadyFaulted) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    tx::ForcePositionConfig cfg;
+    cfg.status_timeout_ms = 120;
+    tx::ForcePositionController c(*g, cfg);
+    c.start();
+    ASSERT_TRUE(wait_for([&] { return c.snapshot().observation.valid; },
+                         std::chrono::milliseconds(1000)));
+
+    // Fault the policy through a route that is NOT staleness, exactly as a
+    // failed submit does in the field.
+    fw.set_status_word(tp::MotorStatusBit::OverCurrent);
+    ASSERT_TRUE(wait_for([&] {
+        return c.state() == tx::ForcePositionState::Fault;
+    }, std::chrono::milliseconds(1000)));
+    const std::string reason = c.snapshot().fault_reason;
+    ASSERT_FALSE(reason.empty());
+
+    // Now lose the stream while already faulted.
+    fw.freeze_stream(true);
+    EXPECT_TRUE(wait_for([&] { return !c.snapshot().observation.valid; },
+                         std::chrono::milliseconds(1000)))
+        << "observation stayed valid: a caller polling it sees frozen numbers "
+           "presented as a live reading";
+
+    // The original cause must survive -- "over current" is why this happened,
+    // "stream stale" is only what happened next.
+    EXPECT_EQ(c.snapshot().fault_reason, reason);
+    c.stop();
+}
+
+// stop() must return when the device has vanished mid-run -- see the matching
+// ImpedanceController case.
+TEST(ForcePositionControllerPty, StopReturnsAfterTheDeviceDisappears) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    auto fw = std::make_unique<FakeFollower>(pty);
+    auto g = open_follower(pty);
+
+    tx::ForcePositionConfig cfg;
+    cfg.status_timeout_ms = 120;
+    tx::ForcePositionController c(*g, cfg);
+    c.start();
+    ASSERT_TRUE(wait_for([&] { return c.snapshot().observation.valid; },
+                         std::chrono::milliseconds(1000)));
+
+    fw.reset();
+    pty.close_master();
+
+    const auto t0 = std::chrono::steady_clock::now();
+    c.stop();
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    EXPECT_LT(took.count(), 3000)
+        << "stop() took " << took.count() << " ms with the device gone";
+    EXPECT_FALSE(c.running());
 }

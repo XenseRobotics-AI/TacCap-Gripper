@@ -26,7 +26,9 @@ Motor::Motor(bus::Transport& transport) : t_(transport) {}
 MotorStatusSample Motor::decode(const std::uint8_t* payload, std::size_t len) {
     MotorStatusSample s{};
     s.host_time      = std::chrono::steady_clock::now();
-    s.raw            = protocol::decode_motor_status(payload, len);
+    // Progressive: accepts 31 / 59 / 72 and zero-fills the tail, so this one
+    // decoder serves both the legacy prefix and the V2 stream.
+    s.raw            = protocol::decode_motor_status_ext(payload, len);
     s.actual_pos     = s.raw.actual_pos;
     s.actual_vel     = s.raw.actual_vel;
     s.actual_torque  = s.raw.actual_torque;
@@ -37,6 +39,11 @@ MotorStatusSample Motor::decode(const std::uint8_t* payload, std::size_t len) {
     s.target_vel     = s.raw.target_vel;
     s.target_torque  = s.raw.target_torque;
     s.control_mode   = s.raw.control_mode;
+    s.monitor_version    = s.raw.monitor_version;
+    s.stop_reason        = s.raw.stop_reason;
+    s.monitor_reserved   = s.raw.monitor_reserved;
+    s.fault_code         = s.raw.fault_code;
+    s.latched_fault_code = s.raw.latched_fault_code;
     return s;
 }
 
@@ -234,6 +241,22 @@ float Motor::get_startup_limit_torque() {
     float torque_nm = 0.0f;
     std::memcpy(&torque_nm, ack.data.data(), 4);
     return torque_nm;
+}
+
+protocol::MotorSpec Motor::get_spec() {
+    auto ack = t_.send_cmd(protocol::Cmd::GetMotorSpec, {});
+    if (ack.is_nack) {
+        throw ProtocolError(std::string("Motor::get_spec NACK: ") +
+                            protocol::to_string(ack.error_code));
+    }
+    if (ack.data.size() < sizeof(protocol::MotorSpec)) {
+        throw ProtocolError("Motor::get_spec: short payload (" +
+                            std::to_string(ack.data.size()) + " bytes) -- "
+                            "firmware older than 1.1.6.26 has no 0x56");
+    }
+    protocol::MotorSpec out{};
+    std::memcpy(&out, ack.data.data(), sizeof(out));
+    return out;
 }
 
 }  // namespace xense::taccap

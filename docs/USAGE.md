@@ -161,15 +161,99 @@ f.motor.clear_fault()
 f.motor.enable()
 ```
 
-**推荐路径 —— `ControlLoop`**:C++ 后台线程按电机状态流的相位提交目标,
-你的策略只碰两个非阻塞调用:
+**推荐路径 —— `ImpedanceController`**:跟随一个位置目标(遥操作、leader-follower
+转发)就用它。C++ 后台线程按电机状态流的相位提交,你的策略只碰两个非阻塞调用:
+
+```python
+cfg = t.ImpedanceConfig()
+cfg.kp = 20.0                      # 刚度 Nm/rad:位置误差换成力矩的比例,手感硬不硬
+cfg.kd = 1.0                       # 阻尼 Nm·s/rad:抑振,并决定接近速度(见下)
+cfg.feedforward_torque = 0.0       # 恒定前馈 Nm,叠在 PD 上。抵消重力/预载用,平时 0
+cfg.max_position_torque_nm = 1.5   # 误差钳位 Nm(主保护):命令目标限制在实测位置
+                                   #   ±(1.5/kp)=0.075 rad 内,并把接近速度定在
+                                   #   约 1.5/kd = 1.5 rad/s
+cfg.rated_torque_nm = 1.8          # 力矩天花板 Nm(硬底线),作用在“实测”力矩上,不是命令值。
+                                   #   顶住后改发 kp=kd=0 的纯前馈帧,力矩被钉死。
+                                   #   上限是额定 1.8 而非峰值 6.0:这个保持无限期
+cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
+cfg.motor_stream_hz = 100          # 状态流速率 Hz;提交锁在这个相位,一帧一提交
+
+c = t.ImpedanceController(f, cfg)
+c.start()                         # 以当前位置作为初始目标,不会跳
+try:
+    while running:
+        s = c.snapshot()          # 一把锁、一致视图
+        if s.state == t.ImpedanceState.FAULT:
+            print("fault:", s.fault_reason)
+            break
+        c.set_target(policy(s.observation))
+finally:
+    c.stop()                      # 先下发零力矩
+    f.motor.disable()
+```
+
+`start()` 之后**不要**再自己 `start_streaming()` 或注册 `motor.on_status()` ——
+控制器独占状态流与控制路径,观测一律从 `snapshot()` 取。
+
+#### 七个字段分别控制什么
+
+| 字段 | 默认 | 控制什么 |
+|---|---|---|
+| `kp` | 20.0 Nm/rad | 刚度。位置误差换算成力矩的比例,"手感硬不硬" |
+| `kd` | 1.0 Nm·s/rad | 阻尼。抑制振荡,同时决定接近速度(见下) |
+| `feedforward_torque` | 0.0 Nm | 恒定前馈力矩,叠加在 PD 之上。抵消重力/预载用,平时留 0 |
+| `max_position_torque_nm` | 1.5 Nm | **误差钳位**,主保护。命令目标被限制在实测位置 ±(该值/`kp`) 内 |
+| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,硬底线。作用在**实测**力矩上,不是命令值 |
+| `status_timeout_ms` | 350 ms | 状态流断这么久 → `FAULT` + 零力矩 + 观测置 invalid |
+| `motor_stream_hz` | 100 | 状态流速率。提交锁在这个相位上,一帧一提交 |
+
+真正要按任务调的是前两个加 `max_position_torque_nm`;后两个是传输参数,
+`rated_torque_nm` 一般就放在电机额定值上。
+
+**这两层保护是不同的东西,别混。**
+
+- `max_position_torque_nm` 钳的是**命令**:`kp × 误差` 不允许超过它。窗口是
+  `max_position_torque_nm / kp`,默认 1.5/20 = **0.075 rad**。它也顺带定死了
+  接近速度 —— 爪子一直加速到阻尼平衡住钳位后的力矩,约
+  `max_position_torque_nm / kd`,默认 **1.5 rad/s**。所以调 `kd` 会同时改手感
+  和接近速度。
+- `rated_torque_nm` 看的是**电机实际发出来的**力矩(由电流推算)。压住这个值
+  够久之后,控制器改发 `kp=kd=0` 的纯前馈帧:位置误差在结构上再也加不进输出,
+  力矩被**钉死**在天花板上,而不是"估计不超过"。
+- 为什么两层都要:钳位管的是命令值,而 1.1.5 实测堵转时反馈只有命令的约 0.59
+  —— 那个比例是一台机、一个温度、一个负载测出来的。**天花板不关心这个比例。**
+
+`rated_torque_nm` 上限卡在 **1.8 Nm(额定)而不是 6.0 Nm(峰值)**,因为它产生的
+保持是**无限期**的,没有任何东西给它计时。超过额定值长期保持,主要风险不是热:
+电机欠压保护很快,持续大电流会把 24 V 拉垮并把 USB 一起带走 —— 到主机这边表现为
+`SerialBus::write: Input/output error`,完全不像力矩故障。
+
+#### 状态机
+
+`IDLE` → `TRACKING` → `STALLED` / `TORQUE_CAPPED` → `FAULT`,优先级
+**`FAULT` > `TORQUE_CAPPED` > `STALLED` > `TRACKING`**。
+
+| 状态 | 含义 |
+|---|---|
+| `TRACKING` | 正常跟随 |
+| `STALLED` | 堵转确认,有效目标被钳在爪子停住的位置,`kp × 误差` 不再增长。反向下发目标即释放 |
+| `TORQUE_CAPPED` | 实测力矩顶到天花板,正在发纯前馈帧 |
+| `FAULT` | 状态流断 / 电机故障位 / 提交失败。零力矩,需 `reset()` |
+
+`STALLED` 和 `TORQUE_CAPPED` 可以同时成立(`state` 报优先级高的那个),所以
+`snapshot()` 另外给了 `stalled` / `torque_capped` 两个布尔和各自的计数
+`stall_trips` / `torque_caps` —— 诊断卡住的爪子时两个都要看。
+
+**底层路径 —— `ControlLoop`**:同一套控制律,但没有状态机、没有一致快照、
+提交失败不留原因。它保留下来是因为还有 `SubmitPhase.FREE_RUNNING` 和运行期改
+增益这两件 `ImpedanceController` 不做的事。新代码用上面那个。
 
 ```python
 loop = t.ControlLoop(f, hz=100, kp=20, kd=1)    # 默认 SubmitPhase.STREAM_LOCKED
-loop.start()                                    # 以当前位置作为初始目标,不会跳
+loop.start()
 try:
     while running:
-        obs = loop.observation()   # .position [0,1] / .velocity / .torque / .age_ms
+        obs = loop.observation()
         loop.set_target(policy(obs))
 finally:
     loop.stop()
@@ -177,47 +261,71 @@ finally:
 ```
 
 **硬物夹持/限力保持 —— `ForcePositionController`**:普通位置阻抗在物体挡住夹爪后
-会继续积累 `kp × 位置误差`,不适合把目标长期放在完全闭合点。力位混合控制器改用:
-
-1. `kp=0` 的速度阻尼闭合,目标位置误差不参与闭合力矩;
-2. 接触判定,直接照搬固件开机自标定的做法(见下);
-3. 接触位置锁存后切到 `kp=kd=0` 的纯 `tau_ff` 力矩保持。
-
-**接触判定为什么是这样**:固件的开机自标定要解决的是同一个问题(闭合到堵转来找零
-点),它的做法是**力矩下限 _并且_ 运动停止**,两个条件缺一不可
-(`third_party/firmware/tc-gu-01` `App/tasks/task_canmotor.c`
-`task_canmotor_is_stalled()`):
+会继续积累 `kp × 位置误差`,不适合把目标长期放在完全闭合点。力位混合控制器改用
+**一条有界力矩的控制律**,全程不变:
 
 ```
-contact = 停止 AND |力矩| >= contact_torque_nm
-停止    = |vel| <= contact_vel_radps,或(已经走过一段)沿运动方向的速度
-          已跌到命令速度的 contact_vel_ratio 以下
-确认    = 连续 contact_samples 帧(固件对应 stall_hold_ms,默认 30 ms)
+command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 ```
 
-| 固件常量 | 值 | SDK 字段 |
-|---|---|---|
-| `TASK_CANMOTOR_STALL_TORQUE_FLOOR_NM` | 0.080 Nm | `contact_torque_nm` |
-| `TASK_CANMOTOR_STALL_VEL_RAD_S` | 0.035 rad/s | `contact_vel_radps` |
-| `TASK_CANMOTOR_STALL_VEL_RATIO` | 0.25 | `contact_vel_ratio` |
-| `TASK_CANMOTOR_STALL_MOVED_RAD` | 0.010 rad | `contact_moved_rad` |
-| `stall_hold_ms` | 30 ms | `contact_samples`(100 Hz 下 3 帧) |
+- **自由行程**:所需力矩只有摩擦那么多(本机构实测约 0.1 N·m),远低于预算,
+  钳位不生效,爪子沿斜坡以 `close_speed_radps` 行进;
+- **被挡住**:爪子停下、斜坡跑到前面、误差钳位饱和,命令**恰好**停在
+  `grasp_torque_nm` 并保持在那里。
+
+**接触不需要判定 —— 饱和就是接触**,保持就是饱和的自然结果。没有模式切换。
+
+`grasp_torque_nm` 默认 **1.1 N·m**,即 EL05 的连续堵转额定。实测复核:夹持按构造是
+无限期的,所以默认值必须是这台夹爪真能一直保持的力矩 —— 那是关于整机的问题,
+不是关于电机的。真实工件持续保持实测(24V、包络启用):
+
+| 夹持力 | 结果 |
+|---|---|
+| 1.1 N·m(默认) | 36→70℃ / 600s,速率 8→4→3→2→1 ℃/min,**外推平台 ≈75℃** |
+| 0.6 N·m | 41→49℃ / 600s,末 60 秒 0.00℃/min,**已进平台** |
+
+1.1 的温升速率全程在衰减,是一阶趋近平台而非线性爬升,平台低于固件 90℃ 温度墙
+约 15℃。余量真实但不宽裕:两轮都从 36–41℃ 起测,高环境温度会直接吃掉它。
+
+另外 `grasp_torque_nm` **不是硬上限**:稳定保持时实测反馈比预算高 5~7%。预算塑造
+命令,真正约束输出的是固件的运动包络。
+
+> 2026-09 之前这里跑的是一套主机侧接触状态机(`kp=0` 速度阻尼闭合 → 堵转判定 →
+> 纯 `tau_ff` 保持)。删掉的原因有三:它重复了 MCU 已经在 500 Hz 做的事
+> (`task_canmotor_is_stalled()`,而 `docs/CONTROL_LAYERING.md` §3 早已把接触判定
+> 划给固件);为了让堵转特征干净,行进段被**刻意**做成 `kp=0`,实测代价是 37% 的
+> 速度纹波和只有命令值 77% 的均速;而它最核心的判断——区分「到位」与「被挡住」
+> ——在空爪场景下物理上本就连续,不可靠。详见 `docs/CONTROL_REFACTOR.md`。
+
+**状态是观测量,不是控制状态。** `snapshot()` 每帧导出:
+
+| 观测 | 含义 |
+|---|---|
+| `arrived` | `\|位置误差\| <= arrival_eps_rad` |
+| `holding` | 设定点已跑到预算允许的最前面(前导量 ≥ 一半上限)**而且**爪子没跟上(速度 ≤ 命令速度的 25%) |
+| `state` | 由上面两者与运动方向导出,仅用于显示 |
+
+`holding` 的速度门限用的是固件自己的 `TASK_CANMOTOR_STALL_VEL_RATIO = 0.25`,
+刻意取同一个数,让主机和 MCU 用同样的方式描述同一个物理事件。
+
+**判据不是「命令是否用满预算」。** 那个在目标一变的瞬间就成立:设定点跳了、命令
+饱和了,而爪子还没来得及动。实测后果是每一步"夹持"都在 0.01 秒内完成、实测力矩
+只有 0.016 N·m —— 什么都没夹住,验收却全绿。前导量自带时序:斜坡是种在爪子上的,
+起步时为零,只有爪子不跟才会涨上去。
+
+`hold_position` 是爪子**实际**停住的位置,`target_position` 是当初要的位置,
+两者仍然分得清。
 
 **做分离的是速度门,不是力矩数字。** 在 1.1.5 从爪上实测整段空载闭合(1578 帧):
 自由行程 `|vel|` 始终 ≥ 0.183 rad/s,是 0.035 门限的五倍,同时 `|力矩|` ≤ 0.142 Nm;
 机械止点处 `|vel|` ≈ 0.012 rad/s、`|力矩|` ≈ 0.21 Nm。**没有任何一帧同时满足两个
-条件**。力矩项只需要否掉"停着但没受力",所以默认值直接用固件那个下限 0.080 Nm。
+条件**。这两条判据现在只留在固件里 —— 主机侧的那份已随接触状态机删除。
 
-**不要把阈值定成命令力矩上限的比例。** 固件能用 ratio = 1.00,是因为它下发的是
-**速度命令带 `max_torque`**,执行器自己的环会一路顶到那个上限;而 `kd` 形式的 MIT
-帧不会。同一次实测:堵住时命令要 0.359 Nm,反馈只饱和到 0.213 Nm(≈0.59)。把阈值
-放在命令上限处就是**永远够不到** —— 夹爪会一直推下去而从不锁存,正是这个控制器
-本该消灭的堵转。
-
-`brake_distance_rad` 那段减速也受 `grasp_torque_nm` 约束(而不是 6 Nm 运动上限):
-它属于调用方的夹持动作,而且如果按运动上限走,最后 0.10 rad 会退化成误差钳位到
-6 Nm 的 PD 推压 —— 堵转原样保留,并且低命令力矩还会把反馈压在接触下限以下,导致
-什么都锁存不了。
+**顺带记下一条仍然有效的事实**:`kd` 形式的 MIT 帧在堵转时,反馈力矩达不到命令值。
+同一次实测:命令 0.359 N·m,反馈只饱和到 0.213 N·m(≈0.59)。所以任何"拿反馈力矩
+去比命令上限"的判据都是够不到的。现在的 `holding` 判据比的是**命令**用没用满预算
+(`commanded_torque_nm >= 95% × grasp_torque_nm`),而命令按构造一定够得到 ——
+和 `ImpedanceController` 的 `stall_clamped_` 用的是同一个道理。
 
 控制器把力矩限制拆成两个职责明确的上限:
 
@@ -248,10 +356,13 @@ print(f.motor.get_startup_limit_torque())
 
 ```python
 cfg = t.ForcePositionConfig()
-cfg.grasp_torque_nm = 0.35
-cfg.hold_torque_limit_nm = 1.8
-cfg.motion_torque_limit_nm = 6.0
-cfg.close_speed_radps = 0.5
+cfg.grasp_torque_nm = 0.35         # 接触后的纯前馈保持力矩 Nm —— 就是夹持力设定值
+cfg.close_speed_radps = 0.5        # 闭合/张开速度 rad/s。与上一项不独立:阻尼增益是
+                                   #   grasp/close_speed(上限 5),低于 grasp/5 会被拒
+cfg.hold_torque_limit_nm = 1.8     # 无限期保持上限 = 电机额定力矩,校验 (0, 1.8]
+cfg.motion_torque_limit_nm = 6.0   # 运动瞬态上限 = 电机峰值力矩,校验 (0, 6.0]
+cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
+cfg.motor_stream_hz = 100          # 状态流速率 Hz;确认帧数由它和固件 30 ms 推导
 
 f = t.FollowerGripper.open()
 f.motor.clear_fault()
@@ -287,7 +398,7 @@ python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 `HoldingForce` 后的命令力矩不超过 1.8 Nm。
 
 该控制器需要 follower 固件 ≥ 1.1.2(支持 V2.2 启动力矩上限读取),并且从爪
-开合行程已经标定。运行期间它独占电机控制与状态流,不要并发使用 `ControlLoop`
+开合行程已经标定。运行期间它独占电机控制与状态流,不要并发使用 `ImpedanceController`
 或直接发送其他运动命令。
 
 **相位为什么重要**:主机帧只要在 MCU 发送期间落地,就会让它丢掉正在发的那一帧,
@@ -298,7 +409,7 @@ python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 **没有低层写法了。** 裸电机原语(`motor.set_impedance` / `submit_impedance` /
 `set_position` / `set_velocity` / `set_torque`,以及归一化包装
 `FollowerGripper.set_position`)**不再暴露给 Python**。它们都是把控制帧直接丢上
-总线:没有误差钳位、没有力矩天花板、没有堵转保护。走 `ControlLoop` 或
+总线:没有误差钳位、没有力矩天花板、没有堵转保护。走 `ImpedanceController` 或
 `ForcePositionController`。C++ 侧保留这些方法,两个控制器内部在用。
 
 **反馈频率**:电机 `actual_*` 遥测只有 ~50–100 Hz,读观测请走
@@ -469,7 +580,8 @@ finally:
 - **谁持有 UVC 设备。** 生产环境里外部相机服务持有 `/dev/video*`,这时
   **不要**再用 `open_cameras=True` 或裸 `Camera` 去开同一个节点 —— 会失败或抢到
   半路。SDK 默认不开相机,就是为了这个。
-- **控制回路要用 `ControlLoop`(`STREAM_LOCKED`)。** 上面的相位说明在满负载下
+- **控制回路要用 `ImpedanceController` 或 `ForcePositionController`。** 两者都把
+  提交锁在状态流的相位上;上面的相位说明在满负载下
   尤其重要:实测就是在"所有相机都在流 + 电机在往复"的条件下做的。
 - **日志。** 全 SDK 一个单例 logger(`xense.taccap.log`),控制台默认 INFO,
   文件 sink 恒为 DEBUG,落在 `~/.taccaplogs/session_*.log`(可用 `$TACCAP_LOG_DIR`
@@ -488,7 +600,7 @@ finally:
 | 矫正后画面全黑 | 用了 `read_fisheye()` 的全零记录 —— 改用 `resolve_fisheye()` |
 | 矫正后画面偏心 | 未必是错的,主点本来就不一定在画面中心 |
 | 录下来的颜色是反的 | 裸 `Camera` 是 BGR、`wrist_camera` 是 RGB,搞混了 |
-| 电机状态帧成片丢失 | 提交相位(用 `ControlLoop`),或刷完固件没断电重插 |
+| 电机状态帧成片丢失 | 提交相位(用两个控制器之一,别自己发帧),或刷完固件没断电重插 |
 | 改了 C++/bindings 但 Python 里没生效 | 消费端的环境没重装,见 [INSTALL.md](INSTALL.md) |
 | `import xense.taccap` 报 `libopencv_core.so` | 缺 `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` |
 

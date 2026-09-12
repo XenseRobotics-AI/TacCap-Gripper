@@ -80,6 +80,12 @@ GripperObservation = _taccap_native.GripperObservation  # ControlLoop latest obs
 ControlLoop = _taccap_native.ControlLoop              # fixed-rate send/recv loop
 SubmitPhase = _taccap_native.SubmitPhase              # ControlLoop send phasing
 StallAction = _taccap_native.StallAction              # ControlLoop blocked-jaw guard
+ImpedanceState = _taccap_native.ImpedanceState        # supervised impedance FSM
+ImpedanceConfig = _taccap_native.ImpedanceConfig
+ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
+ImpedanceController = _taccap_native.ImpedanceController
+MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM   # 1.8 Nm, indefinite
+MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM     # 6.0 Nm, transient
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
 ForcePositionSnapshot = _taccap_native.ForcePositionSnapshot
@@ -194,6 +200,12 @@ __all__ = [
     "ControlLoop",
     "SubmitPhase",
     "StallAction",
+    "ImpedanceState",
+    "ImpedanceConfig",
+    "ImpedanceSnapshot",
+    "ImpedanceController",
+    "MOTOR_RATED_TORQUE_NM",
+    "MOTOR_PEAK_TORQUE_NM",
     "ForcePositionState",
     "ForcePositionConfig",
     "ForcePositionSnapshot",

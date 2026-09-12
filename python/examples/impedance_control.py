@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""ControlLoop 的用法:阻抗控制。
+"""ImpedanceController 的用法:受监督的位置阻抗控制。
 
 后台线程按状态流相位提交 MIT 帧,策略侧只碰两个非阻塞调用:
 
-    loop.set_target(p)        # p in [0,1],0=闭合 1=张开
-    obs = loop.observation()  # 最新观测,不阻塞
+    c.set_target(p)     # p in [0,1],0=闭合 1=张开
+    s = c.snapshot()    # 状态 + 观测 + 两个保护的标志,一把锁一致视图
+
+这个脚本同时是**上机验收**:跑一遍目标序列,并检查那条把「到位」和「被挡住」
+分开的不变式 ——
+
+    保护(STALLED / TORQUE_CAPPED)只有在爪子明显没到命令位置时才成立。
+
+在命令位置上还报保护,说明保护把正常的跟随稳态误判成了堵转。任何一步失败 →
+退出码非零。
+
+底层的 ControlLoop 仍然存在(它有 FREE_RUNNING 相位和运行期改增益),但它把
+stalled / torque_capped 报成两个各自加锁的独立布尔,提交失败也不留原因,所以
+新代码走这个。
 
 运动安全包络
 ------------
@@ -16,6 +28,7 @@
     python python/examples/impedance_control.py --show-envelope
     python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
     python python/examples/impedance_control.py right
+    python python/examples/impedance_control.py --targets 1.0,0.5,0.0
 
 安全:真实运动,退出路径必定下发零力矩并 disable。
 """
@@ -27,9 +40,35 @@ import time
 import _calib_flow
 
 from xense.taccap import (
-    ControlLoop, FollowerGripper, StallAction,
+    FollowerGripper, ImpedanceConfig, ImpedanceController, ImpedanceState,
     GRIPPER_ENVELOPE_VALID, GRIPPER_ENVELOPE_ENFORCE, log,
 )
+
+# 认为「到位」的归一化误差。阻抗跟随会停在 kp x 误差 抵住摩擦的地方,不是数学上
+# 的零点,所以这里比控制器内部的判据宽一些,免得把通过的步骤报成失败。
+ARRIVED = 0.03
+
+
+def settle(c: ImpedanceController, budget: float = 3.0):
+    """等控制器停下来,返回 (状态名, 快照, 用时)。
+
+    等的是「速度落下来」而不是固定睡 2 秒:固定等待既可能截断一次慢的运动,
+    又会在快的运动上白等。
+    """
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < budget:
+        s = c.snapshot()
+        if s.state == ImpedanceState.FAULT:
+            break
+        if s.observation.valid and abs(s.observation.velocity) < 0.02:
+            # 连着两帧都停了才算,避免过零点的一瞬被当成停住。
+            time.sleep(0.05)
+            s2 = c.snapshot()
+            if s2.observation.valid and abs(s2.observation.velocity) < 0.02:
+                return str(s2.state).split(".")[-1], s2, time.perf_counter() - t0
+        time.sleep(0.01)
+    s = c.snapshot()
+    return str(s.state).split(".")[-1], s, time.perf_counter() - t0
 
 
 def main() -> int:
@@ -44,7 +83,19 @@ def main() -> int:
     ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
     ap.add_argument("--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认")
     ap.add_argument("--temp-wall", type=int, default=0, help="温度墙 °C,0=固件默认")
+    ap.add_argument(
+        "--targets",
+        default="1.0,0.6,0.3,0.6,1.0",
+        help="逗号分隔的归一化目标序列",
+    )
     args = ap.parse_args()
+
+    try:
+        targets = [float(x) for x in args.targets.split(",") if x.strip()]
+    except ValueError:
+        ap.error(f"--targets 解析失败: {args.targets!r}")
+    if not targets or any(not 0.0 <= t <= 1.0 for t in targets):
+        ap.error("--targets 必须是 [0,1] 内的归一化位置")
 
     log.set_level("warn")
     g, _ep = _calib_flow.open_follower(args.target)
@@ -63,36 +114,73 @@ def main() -> int:
     if args.show_envelope:
         return 0
 
-    loop = ControlLoop(g, kp=args.kp, kd=args.kd,
-                       stall_action=StallAction.HOLD_POSITION)
+    cfg = ImpedanceConfig()
+    cfg.kp = args.kp                   # 刚度 Nm/rad
+    cfg.kd = args.kd                   # 阻尼 Nm·s/rad,同时定接近速度
+    # 其余走默认:误差钳位 1.5 Nm(命令目标限在实测位置 ±1.5/kp rad),力矩天花板
+    # 1.8 Nm(作用在实测力矩上),流超时 350 ms,状态流 100 Hz。
+
+    c = ImpedanceController(g, cfg)
+    failures = 0
     try:
         g.motor.clear_fault()
-        loop.start()            # 以当前位置为初始目标,不会跳变
+        c.start()            # 以当前位置为初始目标,不会跳变
         g.motor.enable()
 
-        for target in (1.0, 0.6, 0.3, 0.6, 1.0):
-            loop.set_target(target)
-            t0 = time.perf_counter()
-            while time.perf_counter() - t0 < 2.0:
-                time.sleep(0.02)
-            o = loop.observation()
+        for target in targets:
+            c.set_target(target)
+            name, s, dt = settle(c)
+            o = s.observation
+            err = target - o.position
             # 全部来自状态流,控制期间不碰总线 —— read_status() 那类需要 ACK 的
-            # 调用会和控制帧对撞,而 observation() 不会。
-            print(f"  target={target:.2f} -> pos={o.position:.4f} "
-                  f"err={target - o.position:+.4f} tq={o.torque:+.3f} Nm "
-                  f"temp={o.motor_temp_c:.0f}°C age={o.age_ms:.1f}ms")
+            # 调用会和控制帧对撞,而 snapshot() 不会。
+            print(f"  target={target:.2f} -> {name:14s} pos={o.position:.4f} "
+                  f"err={err:+.4f} tq={o.torque:+.3f} Nm cmd={s.commanded_torque_nm:.3f} "
+                  f"temp={o.motor_temp_c:.0f}°C 用时 {dt:.2f}s")
 
-        print(f"\n[loop] submit_hz={loop.submit_hz:.1f} submits={loop.submit_count} "
-              f"堵转保护触发 {loop.stall_trips} 次")
+            if name == "FAULT":
+                print(f"    FAIL  fault: {s.fault_reason}")
+                failures += 1
+                break
+
+            guarded = s.stalled or s.torque_capped
+            if guarded and abs(err) <= ARRIVED:
+                # 到位了还报保护,说明保护把正常的跟随稳态当成了堵转。
+                print(f"    FAIL  到位却报保护(stalled={s.stalled} "
+                      f"capped={s.torque_capped})")
+                failures += 1
+            elif guarded:
+                print(f"    ok    被挡在目标外 {abs(err):.4f},保护正确介入 "
+                      f"(stalled={s.stalled} capped={s.torque_capped})")
+            elif abs(err) <= ARRIVED:
+                print("    ok    到位")
+            else:
+                # 没被挡住也没到位:要么预算不够,要么增益太软推不动。
+                print(f"    FAIL  停在目标外 {abs(err):.4f},但没有保护介入")
+                failures += 1
+
+            if o.torque > cfg.rated_torque_nm + 0.15:
+                print(f"    FAIL  实测力矩 {o.torque:.3f} Nm 越过了天花板 "
+                      f"{cfg.rated_torque_nm:.3f} Nm")
+                failures += 1
+
+        final = c.snapshot()
+        print(f"\n[guards] 堵转钳位触发 {final.stall_trips} 次,"
+              f"力矩天花板触发 {final.torque_caps} 次")
     finally:
         try:
-            loop.stop()          # stop() 先下发零力矩
+            c.stop()          # stop() 先下发零力矩
         except Exception as exc:
             print("stop:", exc)
         try:
             g.motor.disable()
         except Exception as exc:
             print("disable:", exc)
+
+    if failures:
+        print(f"\n{failures} 步失败")
+        return 1
+    print(f"\n{len(targets)} 步全部通过")
     return 0
 
 

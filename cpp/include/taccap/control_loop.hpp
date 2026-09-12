@@ -248,14 +248,43 @@ public:
         // one unit, one temperature, one load. A ceiling on the measurement
         // does not care what the ratio is.
         //
-        // 0 disables it. Note the EduLite05 rated torque is 1.8 Nm; a ceiling
-        // above that is a peak-torque allowance, not a continuous one.
-        float       rated_torque_nm   = 2.0f;
+        // 0 disables it. The default is the EduLite05's rated torque, which is
+        // also ForcePositionController's hold_torque_limit_nm -- the two
+        // controllers hold indefinitely in the same way, so they cap it at the
+        // same place. Nothing here bounds how LONG the ceiling holds, so a
+        // value above the nameplate rating would be a peak-torque allowance
+        // applied continuously.
+        float       rated_torque_nm   = MOTOR_RATED_TORQUE_NM;
         unsigned    rated_hold_ms     = 20;
         // While the ceiling holds, this much travel away from where it engaged
         // means the obstruction is gone, so impedance control resumes. Without
         // it a pure tau_ff hold would keep accelerating a jaw that came free.
+        //
+        // Known behaviour, not yet addressed: on a COMPLIANT object this can
+        // limit-cycle. The ceiling holds, the object creeps rated_release_rad,
+        // the loop reads that as "came free" and resumes impedance, torque
+        // rebuilds, the ceiling re-engages -- with a warn/info log pair each
+        // lap. Travel alone cannot tell a jaw that came free from one that is
+        // still loaded and merely moving; distinguishing them needs the torque
+        // after release, which nothing here looks at yet.
         float       rated_release_rad = 0.05f;
+
+        // ---- Stream liveness ----------------------------------------------
+        // No motor-status frame for this long means the loop is flying blind,
+        // and it stops driving: it puts one zero-torque frame on the wire and
+        // sends nothing further until frames resume.
+        //
+        // Every guard in this class reasons from the status stream, so losing
+        // it does not degrade them gracefully -- it freezes them. The error
+        // clamp keeps bounding against an obs_.raw_pos that no longer moves,
+        // and worst of all a torque ceiling that was ENGAGED when the stream
+        // died can never release, because both of its release tests
+        // (rated_release_rad of travel, or the caller backing off past the
+        // entry position) are evaluated against frames that stop arriving. The
+        // motor would sit at rated_torque_nm indefinitely.
+        //
+        // 0 disables the check.
+        unsigned    status_timeout_ms = 350;
 
         // ---- Stall guard (see StallAction) --------------------------------
         // Stalled = torque at or above stall_torque_nm while the jaw is slower
@@ -335,6 +364,9 @@ private:
                        std::chrono::steady_clock::time_point now);
     // Called from submit_once_ under mu_. Returns the target actually sent.
     float clamped_target_() noexcept;
+    // True while the motor-status stream is stale. The first stale call also
+    // safes the motor; later ones only keep the loop quiet.
+    bool guard_stale_();
     void start_motor_stream_();
     void stop_motor_stream_();
 
@@ -380,6 +412,7 @@ private:
     float cap_sign_      = 1.0f;   // direction the motor was pushing
     float cap_entry_raw_ = 0.0f;   // raw position where the ceiling engaged
     bool  cap_closing_   = false;  // was the blocked motion toward closed?
+    bool  stale_safe_    = false;  // zero-torque frame already sent for this outage
     std::atomic<bool>     torque_capped_pub_{false};
     std::atomic<uint64_t> torque_caps_{0};
 

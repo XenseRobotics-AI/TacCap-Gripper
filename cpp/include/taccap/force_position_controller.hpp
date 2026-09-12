@@ -1,70 +1,51 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// ForcePositionController — contact-aware force/position hybrid grasping.
+// ForcePositionController — bounded-torque grasping.
 //
-// A plain impedance position command keeps increasing torque while an object
-// prevents the jaw from reaching its target. This controller instead runs the
-// same hybrid sequence the firmware itself uses:
+// ONE CONTROL LAW. The jaw is commanded toward target_position with the PD
+// request error-clamped against grasp_torque_nm, for the whole move:
 //
-//   velocity-damped close -> contact detection -> pure feed-forward torque hold
+//   command(target, kp, kd, torque_budget = grasp_torque_nm)
 //
-// In the force-hold state kp=kd=0, so the commanded holding torque cannot grow
-// with position error. Position holds are dynamically error-clamped as a second
-// line of defence.
+// Free travel costs only what friction costs (~0.1 Nm measured on this
+// mechanism), well under the budget, so the clamp does not bind and the jaw
+// tracks a ramp at close_speed_radps. An obstruction stops the jaw, the ramp
+// runs ahead, the clamp saturates, and the command settles at exactly
+// grasp_torque_nm and stays there. CONTACT IS NOT DETECTED -- saturation is
+// what contact IS, and holding is what saturation does.
 //
-// CONTACT DETECTION mirrors tc-gu-01's power-on auto-calibration, which solves
-// exactly this problem (find the travel limits by closing until the jaw is
-// blocked) and has been tuned on this hardware. See
-// third_party/firmware/tc-gu-01 App/tasks/task_canmotor.c
-// task_canmotor_is_stalled(). The essential point is that a stall there is
-// NEVER a bare torque threshold -- it is a torque floor AND arrested motion,
-// held for a confirmation window:
+// WHAT THIS REPLACED, and why. Until 2026-09 this class ran a contact state
+// machine on the host: a velocity-damped close, a stall test copied from the
+// firmware's auto-calibration, an N-frame confirmation window, then a switch
+// into pure feed-forward torque. Three things were wrong with it.
 //
-//   contact = arrested AND |torque| >= contact_torque_nm
-//   arrested = |vel| <= 0.035 rad/s, or (having moved) the velocity along the
-//              motion direction has fallen under 25% of the commanded speed
-//   hold     = contact_samples frames (firmware: stall_hold_ms, default 30 ms)
+//  1. It duplicated the MCU. task_canmotor_is_stalled() runs the same test at
+//     500 Hz and docs/CONTROL_LAYERING.md section 3 already assigns contact
+//     detection to the firmware. Two copies of one physical event drift apart.
+//  2. It made the control soft ON PURPOSE. The travel command carried kp=0 --
+//     a position term would have muddied the stall signature -- leaving a
+//     proportional velocity loop of grasp_torque/close_speed, 0.7 Nm/(rad/s) at
+//     the old defaults. Measured over 10 runs at full stream rate: 37% relative
+//     velocity ripple closing, 0.59 rad/s peak-to-peak, a 12 Hz limit cycle,
+//     and a mean speed only 77% of what was asked for. Four configurations
+//     proved the ripple tracked kd and not speed, so it was loop softness and
+//     not mechanical resonance.
+//  3. Its central judgement was unmeasurable. Separating "arrived" from
+//     "blocked" needed a threshold on distance-to-target, and on empty jaws
+//     those two are physically continuous.
 //
-// THE VELOCITY GATE DOES THE SEPARATING, not the torque number. Measured on a
-// follower running firmware 1.1.5, closing on empty jaws over the full travel
-// (1578 samples): free travel sat at |vel| >= 0.183 rad/s -- five times the
-// 0.035 gate -- with |torque| <= 0.142 Nm, while the mechanical stop showed
-// |vel| ~ 0.012 rad/s and |torque| ~ 0.21 Nm. Zero free-travel samples passed
-// both tests. The torque term only has to reject "stopped but unloaded", which
-// is why the firmware's own floor (TASK_CANMOTOR_STALL_TORQUE_FLOOR_NM,
-// 0.080 Nm) is the default here.
+// THE TORQUE BUDGET IS THE WHOLE DESIGN, so it has to be big enough to command
+// with. The default is now the EL05's continuous stall rating, 1.1 Nm -- see
+// ForcePositionConfig. The previous 0.35 Nm was the firmware's homing constant
+// wearing a grasp-force costume, and left mechanism friction occupying 29% of
+// all available authority, which is what the ripple above really measured.
 //
-// Do NOT derive the threshold from the commanded torque cap. The firmware can
-// use a ratio of 1.00 against its cap because it commands VELOCITY with a
-// max_torque and the actuator's own loop winds up to that cap. A kd-only MIT
-// frame does not: at the stall above the command asked for 0.359 Nm and the
-// feedback saturated at 0.213 Nm (~0.59), so a threshold placed at the cap is
-// simply unreachable and the jaw pushes forever without ever latching --
-// which is the stall this controller exists to prevent.
-//
-// WHAT position 0.0 ACTUALLY IS, and why a full close terminates on contact
-// rather than on arrival. The firmware auto-calibrates on power-up: it closes
-// under a VELOCITY command capped at close_stall_torque_nm (0.35 Nm by
-// default) until stalled, records that position, backs off
-// TASK_CANMOTOR_BACKOFF_DISTANCE_RAD, returns to it, and calls
-// can_motor_set_zero_hold() with the jaw still enabled and loaded. So
-// normalized 0.0 is not a geometric hard stop -- it is the depth the jaw
-// reaches when PUSHED at the auto-cal stall torque, with that preload baked in.
-//
-// A kd-only MIT close does not reproduce that push (see below: feedback runs
-// ~0.59 of the commanded torque at stall), so it settles short of zero.
-// Measured on 1.1.5: an empty close stalls at normalized 0.0167, about 0.020
-// rad shy of the calibrated zero. set_target(0.0) is therefore asking for a
-// point this control mode cannot reach, and no arrival tolerance fixes that --
-// which is precisely why contact detection, not position arrival, is the
-// terminal condition for a blocked close.
-//
-// TORQUE LIMITS. The motor's peak rating is 6 Nm and its continuous/nameplate
-// rating is 1.8 Nm, so the two limits here are the two motor ratings, not two
-// arbitrary safety margins:
-//
-//   motion_torque_limit_nm (<= 6.0)  -- transient, motion only (PEAK rating)
-//   hold_torque_limit_nm   (<= 1.8)  -- indefinite force hold (RATED torque)
+// STILL TRUE, AND STILL LOAD-BEARING: the firmware's motion envelope is the
+// safety layer, not this class. It clamps position error, runs I2t derating and
+// a temperature wall, and it is the only thermal protection in the system --
+// the motor's own over-temperature protection did not act at 100 C case
+// temperature. start() cross-checks grasp_torque_nm against the device's
+// reported continuous envelope and warns; it cannot enforce.
 //
 // 6.0 Nm is also the firmware's own default AND maximum for the persisted
 // 0x700B startup limit (storage.c STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM),
@@ -88,8 +69,10 @@
 
 namespace xense::taccap {
 
-constexpr float FORCE_POSITION_MAX_HOLD_TORQUE_NM   = 1.8f;
-constexpr float FORCE_POSITION_MAX_MOTION_TORQUE_NM = 6.0f;
+// Aliases for the motor ratings in components/motor.hpp, kept because they are
+// public API and exported to Python.
+constexpr float FORCE_POSITION_MAX_HOLD_TORQUE_NM   = MOTOR_RATED_TORQUE_NM;
+constexpr float FORCE_POSITION_MAX_MOTION_TORQUE_NM = MOTOR_PEAK_TORQUE_NM;
 
 enum class ForcePositionState : uint8_t {
     Idle,
@@ -100,43 +83,54 @@ enum class ForcePositionState : uint8_t {
     Fault,
 };
 
+// THE TUNABLE SURFACE. Two values are the grasp itself and are the only ones a
+// task normally sets; two are the motor's own nameplate ratings; two describe
+// the transport.
+//
+// grasp_torque_nm IS THE CONTROL LAW'S TORQUE BUDGET, not a threshold consulted
+// after some contact event. The jaw is commanded toward target_position with the
+// PD request error-clamped against this budget, so free travel costs only what
+// friction costs (~0.1 Nm measured) and an obstruction saturates the clamp at
+// exactly this value and holds there. Contact needs no detecting; it is what
+// saturation IS.
+//
+// THE DEFAULT IS THE EL05's CONTINUOUS STALL RATING, 1.1 Nm -- the torque the
+// datasheet says it can hold indefinitely, and the grip force this gripper is
+// specified to deliver. It replaces an earlier 0.35 Nm that had been copied from
+// the firmware's auto-calibration constant
+// (GRIPPER_AUTO_CAL_DEFAULT_CLOSE_TORQUE, the push used to find the mechanical
+// stop during homing) and was never justified as a grip force at all.
+//
+// WHAT A LONG HOLD AT THIS TORQUE ACTUALLY DOES, measured on a real workpiece at
+// 24 V with the envelope enforced, winding temperature from the status stream:
+//
+//   1.1 Nm  36 -> 70 C over 600 s, and the RATE decays the whole way:
+//           8 -> 4 -> 3 -> 2 -> 1 C/min. That is a first-order approach, not a
+//           linear climb; fitting T_inf - T ~ exp(-t/tau) puts the plateau near
+//           75 C with tau ~ 350 s, about 15 C under the firmware's 90 C
+//           temperature wall. No fault, no undervoltage latch, no link loss, and
+//           the grasp did not drift.
+//   0.6 Nm  41 -> 49 C over 600 s, last-minute slope 0.00 C/min. Plateaued flat.
+//
+// Read the RATE, not the last slope. An earlier reading of this same data called
+// 1.1 Nm unsustainable because it was "still climbing 1 C/min at the end" -- but
+// a first-order system approaching its plateau always still has slope, and the
+// rate had already fallen eightfold. The margin is real but it is not generous:
+// these runs started from 36-41 C rather than a cold machine, and a warm ambient
+// eats into the 15 C directly. A hold measured in tens of minutes is worth
+// confirming on the unit and the ambient it will actually run in.
+//
+// NOT A HARD CEILING EITHER. Measured feedback runs 4-7% above the budget at a
+// settled hold (1.149 Nm against 1.100, 0.643 against 0.600). The budget shapes
+// the command; the firmware's motion envelope is what actually bounds output.
+// See docs/CONTROL_REFACTOR.md.
 struct ForcePositionConfig {
-    float close_position       = 0.0f;   // normalized [0,1], 0 = fully closed
-    float close_speed_radps    = 0.5f;   // raw motor speed magnitude
-    float grasp_torque_nm      = 0.35f;  // pure torque used after contact
-    float hold_torque_limit_nm = FORCE_POSITION_MAX_HOLD_TORQUE_NM;
+    float grasp_torque_nm      = 1.1f;   // torque budget; EL05 continuous rating
+    float close_speed_radps    = 0.5f;   // ramp speed, raw motor units
+    // The two MOTOR RATINGS, not two arbitrary safety margins -- see the note
+    // at the top of this file.
+    float hold_torque_limit_nm   = FORCE_POSITION_MAX_HOLD_TORQUE_NM;
     float motion_torque_limit_nm = FORCE_POSITION_MAX_MOTION_TORQUE_NM;
-    // Contact detection, mirroring task_canmotor_is_stalled() (see above).
-    // A FLOOR, not a saturation threshold: it only has to reject "stopped but
-    // unloaded", because the velocity gate is what separates travel from
-    // contact. Default is the firmware's own
-    // TASK_CANMOTOR_STALL_TORQUE_FLOOR_NM. Raise it only if a specific unit
-    // shows free-travel torque near it -- and remember feedback torque runs
-    // well under the commanded value at stall (~0.59 measured), so a high
-    // floor becomes unreachable rather than merely strict.
-    float contact_torque_nm    = 0.080f;
-    // |vel| at or below this counts as arrested regardless of travel history
-    // (TASK_CANMOTOR_STALL_VEL_RAD_S).
-    float contact_vel_radps    = 0.035f;
-    // Once the jaw has demonstrably moved, velocity along the motion direction
-    // at or below this fraction of the commanded speed also counts as arrested
-    // (TASK_CANMOTOR_STALL_VEL_RATIO).
-    float contact_vel_ratio    = 0.25f;
-    // Travel required before the ratio test arms (TASK_CANMOTOR_STALL_MOVED_RAD),
-    // together with peak speed reaching 35% of the commanded speed.
-    float contact_moved_rad    = 0.010f;
-    // Matches ControlLoop::Config::kp. Raising it tightens the position hold
-    // without raising the torque ceiling: the PD request is error-clamped
-    // against a torque budget either way, so kp only narrows the error window
-    // (budget/kp), it does not widen the output.
-    float position_kp          = 20.0f;  // safe current-position/endpoint hold
-    float position_kd          = 1.0f;
-    float brake_distance_rad   = 0.10f;  // switch close velocity -> clamped PD
-    float close_endpoint_tolerance_rad = 0.03f;
-    // Consecutive confirming status frames. At motor_stream_hz = 100 the
-    // firmware's 30 ms stall_hold_ms is 3 frames.
-    unsigned contact_samples   = 3;
-    unsigned startup_guard_ms  = 250;    // ignore acceleration torque at close start
     unsigned status_timeout_ms = 350;    // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
 };
@@ -152,18 +146,67 @@ struct ForcePositionSnapshot {
     float               hold_torque_limit_nm = 0.0f;
     float               motion_torque_limit_nm = 0.0f;
     float               device_limit_nm     = 0.0f;  // persisted 0x700B boot value
-    unsigned            contact_count       = 0;
+    // OBSERVATIONS, derived per frame -- not states the controller switches on.
+    bool                holding             = false; // budget saturated, not at target
+    bool                arrived             = false; // within arrival_eps_rad
     std::string         fault_reason;
 };
 
 namespace detail {
 
-// Pure state machine used by ForcePositionController. Kept separate from the
-// transport owner so its safety transitions and command bounds are testable
-// without a connected gripper.
+// Fixed control constants: the gains measured against this hardware. Not on
+// ForcePositionConfig -- there is one right answer for this gripper, and the
+// unit tests construct it directly to build scenarios no caller should ask for.
+//
+// The firmware's stall numbers used to live here too (contact_torque_nm,
+// contact_vel_radps, contact_vel_ratio, contact_moved_rad, stall_hold_ms,
+// startup_guard_ms) along with arrival_band_rad and brake_distance_rad. They
+// are gone with the contact state machine: the MCU already runs that test at
+// 500 Hz (task_canmotor_is_stalled) and is the authority per
+// docs/CONTROL_LAYERING.md section 3, so the host was duplicating it -- worse
+// than doing it in either place alone, because two copies of one physical
+// event drift apart.
+struct ForcePositionTuning {
+    // Raising kp tightens tracking without raising the torque ceiling: the PD
+    // request is error-clamped against the budget either way, so kp only
+    // narrows the error window (budget/kp), it does not widen the output.
+    float position_kp         = 20.0f;
+    float position_kd         = 1.0f;
+    // Damping gain during travel. FREE OF THE GRASP BUDGET, which is the whole
+    // point: the velocity feed-forward follows the RAMP's own advance, and the
+    // ramp stops advancing the moment the jaw is blocked (it is anti-windup
+    // clamped to the jaw). So at stall the damping term asks for kd*(0-0) = 0,
+    // the entire budget goes to the position term, and kd is bounded by
+    // stability rather than by how hard the caller wants to grip.
+    //
+    // The first cut of this controller got that wrong: it fed close_speed_radps
+    // forward unconditionally, so kd*close_speed had to be carved out of the
+    // grasp budget and kd came out at HALF what the old velocity-damped design
+    // used at the same grip force. Ripple is disturbance/gain, so halving the
+    // gain undid most of what the refactor was supposed to buy -- measured 33%
+    // at a 0.6 Nm grasp against the old design's ~22% extrapolated for the same
+    // torque. The feed-forward was simply describing a motion that was not
+    // happening.
+    float travel_kd           = 2.5f;
+    // Within this of the commanded position the jaw counts as arrived. Reported,
+    // never acted on -- there is no separate arrival branch any more.
+    float arrival_eps_rad     = 0.010f;
+};
+
+
+// ONE CONTROL LAW plus guards. Kept separate from the transport owner so its
+// bounds and fault transitions are testable without a connected gripper.
+//
+// There is no contact state machine any more. step() always issues the same
+// bounded-impedance command toward target_position_; ForcePositionState is
+// DERIVED from the result each frame and reported, never consulted to decide
+// what to command. Fault is the one real state, because a fault has to latch.
 class ForcePositionPolicy {
 public:
     ForcePositionPolicy(GripperPosition map, ForcePositionConfig cfg);
+    // Tests only: override the fixed control constants.
+    ForcePositionPolicy(GripperPosition map, ForcePositionConfig cfg,
+                        ForcePositionTuning tune);
 
     void reset(const MotorStatusSample& sample,
                std::chrono::steady_clock::time_point now);
@@ -184,41 +227,42 @@ public:
     float hold_position() const noexcept { return map_.to_position(hold_raw_); }
     float grasp_torque_nm() const noexcept { return grasp_torque_nm_; }
     float commanded_torque_nm() const noexcept { return commanded_torque_nm_; }
-    unsigned contact_count() const noexcept { return contact_count_; }
+    // Observations, refreshed by step().
+    bool holding() const noexcept { return holding_; }
+    bool arrived() const noexcept { return arrived_; }
     const std::string& fault_reason() const noexcept { return fault_reason_; }
 
 private:
-    // Reset / update the per-motion travel history the contact test needs.
-    void begin_motion_(const MotorStatusSample& sample);
-    void track_motion_(const MotorStatusSample& sample) noexcept;
-    // Torque saturation AND arrested motion, per task_canmotor_is_stalled().
-    bool contact_candidate_(const MotorStatusSample& sample,
-                            float motion_sign) const noexcept;
     protocol::MotorImpedanceCtrl zero_(const MotorStatusSample& sample);
-    protocol::MotorImpedanceCtrl force_hold_();
-    // torque_budget bounds the instantaneous PD request. The approach ("brake")
-    // phase of a motion passes the grasp torque so decelerating onto a target
-    // can never push harder than the grasp it belongs to; a settled hold passes
-    // the motion limit.
+    // Settled hold on a fixed point: damps absolute velocity, no feed-forward.
     protocol::MotorImpedanceCtrl position_hold_(const MotorStatusSample& sample,
                                                  float desired_raw,
                                                  float torque_budget);
-    float contact_threshold_() const noexcept;
+    // Move toward target_raw along a time-based ramp at desired_vel, with the
+    // PD request error-clamped against torque_budget. See the definition.
+    protocol::MotorImpedanceCtrl travel_track_(const MotorStatusSample& sample,
+                                               float target_raw,
+                                               float desired_vel,
+                                               float torque_budget,
+                                               std::chrono::steady_clock::time_point now);
     float direction_open_() const noexcept;
 
     GripperPosition map_;
     ForcePositionConfig cfg_;
+    ForcePositionTuning tune_;
     ForcePositionState state_ = ForcePositionState::Idle;
     std::chrono::steady_clock::time_point state_started_{};
     float target_position_ = 0.0f;
     float hold_raw_ = 0.0f;
     float grasp_torque_nm_ = 0.0f;
     float commanded_torque_nm_ = 0.0f;
-    unsigned contact_count_ = 0;
-    // Per-motion travel history, reset whenever a new Closing/Opening starts.
-    // Mirrors s_home_stall_{motion_start_pos,peak_vel} in the firmware.
-    float motion_start_raw_ = 0.0f;
-    float peak_abs_vel_ = 0.0f;
+    bool  holding_ = false;
+    bool  arrived_ = false;
+    // Travel ramp: the commanded setpoint, advanced at the commanded speed and
+    // anti-windup clamped to stay within the error limit of the jaw.
+    float ramp_raw_ = 0.0f;
+    bool  ramp_valid_ = false;
+    std::chrono::steady_clock::time_point last_step_{};
     std::string fault_reason_;
 };
 
@@ -268,6 +312,21 @@ private:
     bool step_requested_ = false;
     bool stop_requested_ = false;
     bool have_sample_ = false;
+
+    // Caller commands are queued here and applied in run_() on the status-frame
+    // doorbell, so every serial write lands in the window the MCU is idle.
+    // Applying them on the caller's thread submitted off-phase and cost
+    // telemetry frames. See the note above set_target() in the .cpp.
+    enum class PendingCommand : uint8_t { None, SetTarget, Release, HoldPosition };
+    PendingCommand pending_ = PendingCommand::None;
+    // One-shot wake flag. Caller commands must still wake run_() so staleness
+    // is evaluated promptly, but they must NOT set step_requested_ -- that is
+    // the status-frame doorbell, and setting it here is what used to submit
+    // off-phase. Kept separate from pending_ so the wake is consumed once and
+    // the loop does not spin on a command it is deliberately holding back.
+    bool command_woke_ = false;
+    float pending_position_ = 0.0f;
+    float pending_grasp_torque_nm_ = 0.0f;
     MotorStatusSample latest_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};

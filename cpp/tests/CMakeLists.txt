@@ -21,6 +21,9 @@ add_executable(taccap_unit_tests
     test_gripper_position.cpp
     test_force_position_controller.cpp
     test_force_position_pty.cpp
+    test_control_loop_pty.cpp
+    test_impedance_controller.cpp
+    test_impedance_pty.cpp
     test_upper_v16.cpp
     test_upper_v16_pty.cpp
     test_crc32_boundaries.cpp

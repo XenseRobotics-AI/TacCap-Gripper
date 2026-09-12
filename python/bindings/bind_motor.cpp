@@ -7,6 +7,8 @@
 
 #include "bindings_common.hpp"
 
+#include <cstring>
+
 namespace xense::taccap::python {
 
 void bind_motor(py::module_& m) {
@@ -237,6 +239,13 @@ void bind_motor(py::module_& m) {
         .def_readonly("target_vel",     &MotorStatusSample::target_vel)
         .def_readonly("target_torque",  &MotorStatusSample::target_torque)
         .def_readonly("control_mode",   &MotorStatusSample::control_mode)
+        // 诊断字段:从爪改发 59 字节 V2 状态后随流到达,不再需要轮询 0x53
+        // (轮询会和相位锁里的控制帧对撞)。仍发 31 字节前缀的固件上这些为 0。
+        .def_readonly("monitor_version",    &MotorStatusSample::monitor_version)
+        .def_readonly("stop_reason",        &MotorStatusSample::stop_reason)
+        .def_readonly("monitor_reserved",   &MotorStatusSample::monitor_reserved)
+        .def_readonly("fault_code",         &MotorStatusSample::fault_code)
+        .def_readonly("latched_fault_code", &MotorStatusSample::latched_fault_code)
         .def("__repr__", [](const MotorStatusSample& s) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),
@@ -279,24 +288,87 @@ void bind_motor(py::module_& m) {
              "Copy of the installed converter; .valid is False when none is "
              "installed.");
 
+    // ---- MotorSpec (0x56) ------------------------------------------------
+    py::class_<protocol::MotorSpec>(m, "MotorSpec")
+        .def_property_readonly("name", [](const protocol::MotorSpec& s) {
+            return std::string(s.name, ::strnlen(s.name, sizeof(s.name)));
+        })
+        .def_readonly("p_max_rad",            &protocol::MotorSpec::p_max_rad)
+        .def_readonly("v_max_rad_s",          &protocol::MotorSpec::v_max_rad_s)
+        .def_readonly("t_max_nm",             &protocol::MotorSpec::t_max_nm)
+        .def_readonly("kp_max",               &protocol::MotorSpec::kp_max)
+        .def_readonly("kd_max",               &protocol::MotorSpec::kd_max)
+        .def_readonly("rated_torque_nm",      &protocol::MotorSpec::rated_torque_nm)
+        .def_readonly("stall_cont_torque_nm", &protocol::MotorSpec::stall_cont_torque_nm)
+        .def_readonly("winding_limit_c",      &protocol::MotorSpec::winding_limit_c)
+        .def_readonly("board_limit_c",        &protocol::MotorSpec::board_limit_c)
+        .def("__repr__", [](const protocol::MotorSpec& s) {
+            return "MotorSpec(" + std::string(s.name, ::strnlen(s.name, sizeof(s.name)))
+                 + ", rated=" + std::to_string(s.rated_torque_nm)
+                 + ", peak=" + std::to_string(s.t_max_nm) + ")";
+        });
+
     // ---- Motor ----------------------------------------------------------
     py::class_<Motor>(m, "Motor")
         .def("enable",      [](Motor& self) { py::gil_scoped_release g; self.enable();      })
         .def("disable",     [](Motor& self) { py::gil_scoped_release g; self.disable();     })
         .def("clear_fault", [](Motor& self) { py::gil_scoped_release g; self.clear_fault(); })
-        // ---- 裸电机控制刻意不暴露给 Python -------------------------------
-        // set_position/velocity/torque/impedance 及其 submit_*(无 ACK)对应物
-        // 一律只留在 C++。它们每一个都是把控制帧直接丢上总线:没有误差钳位、
-        // 没有力矩天花板、没有堵转保护 —— 那些都长在 ControlLoop 和
+        // ---- 裸电机控制 --------------------------------------------------
+        // 这些是**无 ACK 的直投命令**:帧丢上总线就返回,没有主机侧的误差钳位、
+        // 力矩天花板或堵转保护 —— 那些长在 ControlLoop / ImpedanceController /
         // ForcePositionController 里,越过控制器就一个都拿不到。
         //
-        // 这不是假设。客户的控制台用 submit_impedance() 在 kp=20 下顶住刚性
-        // 物体,kp*误差 一路涨到电机自己的 0x700B 上限;24V 下的电流需求把整块
-        // 板子拉垮,夹爪松手掉件、USB 链路消失。见 docs/CONTROL_LAYERING.md。
+        // 它们曾经刻意不暴露给 Python。原因是真实事故:客户控制台用
+        // submit_impedance() 在 kp=20 下顶住刚性物体,kp*误差 一路涨到电机的
+        // 0x700B 上限,24V 下的电流需求把整块板子拉垮 —— 夹爪松手掉件、USB
+        // 链路消失。**那是固件 1.1.5、运动安全包络还不存在的时候。**
         //
-        // Python 调用方请用 ControlLoop(阻抗)或 ForcePositionController
-        // (力位混合)。C++ 侧的方法保持不变 —— 两个控制器和
-        // FollowerGripper::set_position 内部都在调它们。
+        // 1.1.6 的包络改变了这个结论。同一份代码、同一台设备、同一物体、
+        // kp=20,只切包络标志位(docs/CONTROL_LAYERING.md §1 [实测]):
+        //     包络关闭 -> 整机掉电重启,力矩失控索要 ~12 Nm
+        //     包络启用 -> 25 秒稳定夹持,恒定 0.549 Nm
+        // 包络长在固件 MIT 分支上,是所有阻抗/位置/力/力位混合命令的唯一必经
+        // 点 —— 裸命令绕不过它。CONTROL_LAYERING §3 的分层本来就是
+        // 「SDK 给意图,固件 500Hz 执行安全包络」,暴露命令层与之一致。
+        //
+        // 仍然要知道的两件事:
+        //  1. **热方向没有底层兜底**(同文档 §2 [实测]):电机自身的过温保护到
+        //     100 °C 壳温都未动作,297 秒恒 1.65 Nm 故障位全零。热保护只有固件
+        //     的温度墙,而温度墙是包络的一部分 —— 包络被关掉就什么都没有了。
+        //  2. 主机看门狗照常计时:停止下发 300ms 后固件 T1 接管零速保持,30s 后
+        //     T2 失能。裸命令不豁免这条。
+        //
+        // 需要误差钳位、力矩天花板和堵转处理的调用方,仍应该用控制器。
+        .def("submit_impedance", [](Motor& self, float target_pos_rad, float kp,
+                                    float kd, float feedforward_torque_nm,
+                                    float feedforward_vel_radps) {
+            py::gil_scoped_release g;
+            self.submit_impedance(target_pos_rad, kp, kd, feedforward_torque_nm,
+                                  feedforward_vel_radps);
+        }, py::arg("target_pos_rad"), py::arg("kp_nm_per_rad"),
+           py::arg("kd_nm_s_per_rad"), py::arg("feedforward_torque_nm"),
+           py::arg("feedforward_vel_radps") = 0.0f,
+           "MIT hybrid frame, no ACK. tau = kp*(target-pos) + kd*(vel_ff-vel) "
+           "+ tau_ff, computed by the motor. Bounded only by the firmware "
+           "envelope and the motor's own 0x700B.")
+        .def("submit_position", [](Motor& self, float target_pos_rad,
+                                   float max_vel_radps, float max_torque_nm) {
+            py::gil_scoped_release g;
+            self.submit_position(target_pos_rad, max_vel_radps, max_torque_nm);
+        }, py::arg("target_pos_rad"), py::arg("max_vel_radps"),
+           py::arg("max_torque_nm"), "Position command, no ACK.")
+        .def("submit_velocity", [](Motor& self, float target_vel_radps,
+                                   float max_torque_nm, float profile_acc_radps2) {
+            py::gil_scoped_release g;
+            self.submit_velocity(target_vel_radps, max_torque_nm, profile_acc_radps2);
+        }, py::arg("target_vel_radps"), py::arg("max_torque_nm"),
+           py::arg("profile_acc_radps2"), "Velocity command, no ACK.")
+        .def("submit_torque", [](Motor& self, float target_torque_nm,
+                                 float max_vel_radps) {
+            py::gil_scoped_release g;
+            self.submit_torque(target_torque_nm, max_vel_radps);
+        }, py::arg("target_torque_nm"), py::arg("max_vel_radps"),
+           "Torque command, no ACK.")
         .def("read_status", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release gil;
             return self.read_status(std::chrono::milliseconds(timeout_ms));
@@ -350,6 +422,10 @@ void bind_motor(py::module_& m) {
         .def("set_startup_limit_torque", [](Motor& self, float torque_nm) {
             py::gil_scoped_release g; self.set_startup_limit_torque(torque_nm);
         }, py::arg("torque_nm"))
+        .def("get_spec", [](Motor& self) {
+            py::gil_scoped_release g; return self.get_spec();
+        }, "当前电机的型号规格(额定/峰值/量程)。设备是自身额定值的权威 —— "
+           "SDK 里的 MOTOR_*_TORQUE_NM 只是 EL05 的 fallback。字段为 0 表示未知。")
         .def("get_startup_limit_torque", [](Motor& self) {
             py::gil_scoped_release g; return self.get_startup_limit_torque();
         });

@@ -111,6 +111,7 @@ enum class Cmd : uint8_t {
     GetMotorFault       = 0x52,    // V2.2 — MotorFaultReport (64B); req 0B (cached)
                                    //        or 1B non-zero (force a CAN read)
     GetMotorStatusExt   = 0x53,    // V2.2 — MotorStatusExt (72B), superset of 0x50
+    GetMotorSpec             = 0x56,  // 电机型号规格(40B)
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

@@ -55,14 +55,11 @@ answers with `python python/examples/fisheye_cal.py show`.
   `set_target(0..1)` and `observation()`, both non-blocking. See
   [Follower gripper control](#follower-gripper-control-mit-force-position) for
   why the phase matters.
-- **`ForcePositionController`** — contact-aware hybrid grasping for a follower:
-  velocity-damped close, then a pure bounded `tau_ff` hold with `kp=kd=0` so
-  blocked-jaw position error cannot keep increasing torque. Contact detection
-  mirrors the firmware's own power-on auto-calibration — torque saturation
-  **and** arrested motion, never a bare torque threshold, which false-triggers
-  on the jaw's restoring torque. Runtime `set_target(0..1, torque)` is the only
-  motion entry point. The two torque limits are the motor's two ratings: 6 Nm
-  peak for motion transients, 1.8 Nm rated for the indefinite force hold.
+- **`ForcePositionController`** — grasping for a follower. One bounded-torque
+  law the whole way: the jaw tracks a ramp toward the target and the command is
+  clamped at `grasp_torque_nm`, so free travel costs only friction and an
+  obstruction settles at exactly the grasp force. No contact detection to tune —
+  saturation *is* contact. Two knobs in practice: the force and the speed.
 - **Normalized position** on both roles — `[0, 1]`, 0 = closed, 1 = open, on
   one-shot reads and on every streamed sample.
 - **`Diagnostics`** (`g.diagnostics`) — the firmware's own UART counters and a
@@ -282,10 +279,9 @@ g = t.FollowerGripper.open()
 g.motor.clear_fault()
 g.motor.enable()                 # required before anything moves
 
-# Motion goes through a controller. The raw motor primitives (set_impedance /
-# submit_impedance / set_position / ...) are C++-only and deliberately not
-# exposed here: they write a control frame straight to the wire with no error
-# clamp, no torque ceiling and no stall guard.
+# Motion goes through a controller. The raw `submit_*` primitives are exposed
+# too, but they write a control frame straight to the wire with no error clamp
+# and no stall guard — the firmware envelope is then your only protection.
 loop = t.ControlLoop(g, kp=20.0, kd=1.0)
 loop.start()                     # seeds the target with the current position
 loop.set_target(0.35)            # normalized [0,1], 0 = closed
@@ -345,6 +341,56 @@ g.motor.disable()
 > Read observations from the **stream**, not by polling `read_status()` —
 > polling `GetMotorStatus` above ~100 Hz can stall the firmware's refresh.
 
+**`ForcePositionController`** — use this one to **grasp something**. `ControlLoop`
+is position control: against a hard object it keeps adding `kp × error` and there
+is no grip force you set. This one clamps the command at a force you choose, so a
+blocked jaw settles at exactly that force and holds.
+
+```python
+fp = t.ForcePositionController(g)         # defaults are the tuned values
+fp.start()
+try:
+    fp.set_target(0.0)                    # close; 0 = closed, 1 = open
+    while True:
+        s = fp.snapshot()
+        if s.holding: break               # gripping the object
+        if s.arrived: break               # reached the target, nothing there
+finally:
+    fp.stop()                             # commands zero torque and disables
+```
+
+**Two parameters, and only these two are task-specific:**
+
+| | default | what it is |
+|---|---|---|
+| `grasp_torque_nm` | **1.1 Nm** | the grip force. Free travel does not use it; a blocked jaw settles here |
+| `close_speed_radps` | **0.5 rad/s** | travel speed |
+
+```python
+cfg = t.ForcePositionConfig()
+cfg.grasp_torque_nm = 0.4        # gentler grip
+fp = t.ForcePositionController(g, cfg)
+```
+
+Everything else has one right answer for this gripper and is not exposed: the
+position gain, the travel damping, the arrival radius. They were measured on this
+hardware, not guessed, and changing them is far likelier to make the gripper
+judder than to improve it.
+
+**Two observations, not states.** `snapshot().holding` means the setpoint has run
+as far ahead of the jaw as the force budget allows and the jaw is not following —
+that is what gripping *is*. `snapshot().arrived` means it reached the commanded
+position. Nothing else needs interpreting.
+
+> **How hard, and for how long.** 1.1 Nm is the EL05's continuous stall rating.
+> Measured on a real workpiece at 24 V: a 600 s hold took the winding 36 → 70 °C
+> with the rate decaying 8 → 1 °C/min, which fits a plateau near 75 °C, about
+> 15 °C under the firmware's temperature wall — no fault, no link loss, no drift.
+> Grips of seconds to minutes are comfortably inside that. For a hold measured in
+> *tens of minutes*, or a warm cabinet, drop the force: 0.6 Nm settles flat at
+> 49 °C. Above the device's continuous envelope the firmware derates rather than
+> failing, and `start()` warns you.
+
 **LEDs and power-on auto-calibration (V1.9):**
 
 ```python
@@ -381,7 +427,7 @@ OTA 本身走 `LeaderGripper`(角色无关),**不受这个检查影响**,升级�
 # 阻抗控制 —— ControlLoop:set_target(0..1) + observation()
 python python/examples/impedance_control.py --side right
 
-# 力位混合 —— ForcePositionController:同样的两个调用,但被挡住后切纯力矩保持
+# 夹持 —— ForcePositionController:同样的两个调用,但命令被钳在 grasp_torque_nm
 python python/examples/force_position_control.py --side right
 ```
 
