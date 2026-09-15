@@ -1,132 +1,47 @@
-# Changelog
+# 更新日志
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+SDK 与固件使用独立版本号。未归属发布的变更列在“未发布”，已发布历史保留原文。
 
 ## [Unreleased]
 
-### Changed
+暂无新的变更。
 
-- **BREAKING: the raw motor primitives are no longer exposed to Python.**
-  Removed from the bindings: `Motor.set_impedance` / `set_position` /
-  `set_velocity` / `set_torque`, their no-ACK `submit_*` counterparts, and
-  `FollowerGripper.set_position` (a normalized wrapper that was itself just
-  `motor_.submit_impedance()`).
+## [0.2.0b1] - 2026-09-15
 
-  Every one of them writes a control frame straight to the wire with no error
-  clamp, no torque ceiling and no stall guard — those live in `ControlLoop` and
-  `ForcePositionController`, and a caller reaching past them gets none of it.
-  This is not hypothetical: a customer console driving `submit_impedance()` at
-  `kp=20` into a rigid object let `kp * error` grow to the motor's own `0x700B`
-  ceiling; at 24 V the current draw browned out the whole board, the gripper
-  dropped what it was holding and the USB link disappeared. See
-  [`docs/CONTROL_LAYERING.md`](docs/CONTROL_LAYERING.md).
+首个统一的 beta 源码版本，收敛先前 0.1.10 / 0.1.11 开发快照及后续修订。
+版本号标识本次候选构建，不表示已发布到 PyPI，也不表示完成全部硬件验收。
 
-  **What breaks:** any Python code calling those methods now raises
-  `AttributeError`. Port it to `ControlLoop` (impedance) or
-  `ForcePositionController` (force/position hybrid), both of which take a
-  normalized `set_target(0..1)` and expose observations without polling the bus.
+### 新增
 
-  **The C++ methods are unchanged** — both controllers and
-  `FollowerGripper::set_position` call them internally. This is a bindings-only
-  change.
+- Python 客户入口 `Gripper`：位置跟随、抓取、阻抗、保持、释放、清错与统一生命周期。
+- 不可变状态、操作结果、设备信息及频率统计；原生运行时统一控制权、反馈与停止流程。
+- 固件 1.1.7 执行诊断兼容路径，以及 1.1.8 扩展遥测与闭合补偿。
+- 正弦轨迹扫描、控制 / 读取频率测试、CSV 记录与离线图表。
+- 中文 MkDocs 用户文档、API 参考、迁移指南与开发记录分层。
 
-- **Example cleanup.** Removed `motor_mit_control.py` (its whole purpose was
-  demonstrating the raw MIT primitive), `gripper_force_grasp_test.py`
-  (host-side contact detection, superseded by `ForcePositionController`),
-  `v4l2_probe.py` / `v4l2_sweep.py`, and `rerun_dual_with_tracker.py`.
+### 变更
 
-- **BREAKING: the example device selector is a positional argument everywhere.**
-  `impedance_control.py`, `force_position_control.py` and the new
-  `gripper_console.py` used to take `--side left|right|follower`; they now take
-  the same positional `left` / `right` / firmware-SN that every other example
-  already used, and omit it when exactly one gripper is plugged in.
+- 持续位置目标使用 `set_position()`；受阻时保留有界位置施力，等待超时不自动取消目标。
+- RS05 编码按说明书使用 ±5.5 N·m；客户扭矩预算上限仍为 1.2 N·m。
+- `_version.py` 成为 Python、wheel 元数据与原生完整版本字符串的唯一来源。
+- 示例统一使用 `gripper_control.py`、`frequency_benchmark.py` 和 `requirements-plot.txt`；旧命令路径保留兼容入口。
 
-  **What breaks:** scripts passing `--side right` to those three. Drop the flag
-  and pass `right`. The convention was already documented in
-  `docs/EXAMPLES.md` — these three were the violators, not the rule.
+### 修复
 
+- 补偿到位判断使用原始电机目标误差，避免错误到位或一直等待。
+- 保留旧顶层及 wildcard 导入，包括 `OtaSession`，原生接口集中到 `advanced`。
+- 清理高级接口重复导出赋值及已过时的模块说明。
 
-- **BREAKING: the wrist camera now hands out RGB by default.** Its consumers are
-  vision and learning pipelines and every one of them wants RGB — LeRobot
-  datasets store RGB — so a BGR default meant each consumer converting at its own
-  call site, or forgetting to and recording swapped channels with nothing raised
-  to notice. `LeaderGripper::Config::wrist_color_mode` /
-  `FollowerGripper::Config::wrist_color_mode` default to `ColorMode::Rgb`; pass
-  `ColorMode::Bgr` to get the old behaviour back.
+### 迁移与兼容
 
-  **What breaks:** code that takes a wrist frame straight to `cv::imshow`,
-  `cv::imwrite` or any other OpenCV sink and does not say `ColorMode::Bgr` will
-  render with red and blue swapped. It will not raise — check any such call site.
+- 客户 `Gripper` 至少要求已标定的从爪固件 1.1.7；推荐配套 1.1.8。
+- 启用闭合补偿要求固件 1.1.8。仓库历史从爪 1.1.6 镜像不能用于客户 API。
+- 相对 0.1.9，Python 原始无保护运动方法已撤下；原生控制器和维护接口继续保留。
+- 腕相机默认 RGB；OpenCV BGR 消费者需显式指定 `ColorMode.Bgr`。
+- 原生控制示例使用位置参数 `left/right/SN`，替代旧 `--side`。
 
-  **A bare `Camera` is unaffected** and keeps OpenCV's native BGR: it can be any
-  V4L2 device and its frames go anywhere, so the convention every OpenCV caller
-  already assumes still holds there.
-
-### Added
-
-
-- **`python/examples/read_intrinsics.py`** — read-only wrist-camera intrinsics
-  export as JSON. Goes through `Calibration.resolve_fisheye()` rather than
-  `read_fisheye()`: an uncalibrated unit answers a read with an all-zero record
-  rather than a NACK, and handing that to `FisheyeUndistorter` remaps every
-  frame to black. The `source` field says whether the numbers came from the
-  device (`device`) or the SDK reference values (`reference`); `--require-device`
-  turns the latter into a non-zero exit. JSON goes to stdout and diagnostics to
-  the log, so it pipes cleanly.
-
-- **`python/examples/gripper_console.py`** — single-gripper keyboard console,
-  with `--mode impedance` (`ControlLoop`) and `--mode force-position`
-  (`ForcePositionController`) sharing one UI. It is also the motion-safety
-  envelope's configuration entry point (`--show-envelope` / `--set-envelope
-  --peak --cont --temp-wall`), and the header carries a permanent
-  `ENFORCED` / `*** INACTIVE ***` marker — the envelope is the only layer on
-  the MIT path that nothing can bypass, and it ships disabled.
-
-
-
-- **`Camera::Config::color_mode`** (`ColorMode::Bgr` / `Rgb`) — the channel order
-  a camera hands frames out in, and the mechanism behind the wrist default above.
-
-  Conversion runs **after** undistortion, so `FisheyeUndistorter` still only ever
-  sees BGR and its contract is unchanged — `remap` is per-channel, so the order
-  of the two steps cannot change the result anyway.
-
-  Exposed in Python as `ColorMode`, a `color_mode` argument on `Camera`
-  (defaulting to BGR), and a `wrist_color_mode` argument on `LeaderGripper` /
-  `FollowerGripper` (defaulting to RGB).
-
-### Fixed
-
-- **The 0.1.8 entry described the wrong fisheye behaviour.** It said a unit that
-  cannot supply a calibration "degrades to raw frames with a warning" — the
-  behaviour before `39e4a24`, which landed in that same release. What 0.1.8 and
-  0.1.9 actually do is fall back to `FISHEYE_FALLBACK_CAL`. The distinction
-  matters downstream: reference-rectified frames and raw fisheye frames are not
-  interchangeable, and a reader trusting the old line would treat them as such.
-  Corrected in place, since it describes what that release shipped.
-- **`docs/CALIBRATION.md` claimed an unwritten record always reads back as
-  `None`.** An uncalibrated unit may answer the fisheye read with a *present*,
-  all-zero record, which passes an `is None` check and then rectifies to a
-  uniformly black frame. Documented, with `is_usable_fisheye_cal()` as the test
-  to use. First seen on firmware 1.1.1 and still the behaviour on **1.2.2**
-  (measured on two leader units), so it is not an old version's quirk.
-- **`docs/CALIBRATION.md` gains a caveat on the optical axis.** A rectified frame
-  can look off-centre or tilted while the calibration is correct: the sensor is
-  not always mounted at the lens's optical centre, and rectification is built
-  around the principal point rather than the middle of the frame. Measured on one
-  unit, the axis sits 39 px right of centre — corroborated by the gripper jaws,
-  which are mechanically symmetric about it — and `FISHEYE_FALLBACK_CAL` is
-  37.7 px away from it. Raw fisheye hides the offset by compressing the
-  periphery; rectification reveals it. Written down because the natural reaction
-  is to "correct" `cx`, which makes it worse.
-- **The fisheye fallback was undocumented outside the headers.**
-  `docs/CALIBRATION.md` gains a section on `resolve_fisheye()`: the three ways a
-  unit fails to supply its own calibration, the reference values that stand in,
-  the per-assembly principal-point drift that makes them approximate, and why a
-  non-640x480 camera throws instead of falling back.
+完整迁移与命名对照见 [beta 迁移指南](docs/sdk/guides/migration.md)。
+旧开发快照的逐项记录见 [beta 前开发记录](docs/history/PRE_BETA_CHANGELOG.md)。
 
 ## [0.1.9] - 2026-08-21
 

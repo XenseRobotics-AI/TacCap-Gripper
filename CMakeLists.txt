@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
-project(taccap_gripper VERSION 0.1.9 LANGUAGES CXX)
+# Python, wheel metadata and native code share one full release version.
+set(_taccap_version_file "${CMAKE_CURRENT_SOURCE_DIR}/python/xense/taccap/_version.py")
+file(STRINGS "${_taccap_version_file}" _taccap_version_line REGEX "^__version__ = ")
+string(REGEX MATCH "\"([0-9]+\\.[0-9]+\\.[0-9]+((a|b|rc)[0-9]+)?)\""
+    _taccap_version_match "${_taccap_version_line}")
+if(NOT _taccap_version_match)
+    message(FATAL_ERROR "Invalid SDK version in ${_taccap_version_file}")
+endif()
+set(TACCAP_VERSION "${CMAKE_MATCH_1}")
+# CMake library VERSION only accepts the numeric release component.
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TACCAP_VERSION_BASE "${TACCAP_VERSION}")
+project(taccap_gripper VERSION ${TACCAP_VERSION_BASE} LANGUAGES CXX)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_taccap_version_file}")
 
 # ==============================================================================
 # Standards & global settings
@@ -44,7 +56,7 @@ endif()
 # ==============================================================================
 message(STATUS "")
 message(STATUS "taccap-gripper configuration:")
-message(STATUS "  Version:           ${PROJECT_VERSION}")
+message(STATUS "  Version:           ${TACCAP_VERSION}")
 message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard:      ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Python bindings:   ${TACCAP_BUILD_PYTHON}")

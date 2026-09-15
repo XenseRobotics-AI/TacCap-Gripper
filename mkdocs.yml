@@ -1,0 +1,60 @@
+site_name: TacCap-Gripper SDK
+site_description: TacCap 夹爪 Python SDK 开发文档
+site_author: Xense Robotics
+docs_dir: docs/sdk
+site_dir: site
+extra_css:
+  - stylesheets/extra.css
+strict: true
+validation:
+  links:
+    anchors: warn
+theme:
+  name: material
+  language: zh
+  font: false
+  palette:
+    primary: blue grey
+    accent: teal
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+plugins:
+  - search:
+      lang: zh
+      separator: '[\s\u200b\u3000\-、。，．？！；,:!=\[\]()"/]+|\.(?!\d)'
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+nav:
+  - 概述: index.md
+  - 快速开始:
+      - 安装: getting-started/installation.md
+      - 第一次控制夹爪: getting-started/quickstart.md
+      - 升级到 beta: guides/migration.md
+  - 使用指南:
+      - 核心概念: guides/concepts.md
+      - 位置控制: guides/position-control.md
+      - 遥操与模型推理: guides/streaming.md
+      - 抓取与释放: guides/grasp.md
+      - 阻抗控制: guides/impedance.md
+      - 状态与诊断: guides/observations.md
+      - 控制与读取频率测试: guides/frequency-test.md
+      - 停止与故障恢复: guides/recovery.md
+      - 主爪与相机: guides/sensors.md
+  - API 参考:
+      - Gripper: reference/gripper.md
+      - 数据类型: reference/types.md
+      - 异常: reference/errors.md
+  - 设备维护:
+      - 固件升级: maintenance/firmware.md
+      - 标定: maintenance/calibration.md
+  - 示例: examples.md
+  - 更新日志: changelog.md

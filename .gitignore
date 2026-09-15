@@ -12,6 +12,8 @@ dist/
 __pycache__/
 *.py[cod]
 .venv/
+.venv-docs/
+/site/
 .pytest_cache/
 
 # IDE / editor
@@ -20,6 +22,8 @@ __pycache__/
 *.swp
 .cache/
 compile_commands.json
+/sine-runs/
+/frequency-runs/
 
 # OS
 .DS_Store

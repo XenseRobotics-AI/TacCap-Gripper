@@ -1,11 +1,10 @@
 # Prebuilt TC-GU-01 firmware
 
-The **latest released** firmware images, so you can upgrade a gripper without
-access to the firmware source repo (which is internal and stays out of this
-SDK — see the repo README's "Firmware / PC GUI reference repos").
-
-Only the current release lives here. Older images are recoverable from this
-directory's git history, not from extra files.
+此目录保留历史预编译镜像：master 1.2.2 / slave 1.1.6。
+**slave 1.1.6 不满足新客户 Gripper 的最低固件要求。** 新客户接口使用 >= 1.1.7，
+闭合补偿与扩展流使用配套 1.1.8，升级路径见[固件说明](../docs/FIRMWARE.md)。
+本次没有替换这里的 bin 或 manifest；以下版本与历史验证仅对应本目录文件，
+不描述当前源码 / dist 候选物。旧版本镜像可从 Git 历史恢复。
 
 | Image | Role | Version | Protocol | Source | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- | --- |

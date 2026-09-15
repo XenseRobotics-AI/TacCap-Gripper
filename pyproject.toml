@@ -4,13 +4,14 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "taccap-gripper"
-version = "0.1.9"
+dynamic = ["version"]
 description = "TacCap-Gripper multimodal tactile gripper SDK"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "XenseRobotics Co., Ltd." }]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.12",
   "Operating System :: POSIX :: Linux",
@@ -24,6 +25,10 @@ wheel.packages = ["python/xense"]
 cmake.version = ">=3.20"
 cmake.build-type = "Release"
 build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "python/xense/taccap/_version.py"
 
 [tool.scikit-build.cmake.define]
 TACCAP_BUILD_PYTHON = "ON"

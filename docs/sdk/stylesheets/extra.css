@@ -1,0 +1,4 @@
+/* Keep API identifiers intact; wide tables remain horizontally scrollable. */
+.md-typeset table code {
+  white-space: nowrap;
+}
