@@ -81,6 +81,9 @@ void validate_config(const ForcePositionConfig& cfg) {
     if (!finite(cfg.brake_distance_rad) || cfg.brake_distance_rad < 0.0f) {
         throw std::invalid_argument("ForcePositionConfig.brake_distance_rad must be >= 0");
     }
+    if (!finite(cfg.close_endpoint_tolerance_rad) || cfg.close_endpoint_tolerance_rad < 0.0f) {
+        throw std::invalid_argument("ForcePositionConfig.close_endpoint_tolerance_rad must be >= 0");
+    }
     if (cfg.contact_samples == 0 || cfg.status_timeout_ms == 0 ||
         cfg.motor_stream_hz == 0 || cfg.motor_stream_hz > 100) {
         throw std::invalid_argument(
@@ -202,8 +205,13 @@ void ForcePositionPolicy::set_target(
     } else if (current_position < target_position - kTargetTolerance) {
         state_ = ForcePositionState::Opening;
     } else {
-        state_ = ForcePositionState::HoldingPosition;
-        hold_raw_ = map_.to_rad(target_position);
+        hold_raw_ = sample.actual_pos;
+        if (target_position <= cfg_.close_position + kTargetTolerance) {
+            state_ = ForcePositionState::HoldingForce;
+        } else {
+            state_ = ForcePositionState::HoldingPosition;
+            hold_raw_ = map_.to_rad(target_position);
+        }
     }
 }
 
@@ -332,7 +340,21 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
             return force_hold_();
         }
 
-        if (open_position <= target_position_ + 1e-4f) {
+        const bool endpoint_arrived =
+            target_position_ <= cfg_.close_position + 1e-4f &&
+            open_position <= cfg_.close_position + cfg_.close_endpoint_tolerance_rad &&
+            std::abs(sample.actual_vel) <= cfg_.contact_vel_radps;
+        if (endpoint_arrived || open_position <= target_position_ + 1e-4f) {
+            hold_raw_ = sample.actual_pos;
+            // A close-to-zero command is a grasp request, including an empty
+            // close that reaches the calibrated endpoint before the contact
+            // detector accumulates enough samples. Keep the configured grasp
+            // torque there instead of dropping into zero-error position hold,
+            // which otherwise lets the jaw unload and rebound.
+            if (target_position_ <= cfg_.close_position + 1e-4f) {
+                state_ = ForcePositionState::HoldingForce;
+                return force_hold_();
+            }
             state_ = ForcePositionState::HoldingPosition;
             hold_raw_ = map_.to_rad(target_position_);
             return position_hold_(sample, hold_raw_, cfg_.motion_torque_limit_nm);
