@@ -9,12 +9,12 @@
 
 运动安全包络
 ------------
-被挡住时 kp x 位置误差没有上界,固件侧的包络负责钳它。包络默认**不启用**,
-用 --set-envelope 写一次(掉电保持,每台设备配一次即可)。
+固件 1.1.7 在包络未配置时使用 cont=1.0 / peak=1.5 Nm 默认值。
+--set-envelope 用于有意修改设备配置；日常使用见 gripper.py。
 
 用法
     python python/examples/impedance_control.py --show-envelope
-    python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
+    python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.0
     python python/examples/impedance_control.py right
 
 安全:真实运动,退出路径必定下发零力矩并 disable。
@@ -26,7 +26,7 @@ import time
 
 import _calib_flow
 
-from xense.taccap import (
+from xense.taccap.advanced import (
     ControlLoop, FollowerGripper, StallAction,
     GRIPPER_ENVELOPE_VALID, GRIPPER_ENVELOPE_ENFORCE, log,
 )
@@ -41,7 +41,7 @@ def main() -> int:
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
     ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
     ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
-    ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
+    ap.add_argument("--cont", type=float, default=1.0, help="可持续力矩上限 Nm")
     ap.add_argument("--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认")
     ap.add_argument("--temp-wall", type=int, default=0, help="温度墙 °C,0=固件默认")
     args = ap.parse_args()
@@ -59,7 +59,7 @@ def main() -> int:
     env = g.get_envelope()
     print(f"[envelope] {env}")
     if not (env.flags & GRIPPER_ENVELOPE_ENFORCE):
-        print("[warn] 包络未启用 —— 被挡住时 kp*误差 没有上界。用 --set-envelope 开启。")
+        print("[envelope] 未显式配置：1.1.7 使用默认包络，1.1.6 则不执行包络。")
     if args.show_envelope:
         return 0
 

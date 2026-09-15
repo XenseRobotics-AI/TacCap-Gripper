@@ -31,7 +31,7 @@ import time
 
 import _calib_flow
 
-from xense.taccap import (
+from xense.taccap.advanced import (
     FollowerGripper, ForcePositionConfig, ForcePositionController,
     GRIPPER_ENVELOPE_ENFORCE, log,
 )

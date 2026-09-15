@@ -13,14 +13,13 @@ kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被�
     --mode impedance       ControlLoop —— 误差钳位 + 力矩天花板 + 堵转保持
     --mode force-position  ForcePositionController —— 接触判定后转纯力矩保持
 
-三层的分工见 docs/CONTROL_LAYERING.md。要记住的一条:**固件包络是唯一在 MIT
-路径上、谁都绕不过的一层**,而它出厂默认不启用(GripperConfig.reserved 全 0)。
-不开就没有,主机侧这两个控制器也替代不了它 —— 100 Hz 相位锁的链路,主机反应
-下限几十毫秒,8 rad/s 下就是 0.24 rad。用 --set-envelope 写一次,掉电保持。
+三层分工见 docs/CONTROL_LAYERING.md。固件 1.1.7 未配置包络时使用 RAM
+cont=1.0 / peak=1.5 Nm 默认值；1.1.6 则不执行未启用的包络。
+此工具面向调参；日常客户操作请用 gripper.py。
 
 用法
     python python/examples/gripper_console.py --show-envelope
-    python python/examples/gripper_console.py --set-envelope --peak 2.0 --cont 1.6
+    python python/examples/gripper_console.py --set-envelope --peak 2.0 --cont 1.0
     python python/examples/gripper_console.py --mode force-position --grasp-torque 1.2
 
 按键
@@ -47,7 +46,7 @@ from typing import Optional
 
 import _calib_flow
 
-from xense.taccap import (
+from xense.taccap.advanced import (
     ControlLoop,
     FollowerGripper,
     ForcePositionConfig,
@@ -335,7 +334,7 @@ def main() -> int:
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
     ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
     ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
-    ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
+    ap.add_argument("--cont", type=float, default=1.0, help="可持续力矩上限 Nm")
     ap.add_argument(
         "--temp-derate-start",
         type=int,
@@ -369,9 +368,7 @@ def main() -> int:
     enforced = bool(env.flags & GRIPPER_ENVELOPE_ENFORCE)
     if not enforced:
         print(
-            "[warn] 包络未启用 —— 被挡住时固件不钳 kp x 误差,I2t 与温度墙也不"
-            "生效。\n"
-            "       用 --set-envelope --peak 2.0 --cont 1.6 写一次(掉电保持)。"
+            "[envelope] 未显式配置：1.1.7 使用默认包络，1.1.6 则不执行包络。"
         )
     if args.show_envelope:
         return 0
@@ -390,7 +387,7 @@ def main() -> int:
         f"  envelope: cont={env.cont_torque_nm:.3f} "
         f"peak={env.peak_torque_nm:.3f} Nm  "
         f"temp={env.temp_derate_start_c or 90}/{env.temp_wall_c or 100}C  "
-        + ("ENFORCED" if enforced else "*** INACTIVE ***")
+        + ("ENFORCED" if enforced else "UNCONFIGURED")
     )
     head = (
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "
