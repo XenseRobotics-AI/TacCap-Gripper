@@ -1,0 +1,3 @@
+# Optional offline plotting dependencies; recording itself uses the standard library and SDK.
+numpy>=1.24
+matplotlib>=3.7
