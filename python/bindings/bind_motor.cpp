@@ -110,6 +110,25 @@ void bind_motor(py::module_& m) {
                 return self.disable_logging(std::chrono::milliseconds(timeout_ms));
             }, py::arg("timeout_ms") = 100u);
 
+    py::class_<protocol::MotorExecutionStatus>(m, "MotorExecutionStatus")
+        .def_readonly("owner", &protocol::MotorExecutionStatus::owner)
+        .def_readonly("home_state", &protocol::MotorExecutionStatus::home_state)
+        .def_readonly("envelope_state", &protocol::MotorExecutionStatus::envelope_state)
+        .def_readonly("mode", &protocol::MotorExecutionStatus::mode)
+        .def_readonly("timeout_ms", &protocol::MotorExecutionStatus::timeout_ms)
+        .def_readonly("target_age_ms", &protocol::MotorExecutionStatus::target_age_ms)
+        .def_readonly("target_seq", &protocol::MotorExecutionStatus::target_seq)
+        .def_readonly("applied_seq", &protocol::MotorExecutionStatus::applied_seq)
+        .def_readonly("last_error", &protocol::MotorExecutionStatus::last_error)
+        .def_readonly("flags", &protocol::MotorExecutionStatus::flags)
+        .def_readonly("torque_cap_nm", &protocol::MotorExecutionStatus::torque_cap_nm)
+        .def_property_readonly("requested", [](const protocol::MotorExecutionStatus& s) {
+            return py::make_tuple(s.requested[0], s.requested[1], s.requested[2], s.requested[3], s.requested[4]);
+        })
+        .def_property_readonly("applied", [](const protocol::MotorExecutionStatus& s) {
+            return py::make_tuple(s.applied[0], s.applied[1], s.applied[2], s.applied[3], s.applied[4]);
+        });
+
     py::class_<protocol::MotorControlStats>(m, "MotorControlStats")
         .def_readonly("running",             &protocol::MotorControlStats::running)
         .def_readonly("mode",                &protocol::MotorControlStats::mode)
@@ -284,19 +303,9 @@ void bind_motor(py::module_& m) {
         .def("enable",      [](Motor& self) { py::gil_scoped_release g; self.enable();      })
         .def("disable",     [](Motor& self) { py::gil_scoped_release g; self.disable();     })
         .def("clear_fault", [](Motor& self) { py::gil_scoped_release g; self.clear_fault(); })
-        // ---- 裸电机控制刻意不暴露给 Python -------------------------------
-        // set_position/velocity/torque/impedance 及其 submit_*(无 ACK)对应物
-        // 一律只留在 C++。它们每一个都是把控制帧直接丢上总线:没有误差钳位、
-        // 没有力矩天花板、没有堵转保护 —— 那些都长在 ControlLoop 和
-        // ForcePositionController 里,越过控制器就一个都拿不到。
-        //
-        // 这不是假设。客户的控制台用 submit_impedance() 在 kp=20 下顶住刚性
-        // 物体,kp*误差 一路涨到电机自己的 0x700B 上限;24V 下的电流需求把整块
-        // 板子拉垮,夹爪松手掉件、USB 链路消失。见 docs/CONTROL_LAYERING.md。
-        //
-        // Python 调用方请用 ControlLoop(阻抗)或 ForcePositionController
-        // (力位混合)。C++ 侧的方法保持不变 —— 两个控制器和
-        // FollowerGripper::set_position 内部都在调它们。
+        // Python retains controller-based motion APIs. C++ raw targets now
+        // validate parameters/ownership, and firmware 1.1.7 enforces its own
+        // external envelope. Raw Python motion remains intentionally hidden.
         .def("read_status", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release gil;
             return self.read_status(std::chrono::milliseconds(timeout_ms));
@@ -332,6 +341,10 @@ void bind_motor(py::module_& m) {
         .def("set_private_param", [](Motor& self, uint16_t index, uint32_t raw_value) {
             py::gil_scoped_release g; self.set_private_param(index, raw_value);
         }, py::arg("index"), py::arg("raw_value"))
+        .def("execution_status", [](Motor& self, unsigned timeout_ms) {
+            py::gil_scoped_release release;
+            return self.execution_status(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 300, "Firmware 1.1.7+: requested and applied targets, limits and owner.")
         .def("control_stats", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release g;
             return self.control_stats(std::chrono::milliseconds(timeout_ms));

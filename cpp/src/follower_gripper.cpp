@@ -199,10 +199,14 @@ void FollowerGripper::start_streaming(unsigned motor_hz) {
                                   detail::kMotorMaxRateHz);
 
     protocol::StreamConfig sc{};
-    // Only the MotorStatus bit: a rate alone would not turn a source on, and a
+    // The MotorStatus bit enables the source; a rate alone does not. A
     // set bit with rate 0 would stream at the firmware's 100Hz default rather
     // than staying off. See stream_rate.hpp.
     sc.source_mask  = protocol::StreamSrc::MotorStatus;
+    const auto version = firmware_version();
+    if (version && (version->major > 1 || (version->major == 1 &&
+        (version->minor > 1 || (version->minor == 1 && version->patch >= 8)))))
+        sc.source_mask |= protocol::StreamSrc::MotorExecution;
     sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Separate);
     sc.imu_rate     = 0;
     sc.encoder_rate = 0;
@@ -251,6 +255,11 @@ protocol::GripperEnvelope FollowerGripper::get_envelope(
 }
 
 void FollowerGripper::set_envelope(const protocol::GripperEnvelope& env) {
+    const auto active = protocol::GripperEnvelopeFlag::Valid | protocol::GripperEnvelopeFlag::Enforce;
+    if ((env.flags & active) == active &&
+        (!std::isfinite(env.cont_torque_nm) || env.cont_torque_nm <= 0 || env.cont_torque_nm > 1.2f ||
+         !std::isfinite(env.peak_torque_nm) || env.peak_torque_nm < env.cont_torque_nm || env.peak_torque_nm > 5.5f))
+        throw std::invalid_argument("RS05 envelope requires 0 < continuous <= 1.2 and continuous <= peak <= 5.5 Nm");
     // Read-modify-write: the envelope shares its record with the travel
     // calibration, and the firmware's own sanitiser rebuilds the record from a
     // zeroed default. Writing a config assembled from scratch here would drop

@@ -73,6 +73,7 @@ const char* to_string(Cmd c) noexcept {
         case Cmd::MotorTorqueCtrl:     return "MotorTorqueCtrl";
         case Cmd::MotorImpedanceCtrl:  return "MotorImpedanceCtrl";
         case Cmd::GetMotorStatus:      return "GetMotorStatus";
+        case Cmd::GetMotorExecutionStatus: return "GetMotorExecutionStatus";
         case Cmd::GetMotorControlStats: return "GetMotorControlStats";
         case Cmd::GetMotorFault:       return "GetMotorFault";
         case Cmd::GetMotorStatusExt:   return "GetMotorStatusExt";

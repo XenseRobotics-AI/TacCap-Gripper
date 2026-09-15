@@ -5,6 +5,8 @@
 #include <taccap/protocol/codec.hpp>
 
 #include <cstring>
+#include <cmath>
+#include <stdexcept>
 
 namespace xense::taccap {
 
@@ -13,10 +15,32 @@ namespace {
 void send_or_throw(bus::Transport& t, protocol::Cmd cmd,
                    const std::vector<uint8_t>& payload, const char* what) {
     auto ack = t.send_cmd(cmd, payload);
-    if (ack.is_nack) {
+    if (bus::ack_error_code(ack) != protocol::ErrorCode::Ok) {
         throw ProtocolError(std::string("Motor::") + what + " NACK: " +
-                            protocol::to_string(ack.error_code));
+                            protocol::to_string(bus::ack_error_code(ack)));
     }
+}
+
+
+bool magnitude(float x, float limit) { return std::isfinite(x) && std::abs(x) <= limit; }
+bool positive(float x, float limit) { return magnitude(x, limit) && x > 0; }
+void validate(const protocol::MotorPosCtrl& c) {
+    if (!magnitude(c.target_pos, 12.57f) || !positive(c.max_vel, 50) || !positive(c.max_torque, 5.5f))
+        throw std::invalid_argument("invalid RS05 position target or limits");
+}
+void validate(const protocol::MotorVelCtrl& c) {
+    if (!magnitude(c.target_vel, 50) || !positive(c.max_torque, 5.5f) || !positive(c.profile_acc, 1000))
+        throw std::invalid_argument("invalid RS05 velocity target or limits");
+}
+void validate(const protocol::MotorTorqueCtrl& c) {
+    if (!magnitude(c.target_torque, 5.5f) || !positive(c.max_vel, 50))
+        throw std::invalid_argument("invalid RS05 torque target or limits");
+}
+void validate(const protocol::MotorImpedanceCtrl& c) {
+    if (!magnitude(c.target_pos, 12.57f) || !magnitude(c.vel, 50) ||
+        !magnitude(c.target_torque, 5.5f) || !magnitude(c.kp, 500) || c.kp < 0 ||
+        !magnitude(c.kd, 5) || c.kd < 0)
+        throw std::invalid_argument("invalid RS05 impedance target or gains");
 }
 
 }  // namespace
@@ -37,31 +61,54 @@ MotorStatusSample Motor::decode(const std::uint8_t* payload, std::size_t len) {
     s.target_vel     = s.raw.target_vel;
     s.target_torque  = s.raw.target_torque;
     s.control_mode   = s.raw.control_mode;
+    constexpr size_t extended_size = sizeof(protocol::MotorStatus) +
+        sizeof(protocol::MotorExecutionStatus) + sizeof(uint32_t) + sizeof(float);
+    static_assert(extended_size == 107);
+    if (len == extended_size) {
+        s.has_execution = true;
+        std::memcpy(&s.execution, payload + sizeof(protocol::MotorStatus), sizeof(s.execution));
+        std::memcpy(&s.sample_age_ms, payload + extended_size - sizeof(float) - sizeof(uint32_t), sizeof(uint32_t));
+        std::memcpy(&s.actual_pos, payload + extended_size - sizeof(float), sizeof(float));
+    }
     return s;
 }
 
-void Motor::enable()       { send_or_throw(t_, protocol::Cmd::MotorEnable,     {}, "enable"); }
-void Motor::disable()      { send_or_throw(t_, protocol::Cmd::MotorDisable,    {}, "disable"); }
-void Motor::clear_fault()  { send_or_throw(t_, protocol::Cmd::MotorClearFault, {}, "clear_fault"); }
+void Motor::enable()       { auto lock = check_control_access(); send_or_throw(t_, protocol::Cmd::MotorEnable,     {}, "enable"); }
+void Motor::disable() {
+    // Serialize behind any in-flight target, then prevent this controller from
+    // re-enabling the motor on its next tick. stop()/start() acquires a new lease.
+    std::lock_guard<std::mutex> lock(control_mu_);
+    if (controller_) controller_disabled_ = true;
+    send_or_throw(t_, protocol::Cmd::MotorDisable, {}, "disable");
+}
+void Motor::clear_fault()  { auto lock = check_control_access(); send_or_throw(t_, protocol::Cmd::MotorClearFault, {}, "clear_fault"); }
 
 void Motor::set_position(float pos, float max_vel, float max_torque) {
+    auto control_lock = check_control_access();
     protocol::MotorPosCtrl c{pos, max_vel, max_torque};
+    validate(c);
     send_or_throw(t_, protocol::Cmd::MotorPosCtrl, protocol::encode(c), "set_position");
 }
 
 void Motor::set_velocity(float vel, float max_torque, float profile_acc) {
+    auto control_lock = check_control_access();
     protocol::MotorVelCtrl c{vel, max_torque, profile_acc};
+    validate(c);
     send_or_throw(t_, protocol::Cmd::MotorVelCtrl, protocol::encode(c), "set_velocity");
 }
 
 void Motor::set_torque(float torque, float max_vel) {
+    auto control_lock = check_control_access();
     protocol::MotorTorqueCtrl c{torque, max_vel, 0.0f};
+    validate(c);
     send_or_throw(t_, protocol::Cmd::MotorTorqueCtrl, protocol::encode(c), "set_torque");
 }
 
 void Motor::set_impedance(float pos, float kp, float kd, float ff_torque,
                           float ff_vel) {
+    auto control_lock = check_control_access();
     protocol::MotorImpedanceCtrl c{pos, kp, kd, ff_torque, ff_vel};
+    validate(c);
     send_or_throw(t_, protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c), "set_impedance");
 }
 
@@ -70,15 +117,23 @@ void Motor::set_impedance(float pos, float kp, float kd, float ff_torque,
 // throw on NACK (there is none). The struct overloads are the single source of
 // truth; the float wrappers delegate. See motor.hpp for the health contract.
 void Motor::submit(const protocol::MotorImpedanceCtrl& c) {
+    auto control_lock = check_control_access();
+    validate(c);
     t_.send_cmd_no_ack(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorPosCtrl& c) {
+    auto control_lock = check_control_access();
+    validate(c);
     t_.send_cmd_no_ack(protocol::Cmd::MotorPosCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorVelCtrl& c) {
+    auto control_lock = check_control_access();
+    validate(c);
     t_.send_cmd_no_ack(protocol::Cmd::MotorVelCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorTorqueCtrl& c) {
+    auto control_lock = check_control_access();
+    validate(c);
     t_.send_cmd_no_ack(protocol::Cmd::MotorTorqueCtrl, protocol::encode(c));
 }
 
@@ -237,3 +292,39 @@ float Motor::get_startup_limit_torque() {
 }
 
 }  // namespace xense::taccap
+
+namespace xense::taccap {
+protocol::MotorExecutionStatus Motor::execution_status(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::GetMotorExecutionStatus, {}, timeout);
+    if (ack.is_nack || ack.data.size() != sizeof(protocol::MotorExecutionStatus))
+        throw ProtocolError("Motor execution status unavailable (requires firmware 1.1.7)");
+    protocol::MotorExecutionStatus out{};
+    std::memcpy(&out, ack.data.data(), sizeof(out));
+    return out;
+}
+}
+
+namespace xense::taccap {
+void Motor::claim_controller(const void *owner) {
+    std::lock_guard<std::mutex> lock(control_mu_);
+    if (controller_) throw std::logic_error("motor already owned by a controller");
+    controller_ = owner;
+    controller_disabled_ = false;
+    controller_thread_ = {};
+}
+void Motor::controller_thread(const void *owner) {
+    std::lock_guard<std::mutex> lock(control_mu_);
+    if (controller_ != owner) throw std::logic_error("invalid motor controller owner");
+    controller_thread_ = std::this_thread::get_id();
+}
+void Motor::release_controller(const void *owner) {
+    std::lock_guard<std::mutex> lock(control_mu_);
+    if (controller_ == owner) { controller_ = nullptr; controller_thread_ = {}; }
+}
+std::unique_lock<std::mutex> Motor::check_control_access() {
+    std::unique_lock<std::mutex> lock(control_mu_);
+    if (controller_ && (controller_disabled_ || controller_thread_ != std::this_thread::get_id()))
+        throw std::logic_error("motor targets are owned by the active controller");
+    return lock;
+}
+}

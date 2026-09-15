@@ -5,6 +5,8 @@
 #include <taccap/force_position_controller.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -25,6 +27,157 @@ MotorStatusSample sample(float pos, float vel = 0.0f, float torque = 0.0f,
 }
 
 }  // namespace
+
+TEST(GripperModes, PositionUsesSpeedLimitedReferenceAndSharedTorqueBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), now);
+    p.set_position_target(sample(0.8f), 0.0f, 0.4f, 0.5f, now);
+    const auto first = p.step(sample(0.8f), now + std::chrono::milliseconds(10));
+    EXPECT_FLOAT_EQ(first.vel, -0.5f);
+    EXPECT_GT(-(first.kp * (first.target_pos - 0.8f) + first.kd * first.vel), 0.0f);
+    EXPECT_GT(first.kp, 0.0f);
+    EXPECT_FLOAT_EQ(first.target_torque, 0.0f);
+    const auto moving = p.step(sample(0.8f, 3.0f), now + std::chrono::milliseconds(20));
+    const float predicted = moving.kp * (moving.target_pos - 0.8f) + moving.kd * (moving.vel - 3.0f);
+    EXPECT_LE(std::abs(predicted), 0.4f + 1e-6f);
+    EXPECT_EQ(p.state(), ForcePositionState::MovingPosition);
+}
+
+TEST(GripperModes, PositionObstructionRetainsTorqueAndReversalAcrossRates) {
+    for (bool reverse : {false, true}) for (float target : {0.0f, 1.0f})
+        for (int period_ms : {10, 20, 50}) {
+        const float raw = reverse ? -0.5f : 0.5f;
+        const float direction = (target == 1.0f ? 1.0f : -1.0f) * (reverse ? -1.0f : 1.0f);
+        ForcePositionPolicy p(GripperPosition::from_travel(1.0f, 0.0f, reverse), {});
+        const auto now = std::chrono::steady_clock::now();
+        const auto loaded = sample(raw, 0.0f, 0.2f);
+        p.reset(loaded, now);
+        p.set_position_target(loaded, target, 0.35f, 0.5f, now);
+        for (int ms = period_ms; ms <= 2000; ms += period_ms) {
+            const auto time = now + std::chrono::milliseconds(ms);
+            p.set_position_target(loaded, target, 0.35f, 0.5f, time);
+            const auto c = p.step(loaded, time);
+            const float torque = c.kp * (c.target_pos - raw) + c.kd * c.vel + c.target_torque;
+            EXPECT_GT(torque * direction, 0.0f);
+            EXPECT_LE(std::abs(torque), 0.35001f);
+            EXPECT_EQ(p.state(), ForcePositionState::MovingPosition);
+            EXPECT_FLOAT_EQ(p.target_position(), target);
+        }
+        const auto changed = now + std::chrono::milliseconds(2010);
+        p.set_position_target(loaded, 1.0f - target, 0.35f, 0.5f, changed);
+        const auto c = p.step(loaded, changed + std::chrono::milliseconds(period_ms));
+        EXPECT_LT((c.kp * (c.target_pos - raw) + c.kd * c.vel) * direction, 0.0f);
+    }
+}
+
+TEST(GripperModes, RepeatedCommandWakesCannotCountCachedFeedbackAsNewContact) {
+    ForcePositionConfig cfg;
+    cfg.startup_guard_ms = 0;
+    cfg.contact_samples = 2;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    const auto loaded = sample(0.5f, 0.0f, 0.2f);
+    p.reset(loaded, now);
+    p.set_grasp_target(loaded, 0.0f, 0.35f, 0.5f, now);
+    p.step(loaded, now, true);
+    for (int i = 0; i < 10; ++i) p.step(loaded, now, false);
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
+    EXPECT_EQ(p.contact_count(), 1u);
+    p.step(loaded, now, true);
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
+
+TEST(GripperModes, ArrivalAndManualHoldKeepOperationBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), now);
+    p.set_position_target(sample(0.8f), 0.5f, 0.35f, 0.5f, now);
+    p.step(sample(0.5f), now);
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingPosition);
+    const auto holding = p.step(sample(0.7f), now);
+    EXPECT_LE(std::abs(holding.kp * (holding.target_pos - 0.7f)), 0.35f + 1e-6f);
+    EXPECT_LE(p.commanded_torque_nm(), 0.35f + 1e-6f);
+    p.hold_position(sample(0.7f));
+    p.step(sample(0.9f, 4.0f), now);
+    EXPECT_LE(p.commanded_torque_nm(), 0.35f + 1e-6f);
+    p.set_impedance_target(sample(0.5f), 0.5f, 20.0f, 1.0f, 0.0f, 0.0f, 5.5f, now);
+    p.hold_position(sample(0.5f));
+    p.step(sample(0.9f), now);
+    EXPECT_FLOAT_EQ(p.active_torque_limit_nm(), cfg.hold_torque_limit_nm);
+    EXPECT_LE(p.commanded_torque_nm(), cfg.hold_torque_limit_nm);
+}
+
+TEST(GripperModes, ImpedanceBoundsCombinedAbsoluteTorqueTerms) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    for (float position : {0.0f, 1.0f}) for (float ff : {-0.2f, 0.0f, 0.2f})
+        for (float velocity : {-30.0f, 0.0f, 30.0f}) {
+            p.set_impedance_target(sample(0.5f), position, 500.0f, 5.0f, ff, -5.0f, 0.3f, now);
+            const auto c = p.step(sample(0.5f, velocity), now);
+            const float spring = c.kp * (c.target_pos - 0.5f);
+            const float damping = c.kd * (c.vel - velocity);
+            EXPECT_LE(std::abs(spring) + std::abs(damping) + std::abs(c.target_torque), 0.30001f);
+            EXPECT_NEAR(p.commanded_torque_nm(), std::abs(spring + damping + c.target_torque), 1e-6f);
+            EXPECT_EQ(p.state(), ForcePositionState::Impedance);
+        }
+}
+
+TEST(GripperModes, PureFeedforwardAndModeSwitchesUseSamePolicy) {
+    ForcePositionConfig cfg;
+    cfg.startup_guard_ms = 0;
+    cfg.contact_samples = 1;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), now);
+    p.set_grasp_target(sample(0.8f), 0.0f, 0.3f, 0.8f, now);
+    EXPECT_FLOAT_EQ(p.step(sample(0.8f), now).vel, -0.8f);
+    p.step(sample(0.5f, 0.0f, 0.2f), now);
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    p.set_impedance_target(sample(0.5f), 0.4f, 0.0f, 0.0f, 0.2f, 0.0f, 0.4f, now);
+    const auto ff = p.step(sample(0.5f), now);
+    EXPECT_FLOAT_EQ(ff.target_torque, 0.2f);
+    EXPECT_FLOAT_EQ(ff.kp, 0.0f);
+    EXPECT_FLOAT_EQ(ff.kd, 0.0f);
+    p.set_position_target(sample(0.5f), 1.0f, 0.4f, 0.5f, now);
+    EXPECT_EQ(p.state(), ForcePositionState::MovingPosition);
+    EXPECT_EQ(p.control_mode(), xense::taccap::ForcePositionMode::Position);
+}
+
+TEST(GripperModes, InvalidModeParametersLeaveExistingOperationUntouched) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_grasp_target(sample(0.5f), 0.0f, 0.35f, 0.5f, now);
+    for (float invalid : {-1.0f, 51.0f, std::numeric_limits<float>::quiet_NaN()}) {
+        EXPECT_THROW(p.set_position_target(sample(0.5f), 0.2f, 0.4f, invalid, now), std::invalid_argument);
+        EXPECT_EQ(p.state(), ForcePositionState::Closing);
+    }
+    EXPECT_THROW(p.set_impedance_target(sample(0.5f), 0.4f, 501.0f, 1.0f, 0.0f, 0.0f, 0.4f, now), std::invalid_argument);
+    EXPECT_THROW(p.set_impedance_target(sample(0.5f), 0.4f, 1.0f, 6.0f, 0.0f, 0.0f, 0.4f, now), std::invalid_argument);
+    EXPECT_THROW(p.set_impedance_target(sample(0.5f), 0.4f, 1.0f, 1.0f, 0.5f, 0.0f, 0.4f, now), std::invalid_argument);
+    EXPECT_THROW(p.set_grasp_target(sample(0.5f), 0.0f, 1.21f, 0.5f, now), std::invalid_argument);
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
+    EXPECT_FLOAT_EQ(p.target_position(), 0.0f);
+}
+
+TEST(GripperModes, FaultCannotBeClearedByChangingMode) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.fail("test fault");
+    EXPECT_THROW(p.set_position_target(sample(0.5f), 1.0f, 0.4f, 0.5f, now), std::logic_error);
+    EXPECT_THROW(p.set_grasp_target(sample(0.5f), 0.0f, 0.35f, 0.5f, now), std::logic_error);
+    EXPECT_THROW(p.set_impedance_target(sample(0.5f), 0.4f, 1.0f, 1.0f, 0.0f, 0.0f, 0.4f, now), std::logic_error);
+    EXPECT_EQ(p.state(), ForcePositionState::Fault);
+    EXPECT_EQ(p.fault_reason(), "test fault");
+}
 
 TEST(ForcePositionPolicy, ClosingUsesVelocityDampingWithoutPositionSpring) {
     ForcePositionConfig cfg;
@@ -111,7 +264,7 @@ TEST(ForcePositionPolicy, RuntimeTargetRejectsUnsafeValues) {
 
     EXPECT_THROW(p.set_target(sample(0.5f), -0.1f, 0.3f, now),
                  std::invalid_argument);
-    EXPECT_THROW(p.set_target(sample(0.5f), 0.3f, 1.81f, now),
+    EXPECT_THROW(p.set_target(sample(0.5f), 0.3f, 1.21f, now),
                  std::invalid_argument);
 }
 
@@ -147,7 +300,7 @@ TEST(ForcePositionPolicy, ConfirmedContactSwitchesToPureBoundedTorqueHold) {
 
 TEST(ForcePositionPolicy, ForceHoldUsesSoftwareCeilingNotMotionLimit) {
     ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 1.8f;
+    cfg.grasp_torque_nm = 1.2f;
     cfg.startup_guard_ms = 0;
     cfg.contact_samples = 1;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
@@ -155,11 +308,11 @@ TEST(ForcePositionPolicy, ForceHoldUsesSoftwareCeilingNotMotionLimit) {
     p.reset(sample(0.8f), now);
     p.set_target(sample(0.8f), cfg.close_position, cfg.grasp_torque_nm, now);
 
-    const auto holding = p.step(sample(0.5f, 0.0f, 1.8f), now);
+    const auto holding = p.step(sample(0.5f, 0.0f, 1.2f), now);
     EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
     EXPECT_FLOAT_EQ(holding.kp, 0.0f);
     EXPECT_FLOAT_EQ(holding.kd, 0.0f);
-    EXPECT_FLOAT_EQ(holding.target_torque, -1.8f);
+    EXPECT_FLOAT_EQ(holding.target_torque, -1.2f);
     EXPECT_LT(std::abs(holding.target_torque), cfg.motion_torque_limit_nm);
 }
 
@@ -180,7 +333,7 @@ TEST(ForcePositionPolicy, ReverseMapFlipsCloseTorqueAndVelocity) {
     EXPECT_FLOAT_EQ(holding.target_torque, cfg.grasp_torque_nm);
 }
 
-TEST(ForcePositionPolicy, PositionHoldUsesMotionLimitAboveHoldLimit) {
+TEST(ForcePositionPolicy, InitialPositionHoldUsesConservativeGraspBudget) {
     ForcePositionConfig cfg;
     cfg.position_kp = 20.0f;
     cfg.position_kd = 1.0f;
@@ -190,9 +343,9 @@ TEST(ForcePositionPolicy, PositionHoldUsesMotionLimitAboveHoldLimit) {
 
     const auto c = p.step(sample(1.0f), now);
     const float predicted = c.kp * (c.target_pos - 1.0f);
-    EXPECT_NEAR(c.target_pos, 0.7f, 1e-6f);
-    EXPECT_NEAR(std::abs(predicted), 6.0f, 1e-5f);
-    EXPECT_LE(p.commanded_torque_nm(), cfg.motion_torque_limit_nm);
+    EXPECT_NEAR(c.target_pos, 0.9825f, 1e-6f);
+    EXPECT_NEAR(std::abs(predicted), cfg.grasp_torque_nm, 1e-5f);
+    EXPECT_LE(p.commanded_torque_nm(), cfg.hold_torque_limit_nm);
 }
 
 TEST(ForcePositionPolicy, FeedbackBetweenHoldAndMotionLimitsIsAllowed) {
@@ -215,7 +368,7 @@ TEST(ForcePositionPolicy, FeedbackOverMotionLimitTransitionsToZeroTorqueFault) {
     p.reset(sample(0.5f), now);
     p.set_target(sample(0.5f), cfg.close_position, cfg.grasp_torque_nm, now);
 
-    const auto c = p.step(sample(0.5f, 0.0f, 6.01f), now);
+    const auto c = p.step(sample(0.5f, 0.0f, 5.51f), now);
     EXPECT_EQ(p.state(), ForcePositionState::Fault);
     EXPECT_FLOAT_EQ(c.kp, 0.0f);
     EXPECT_FLOAT_EQ(c.kd, 0.0f);
@@ -233,7 +386,7 @@ TEST(ForcePositionPolicy, RejectsGraspTorqueAboveMaximum) {
 
 TEST(ForcePositionPolicy, RejectsHoldLimitAboveSoftwareMaximum) {
     ForcePositionConfig cfg;
-    cfg.hold_torque_limit_nm = 1.81f;
+    cfg.hold_torque_limit_nm = 1.21f;
     EXPECT_THROW(
         ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
         std::invalid_argument);
@@ -241,7 +394,7 @@ TEST(ForcePositionPolicy, RejectsHoldLimitAboveSoftwareMaximum) {
 
 TEST(ForcePositionPolicy, RejectsMotionLimitAboveDeviceMaximum) {
     ForcePositionConfig cfg;
-    cfg.motion_torque_limit_nm = 6.01f;
+    cfg.motion_torque_limit_nm = 5.51f;
     EXPECT_THROW(
         ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
         std::invalid_argument);
@@ -472,4 +625,50 @@ TEST(ForcePositionPolicy, RealEmptyCloseLatchesOnlyAtTheMechanicalStop) {
     EXPECT_GT(latched_at, n - 10) << "latched during travel, at sample "
                                   << latched_at << " of " << n;
     EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
+
+TEST(GripperModes, ClosingCompensationCrossesZeroWithinBudgetAndReleases) {
+    for (bool reverse : {false, true}) {
+        ForcePositionConfig cfg;
+        cfg.close_compensation_rad = 0.03f;
+        ForcePositionPolicy p(GripperPosition::from_travel(1.3f, 0.0f, reverse), cfg);
+        const float sign = reverse ? -1.0f : 1.0f;
+        const auto now = std::chrono::steady_clock::now();
+        auto measured = sample(0.0f);
+        p.reset(measured, now);
+        p.set_position_target(measured, 0.0f, 0.35f, 0.5f, now);
+        EXPECT_NEAR(p.position_target_rad(), -sign * 0.03f, 1e-6f);
+        auto c = p.step(measured, now + std::chrono::milliseconds(10));
+        EXPECT_LT((c.kp * c.target_pos + c.kd * c.vel) * sign, 0.0f);
+        EXPECT_LE(std::abs(c.kp * c.target_pos), 0.35001f);
+        measured.actual_pos = -sign * 0.015f;
+        for (int ms = 20; ms <= 300; ms += 10) {
+            auto time = now + std::chrono::milliseconds(ms);
+            p.set_position_target(measured, 0.0f, 0.35f, 0.5f, time);
+            c = p.step(measured, time);
+        }
+        EXPECT_NEAR(c.target_pos, -sign * 0.03f, 1e-6f);
+        p.set_position_target(measured, 1.0f, 0.35f, 0.5f, now + std::chrono::seconds(1));
+        EXPECT_NEAR(p.position_target_rad(), sign * 1.3f, 1e-6f);
+        c = p.step(measured, now + std::chrono::milliseconds(1010));
+        EXPECT_GT((c.kp * (c.target_pos - measured.actual_pos) + c.kd * c.vel) * sign, 0.0f);
+        p.hold_position(measured);
+        EXPECT_EQ(p.step(measured, now).target_pos, measured.actual_pos);
+    }
+}
+
+TEST(GripperModes, PositionTrackingVelocitySharesBudgetAndStopsAtEndpoint) {
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), {});
+    auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_position_target(sample(0.5f), 1.0f, 0.35f, 0.5f, now);
+    for (float v : {-2.0f, 0.0f, 0.5f, 2.0f}) {
+        now += std::chrono::milliseconds(10);
+        auto c = p.step(sample(0.5f, v), now);
+        EXPECT_LE(std::abs(c.kp * (c.target_pos - 0.5f)) + std::abs(c.kd * (c.vel - v)), 0.35001f);
+        EXPECT_NEAR(c.vel, 0.5f, 1e-5f);
+    }
+    auto arrived = p.step(sample(1.0f), now + std::chrono::seconds(1));
+    EXPECT_EQ(arrived.vel, 0.0f);
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
 }

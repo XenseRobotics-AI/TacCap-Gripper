@@ -17,8 +17,11 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <thread>
 
 namespace xense::taccap {
+namespace detail { class ControlRuntime; }
 
 struct MotorStatusSample {
     std::chrono::steady_clock::time_point host_time;
@@ -35,6 +38,9 @@ struct MotorStatusSample {
     uint8_t  control_mode;      // protocol::MotorMode
 
     protocol::MotorStatus raw;
+    bool has_execution = false;
+    protocol::MotorExecutionStatus execution{};
+    uint32_t sample_age_ms = 0;  // CAN sample age at MCU transmission, >= 1.1.8
 };
 
 class Motor {
@@ -70,7 +76,9 @@ public:
     // ---- High-rate control submission (no ACK) -----------------------------
     // Fire-and-forget MIT control frames for a host-driven realtime loop.
     // These send a CMD_NO_ACK frame and return immediately: there is NO ACK,
-    // NO NACK, NO retry, NO timeout, and NO throw on a target the firmware
+    // No ACK wait/retry. Local invalid parameters or ownership conflicts throw.
+    // Firmware 1.1.7 expires targets after 500 ms; refresh even stationary holds.
+    // There is no synchronous error on a target the firmware
     // rejects. The firmware's slave control task consumes the *latest*
     // submitted target. Unlike set_*(), which block on an ACK and throw
     // ProtocolError on NACK, submit() never blocks.
@@ -209,6 +217,8 @@ public:
     // private-parameter access.
     protocol::MotorPrivateParam get_private_param(uint16_t index);
     void set_private_param(uint16_t index, uint32_t raw_value);
+    protocol::MotorExecutionStatus execution_status(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
     protocol::MotorControlStats control_stats(                 // Cmd 0x51
         std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 
@@ -227,6 +237,15 @@ public:
     static MotorStatusSample decode(const std::uint8_t* payload, std::size_t len);
 
 private:
+    friend class detail::ControlRuntime;
+    void claim_controller(const void *owner);
+    void controller_thread(const void *owner);
+    void release_controller(const void *owner);
+    std::unique_lock<std::mutex> check_control_access();
+    std::mutex control_mu_;
+    const void *controller_ = nullptr;
+    bool controller_disabled_ = false;
+    std::thread::id controller_thread_{};
     bus::Transport& t_;
 };
 

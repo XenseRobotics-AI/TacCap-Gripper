@@ -107,6 +107,7 @@ enum class Cmd : uint8_t {
     MotorTorqueCtrl     = 0x42,
     MotorImpedanceCtrl  = 0x43,
     GetMotorStatus      = 0x50,    // resp MotorStatus (31B) — unchanged in V2.2
+    GetMotorExecutionStatus = 0x56,
     GetMotorControlStats = 0x51,   // V1.7 — follower control-loop stats (resp 48B)
     GetMotorFault       = 0x52,    // V2.2 — MotorFaultReport (64B); req 0B (cached)
                                    //        or 1B non-zero (force a CAN read)

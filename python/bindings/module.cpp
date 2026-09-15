@@ -9,8 +9,7 @@
 //                        stuff_data(), unstuff_data()
 //   - serial transport:  SerialBus
 //
-// Future steps add component classes (Camera, IMU, Encoder, Motor,
-// LeaderGripper, FollowerGripper) here.
+// Components and controllers are registered by the subsystem binding files.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -63,7 +62,7 @@ void bind_log(py::module_& m);         // defined in log.cpp
 }
 
 PYBIND11_MODULE(_taccap_native, m) {
-    m.doc() = "TacCap-Gripper native module (lite scaffold + TC-GU-01 protocol)";
+    m.doc() = "TacCap-Gripper native controllers, devices and TC-GU-01 protocol";
 
     m.attr("__version__") = TACCAP_VERSION_STRING;
 
@@ -135,6 +134,7 @@ PYBIND11_MODULE(_taccap_native, m) {
         .value("MotorTorqueCtrl",    tp::Cmd::MotorTorqueCtrl)
         .value("MotorImpedanceCtrl", tp::Cmd::MotorImpedanceCtrl)
         .value("GetMotorStatus",     tp::Cmd::GetMotorStatus)
+        .value("GetMotorExecutionStatus", tp::Cmd::GetMotorExecutionStatus)
         .value("GetMotorControlStats", tp::Cmd::GetMotorControlStats)
         .value("GetMotorFault",      tp::Cmd::GetMotorFault)
         .value("GetMotorStatusExt",  tp::Cmd::GetMotorStatusExt)

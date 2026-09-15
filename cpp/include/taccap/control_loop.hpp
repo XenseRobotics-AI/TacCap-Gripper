@@ -58,6 +58,7 @@
 #include <thread>
 
 namespace xense::taccap {
+namespace detail { class ControlRuntime; }
 
 // Latest gripper observation, refreshed from the motor-status stream.
 struct GripperObservation {
@@ -172,7 +173,7 @@ public:
     // into the VELOCITY command paths and only near the travel ends -- the MIT
     // impedance path has no stall protection at all, leaving the motor's own
     // 0x700B ceiling (6 Nm, vs a 1.8 Nm rated torque) as the sole backstop.
-    // So the host is the only place this can be caught.
+    // Historical 1.1.5 behaviour; 1.1.7 adds a firmware envelope to all external modes.
     enum class StallAction : uint8_t {
         // Leave the caller's target alone. The pre-guard behaviour.
         None,
@@ -189,6 +190,7 @@ public:
         // status stream. The default matches what StreamLocked actually
         // produces, so the two phases agree out of the box and switching to
         // FreeRunning does not silently change the rate as well as the phase.
+        unsigned status_timeout_ms   = 350;
         unsigned hz                  = 100;
         float    kp                  = 20.0f;  // impedance stiffness (Nm/rad)
         float    kd                  = 1.0f;   // impedance damping (Nm·s/rad)
@@ -248,8 +250,9 @@ public:
         // one unit, one temperature, one load. A ceiling on the measurement
         // does not care what the ratio is.
         //
-        // 0 disables it. Note the EduLite05 rated torque is 1.8 Nm; a ceiling
-        // above that is a peak-torque allowance, not a continuous one.
+        // 0 disables this host guard. RS05 stationary rating is 1.2 Nm under
+        // specified cooling; higher values are transient allowances. Firmware
+        // 1.1.7 independently applies its configured continuous/peak envelope.
         float       rated_torque_nm   = 2.0f;
         unsigned    rated_hold_ms     = 20;
         // While the ceiling holds, this much travel away from where it engaged
@@ -265,8 +268,8 @@ public:
         // just a jaw at rest.
         //
         // The default trip sits above anything free motion produces and above
-        // a firm deliberate grasp, but below the motor's 1.8 Nm rated torque,
-        // so it catches the runaway well before the 6 Nm hardware ceiling.
+        // a firm deliberate grasp. It is a contact threshold, not a guarantee
+        // that 1.2 Nm can be held indefinitely under arbitrary cooling.
         // Measured free-motion peaks on 1.1.5: 0.29 Nm stepping a quarter of
         // the travel, 0.68 Nm on a full 1.0 -> 0.0 step. Note that torque is
         // NOT what keeps those from tripping the guard -- 0.68 is close to
@@ -291,7 +294,7 @@ public:
     // current position so that (with the motor already enabled) starting does
     // not produce a jump. Throws ProtocolError if the gripper isn't calibrated.
     void start();
-    void stop();
+    void stop(); // disables motor and releases this controller's ownership
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     // Thread-safe, non-blocking. set_target clamps to [0,1].
@@ -319,9 +322,6 @@ public:
     const Config& config() const noexcept { return cfg_; }
 
 private:
-    void run_();
-    void run_free_();
-    void run_stream_locked_();
     // Read the target under mu_ and put one MIT frame on the wire. False means
     // the write failed and the loop has already set stop_flag_.
     bool submit_once_();
@@ -335,24 +335,15 @@ private:
                        std::chrono::steady_clock::time_point now);
     // Called from submit_once_ under mu_. Returns the target actually sent.
     float clamped_target_() noexcept;
-    void start_motor_stream_();
-    void stop_motor_stream_();
 
     FollowerGripper& g_;
     Config           cfg_;
     GripperPosition  pos_map_;
 
-    std::thread        thread_;
+    std::unique_ptr<detail::ControlRuntime> runtime_;
+    uint64_t rate_count_ = 0;
+    std::chrono::steady_clock::time_point rate_start_{};
     std::atomic<bool>  running_{false};
-    std::atomic<bool>  stop_flag_{false};
-
-    // Status-frame doorbell for SubmitPhase::StreamLocked. The submit stays on
-    // the loop's own thread rather than running inside on_status_: that
-    // callback is the dispatcher thread, shared with every other subscriber,
-    // and a write must not be able to stall them.
-    std::mutex              tick_mu_;
-    std::condition_variable tick_cv_;
-    bool                    tick_ = false;
 
     mutable std::mutex mu_;
     float              target_ = 0.0f;   // normalized [0,1]
@@ -362,11 +353,6 @@ private:
     GripperObservation obs_;
     std::chrono::steady_clock::time_point obs_time_{};
 
-    Motor::SubId       sub_           = 0;
-    bool               sub_active_    = false;
-    bool               stream_ours_   = false;   // did we StartStream ourselves?
-
-    // Stall guard, all under mu_ except the two atomics.
     std::chrono::steady_clock::time_point stall_since_{};
     bool  stall_clamped_ = false;
     float stall_clamp_   = 0.0f;   // normalized position the jaw stopped at

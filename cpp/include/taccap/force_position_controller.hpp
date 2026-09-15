@@ -59,18 +59,10 @@
 // which is precisely why contact detection, not position arrival, is the
 // terminal condition for a blocked close.
 //
-// TORQUE LIMITS. The motor's peak rating is 6 Nm and its continuous/nameplate
-// rating is 1.8 Nm, so the two limits here are the two motor ratings, not two
-// arbitrary safety margins:
-//
-//   motion_torque_limit_nm (<= 6.0)  -- transient, motion only (PEAK rating)
-//   hold_torque_limit_nm   (<= 1.8)  -- indefinite force hold (RATED torque)
-//
-// 6.0 Nm is also the firmware's own default AND maximum for the persisted
-// 0x700B startup limit (storage.c STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM),
-// so the default configuration here matches a factory device. start() verifies
-// the V2.2 value persisted for the next boot against the motion limit. After
-// changing that stored value, physically power-cycle before calling start().
+// RS05 manual: 5.5 Nm peak; the 1.2 Nm stalled rating is conditional on
+// the manufacturer's thermal test setup. Neither is an unconditional holding
+// guarantee. Firmware applies the configured thermal envelope independently.
+// start() checks the persisted startup limit, not a live motor-register read.
 
 #pragma once
 
@@ -88,8 +80,8 @@
 
 namespace xense::taccap {
 
-constexpr float FORCE_POSITION_MAX_HOLD_TORQUE_NM   = 1.8f;
-constexpr float FORCE_POSITION_MAX_MOTION_TORQUE_NM = 6.0f;
+constexpr float FORCE_POSITION_MAX_HOLD_TORQUE_NM   = 1.2f;
+constexpr float FORCE_POSITION_MAX_MOTION_TORQUE_NM = 5.5f;
 
 enum class ForcePositionState : uint8_t {
     Idle,
@@ -98,7 +90,12 @@ enum class ForcePositionState : uint8_t {
     HoldingForce,
     Opening,
     Fault,
+    MovingPosition,
+    Impedance,
+    Blocked,
 };
+
+enum class ForcePositionMode : uint8_t { Position, Grasp, Impedance };
 
 struct ForcePositionConfig {
     float close_position       = 0.0f;   // normalized [0,1], 0 = fully closed
@@ -131,6 +128,7 @@ struct ForcePositionConfig {
     // (budget/kp), it does not widen the output.
     float position_kp          = 20.0f;  // safe current-position/endpoint hold
     float position_kd          = 1.0f;
+    float close_compensation_rad = 0.0f;  // opt-in position-only closing offset, firmware >= 1.1.8
     float brake_distance_rad   = 0.10f;  // switch close velocity -> clamped PD
     // Consecutive confirming status frames. At motor_stream_hz = 100 the
     // firmware's 30 ms stall_hold_ms is 3 frames.
@@ -138,6 +136,7 @@ struct ForcePositionConfig {
     unsigned startup_guard_ms  = 250;    // ignore acceleration torque at close start
     unsigned status_timeout_ms = 350;    // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
+    bool monitor_execution     = false;  // 1.1.8 stream; 1.1.7 legacy synchronous fallback
 };
 
 struct ForcePositionSnapshot {
@@ -153,6 +152,23 @@ struct ForcePositionSnapshot {
     float               device_limit_nm     = 0.0f;  // persisted 0x700B boot value
     unsigned            contact_count       = 0;
     std::string         fault_reason;
+    ForcePositionMode   control_mode = ForcePositionMode::Position;
+    bool                blocked = false;
+    float               active_torque_limit_nm = 0.0f;
+    float               speed_rad_s = 0.0f;
+    uint64_t            command_sequence = 0;
+    uint64_t            submitted_sequence = 0;
+    uint64_t            submission_observation_sequence = 0;
+    float               target_error_rad = 0.0f;
+    bool                execution_telemetry = false;
+    protocol::MotorExecutionStatus execution{};
+    uint64_t            feedback_frames = 0;
+    uint64_t            command_frames = 0;
+    double              elapsed_s = 0.0;
+    double              max_feedback_gap_ms = 0.0;
+    double              max_command_gap_ms = 0.0;
+    double              last_submit_latency_ms = 0.0;
+    double              max_submit_latency_ms = 0.0;
 };
 
 namespace detail {
@@ -172,11 +188,21 @@ public:
                     float grasp_torque_nm,
                     std::chrono::steady_clock::time_point now);
     void hold_position(const MotorStatusSample& sample);
+    void set_position_target(const MotorStatusSample& sample, float position,
+                             float torque_limit_nm, float speed_rad_s,
+                             std::chrono::steady_clock::time_point now);
+    void set_grasp_target(const MotorStatusSample& sample, float position,
+                          float torque_nm, float speed_rad_s,
+                          std::chrono::steady_clock::time_point now);
+    void set_impedance_target(const MotorStatusSample& sample, float position,
+                              float kp, float kd, float feedforward_torque_nm,
+                              float velocity_rad_s, float torque_limit_nm,
+                              std::chrono::steady_clock::time_point now);
     void fail(std::string reason);
 
     protocol::MotorImpedanceCtrl step(
         const MotorStatusSample& sample,
-        std::chrono::steady_clock::time_point now);
+        std::chrono::steady_clock::time_point now, bool new_sample = true);
 
     ForcePositionState state() const noexcept { return state_; }
     float target_position() const noexcept { return target_position_; }
@@ -185,6 +211,15 @@ public:
     float commanded_torque_nm() const noexcept { return commanded_torque_nm_; }
     unsigned contact_count() const noexcept { return contact_count_; }
     const std::string& fault_reason() const noexcept { return fault_reason_; }
+    ForcePositionMode control_mode() const noexcept { return control_mode_; }
+    float active_torque_limit_nm() const noexcept { return active_torque_limit_nm_; }
+    float speed_rad_s() const noexcept { return speed_rad_s_; }
+    float position_target_rad() const noexcept {
+        if (state_ == ForcePositionState::HoldingPosition) return hold_raw_;
+        return map_.to_rad(target_position_) - (map_.reverse() ? -1.0f : 1.0f) *
+            (compensate_close_ && control_mode_ == ForcePositionMode::Position ?
+                cfg_.close_compensation_rad * (1.0f - target_position_) : 0.0f);
+    }
 
 private:
     // Reset / update the per-motion travel history the contact test needs.
@@ -201,9 +236,11 @@ private:
     // the motion limit.
     protocol::MotorImpedanceCtrl position_hold_(const MotorStatusSample& sample,
                                                  float desired_raw,
-                                                 float torque_budget);
+                                                 float torque_budget, float desired_velocity = 0.0f);
     float contact_threshold_() const noexcept;
     float direction_open_() const noexcept;
+    void require_active_() const;
+    protocol::MotorImpedanceCtrl impedance_(const MotorStatusSample& sample);
 
     GripperPosition map_;
     ForcePositionConfig cfg_;
@@ -219,6 +256,13 @@ private:
     float motion_start_raw_ = 0.0f;
     float peak_abs_vel_ = 0.0f;
     std::string fault_reason_;
+    ForcePositionMode control_mode_ = ForcePositionMode::Position;
+    float active_torque_limit_nm_ = 0.0f;
+    float speed_rad_s_ = 0.0f;
+    float reference_raw_ = 0.0f;
+    bool compensate_close_ = false;
+    std::chrono::steady_clock::time_point reference_time_{};
+    protocol::MotorImpedanceCtrl impedance_target_{};
 };
 
 }  // namespace detail
@@ -233,7 +277,7 @@ public:
     ForcePositionController& operator=(const ForcePositionController&) = delete;
 
     // Owns the follower motor-status/control path until stop(). The caller still
-    // owns motor enable/disable. start() seeds a safe current-position hold.
+    // can request an emergency disable. stop() disables before releasing ownership.
     void start();
     void stop();
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
@@ -243,8 +287,21 @@ public:
     // contact-aware grasp path; a higher target uses bounded opening motion.
     void set_target(float position);
     void set_target(float position, float grasp_torque_nm);
+    // Position speed limits the reference ramp, not measured physical velocity.
+    // Position following retains the requested target under load and keeps
+    // applying bounded torque. Only a new command cancels that target.
+    void set_position_target(float position, float torque_limit_nm = 1.0f,
+                             float speed_rad_s = 0.5f);
+    void set_grasp_target(float position, float torque_nm = 0.35f,
+                          float speed_rad_s = 0.5f);
+    // Velocity and feed-forward torque use the raw motor frame. All three torque
+    // terms share torque_limit_nm; zero kp/kd gives bounded feed-forward control.
+    void set_impedance_target(float position, float kp, float kd,
+                              float feedforward_torque_nm = 0.0f,
+                              float velocity_rad_s = 0.0f,
+                              float torque_limit_nm = 1.0f);
     void hold_position();  // cancel motion/force and hold the latest position
-    void reset();          // leave Fault after the caller has cleared the motor fault
+    void reset();          // reset strategy only; after disable use stop/clear_fault/start
 
     ForcePositionState state() const;
     ForcePositionSnapshot snapshot() const;
@@ -252,32 +309,40 @@ public:
 
 private:
     void validate_config_() const;
-    void start_motor_stream_();
-    void stop_motor_stream_();
     void on_status_(const MotorStatusSample& sample);
     void request_step_();
-    void run_();
+    void tick_(bool event);
+    void require_active_() const;
 
     FollowerGripper& g_;
     ForcePositionConfig cfg_;
     GripperPosition map_;
 
     mutable std::mutex mu_;
-    std::condition_variable cv_;
+    std::condition_variable sample_cv_;
+    std::mutex submission_mu_;  // target changes serialize with writes, not telemetry
     bool step_requested_ = false;
-    bool stop_requested_ = false;
     bool have_sample_ = false;
     MotorStatusSample latest_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};
     std::unique_ptr<detail::ForcePositionPolicy> policy_;
     float device_limit_nm_ = 0.0f;
+    uint64_t command_sequence_ = 0;
+    uint64_t submitted_sequence_ = 0;
+    uint64_t submission_observation_sequence_ = 0;
+    std::chrono::steady_clock::time_point next_execution_check_{};
+    bool fault_stop_completed_ = false;
+    uint64_t last_step_observation_sequence_ = 0;
+    bool stream_execution_ = false;
+    uint64_t feedback_frames_ = 0, command_frames_ = 0;
+    double max_feedback_gap_ms_ = 0.0, max_command_gap_ms_ = 0.0;
+    double last_submit_latency_ms_ = 0.0, max_submit_latency_ms_ = 0.0;
+    std::chrono::steady_clock::time_point started_time_{}, command_time_{}, last_submit_time_{};
 
-    std::thread thread_;
+    std::unique_ptr<detail::ControlRuntime> runtime_;
     std::atomic<bool> running_{false};
-    Motor::SubId sub_ = 0;
-    bool sub_active_ = false;
-    bool stream_ours_ = false;
+
 };
 
 const char* to_string(ForcePositionState state) noexcept;

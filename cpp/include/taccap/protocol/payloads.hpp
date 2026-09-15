@@ -268,6 +268,7 @@ enum class MotorStopReason : uint8_t {
     ClearFault   = 0x03,  // stopped by a clear-fault
     LimitStall   = 0x04,  // limit / stall protection tripped
     ControlError = 0x05,  // firmware control-loop error
+    TargetTimeout = 0x06, // external target older than 500 ms (firmware 1.1.7+)
 };
 
 // Bit positions inside the raw 32-bit motor fault word (MotorStatusExt::
@@ -430,19 +431,10 @@ struct GripperConfig {
 
 // ---- Motion safety envelope (overlays GripperConfig::reserved) ------------
 // Carried inside the existing 32-byte GripperConfig record, so Cmd 0x66/0x67
-// keep their payload length and no new command was added. On a device that has
-// never had one written, reserved is all zeros, so flags is 0 and the envelope
-// is simply inactive.
-//
-// It lives in firmware because the host cannot enforce it in time: this link
-// is 100 Hz, phase-locked, and cannot be polled while controlling (an ACK
-// collides with the control frames). At 8 rad/s a 30 ms host reaction is
-// 0.24 rad of travel — measured, that is enough to cross an object and knock
-// it out before torque even rises.
-//
-// There is deliberately no command-timeout field: an MCU-side timer cannot
-// protect against the MCU itself hanging. The motor's own CAN timeout register
-// (0x7028) is the right layer for that and is independent of this record.
+// keep their payload length. Firmware 1.1.7 uses a RAM 1.0/1.5 Nm envelope
+// when unset; enabled records with invalid layout or values reject motion.
+// The 500 ms host-target timeout belongs to the scheduler. It does not protect
+// against MCU hangs; the motor-side 0x7028 timeout is still unconfigured.
 namespace GripperEnvelopeFlag {
     constexpr uint16_t Valid   = 0x0001;  // the record has been written
     constexpr uint16_t Enforce = 0x0002;  // firmware applies it every cycle
@@ -576,6 +568,23 @@ namespace LogOutput {
 }
 
 // ---- Follower motor control loop stats (V1.7 — Cmd::GetMotorControlStats 0x51)
+struct MotorExecutionStatus {
+    uint8_t owner;          // 0 idle, 1 external, 2 homing, 3 OTA, 4 fault
+    uint8_t home_state;     // canmotor_home_state_t wire values
+    uint8_t envelope_state; // 0 conservative defaults, 1 explicit valid, 2 invalid
+    uint8_t mode;
+    uint16_t timeout_ms;
+    uint16_t target_age_ms;
+    uint32_t target_seq;
+    uint32_t applied_seq;   // successful MCU output, not motor arrival
+    int32_t last_error;
+    uint32_t flags;         // bit0 target limited, bit1 output failed
+    float requested[5];    // position, velocity, torque, kp, kd
+    float applied[5];      // last successful CAN command in the same units
+    float torque_cap_nm;   // effective thermal envelope allowance
+};
+static_assert(sizeof(MotorExecutionStatus) == 68);
+
 struct MotorControlStats {
     uint8_t  running;              // control thread running?
     uint8_t  mode;                 // MotorMode
@@ -753,6 +762,7 @@ namespace StreamSrc {
     constexpr uint16_t Eskin1      = 0x0004;
     constexpr uint16_t Eskin2      = 0x0008;
     constexpr uint16_t MotorStatus = 0x0010;
+    constexpr uint16_t MotorExecution = 0x0020;  // status stream extension, firmware >= 1.1.8
 }
 
 enum class StreamMode : uint8_t {

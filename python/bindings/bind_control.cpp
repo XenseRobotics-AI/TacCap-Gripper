@@ -48,9 +48,8 @@ void bind_control(py::module_& m) {
         "HOLD_POSITION (default) clamps the effective target at the position "
         "the jaw actually reached, so kp*error -- and therefore torque -- stops "
         "growing; commanding a target back the other way releases it. NONE is "
-        "the unguarded behaviour: on firmware 1.1.5 nothing below the host "
-        "bounds a blocked impedance target except the motor's 6 Nm 0x700B "
-        "ceiling.")
+        "the behaviour without this host guard. Firmware 1.1.7 independently "
+        "enforces its configured external target envelope.")
         .value("NONE",          ControlLoop::StallAction::None)
         .value("HOLD_POSITION", ControlLoop::StallAction::HoldPosition);
 
@@ -63,8 +62,9 @@ void bind_control(py::module_& m) {
                          float rated_release_rad,
                          float stall_torque_nm, float stall_vel_radps,
                          unsigned stall_hold_ms,
-                         ControlLoop::StallAction stall_action) {
+                         ControlLoop::StallAction stall_action, unsigned status_timeout_ms) {
                 ControlLoop::Config c;
+                c.status_timeout_ms = status_timeout_ms;
                 c.hz = hz; c.kp = kp; c.kd = kd;
                 c.feedforward_torque = feedforward_torque;
                 c.motor_stream_hz = motor_stream_hz;
@@ -92,6 +92,7 @@ void bind_control(py::module_& m) {
             py::arg("stall_vel_radps") = 0.15f,
             py::arg("stall_hold_ms") = 60u,
             py::arg("stall_action") = ControlLoop::StallAction::HoldPosition,
+            py::arg("status_timeout_ms") = 350u,
             py::keep_alive<1, 2>())   // keep the gripper alive while the loop lives
         .def("start", [](ControlLoop& l) { py::gil_scoped_release g; l.start(); })
         .def("stop",  [](ControlLoop& l) { py::gil_scoped_release g; l.stop(); })
@@ -132,7 +133,15 @@ void bind_control(py::module_& m) {
         .value("HOLDING_FORCE",    ForcePositionState::HoldingForce)
         .value("OPENING",          ForcePositionState::Opening)
         .value("FAULT",            ForcePositionState::Fault)
+        .value("MOVING_POSITION",  ForcePositionState::MovingPosition)
+        .value("IMPEDANCE",        ForcePositionState::Impedance)
+        .value("BLOCKED",          ForcePositionState::Blocked)
         .def("__str__", [](ForcePositionState s) { return to_string(s); });
+
+    py::enum_<ForcePositionMode>(m, "ForcePositionMode")
+        .value("POSITION", ForcePositionMode::Position)
+        .value("GRASP", ForcePositionMode::Grasp)
+        .value("IMPEDANCE", ForcePositionMode::Impedance);
 
     py::class_<ForcePositionConfig>(m, "ForcePositionConfig")
         .def(py::init<>())
@@ -151,7 +160,9 @@ void bind_control(py::module_& m) {
         .def_readwrite("contact_samples",      &ForcePositionConfig::contact_samples)
         .def_readwrite("startup_guard_ms",     &ForcePositionConfig::startup_guard_ms)
         .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms)
-        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz);
+        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz)
+        .def_readwrite("close_compensation_rad", &ForcePositionConfig::close_compensation_rad)
+        .def_readwrite("monitor_execution",   &ForcePositionConfig::monitor_execution);
 
     py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot")
         .def_readonly("running",               &ForcePositionSnapshot::running)
@@ -166,6 +177,23 @@ void bind_control(py::module_& m) {
         .def_readonly("device_limit_nm",       &ForcePositionSnapshot::device_limit_nm)
         .def_readonly("contact_count",         &ForcePositionSnapshot::contact_count)
         .def_readonly("fault_reason",          &ForcePositionSnapshot::fault_reason)
+        .def_readonly("control_mode",          &ForcePositionSnapshot::control_mode)
+        .def_readonly("blocked",               &ForcePositionSnapshot::blocked)
+        .def_readonly("active_torque_limit_nm", &ForcePositionSnapshot::active_torque_limit_nm)
+        .def_readonly("speed_rad_s",           &ForcePositionSnapshot::speed_rad_s)
+        .def_readonly("command_sequence",      &ForcePositionSnapshot::command_sequence)
+        .def_readonly("submitted_sequence",    &ForcePositionSnapshot::submitted_sequence)
+        .def_readonly("submission_observation_sequence", &ForcePositionSnapshot::submission_observation_sequence)
+        .def_readonly("target_error_rad", &ForcePositionSnapshot::target_error_rad)
+        .def_readonly("execution_telemetry", &ForcePositionSnapshot::execution_telemetry)
+        .def_readonly("execution", &ForcePositionSnapshot::execution)
+        .def_readonly("feedback_frames", &ForcePositionSnapshot::feedback_frames)
+        .def_readonly("command_frames", &ForcePositionSnapshot::command_frames)
+        .def_readonly("elapsed_s", &ForcePositionSnapshot::elapsed_s)
+        .def_readonly("max_feedback_gap_ms", &ForcePositionSnapshot::max_feedback_gap_ms)
+        .def_readonly("max_command_gap_ms", &ForcePositionSnapshot::max_command_gap_ms)
+        .def_readonly("last_submit_latency_ms", &ForcePositionSnapshot::last_submit_latency_ms)
+        .def_readonly("max_submit_latency_ms", &ForcePositionSnapshot::max_submit_latency_ms)
         .def("__repr__", [](const ForcePositionSnapshot& s) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),
@@ -199,6 +227,16 @@ void bind_control(py::module_& m) {
             if (grasp_torque_nm) c.set_target(position, *grasp_torque_nm);
             else                 c.set_target(position);
         }, py::arg("position"), py::arg("grasp_torque_nm") = std::nullopt)
+        .def("set_position_target", &ForcePositionController::set_position_target,
+             py::arg("position"), py::arg("torque_limit_nm") = 1.0f,
+             py::arg("speed_rad_s") = 0.5f, py::call_guard<py::gil_scoped_release>())
+        .def("set_grasp_target", &ForcePositionController::set_grasp_target,
+             py::arg("position"), py::arg("torque_nm") = 0.35f,
+             py::arg("speed_rad_s") = 0.5f, py::call_guard<py::gil_scoped_release>())
+        .def("set_impedance_target", &ForcePositionController::set_impedance_target,
+             py::arg("position"), py::arg("kp"), py::arg("kd"),
+             py::arg("feedforward_torque_nm") = 0.0f, py::arg("velocity_rad_s") = 0.0f,
+             py::arg("torque_limit_nm") = 1.0f, py::call_guard<py::gil_scoped_release>())
         .def("hold_position", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.hold_position();
         })

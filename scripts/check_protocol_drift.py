@@ -56,6 +56,8 @@ NAME_ALIASES = {
 # type that is deliberately not mirrored (host-irrelevant, or represented
 # differently) simply stays out of this table.
 STRUCT_MAP = {
+    "motor_execution_status_t": "MotorExecutionStatus",
+    "gripper_envelope_t": "GripperEnvelope",
     "firmware_version_t": "FirmwareVersion",
     "sn_info_t": "SnInfo",
     "imu_data_packet_t": "ImuData",
@@ -88,6 +90,12 @@ STRUCT_MAP = {
     "sensor_error_report_t": "SensorErrorReport",
     "ota_start_t": "OtaStart",
     "ota_status_t": "OtaStatus",
+}
+
+# Size alone cannot detect reordering within these safety-critical payloads.
+OFFSET_FIELDS = {
+    "gripper_envelope_t": ["cont_torque_nm", "peak_torque_nm", "temp_derate_start_c", "temp_wall_c", "flags"],
+    "motor_execution_status_t": ["owner", "home_state", "envelope_state", "mode", "timeout_ms", "target_age_ms", "target_seq", "applied_seq", "last_error", "flags", "requested", "applied", "torque_cap_nm"],
 }
 
 # Firmware structs whose WIRE size is not sizeof(): the firmware declares a
@@ -216,15 +224,19 @@ def check_sizes(firmware: Path, cc: str, cxx: str) -> list[str]:
         return f"(size_t)({macro})" if macro else f"sizeof({name})"
 
     c_src = "\n".join(
-        ['#include <stdio.h>', '#include "protocol_data.h"', "int main(void) {"]
+        ['#include <stddef.h>', '#include <stdio.h>', '#include "protocol_data.h"', "int main(void) {"]
         + [f'  printf("{n}=%zu\\n", {fw_expr(n)});' for n in c_names]
+        + [f'  printf("{n}.{f}=%zu\\n", offsetof({n}, {f}));'
+           for n, fields in OFFSET_FIELDS.items() for f in fields]
         + ["  return 0;", "}", ""]
     )
     cxx_src = "\n".join(
-        ["#include <cstdio>", "#include <taccap/protocol/payloads.hpp>",
+        ["#include <cstddef>", "#include <cstdio>", "#include <taccap/protocol/payloads.hpp>",
          "namespace tp = xense::taccap::protocol;", "int main() {"]
         + [f'  std::printf("{STRUCT_MAP[n]}=%zu\\n", sizeof(tp::{STRUCT_MAP[n]}));'
            for n in c_names]
+        + [f'  std::printf("{n}.{f}=%zu\\n", offsetof(tp::{STRUCT_MAP[n]}, {f}));'
+           for n, fields in OFFSET_FIELDS.items() for f in fields]
         + ["  return 0;", "}", ""]
     )
 
@@ -245,6 +257,11 @@ def check_sizes(firmware: Path, cc: str, cxx: str) -> list[str]:
             return [err]
 
     errors = []
+    for n, fields in OFFSET_FIELDS.items():
+        for field in fields:
+            key = f"{n}.{field}"
+            if fw_sizes[key] != sdk_sizes[key]:
+                errors.append(f"field offset mismatch: {key}: firmware={fw_sizes[key]}, SDK={sdk_sizes[key]}")
     for n in c_names:
         if fw_sizes[n] == sdk_sizes[STRUCT_MAP[n]]:
             continue
@@ -327,7 +344,7 @@ def main() -> int:
     print(f"error codes: firmware {len(fw_errs):>3}   SDK {len(sdk_errs):>3}")
     errors += compare_tables("error code", fw_errs, sdk_errs)
 
-    print(f"payloads:    {len(STRUCT_MAP)} structs size-checked "
+    print(f"payloads:    {len(STRUCT_MAP)} structs size-checked; safety payload offsets checked "
           f"({args.cc} / {args.cxx})")
     errors += check_sizes(fw_dir, args.cc, args.cxx)
 

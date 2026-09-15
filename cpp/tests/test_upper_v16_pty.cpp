@@ -763,7 +763,7 @@ TEST(MotorSubmit, HighRateBurstAllDelivered) {
 
     for (int i = 0; i < kN; ++i) {
         motor.submit(tp::MotorImpedanceCtrl{
-            static_cast<float>(i), 1.0f, 0.1f, 0.0f, 0.0f});
+            static_cast<float>(i) / kN, 1.0f, 0.1f, 0.0f, 0.0f});
     }
     fw.join();
     EXPECT_EQ(count.load(), kN);
@@ -824,4 +824,17 @@ TEST(MotorSubmit, ControlStatsRoundtripsAfterSubmit) {
     EXPECT_EQ(got.running, 1u);
     EXPECT_EQ(got.applied_seq, 10u);
     EXPECT_FLOAT_EQ(got.actual_hz, 499.0f);
+}
+
+TEST(MotorSubmit, EchoedErrorAckThrows) {
+    Pty pty;
+    tb::Transport host(base_config(pty.slave_path()));
+    tx::Motor motor(host);
+    std::thread fw([&] {
+        auto f = pty.expect_frame();
+        if (f) pty.send_response(f->seq, f->cmd,
+            {static_cast<uint8_t>(tp::ErrorCode::MotorFault)});
+    });
+    EXPECT_THROW(motor.set_position(0.2f, 1.0f, 1.0f), tx::ProtocolError);
+    fw.join();
 }
