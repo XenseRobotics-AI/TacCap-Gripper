@@ -9,14 +9,22 @@ directory's git history, not from extra files.
 
 | Image | Role | Version | Protocol | Source | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.2** | V2.1 + 0x54/0x55 | `02bec6f` | 117,980 B | `0x28742359` |
-| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.1.6** | V2.2 + envelope | `214d3a9` | 157,392 B | `0xC8C682A1` |
+| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.3** | V2.3 | `34da1cb` | 118,236 B | `0x6735d0ac` |
+| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.2.3** | V2.3 + envelope | `34da1cb` | 162,476 B | `0x9a91e5ab` |
 
-Leader from firmware branch `hw_v1.1.0`, follower from
-`feat/envelope-and-reachable-travel`. `manifest.json` has the same data
-machine-readably, per image — the two roles no longer share one source commit
-or one protocol level, because every V2.2 command is follower-only and the
-leader had no reason to be rebuilt.
+Both from firmware branch `feat/actuator-can-timeout`, **one commit, one
+version number**. `manifest.json` has the same data machine-readably.
+
+1.2.3 is where the two version lines merge. They had drifted apart (leader
+1.2.x, follower 1.1.x) on the theory that V2.2 commands were follower-only and
+the leader had no reason to be rebuilt — but the two roles share
+`protocol_handler.c`, so a change to the shared layer obliges both. This
+release changes exactly that (failed commands now answer with `cmd == 0`), and
+with separate lines it was easy to bump the follower and forget the leader:
+two leaders ended up reporting 1.2.1 while running a binary 17,809 bytes
+different from the official 1.2.1. One number per release makes that
+impossible. The cost is that a change touching only one role still bumps the
+other.
 
 > ### ⚠️ Both images are local builds
 >
@@ -27,15 +35,30 @@ leader had no reason to be rebuilt.
 > it (150,044 B against the shipped 149,256 B), so a few hundred bytes of any
 > size delta is toolchain, not firmware code.
 >
-> **Both are hardware-validated**, on two units each.
+> **Both are hardware-validated**, on two units each, all four power-cycled at
+> 24 V before measuring.
 >
-> Follower 1.1.6: the command channel survives sustained 1000 Hz `CMD_NO_ACK`
-> input, `rx_overflow` and `debug_tx_bytes` are both 0, and stream-locked
-> control loses no status frames with all cameras streaming and the motor
-> cycling. The motion safety envelope was validated separately on
-> `TCGU01A28Z0018s` at 24 V — see the 1.1.6 entry below.
+> Follower 1.2.3, on `TCGU01A28Z0018s` and `TCGU01A28Z0015s`: auto-calibration
+> completes, force-position control reaches 1.000 / 0.001 / 1.000 with
+> `arrived=True`, and instruction-5 fault reads keep advancing. Two things are
+> new and were checked directly. The idle status stream stays fresh —
+> `status_timestamp_ms` advances ~2000 ms over a 2 s idle window, where it used
+> to freeze indefinitely (the firmware asked the motor for active reporting,
+> the motor does not support it, and the firmware stopped polling on the
+> strength of having asked). And power-on calibration went 11 s → 1.3 s via a
+> two-stage approach, with 0.77 mrad of spread over five power cycles against a
+> 29 mrad open-limit margin.
 >
-> Leader 1.2.2, upgraded from 1.2.0: IMU and encoder both stream at ~99 Hz
+> Leader 1.2.3, on `TCGU01A28Z0023m` and `TCGU01A28Z0024m`: encoder and IMU
+> both read (accel magnitude 9.72 / 9.64 m/s² at rest), the data stream holds
+> ~100 Hz over 2 s, and an unassigned command code answers
+> `ProtocolError(NACK: InvalidCmd)`. That last one is the whole reason the
+> leader had to be reflashed at all: it proves the V2.3 error semantics reached
+> the shared protocol layer on this role too. Key handling carries an upstream
+> change (`823e351`, timing constants), validated separately.
+>
+> The earlier leader 1.2.2 measurements still stand, since 1.2.3 contains that
+> code — leader 1.2.2, upgraded from 1.2.0: IMU and encoder both stream at ~99 Hz
 > under a concurrent 100 Hz command load, with zero retries and zero ACK
 > timeouts. The comparison against 1.2.0 on the same bench is the point —
 >

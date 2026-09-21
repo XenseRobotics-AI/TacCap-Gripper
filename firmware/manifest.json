@@ -2,33 +2,33 @@
   "images": {
     "master": {
       "file": "tc-gu-01-master.bin",
-      "version": "1.2.2",
-      "size_bytes": 117980,
-      "crc32": "0x28742359",
+      "version": "1.2.3",
+      "size_bytes": 118236,
+      "crc32": "0x6735d0ac",
       "sn_suffix": "m",
-      "protocol": "V2.1 + 0x54/0x55 diagnostics",
+      "protocol": "V2.3",
       "source": {
-        "branch": "hw_v1.1.0",
-        "commit": "02bec6f150846bb1521f304b56b6bb52e8113bd3"
+        "branch": "feat/actuator-can-timeout",
+        "commit": "34da1cbdec60e04ca7531d4d5f4df5f7874a9617"
       },
       "build": "local",
-      "toolchain": "arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2)",
-      "note": "Built locally, NOT by the firmware team's release toolchain. Hardware-validated on two leader units upgraded from 1.2.0: IMU and encoder both stream at ~99 Hz under a concurrent 100 Hz command load with zero retries or ACK timeouts, the two diagnostic commands answer with real data (they NACK on 1.2.0), and debug_tx_bytes stays 0. It replaces an official, validated 1.2.1 image; the trade is three defect fixes that live in code both roles share - command-channel livelock, blocking-log stalls, a per-boot out-of-bounds write - against the loss of that provenance. POWER-CYCLE THE GRIPPER AFTER FLASHING; see tc-gu-01 issue #6."
+      "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
+      "note": "Built locally, NOT by the firmware team's release toolchain. Hardware-validated on two leader units (TCGU01A28Z0023m / 0024m): version reports 1.2.3.0, encoder and IMU both read (accel magnitude 9.72 / 9.64 m/s^2 at rest), the data stream holds ~100 Hz over 2 s, and an unassigned command code answers ProtocolError(NACK: InvalidCmd) -- that last one is the point, because it proves the V2.3 error semantics reached the leader. Key handling carries an upstream change (823e351, timing constants) validated separately. 1.2.3 is where the leader and follower version lines merge: they share protocol_handler.c, so a shared-layer change obliges both, and separate lines made it easy to bump one and forget the other. POWER-CYCLE THE GRIPPER AFTER FLASHING."
     },
     "slave": {
       "file": "tc-gu-01-slave.bin",
-      "version": "1.1.6",
-      "size_bytes": 157392,
-      "crc32": "0xC8C682A1",
+      "version": "1.2.3",
+      "size_bytes": 162476,
+      "crc32": "0x9a91e5ab",
       "sn_suffix": "s",
-      "protocol": "V2.2 + 运动安全包络(GripperConfig.reserved 覆盖,协议不变)",
+      "protocol": "V2.3 + 运动安全包络",
       "source": {
-        "branch": "feat/envelope-and-reachable-travel",
-        "commit": "214d3a9"
+        "branch": "feat/actuator-can-timeout",
+        "commit": "34da1cbdec60e04ca7531d4d5f4df5f7874a9617"
       },
       "build": "local",
-      "toolchain": "arm-none-eabi-gcc 13.2.1 (15:13.2.rel1-2)",
-      "note": "本地构建,非固件团队发布工具链。相对 1.1.5 新增:MIT 路径的运动安全包络(误差钳位 + 力矩钳位,覆盖在 gripper_config_t.reserved[16] 上,命令 0x66/0x67 与载荷长度不变)、I2t 零速持续力矩降额、可配温度墙(默认 90/100 摄氏度)、min_open_rad 存控制可达行程。硬件验证(TCGU01A28Z0018s,24V):限速 8.68->1.70 rad/s;应索要 5.72Nm 实际 1.569Nm;kp 8->120(15x)力矩离散 1.4%;力位混合力矩保持在 91 摄氏度起降额、94 摄氏度/1.370Nm 平衡;客户 gripper_loose_problem 复现件(kp=20 裸 submit_impedance 压到全闭)包络关闭时整机掉电重启、开启时 25 秒稳定夹持无故障。已知未验证:力矩天花板(rated_torque_nm)层从未在硬件上触发;24V 欠压阈值只夹逼到 4.5Nm 存活、6.0Nm 未测;裸阻抗在 100 摄氏度墙下的平衡值未测到。刷完必须断电重启 —— 除 bank-swap 软复位丢帧外,min_open_rad 也只在下次开机自标定时写入。"
+      "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
+      "note": "Built locally, NOT by the firmware team's release toolchain. Hardware-validated on two follower units (TCGU01A28Z0018s / 0015s): auto-calibration completes, force-position control reaches 1.000 / 0.001 / 1.000 with arrived=True, the idle status stream stays fresh (status_timestamp_ms advances ~2000 ms over a 2 s idle window -- it used to freeze), and instruction-5 fault reads keep advancing. Power-on calibration is 11 s -> 1.3 s (two-stage approach), repeatability 0.77 mrad over five power cycles against a 29 mrad open-limit margin. POWER-CYCLE THE GRIPPER AFTER FLASHING (24 V, not just USB)."
     }
   }
 }

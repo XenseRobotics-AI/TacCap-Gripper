@@ -51,13 +51,16 @@ error payload — indistinguishable on the wire from a success returning one byt
 of data, so every no-data command's failure was invisible. If you talk to a
 follower or leader older than 1.2.3 you get the old, ambiguous form.
 
-> **[`firmware/`](firmware/) ships leader 1.2.2 and follower 1.1.6**, both local
-> builds, both hardware-validated on two units each. They carry three fixes that
-> live in code the two roles share: a command-channel livelock under sustained
-> high-rate input, a blocking-log path that stalled realtime tasks, and an
-> out-of-bounds write on every boot. Note that leader 1.2.2 replaces an
-> *official* 1.2.1, so it trades that provenance for the fixes — see
-> [`firmware/README.md`](firmware/README.md). **Power-cycle after any flash.**
+> **[`firmware/`](firmware/) ships 1.2.3 for both roles**, both local
+> builds from one commit, both hardware-validated on two units each — four
+> grippers in total, all power-cycled at 24 V before measuring. Beyond the V2.3
+> protocol work they carry three fixes in code the two roles share (a
+> command-channel livelock under sustained high-rate input, a blocking-log path
+> that stalled realtime tasks, an out-of-bounds write on every boot), and on the
+> follower, power-on calibration drops from 11 s to 1.3 s. Note that this line
+> replaces an *official* leader 1.2.1, so it trades that provenance for the
+> fixes — see [`firmware/README.md`](firmware/README.md).
+> **Power-cycle after any flash** (24 V on a follower, not just USB).
 
 ### What's in
 
