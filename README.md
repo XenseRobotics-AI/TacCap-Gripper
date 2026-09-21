@@ -31,18 +31,25 @@ under a full production load (all cameras streaming, motor cycling).
 
 **Firmware minimums:** leader >= 1.2.0, follower >= 1.1.0. V2.2 follower
 diagnostics need follower >= 1.1.2; the V2.3 additions (`GetMotorSpec` 0x56,
-`GetHomeDiag` 0x57) need follower >= 1.2.0.
+`GetHomeDiag` 0x57) need follower >= 1.2.3. These are floors, not exact
+matches — newer commands fail loudly with `ProtocolError(InvalidCmd)` rather
+than misbehaving, and payload length is never a version probe. Check what a
+device answers with `python python/examples/fisheye_cal.py show`.
+
+**Firmware 1.2.3 aligns the two roles onto one version number.** They build
+from one tree and share `protocol_handler.c`, so a change to the shared layer
+obliges both — and with separate lines (leader 1.2.x, follower 1.1.x) it was
+easy to bump one and forget the other, which is exactly what happened before
+1.2.3: two leaders reported 1.2.1 while running a binary 17,809 bytes different
+from the official 1.2.1. One number per release makes that impossible. The
+cost is that a change touching only one role still bumps the other.
 
 **V2.3 changed how a failed command answers.** A failure now comes back as a
 pure ACK with `cmd == 0` and a one-byte error code; success keeps the original
 command code. Before, a failure also carried the command code with a one-byte
 error payload — indistinguishable on the wire from a success returning one byte
 of data, so every no-data command's failure was invisible. If you talk to a
-follower older than 1.2.0 (or a leader older than 1.2.1) you get the old,
-ambiguous form. These are floors, not exact matches —
-newer commands fail loudly with `ProtocolError(InvalidCmd)` rather than
-misbehaving, and payload length is never a version probe. Check what a device
-answers with `python python/examples/fisheye_cal.py show`.
+follower or leader older than 1.2.3 you get the old, ambiguous form.
 
 > **[`firmware/`](firmware/) ships leader 1.2.2 and follower 1.1.6**, both local
 > builds, both hardware-validated on two units each. They carry three fixes that

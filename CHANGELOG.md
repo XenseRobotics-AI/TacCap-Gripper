@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-09-22
 
-Paired with follower firmware **1.2.0** and command set **V2.3**. Both were
+Paired with firmware **1.2.3** (both roles — 1.2.3 is where the leader and
+follower version lines merge) and command set **V2.3**. Both were
 developed and hardware-validated together; the SDK's protocol mirror is checked
 against the firmware headers by `scripts/check_protocol_drift.py`.
 
@@ -20,8 +21,8 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   code. Previously a failure also carried the command code with a one-byte
   error payload, which is byte-for-byte identical to a success returning one
   byte of data — so the failure of every no-data command was invisible and the
-  SDK had to treat it as success. Requires follower >= 1.2.0; older firmware
-  still answers the old, ambiguous way.
+  SDK had to treat it as success. Requires firmware >= 1.2.3 on whichever role
+  you are talking to; older firmware still answers the old, ambiguous way.
 
 - **The motor-status DATA stream is 59 bytes, not 31.** Firmware 1.1.6 started
   streaming `MOTOR_STATUS_V2_SIZE` so that diagnostics arrive with the stream
