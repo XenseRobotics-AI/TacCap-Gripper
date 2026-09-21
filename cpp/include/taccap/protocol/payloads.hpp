@@ -246,6 +246,74 @@ struct __attribute__((packed)) MotorSpec {
 };
 constexpr std::size_t MOTOR_SPEC_SIZE = 40;
 
+// ---- Auto-calibration diagnostics (Cmd 0x57) ------------------------------
+//
+// Homing has five failure paths and, before this command existed, NONE of them
+// were visible to a host: all five only reach LOG_E on UART7, which is not
+// wired to USB on this board. A host could see the aftermath -- stop_reason ==
+// StopReason::Emergency -- and nothing about which step failed or why.
+//
+// That cost real time. Chasing a "gripper closes but never opens" fault we
+// could only infer the step by comparing stop_timestamp_ms against the 30 s
+// timeout constant. With this report the answer was one sample: state == Open
+// while the motor self-reported Reset mode and torque sat at the noise floor.
+//
+// Read it any time, including while control runs -- it is a read-only snapshot
+// and deliberately does not go through the motor-admin gate, because a running
+// control loop is exactly when you most want to look.
+enum class HomeState : std::uint8_t {
+    Idle = 0, Init, ClearFault, Close, CloseBackoff, CloseAverageHold,
+    SetZero, PostZero, Open, OpenBackoff, SaveMax, OpenFinalBackoff,
+    Done, Error,
+};
+
+enum class HomeFail : std::uint8_t {
+    None = 0,
+    Timeout,        // whole-sequence budget (30 s) ran out
+    ClearFault,     // can_motor_clear_fault failed
+    SetZero,        // can_motor_set_zero_hold failed
+    MaxOpenTooSmall,
+    SaveConfig,
+};
+
+namespace HomeDiagFlag {
+    constexpr std::uint8_t Active    = 0x01;
+    constexpr std::uint8_t Done      = 0x02;
+    constexpr std::uint8_t Attempted = 0x04;
+    constexpr std::uint8_t HasMoved  = 0x08;  // stall monitor saw real motion
+}
+
+struct __attribute__((packed)) HomeDiagReport {
+    std::uint8_t  version;            // == HOME_DIAG_REPORT_VERSION
+    std::uint8_t  state;              // HomeState
+    std::uint8_t  fail_reason;        // HomeFail
+    std::uint8_t  flags;              // HomeDiagFlag::*
+    std::int32_t  fail_ret;           // ret that accompanied the failure, else 0
+    std::uint32_t elapsed_ms;         // since homing started
+    std::uint32_t state_elapsed_ms;   // in the current phase -- a hang is obvious
+    float         vel_cmd;            // last commanded velocity, signed
+    float         torque_limit_nm;    // last commanded current limit
+    float         stall_threshold_nm; // limit * saturation ratio * margin
+    float         last_abs_torque;    // |torque| at the last stall evaluation
+    float         last_abs_vel;
+    float         peak_vel;           // max |vel| seen in this phase
+    float         progress_rad;       // distance covered in this phase
+    float         last_pos;
+    float         close_pos;          // measured closed limit
+    float         open_pos;           // measured open limit
+    float         open_sign;          // +1/-1, derived from GripperConfigFlag::Reverse
+    std::uint16_t reenable_count;     // times the motor was found in Reset while
+                                      // the MCU believed it enabled (see
+                                      // can_motor_reconcile_enable)
+    std::uint16_t report_miss_count;  // times active reporting was requested but
+                                      // never delivered, so the firmware fell
+                                      // back to polling. Non-zero means this
+                                      // motor does not honour MIT instruction 13
+                                      // (needs motor firmware >= 1.0.5.0.4).
+};
+constexpr std::size_t HOME_DIAG_REPORT_SIZE = 64;
+constexpr std::uint8_t HOME_DIAG_REPORT_VERSION = 0x01;
+
 // ---- Extended motor status + fault report (V2.2 — Cmd 0x53 / 0x52) --------
 //
 // V2.2 grew the firmware's internal motor_status_t to 72 bytes, but deliberately
@@ -971,6 +1039,7 @@ static_assert(sizeof(MotorVelCtrl)       == 12);
 static_assert(sizeof(MotorTorqueCtrl)    == 12);
 static_assert(sizeof(MotorImpedanceCtrl) == 20);  // V1.7 (+ feed-forward vel)
 static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
+static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
 static_assert(sizeof(MotorStatus)        == 31);  // V1.9 motor_status_t (was 40)
 static_assert(sizeof(MotorStatus)        == MOTOR_STATUS_LEGACY_SIZE);
 // V2.2 — 0x53 payload. Its first 31 bytes must stay layout-identical to

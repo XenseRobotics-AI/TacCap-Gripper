@@ -48,23 +48,28 @@ carries deep background; this file is *house rules*.
   when no gripper is connected. Guards against zero-stride numpy views (see
   `test_numpy_views.py`); `py::array_t<T> a(n)` is a trap on pybind11 2.9.
   `test_dispatch_decoupling.py` is pty-backed and needs no hardware.
-- **`pytest` is not in `xense-taccap`** (it is in `taccap` / `lerobot-xense`),
-  and *both* envs carry an editable install of `taccap_gripper` that redirects
-  `xense.taccap` to a **different checkout** through a `sys.meta_path` finder.
-  That finder beats `PYTHONPATH`, so the obvious invocation silently tests
-  someone else's code — a second, nastier variant of the `PYTHONPATH` trap
-  below. Strip the finder first:
+- `pytest` is available in all three envs (`xense-taccap`, `taccap`,
+  `lerobot-xense`) — an older note here claimed it was missing from
+  `xense-taccap`; that is wrong.
+- **The `sys.meta_path` hijack is now handled by `python/tests/conftest.py`**,
+  so a plain `pytest python/tests` tests *this* checkout. Keep that file: both
+  `taccap` and `lerobot-xense` carry an editable install of `taccap_gripper`
+  whose `ScikitBuildRedirectingFinder` beats `PYTHONPATH` *and* a
+  `sys.path.insert`, silently redirecting `xense.taccap` to a different
+  checkout. The symptom is not an import error — it is ~38 assertion failures
+  claiming `ForcePositionConfig` still has `brake_distance_rad`, which reads
+  exactly like a regression in this repo and is not.
+  Scripts outside `python/tests/` still have to strip it themselves:
   ```python
   import sys
   sys.meta_path[:] = [f for f in sys.meta_path
                       if 'taccap' not in type(f).__module__.lower()]
   sys.path.insert(0, '<repo>/python')
   ```
-  Then assert `xense.taccap.__file__` really points into this repo before
-  trusting a green run. The build copies `_taccap_native*.so` and
-  `libtaccap_core.so*` straight into `python/xense/taccap/`, so no install step
-  is needed — but importing still needs `LD_LIBRARY_PATH=<xense-taccap>/lib`
-  for OpenCV.
+  The conftest also asserts that `_taccap_native` came from this checkout —
+  `xense.taccap` is a namespace package, so `__file__` pointing here does not
+  prove the compiled extension did. Importing still needs
+  `LD_LIBRARY_PATH=<xense-taccap>/lib` for OpenCV.
 
 ## Build & install (Python wheel)
 - conda env `xense-taccap` (py3.12, primary dev env):
