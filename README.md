@@ -24,13 +24,22 @@ access, and neither is required to use this SDK.
 
 ## Status
 
-**v0.1.9.** Command set **V2.2**, wire framing **V1.8**. Hardware-validated on
+**v0.2.0.** Command set **V2.3**, wire framing **V1.8**. Hardware-validated on
 bilateral leader setups and on real follower grippers — including the V2.2
 follower diagnostics, the MIT force-position control path, and `ControlLoop`
 under a full production load (all cameras streaming, motor cycling).
 
 **Firmware minimums:** leader >= 1.2.0, follower >= 1.1.0. V2.2 follower
-diagnostics need follower >= 1.1.2. These are floors, not exact matches —
+diagnostics need follower >= 1.1.2; the V2.3 additions (`GetMotorSpec` 0x56,
+`GetHomeDiag` 0x57) need follower >= 1.2.0.
+
+**V2.3 changed how a failed command answers.** A failure now comes back as a
+pure ACK with `cmd == 0` and a one-byte error code; success keeps the original
+command code. Before, a failure also carried the command code with a one-byte
+error payload — indistinguishable on the wire from a success returning one byte
+of data, so every no-data command's failure was invisible. If you talk to a
+follower older than 1.2.0 (or a leader older than 1.2.1) you get the old,
+ambiguous form. These are floors, not exact matches —
 newer commands fail loudly with `ProtocolError(InvalidCmd)` rather than
 misbehaving, and payload length is never a version probe. Check what a device
 answers with `python python/examples/fisheye_cal.py show`.

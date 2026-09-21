@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-22
+
+Paired with follower firmware **1.2.0** and command set **V2.3**. Both were
+developed and hardware-validated together; the SDK's protocol mirror is checked
+against the firmware headers by `scripts/check_protocol_drift.py`.
+
 ### Changed
+
+- **A failed command now answers with `cmd == 0`.** Success keeps the original
+  command code; failure comes back as a pure ACK carrying a one-byte error
+  code. Previously a failure also carried the command code with a one-byte
+  error payload, which is byte-for-byte identical to a success returning one
+  byte of data — so the failure of every no-data command was invisible and the
+  SDK had to treat it as success. Requires follower >= 1.2.0; older firmware
+  still answers the old, ambiguous way.
+
+- **The motor-status DATA stream is 59 bytes, not 31.** Firmware 1.1.6 started
+  streaming `MOTOR_STATUS_V2_SIZE` so that diagnostics arrive with the stream
+  instead of forcing a `GetMotorStatusExt` poll — polling during control
+  collides with the control frames. The `GetMotorStatus` (0x50) ACK is still
+  31 bytes, so payload length remains useless as a version probe; use
+  `GetVersion`.
+
 
 - **BREAKING: `ForcePositionController` lost its contact state machine.** It is
   now ONE control law: the jaw is commanded toward the target with the PD
@@ -264,6 +286,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already assumes still holds there.
 
 ### Added
+
+- **`Cmd::GetHomeDiag` (0x57) and `HomeDiagReport`** — the follower's
+  auto-calibration state machine, exposed. Homing has five failure paths and
+  before this command none of them were visible to a host: they only reach
+  `LOG_E` on UART7, which is not wired to USB on this board. All a host could
+  see was `StopReason::Emergency` after the fact, with no indication of which
+  step failed.
+
+  The report carries the current phase, how long it has sat there, the
+  commanded velocity and current limit, the stall threshold, and the torque,
+  velocity, peak velocity and travel actually observed. That turns three
+  distinct faults into three distinct readings: no travel and no torque means
+  the speed frames are not being executed; no travel with torque at the
+  threshold means the stall test is not satisfied; travel that stops short
+  means resistance exceeds the current limit.
+
+  It is a read-only snapshot and deliberately bypasses the motor-admin gate —
+  a running control loop is exactly when you most want to read it.
+
+- **`Cmd::GetMotorSpec` (0x56) reached `to_string`.** The enumerator was added
+  earlier but its `to_string` branch was missed, so it logged as an unknown
+  command.
+
+- **`python/tests/conftest.py`** — `pytest python/tests` now tests *this*
+  checkout. The `taccap` and `lerobot-xense` envs each carry an editable
+  install whose `ScikitBuildRedirectingFinder` sits on `sys.meta_path`, which
+  runs before `sys.path` and therefore beats both `PYTHONPATH` and a
+  `sys.path.insert`. The symptom was not an import error but 38 assertion
+  failures claiming `ForcePositionConfig` still had `brake_distance_rad` —
+  fields this release deletes — which reads exactly like a regression here and
+  was a different repository answering. The conftest also asserts that
+  `_taccap_native` came from this checkout, since `xense.taccap` is a namespace
+  package and `__file__` pointing here does not prove the extension did.
+
 
 - **`MotorStopReason::HostTimeout` (0x06)** — mirrors the firmware's new
   `MOTOR_STOP_REASON_HOST_TIMEOUT`, set when the slave control task finds its
