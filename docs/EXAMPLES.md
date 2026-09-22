@@ -4,9 +4,11 @@
 
 ## Examples
 
-All scripts live under `python/examples/`. Enable C++ examples with
-`-DTACCAP_BUILD_EXAMPLES=ON` (they're off by default); they land in
-`build/cpp/examples/`.
+All scripts live under `python/examples/`. C++ examples build by default into
+`build/cpp/examples/` — they were off until 2026-09-22, which meant nothing
+compiled them and an SDK signature change could break them while CI stayed
+green. Pass `-DTACCAP_BUILD_EXAMPLES=OFF` to skip them; the wheel build already
+does.
 
 **刻意不提供电机原语的示例。** `submit_position` / `submit_velocity` /
 `submit_torque` / `submit_impedance` 是裸 MIT 帧,不经过主机侧的误差钳位、力矩

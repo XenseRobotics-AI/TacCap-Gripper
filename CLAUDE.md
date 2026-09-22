@@ -76,7 +76,10 @@ carries deep background; this file is *house rules*.
   `pip install -e . --no-build-isolation`
 - System py3.10 (used by ROS2 Humble):
   `/usr/bin/python3 -m pip install --user --no-build-isolation .`
-- Examples are off by default; enable with `-DTACCAP_BUILD_EXAMPLES=ON`.
+- C++ examples build by default (`-DTACCAP_BUILD_EXAMPLES=OFF` to skip). They
+  are on so CI compiles them: while they were off, an SDK signature change
+  could break every example and the build stayed green. `pyproject.toml` pins
+  them OFF for wheel builds, so `pip install` is unaffected.
 - Active conda env's python:
   `/home/vertax/miniforge3/envs/xense-taccap/bin/python`.
 - **Always run Python with `env -u PYTHONPATH`.** The shell stacks

@@ -46,7 +46,11 @@ endif()
 # Options
 # ==============================================================================
 option(TACCAP_BUILD_PYTHON   "Build pybind11 module (xense.taccap)" ON)
-option(TACCAP_BUILD_EXAMPLES "Build C++ examples"                   OFF)
+# ON since the examples became the reference for how to drive a gripper: with
+# them off, nothing compiled them, so a signature change in the SDK broke them
+# silently and CI stayed green. They are small and link the library that was
+# built anyway. Turn them off for a size- or time-constrained consumer build.
+option(TACCAP_BUILD_EXAMPLES "Build C++ examples"                   ON)
 option(TACCAP_BUILD_TESTS    "Build C++ unit tests"                 OFF)
 
 # Threads (used by SerialBus + future async Transport)

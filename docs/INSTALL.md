@@ -66,8 +66,9 @@ sudo usermod -aG dialout,video "$USER"
 ### 5a. Python install (recommended for most users)
 
 `pyproject.toml` uses **scikit-build-core** as the build backend, which
-drives CMake under the hood with `TACCAP_BUILD_PYTHON=ON` and
-`TACCAP_BUILD_EXAMPLES=OFF`. A single `pip` invocation builds the C++
+drives CMake under the hood with `TACCAP_BUILD_PYTHON=ON` and an explicit
+`TACCAP_BUILD_EXAMPLES=OFF` — the option defaults to ON for source builds so CI
+compiles the examples, but example binaries have no place in a wheel. A single `pip` invocation builds the C++
 core and the pybind11 extension, then co-locates them inside the wheel
 under `xense/taccap/`:
 
@@ -124,7 +125,7 @@ CMake options (top-level `CMakeLists.txt:19-21`):
 | Option                  | Default | Effect                                          |
 | ----------------------- | ------- | ----------------------------------------------- |
 | `TACCAP_BUILD_PYTHON`   | `ON`    | Build the `_taccap_native` pybind11 module      |
-| `TACCAP_BUILD_EXAMPLES` | `OFF`   | Build the `leader_demo` smoke binary            |
+| `TACCAP_BUILD_EXAMPLES` | `ON`    | Build `cpp/examples/` (leader stream demo, follower status, two controllers) |
 | `TACCAP_BUILD_TESTS`    | `OFF`   | Build the gtest suite under `cpp/tests/`        |
 
 ### 6. Verify

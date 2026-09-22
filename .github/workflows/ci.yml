@@ -28,7 +28,7 @@ jobs:
             pybind11-dev python3-dev
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DTACCAP_BUILD_TESTS=ON
+        run: cmake -S . -B build -G Ninja -DTACCAP_BUILD_TESTS=ON -DTACCAP_BUILD_EXAMPLES=ON
 
       - name: Build
         run: cmake --build build

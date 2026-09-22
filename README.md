@@ -526,8 +526,9 @@ g.diagnostics.disable_logging()                                  # off again
 ## Examples
 
 All scripts live under `python/examples/`; the table is in
-**[docs/EXAMPLES.md](docs/EXAMPLES.md)**. Enable C++ examples with
-`-DTACCAP_BUILD_EXAMPLES=ON` (off by default).
+**[docs/EXAMPLES.md](docs/EXAMPLES.md)**. C++ examples build by default into
+`build/cpp/examples/` (`-DTACCAP_BUILD_EXAMPLES=OFF` to skip them); the wheel
+build turns them off on its own.
 
 ## Logging
 
