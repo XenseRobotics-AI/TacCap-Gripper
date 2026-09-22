@@ -35,6 +35,12 @@ constexpr float kMaxDampingGain = 5.0f;
 // limit at the defaults -- so the separation is an order of magnitude.
 constexpr float kHoldingLeadRatio = 0.5f;
 constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
+// The closed endpoint for preload purposes. Normalized, so it scales with the
+// calibrated stroke: 1e-3 of a 1.215 rad travel is 1.2 mrad. It exists only to
+// absorb float sloppiness in a caller that means 0.0 -- the preload is for the
+// endpoint, not for "somewhere near the closed side", because pressing while
+// holding a mid-stroke target would drag the jaw off that target.
+constexpr float kClosedEndpointEps = 1e-3f;
 
 void validate_config(const ForcePositionConfig& cfg) {
     auto finite = [](float v) { return std::isfinite(v); };
@@ -61,6 +67,17 @@ void validate_config(const ForcePositionConfig& cfg) {
     if (cfg.grasp_torque_nm > cfg.hold_torque_limit_nm) {
         throw std::invalid_argument(
             "ForcePositionConfig.grasp_torque_nm must not exceed hold_torque_limit_nm");
+    }
+    if (!finite(cfg.close_preload_nm) || cfg.close_preload_nm < 0.0f) {
+        throw std::invalid_argument(
+            "ForcePositionConfig.close_preload_nm must be >= 0");
+    }
+    // Bounded by the GRASP BUDGET, not by hold_torque_limit_nm: the preload is
+    // reserved out of that budget in position_hold_, so a preload above it would
+    // leave the position term nothing to work with and stall the approach.
+    if (cfg.close_preload_nm > cfg.grasp_torque_nm) {
+        throw std::invalid_argument(
+            "ForcePositionConfig.close_preload_nm must not exceed grasp_torque_nm");
     }
     // No coupling rule between close_speed_radps and grasp_torque_nm any more.
     // It existed because the travel damping gain WAS grasp/speed; the ramp now
@@ -233,9 +250,22 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::zero_(
     return {sample.actual_pos, 0.0f, 0.0f, 0.0f, 0.0f};
 }
 
+// Signed feed-forward preload for the hold, nonzero only when the commanded
+// target IS the closed endpoint. The sign comes from the position map rather
+// than a constant: to_rad() multiplies by dir_, so a rising normalized position
+// means a FALLING raw angle on a reversed unit. Closing is therefore -dir_,
+// i.e. +1 when reversed and -1 when not. Hard-coding +1 would have pushed a
+// non-reversed gripper open instead of closed.
+float ForcePositionPolicy::close_preload_signed_() const {
+    if (cfg_.close_preload_nm <= 0.0f) return 0.0f;
+    if (target_position_ > kClosedEndpointEps) return 0.0f;
+    const float close_dir = map_.reverse() ? 1.0f : -1.0f;
+    return close_dir * cfg_.close_preload_nm;
+}
+
 protocol::MotorImpedanceCtrl ForcePositionPolicy::position_hold_(
         const MotorStatusSample& sample, float desired_raw,
-        float torque_budget) {
+        float torque_budget, float preload_nm) {
     const float budget = std::clamp(torque_budget, kEpsilon,
                                     cfg_.motion_torque_limit_nm);
     const float speed = std::abs(sample.actual_vel);
@@ -244,14 +274,21 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::position_hold_(
         kd = std::min(kd, budget / speed);
     }
     const float damping = -kd * sample.actual_vel;
-    const float position_budget = std::max(0.0f, budget - std::abs(damping));
+    // The preload is RESERVED OUT of the budget before the position term gets
+    // its share, which keeps the invariant this function has always held: the
+    // total request never exceeds the budget. Reserving it (rather than adding
+    // it on top) is why close_preload_nm is validated against grasp_torque_nm.
+    const float preload = std::clamp(std::abs(preload_nm), 0.0f, budget);
+    const float position_budget =
+        std::max(0.0f, budget - std::abs(damping) - preload);
     const float error_limit = position_budget / tune_.position_kp;
     const float error = std::clamp(desired_raw - sample.actual_pos,
                                    -error_limit, error_limit);
     const float target = sample.actual_pos + error;
-    const float predicted = tune_.position_kp * error + damping;
+    const float tau_ff = (preload_nm < 0.0f) ? -preload : preload;
+    const float predicted = tune_.position_kp * error + damping + tau_ff;
     commanded_torque_nm_ = std::min(budget, std::abs(predicted));
-    return {target, tune_.position_kp, kd, 0.0f, 0.0f};
+    return {target, tune_.position_kp, kd, tau_ff, 0.0f};
 }
 
 /* Move toward target_raw along a TIME-BASED ramp.
@@ -418,7 +455,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     protocol::MotorImpedanceCtrl cmd;
     if (arrived_) {
         ramp_valid_ = false;                // next move restarts the ramp here
-        cmd = position_hold_(sample, target_raw, grasp_torque_nm_);
+        cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
+                             close_preload_signed_());
     } else {
         const float dir = (to_target > 0.0f) ? 1.0f : -1.0f;
         cmd = travel_track_(sample, target_raw, dir * cfg_.close_speed_radps,

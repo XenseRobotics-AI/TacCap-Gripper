@@ -233,7 +233,7 @@ void bind_control(py::module_& m) {
         .value("FAULT",            ForcePositionState::Fault)
         .def("__str__", [](ForcePositionState s) { return to_string(s); });
 
-    // Six fields, down from sixteen. The contact-detection constants and the
+    // Seven fields, down from sixteen. The contact-detection constants and the
     // position gains are firmware mirrors / measured values with one right
     // answer for this gripper, and live in detail::ForcePositionTuning on the
     // C++ side where a caller cannot reach them.
@@ -244,7 +244,8 @@ void bind_control(py::module_& m) {
         .def_readwrite("hold_torque_limit_nm", &ForcePositionConfig::hold_torque_limit_nm)
         .def_readwrite("motion_torque_limit_nm", &ForcePositionConfig::motion_torque_limit_nm)
         .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms)
-        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz);
+        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz)
+        .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm);
 
     py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot")
         .def_readonly("running",               &ForcePositionSnapshot::running)

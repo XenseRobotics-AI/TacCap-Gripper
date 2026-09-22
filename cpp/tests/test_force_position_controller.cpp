@@ -249,6 +249,114 @@ TEST(ForcePositionPolicy, SettledHoldIsBoundedByTheGraspBudget) {
     EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-5f);
 }
 
+// ---------------------------------------------------------------------------
+// Closed-endpoint preload
+// ---------------------------------------------------------------------------
+
+// The whole point: kp*(target-actual) vanishes AT the target, so without a
+// feed-forward term the jaw reaches the closed stop and stops pressing, leaving
+// the gear backlash unseated. Measured on hardware: 0.15 Nm of feed-forward
+// seats it at raw 0.00000 and 0.50 Nm moves it no further.
+TEST(ForcePositionPolicy, ClosedEndpointHoldCarriesThePreload) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);                  // target_position == 0
+    const auto c = p.step(sample(0.0f), now);
+
+    EXPECT_TRUE(p.arrived());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+    // Sitting exactly on the target, so the spring contributes nothing and the
+    // command is the preload alone -- closing is -raw on a non-reversed map.
+    EXPECT_FLOAT_EQ(c.target_torque, -cfg.close_preload_nm);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.close_preload_nm, 1e-5f);
+}
+
+// A mid-stroke hold must NOT press: the preload is for seating against a
+// mechanical stop, and applying it anywhere else would drag the jaw off the
+// position the caller asked it to hold.
+TEST(ForcePositionPolicy, MidStrokeHoldCarriesNoPreload) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_target(sample(0.5f), 0.5f, cfg.grasp_torque_nm, now);
+    const auto c = p.step(sample(0.5f), now);
+
+    EXPECT_TRUE(p.arrived());
+    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+}
+
+// The sign comes from the map, not a constant. to_rad() multiplies by dir_, so
+// a rising normalized position is a FALLING raw angle when reversed -- closing
+// is -dir_. Hard-coding +1 would push a non-reversed gripper OPEN.
+TEST(ForcePositionPolicy, PreloadSignFollowsTheMapDirection) {
+    ForcePositionConfig cfg;
+    const auto now = std::chrono::steady_clock::now();
+
+    ForcePositionPolicy normal(GripperPosition::from_travel(1.0f), cfg);
+    normal.reset(sample(0.0f), now);
+    EXPECT_LT(normal.step(sample(0.0f), now).target_torque, 0.0f);
+
+    ForcePositionPolicy reversed(GripperPosition::from_travel(1.0f, 0.0f, true),
+                                 cfg);
+    reversed.reset(sample(0.0f), now);
+    EXPECT_GT(reversed.step(sample(0.0f), now).target_torque, 0.0f);
+}
+
+// The preload is RESERVED OUT of the grasp budget, not added on top of it, so
+// the bound this class has always held still holds at the endpoint: a jaw
+// dragged far off the closed target cannot be asked for more than the budget.
+TEST(ForcePositionPolicy, PreloadIsReservedOutOfTheGraspBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg, tune);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);
+
+    const auto c = p.step(sample(1.0f), now);
+    const float spring = c.kp * (c.target_pos - 1.0f);
+    // Spring alone is capped at budget-preload; spring plus preload at budget.
+    EXPECT_LE(std::abs(spring),
+              cfg.grasp_torque_nm - cfg.close_preload_nm + 1e-5f);
+    EXPECT_LE(std::abs(spring) + std::abs(c.target_torque), cfg.grasp_torque_nm + 1e-5f);
+    EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-5f);
+}
+
+TEST(ForcePositionPolicy, ZeroPreloadRestoresThePureSpringHold) {
+    ForcePositionConfig cfg;
+    cfg.close_preload_nm = 0.0f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);
+    const auto c = p.step(sample(0.0f), now);
+
+    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+}
+
+TEST(ForcePositionPolicy, DefaultPreloadIsTheMeasuredSeatingTorque) {
+    // 0.15 Nm seats the jaw on hardware; 0.25 is that with headroom for
+    // friction growth and drift. Above ~0.15 buys heat, never closure.
+    EXPECT_FLOAT_EQ(ForcePositionConfig{}.close_preload_nm, 0.25f);
+}
+
+TEST(ForcePositionPolicy, RejectsNegativePreload) {
+    ForcePositionConfig cfg;
+    cfg.close_preload_nm = -0.01f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
+}
+
+TEST(ForcePositionPolicy, RejectsPreloadAboveTheGraspBudget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm  = 0.30f;
+    cfg.close_preload_nm = 0.31f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
+}
+
 TEST(ForcePositionPolicy, FeedbackBetweenHoldAndMotionLimitsIsAllowed) {
     ForcePositionConfig cfg;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);

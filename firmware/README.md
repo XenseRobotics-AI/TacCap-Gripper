@@ -9,11 +9,18 @@ directory's git history, not from extra files.
 
 | Image | Role | Version | Protocol | Source | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.3** | V2.3 | `34da1cb` | 118,236 B | `0x6735d0ac` |
-| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.2.3** | V2.3 + envelope | `34da1cb` | 162,476 B | `0x9a91e5ab` |
+| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.3 | `5e4ea62` | 118,236 B | `0x42c83731` |
+| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.2.5** | V2.3 + envelope | `5e4ea62` | 162,468 B | `0xd0ef491a` |
 
 Both from firmware branch `feat/actuator-can-timeout`, **one commit, one
 version number**. `manifest.json` has the same data machine-readably.
+
+1.2.5 is where one-number-per-release became structural: 1.2.3 aligned the two
+numbers but left two `#ifdef`-guarded version definitions in the source, so the
+cause of the drift survived the fix. 1.2.5 collapses them into a single
+definition — a role can no longer be left behind. The per-role change history is
+kept as comments next to it, because *what* changed on which side is still worth
+tracing; only the number has one source now.
 
 1.2.3 is where the two version lines merge. They had drifted apart (leader
 1.2.x, follower 1.1.x) on the theory that V2.2 commands were follower-only and
@@ -37,6 +44,27 @@ other.
 >
 > **Both are hardware-validated**, on two units each, all four power-cycled at
 > 24 V before measuring.
+>
+> Follower 1.2.5, on `TCGU01A28Z0018s`: the closed zero written by
+> auto-calibration (`min_open_rad`) goes to **0**, so normalized 0.0 is the
+> closed hard stop itself rather than an inset short of it. Six open/close
+> cycles land at raw **−0.00049** with 0.383 mrad of spread, `arrived` true and
+> `HOLDING_POSITION` throughout — against −0.02014 on 1.2.3, i.e. 19.65 mrad
+> tighter. A five-minute continuous hold does not drift, decays 1.2% in torque,
+> and warms **+1.0 °C**, flat within the sensor's 1 °C resolution after 90 s.
+>
+> The two earlier insets were both measured against premises that no longer
+> held. 20 mrad came from the pre-`5b8b3bf` kd-form control law and was never
+> revisited when the law changed; 5 mrad assumed a residual the control could
+> not close. A pure feed-forward sweep (`kp=kd=0`) settled it: 0.05 N·m → raw
+> −0.00249, 0.10 → −0.00096, **0.15 → +0.00000**, and 0.20 / 0.30 / 0.40 / 0.50
+> all → +0.00000 unmoved. raw 0 is a hard stop, so no inset is needed and more
+> torque buys no closure. Seating it is the SDK's job now
+> (`ForcePositionConfig::close_preload_nm`, 0.25 N·m by default).
+>
+> Leader 1.2.5 is **byte-identical to 1.2.3 except the version byte** (two bytes
+> differ). This release touches follower-only code; the leader is rebuilt solely
+> to keep the roles on one number, which is the documented cost of that policy.
 >
 > Follower 1.2.3, on `TCGU01A28Z0018s` and `TCGU01A28Z0015s`: auto-calibration
 > completes, force-position control reaches 1.000 / 0.001 / 1.000 with

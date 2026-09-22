@@ -15,10 +15,18 @@ Top-level surface today:
                        ``TimeoutError``
 """
 
-from ._version import __version__
 from . import _taccap_native
 
 # ---- Versioning -------------------------------------------------------------
+# Derived, never written here. The one hand-written copy is [project].version in
+# pyproject.toml; CMake reads it into PROJECT_VERSION, version.hpp.in bakes it
+# into the extension, and we take it from there.
+#
+# This was a hand-maintained _version.py until 0.2.1, and it had drifted: the
+# package said 0.2.0 while the extension, hello() and the wheel metadata all
+# said 0.2.1. A version the public API reports wrongly is worse than no version,
+# because it reads as authoritative.
+__version__ = _taccap_native.__version__
 hello = _taccap_native.hello
 
 # ---- Logging (spdlog-backed, shared with C++ core) --------------------------

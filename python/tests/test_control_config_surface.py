@@ -28,7 +28,8 @@ import xense.taccap as t
 # ---- ForcePositionConfig -------------------------------------------------
 
 # The whole tunable surface. Two values are the grasp itself, two are the
-# motor's nameplate ratings, two describe the transport.
+# motor's nameplate ratings, two describe the transport, one is the closed-end
+# preload.
 FORCE_POSITION_FIELDS = {
     "grasp_torque_nm": 1.1,
     "close_speed_radps": 0.5,
@@ -36,6 +37,11 @@ FORCE_POSITION_FIELDS = {
     "motion_torque_limit_nm": 6.0,
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
+    # Seats the jaw against the closed mechanical stop. Measured: 0.15 Nm
+    # seats it fully (raw 0.00000) and 0.50 Nm moves it no further, so 0.25
+    # is the seating torque with headroom, not a force anyone should raise
+    # hoping for a tighter close. See the header for the sweep.
+    "close_preload_nm": 0.25,
 }
 
 # Removed in the 16 -> 6 trim. The first eight are firmware-constant mirrors or
@@ -66,7 +72,7 @@ def _public_fields(obj) -> set:
     return {a for a in dir(obj) if not a.startswith("_")}
 
 
-def test_force_position_config_has_exactly_the_six_fields():
+def test_force_position_config_has_exactly_the_declared_fields():
     cfg = t.ForcePositionConfig()
     assert _public_fields(cfg) == set(FORCE_POSITION_FIELDS)
 

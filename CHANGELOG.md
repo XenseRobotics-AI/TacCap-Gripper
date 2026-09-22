@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-22
+
+Paired with firmware **1.2.5** (one version for both roles — 1.2.5 collapses the
+two `#ifdef`-guarded version definitions into a single one, so a role can no
+longer be left behind).
+
+### Added
+
+- **`ForcePositionConfig::close_preload_nm`, default 0.25 N·m.** Feed-forward
+  torque applied only while holding the *closed endpoint*, to seat the jaw
+  against its mechanical stop and take up the gear train's backlash.
+
+  The jaw used to arrive at the closed end and stop pressing, because
+  `position_hold_` commands `kp*(target − actual)` and that goes to zero exactly
+  at the target: measured holding torque at the closed position was **0.001 N·m**
+  — parked, not clamped, with the backlash unseated and visible as a gap.
+
+  A position bias cannot fix it. The firmware clamps every target to the
+  calibrated range, and that range's closed end is hard-coded `0.0f` in
+  `can_motor_get_gripper_target_range()`, so a target biased past the stop is
+  simply truncated — measured: sweeping the commanded target from 0 to +40 mrad
+  past the stop moved the jaw not at all and left the torque flat at 0.061 N·m.
+  A feed-forward term has no such clamp.
+
+  **Why 0.25.** Pure feed-forward (`kp=kd=0`) swept against the closed stop on
+  `TCGU01A28Z0018s`:
+
+  | feed-forward | resulting raw |
+  |---|---|
+  | 0.05 N·m | −0.00249 |
+  | 0.10 N·m | −0.00096 |
+  | 0.15 N·m | **+0.00000** |
+  | 0.20 / 0.30 / 0.40 / 0.50 N·m | +0.00000 (unmoved) |
+
+  raw 0 is a *hard stop*, not a compliant region: 0.15 N·m seats the jaw fully
+  and 3.3× more torque moves it not one microradian. So the useful range ends at
+  ~0.15 N·m, and 0.25 is that with 1.7× headroom for friction growth and
+  mechanical drift. **Raising it further buys heat and gear load, never a tighter
+  close** — worth stating because "more torque = tighter" is the obvious guess
+  and it is wrong here.
+
+  Bounded and thermally governed: the preload is *reserved out of*
+  `grasp_torque_nm` rather than added on top, so the invariant that the total
+  request never exceeds the budget still holds; and it passes through the
+  firmware's `can_motor_envelope_clamp_torque()`, which is applied
+  unconditionally alongside the target clamp. At 0.25 N·m it is 23% of the
+  envelope's measured `cont_torque_nm` (1.1 N·m), so the I²t accumulator stays
+  pinned at 0. Measured over a five-minute continuous hold: position did not
+  drift, torque decayed 1.2%, temperature rose **+1.0 °C** and was flat within
+  the sensor's 1 °C resolution after 90 s.
+
+  Self-compensating, which a fixed position inset is not: however far the stop
+  drifts with wear, the force presses until the jaw is seated again.
+
+  Its sign is derived from the position map, not a constant — `to_rad()`
+  multiplies by the direction, so a rising normalized position is a *falling*
+  raw angle on a reversed unit. Set it to 0 to restore the pure spring hold.
+
+### Changed
+
+- **Paired firmware is 1.2.5.** Follower closed zero (`min_open_rad`, written by
+  auto-calibration) goes 20 mrad → 5 mrad → **0**: normalized 0.0 is now the
+  closed hard stop itself. The 20 mrad inset had been measured under the
+  pre-`5b8b3bf` kd-form control law and was never revisited when the law
+  changed; the 5 mrad step assumed a residual the control could not close, which
+  the feed-forward sweep above disproved. Leader code is untouched by this (its
+  binary differs from 1.2.3 by 2 bytes, the version byte) and is bumped only to
+  keep the roles on one number.
+
+  Closed position on `TCGU01A28Z0018s`, six cycles each, `arrived` true and
+  `HOLDING_POSITION` throughout:
+
+  | | closed raw | holding torque |
+  |---|---|---|
+  | 1.2.3 | −0.02014 | 0.001 N·m |
+  | 1.2.4 | −0.00403 | 0.001 N·m |
+  | **1.2.5 + preload** | **−0.00049** | **0.298 N·m** |
+
+  19.65 mrad tighter than 1.2.3, repeatability 0.383 mrad.
+
 ## [0.2.0] - 2026-09-22
 
 Paired with firmware **1.2.3** (both roles — 1.2.3 is where the leader and

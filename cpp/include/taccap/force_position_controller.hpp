@@ -133,6 +133,36 @@ struct ForcePositionConfig {
     float motion_torque_limit_nm = FORCE_POSITION_MAX_MOTION_TORQUE_NM;
     unsigned status_timeout_ms = 350;    // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
+    // Feed-forward torque added ONLY while holding the closed endpoint, to seat
+    // the jaw against its mechanical stop. 0 disables it.
+    //
+    // WHY A FORCE AND NOT A POSITION OFFSET. position_hold_ commands
+    // kp*(target-actual), which goes to zero exactly at the target -- so the jaw
+    // arrives at the closed end and then stops pressing, leaving the gear
+    // train's backlash unseated. Biasing the target past the stop cannot fix it:
+    // the firmware clamps every target to the calibrated range, whose closed end
+    // is hard-coded 0.0f in can_motor_get_gripper_target_range(), so a biased
+    // target is simply truncated. A feed-forward term has no such clamp.
+    //
+    // WHY 0.25. Measured on TCGU01A28Z0018s, pure feed-forward (kp=kd=0) swept
+    // against the closed stop:
+    //     0.05 Nm -> raw -0.00249     0.15 Nm -> raw +0.00000
+    //     0.10 Nm -> raw -0.00096     0.20/0.30/0.40/0.50 Nm -> raw +0.00000
+    // raw 0 is a HARD STOP, not a compliant region: 0.15 Nm seats the jaw fully
+    // and 3.3x more torque moves it not one microradian. So the useful range
+    // ends at ~0.15 Nm; 0.25 is that with 1.7x headroom for friction growth and
+    // mechanical drift. Anything above buys heat and gear load, never closure.
+    //
+    // Thermally free at this value: the firmware accumulates I2t only above the
+    // envelope's cont_torque_nm (1.1 Nm measured), and 0.25 is 23% of it, so
+    // s_i2t_energy stays pinned at 0. It still passes through
+    // can_motor_envelope_clamp_torque(), so the temperature wall governs it --
+    // that clamp is applied unconditionally alongside the target clamp
+    // (can_motor.c:5317-5318), not only on the kp==0 path.
+    //
+    // Self-compensating, which a fixed position inset is not: however far the
+    // stop drifts with wear, the force presses until the jaw is seated again.
+    float close_preload_nm     = 0.25f;
 };
 
 struct ForcePositionSnapshot {
@@ -234,10 +264,17 @@ public:
 
 private:
     protocol::MotorImpedanceCtrl zero_(const MotorStatusSample& sample);
-    // Settled hold on a fixed point: damps absolute velocity, no feed-forward.
+    // Signed preload for the current hold: cfg_.close_preload_nm when the
+    // commanded target is the closed endpoint, 0 otherwise. Sign from the map.
+    float close_preload_signed_() const;
+    // Settled hold on a fixed point: damps absolute velocity. preload_nm is a
+    // SIGNED feed-forward torque, nonzero only at the closed endpoint (see
+    // ForcePositionConfig::close_preload_nm); it is reserved out of the budget
+    // so the total request stays bounded by it.
     protocol::MotorImpedanceCtrl position_hold_(const MotorStatusSample& sample,
                                                  float desired_raw,
-                                                 float torque_budget);
+                                                 float torque_budget,
+                                                 float preload_nm);
     // Move toward target_raw along a time-based ramp at desired_vel, with the
     // PD request error-clamped against torque_budget. See the definition.
     protocol::MotorImpedanceCtrl travel_track_(const MotorStatusSample& sample,

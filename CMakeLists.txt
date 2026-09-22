@@ -1,5 +1,34 @@
 cmake_minimum_required(VERSION 3.20)
-project(taccap_gripper VERSION 0.2.0 LANGUAGES CXX)
+
+# ==============================================================================
+# Version — ONE hand-written source: [project].version in pyproject.toml
+# ==============================================================================
+# Everything else derives from it: PROJECT_VERSION -> TACCAP_VERSION_STRING
+# (cpp/include/taccap/version.hpp.in) -> the extension's __version__ -> the
+# package's __version__. The wheel metadata reads the same key directly.
+#
+# It used to be written by hand in three places -- here, pyproject.toml, and a
+# checked-in python/xense/taccap/_version.py -- with nothing tying them
+# together, and it had already drifted: the package reported 0.2.0 while the
+# extension, hello() and the wheel metadata all said 0.2.1. That is the same
+# shape as the firmware's two #ifdef-guarded version structs (one number, two
+# copies, no link), and it gets the same treatment: one source, the rest derived.
+# python/tests/test_version_single_source.py fails if they ever disagree again.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml"
+     _taccap_version_lines REGEX "^version[ \t]*=")
+list(LENGTH _taccap_version_lines _taccap_version_count)
+if(NOT _taccap_version_count EQUAL 1)
+    message(FATAL_ERROR
+        "Expected exactly one line-anchored 'version =' in pyproject.toml, "
+        "found ${_taccap_version_count}. The build reads the project version "
+        "from there; fix pyproject.toml rather than hard-coding it here.")
+endif()
+string(REGEX REPLACE "^version[ \t]*=[ \t]*\"([^\"]+)\".*$" "\\1"
+       TACCAP_VERSION "${_taccap_version_lines}")
+unset(_taccap_version_lines)
+unset(_taccap_version_count)
+
+project(taccap_gripper VERSION ${TACCAP_VERSION} LANGUAGES CXX)
 
 # ==============================================================================
 # Standards & global settings
