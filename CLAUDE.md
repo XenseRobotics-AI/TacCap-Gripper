@@ -196,9 +196,19 @@ So the only push is `git push origin main`. There is no `github` remote here —
 clones name the remotes the other way round, `origin` = internal GitLab and
 `github` = GitHub. Check `git remote -v` before trusting either convention.)
 
-The internal GitLab is **out of scope from here**: it is not reachable on this
-network and the maintainer syncs it by hand from somewhere that is. Do not try
-to add, fetch, or push a GitLab remote.
+The internal GitLab **is reachable from this machine** (verified 2026-09-22;
+an older note here said it was not). It mirrors the **firmware** repo only:
+
+```
+# in third_party/firmware/tc-gu-01
+gitlab  git@192.168.110.140:xense/tc-gu-01.git
+```
+
+Use SSH, not HTTP — HTTP prompts for a username that a non-interactive shell
+cannot supply. The shared trunk there is `hw_v1.1.0`, same name as on GitHub,
+and it carries other people's commits, so rebase onto it before pushing and
+open an MR rather than pushing the trunk directly. No GitLab mirror of this
+SDK repo is known; if one exists, ask for its URL rather than guessing.
 
 `origin/main` takes external contributions, so **expect a rejected push**.
 Fetch, look at what landed, then rebase — never force-push to `main` as a
