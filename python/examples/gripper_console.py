@@ -10,7 +10,7 @@ kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被�
 
 这一版把控制交给 SDK 的两个控制器,并把固件侧的运动安全包络一起配好。
 
-    --mode impedance       ControlLoop —— 误差钳位 + 力矩天花板 + 堵转保持
+    --mode impedance       ImpedanceController —— 误差钳位 + 力矩天花板 + 堵转保持
     --mode force-position  ForcePositionController —— 接触判定后转纯力矩保持
 
 三层的分工见 docs/CONTROL_LAYERING.md。要记住的一条:**固件包络是唯一在 MIT
@@ -48,11 +48,11 @@ from typing import Optional
 import _calib_flow
 
 from xense.taccap import (
-    ControlLoop,
     FollowerGripper,
     ForcePositionConfig,
+    ImpedanceConfig,
+    ImpedanceController,
     ForcePositionController,
-    StallAction,
     GRIPPER_ENVELOPE_VALID,
     GRIPPER_ENVELOPE_ENFORCE,
     log,
@@ -116,56 +116,74 @@ class RawKeyboard:
 
 
 class ImpedanceBackend:
-    """ControlLoop:误差钳位 + 力矩天花板 + 堵转保持。"""
+    """ImpedanceController:误差钳位 + 力矩天花板 + 堵转保持,带状态机。
+
+    走 ImpedanceController 而不是 ControlLoop:后者把 stalled / torque_capped
+    报成两个各自加锁的独立布尔,轮询两次可能读到从未同时存在过的组合,而且
+    submit 失败时循环直接退出、不留 fault 原因。这里所有字段来自同一个
+    snapshot(),同一把锁。ControlLoop 仍在,做底层用。
+    """
 
     label = "IMPEDANCE"
 
     def __init__(self, g: FollowerGripper, args):
-        self.loop = ControlLoop(
-            g,
-            hz=int(args.hz),
-            kp=args.kp,
-            kd=args.kd,
-            max_position_torque_nm=args.max_position_torque,
-            rated_torque_nm=args.rated_torque,
-            stall_action=StallAction.HOLD_POSITION,
-        )
+        cfg = ImpedanceConfig()
+        cfg.kp = args.kp                     # 刚度 Nm/rad
+        cfg.kd = args.kd                     # 阻尼 Nm·s/rad,同时定接近速度
+        # 误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。主保护 —— 它同时
+        # 限住了「接近」和「堵转」,而只防堵转是不够的:实测不钳位的大步进会以
+        # 5.5 rad/s 掠过物体把它撞飞,全程力矩不到 0.03 Nm,没有持续接触可检测。
+        cfg.max_position_torque_nm = args.max_position_torque
+        # 力矩天花板:作用在实测力矩上(不是命令值)。顶住后改发 kp=kd=0 的纯前馈
+        # 帧,位置误差再也加不进输出。上限是额定 1.8 而非峰值 6.0 —— 这个保持无限期。
+        cfg.rated_torque_nm = args.rated_torque
+        # status_timeout_ms / motor_stream_hz 用默认值(350 ms / 100 Hz)。
+        self.ctl = ImpedanceController(g, cfg)
+        self._snap = None
 
     def start(self):
-        self.loop.start()
+        self.ctl.start()
 
     def stop(self):
-        self.loop.stop()
+        self.ctl.stop()
 
     def set_target(self, p):
-        self.loop.set_target(p)
+        self.ctl.set_target(p)
 
     def observation(self):
-        return self.loop.observation()
+        self._snap = self.ctl.snapshot()
+        return self._snap.observation
 
     def open_full(self):
-        self.loop.set_target(1.0)
+        self.ctl.set_target(1.0)
 
     def after_fault_clear(self):
-        pass
+        self.ctl.reset()
 
     def hold(self) -> Optional[float]:
         """停在当前位置。返回新的目标,None 表示还没有观测可用。"""
-        obs = self.loop.observation()
-        if not obs.valid:
+        s = self._snap or self.ctl.snapshot()
+        if not s.observation.valid:
             return None
-        self.loop.set_target(obs.position)
-        return obs.position
+        self.ctl.set_target(s.observation.position)
+        return s.observation.position
 
     def detail(self) -> str:
-        l = self.loop
-        stall = "HOLD" if l.stalled else "-"
-        cap = "ON" if l.torque_capped else "-"
-        return (
-            f"submit={l.submit_hz:5.1f}Hz  "
-            f"stall={stall:>4s}({l.stall_trips})  "
-            f"cap={cap:>3s}({l.torque_caps})"
+        s = self._snap
+        if s is None:
+            return ""
+        name = str(s.state).split(".")[-1]
+        stall = "HOLD" if s.stalled else "-"
+        cap = "ON" if s.torque_capped else "-"
+        out = (
+            f"state={name:16s} cmd={s.commanded_torque_nm:5.3f}Nm  "
+            f"eff={s.effective_position:.3f}  "
+            f"stall={stall:>4s}({s.stall_trips})  "
+            f"cap={cap:>3s}({s.torque_caps})"
         )
+        if s.fault_reason:
+            out += f"  fault: {s.fault_reason}"
+        return out
 
 
 class ForcePositionBackend:
@@ -175,11 +193,14 @@ class ForcePositionBackend:
 
     def __init__(self, g: FollowerGripper, args):
         cfg = ForcePositionConfig()
-        cfg.grasp_torque_nm = args.grasp_torque
+        cfg.grasp_torque_nm = args.grasp_torque    # 接触后的保持力矩 = 夹持力
+        # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),
+        # 所以 close_speed < grasp/5 时增益饱和,爪子会堵转在低于设定的力上 ——
+        # validate_config() 直接拒掉,而不是给一个悄悄变软的夹持。
         cfg.close_speed_radps = args.close_speed
-        cfg.contact_torque_nm = args.contact_torque
-        cfg.position_kp = args.kp
-        cfg.position_kd = args.kd
+        # hold/motion 上限与传输参数用默认值(1.8 / 6.0 Nm,350 ms / 100 Hz)。
+        # 接触判定常数与位置增益不再是可配项:它们是固件常量的镜像和实测值,
+        # 对这台夹爪只有一个正确答案。--kp/--kd 仍然喂 ImpedanceBackend。
         self.ctl = ForcePositionController(g, cfg)
         self._snap = None
 
@@ -202,7 +223,8 @@ class ForcePositionBackend:
             return ""
         name = str(s.state).split(".")[-1]
         out = (
-            f"state={name:16s} contact={s.contact_count}  "
+            f"state={name:16s} hold={'Y' if s.holding else 'N'} "
+            f"arr={'Y' if s.arrived else 'N'}  "
             f"cmd={s.commanded_torque_nm:5.3f}Nm  "
             f"grasp={s.grasp_torque_nm:5.3f}Nm  "
             f"limit hold={s.hold_torque_limit_nm:.2f}/"
@@ -280,7 +302,7 @@ def main() -> int:
         "--mode",
         default="impedance",
         choices=("impedance", "force-position"),
-        help="阻抗 (ControlLoop) 或力位混合 (ForcePositionController)",
+        help="阻抗 (ImpedanceController) 或力位混合 (ForcePositionController)",
     )
     ap.add_argument("--kp", type=float, default=20.0, help="刚度 Nm/rad")
     ap.add_argument("--kd", type=float, default=1.0, help="阻尼 Nm·s/rad")
@@ -288,13 +310,13 @@ def main() -> int:
         "--hz",
         type=float,
         default=100.0,
-        help="UI 刷新率;阻抗模式下同时是 ControlLoop 的提交率,但默认"
-        " STREAM_LOCKED 相位跟随状态流,不用它",
+        help="UI 刷新率。控制提交率不由它决定 —— 两个控制器都锁在状态流的"
+        "相位上,一帧一提交",
     )
     ap.add_argument(
         "--step", type=float, default=0.05, help="j/k 步进量(归一化 0..1,默认 0.05)"
     )
-    # ---- ControlLoop 的两层主机侧保护 ----
+    # ---- 阻抗模式的两层主机侧保护 ----
     ap.add_argument(
         "--max-position-torque",
         type=float,
@@ -313,7 +335,7 @@ def main() -> int:
     ap.add_argument(
         "--grasp-torque",
         type=float,
-        default=0.35,
+        default=1.1,
         dest="grasp_torque",
         help="接触后的纯前馈保持力矩 Nm",
     )
@@ -323,13 +345,6 @@ def main() -> int:
         default=0.5,
         dest="close_speed",
         help="闭合速度 rad/s",
-    )
-    ap.add_argument(
-        "--contact-torque",
-        type=float,
-        default=0.080,
-        dest="contact_torque",
-        help="接触力矩下限 Nm",
     )
     # ---- 固件运动安全包络 ----
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
@@ -392,9 +407,15 @@ def main() -> int:
         f"temp={env.temp_derate_start_c or 90}/{env.temp_wall_c or 100}C  "
         + ("ENFORCED" if enforced else "*** INACTIVE ***")
     )
+    # 只在阻抗模式显示增益:力位模式的位置增益已经不是可配项(在
+    # detail::ForcePositionTuning 里),再把 --kp/--kd 印在标题上会让人以为
+    # 它们生效了。
+    gains = (f"  kp={args.kp:.2f} kd={args.kd:.2f}"
+             if args.mode == "impedance"
+             else f"  grasp={args.grasp_torque:.2f}Nm")
     head = (
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "
-        f"fw {g.firmware_version}  kp={args.kp:.2f} kd={args.kd:.2f} ==="
+        f"fw {g.firmware_version}{gains} ==="
     )
 
     last_key = "-"

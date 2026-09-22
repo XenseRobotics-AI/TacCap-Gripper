@@ -9,14 +9,29 @@ directory's git history, not from extra files.
 
 | Image | Role | Version | Protocol | Source | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.2** | V2.1 + 0x54/0x55 | `02bec6f` | 117,980 B | `0x28742359` |
-| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.1.6** | V2.2 + envelope | `214d3a9` | 157,392 B | `0xC8C682A1` |
+| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.3 | `5e4ea62` | 118,236 B | `0x42c83731` |
+| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.2.5** | V2.3 + envelope | `5e4ea62` | 162,468 B | `0xd0ef491a` |
 
-Leader from firmware branch `hw_v1.1.0`, follower from
-`feat/envelope-and-reachable-travel`. `manifest.json` has the same data
-machine-readably, per image — the two roles no longer share one source commit
-or one protocol level, because every V2.2 command is follower-only and the
-leader had no reason to be rebuilt.
+Both from firmware branch `feat/actuator-can-timeout`, **one commit, one
+version number**. `manifest.json` has the same data machine-readably.
+
+1.2.5 is where one-number-per-release became structural: 1.2.3 aligned the two
+numbers but left two `#ifdef`-guarded version definitions in the source, so the
+cause of the drift survived the fix. 1.2.5 collapses them into a single
+definition — a role can no longer be left behind. The per-role change history is
+kept as comments next to it, because *what* changed on which side is still worth
+tracing; only the number has one source now.
+
+1.2.3 is where the two version lines merge. They had drifted apart (leader
+1.2.x, follower 1.1.x) on the theory that V2.2 commands were follower-only and
+the leader had no reason to be rebuilt — but the two roles share
+`protocol_handler.c`, so a change to the shared layer obliges both. This
+release changes exactly that (failed commands now answer with `cmd == 0`), and
+with separate lines it was easy to bump the follower and forget the leader:
+two leaders ended up reporting 1.2.1 while running a binary 17,809 bytes
+different from the official 1.2.1. One number per release makes that
+impossible. The cost is that a change touching only one role still bumps the
+other.
 
 > ### ⚠️ Both images are local builds
 >
@@ -27,15 +42,51 @@ leader had no reason to be rebuilt.
 > it (150,044 B against the shipped 149,256 B), so a few hundred bytes of any
 > size delta is toolchain, not firmware code.
 >
-> **Both are hardware-validated**, on two units each.
+> **Both are hardware-validated**, on two units each, all four power-cycled at
+> 24 V before measuring.
 >
-> Follower 1.1.6: the command channel survives sustained 1000 Hz `CMD_NO_ACK`
-> input, `rx_overflow` and `debug_tx_bytes` are both 0, and stream-locked
-> control loses no status frames with all cameras streaming and the motor
-> cycling. The motion safety envelope was validated separately on
-> `TCGU01A28Z0018s` at 24 V — see the 1.1.6 entry below.
+> Follower 1.2.5, on `TCGU01A28Z0018s`: the closed zero written by
+> auto-calibration (`min_open_rad`) goes to **0**, so normalized 0.0 is the
+> closed hard stop itself rather than an inset short of it. Six open/close
+> cycles land at raw **−0.00049** with 0.383 mrad of spread, `arrived` true and
+> `HOLDING_POSITION` throughout — against −0.02014 on 1.2.3, i.e. 19.65 mrad
+> tighter. A five-minute continuous hold does not drift, decays 1.2% in torque,
+> and warms **+1.0 °C**, flat within the sensor's 1 °C resolution after 90 s.
 >
-> Leader 1.2.2, upgraded from 1.2.0: IMU and encoder both stream at ~99 Hz
+> The two earlier insets were both measured against premises that no longer
+> held. 20 mrad came from the pre-`5b8b3bf` kd-form control law and was never
+> revisited when the law changed; 5 mrad assumed a residual the control could
+> not close. A pure feed-forward sweep (`kp=kd=0`) settled it: 0.05 N·m → raw
+> −0.00249, 0.10 → −0.00096, **0.15 → +0.00000**, and 0.20 / 0.30 / 0.40 / 0.50
+> all → +0.00000 unmoved. raw 0 is a hard stop, so no inset is needed and more
+> torque buys no closure. Seating it is the SDK's job now
+> (`ForcePositionConfig::close_preload_nm`, 0.25 N·m by default).
+>
+> Leader 1.2.5 is **byte-identical to 1.2.3 except the version byte** (two bytes
+> differ). This release touches follower-only code; the leader is rebuilt solely
+> to keep the roles on one number, which is the documented cost of that policy.
+>
+> Follower 1.2.3, on `TCGU01A28Z0018s` and `TCGU01A28Z0015s`: auto-calibration
+> completes, force-position control reaches 1.000 / 0.001 / 1.000 with
+> `arrived=True`, and instruction-5 fault reads keep advancing. Two things are
+> new and were checked directly. The idle status stream stays fresh —
+> `status_timestamp_ms` advances ~2000 ms over a 2 s idle window, where it used
+> to freeze indefinitely (the firmware asked the motor for active reporting,
+> the motor does not support it, and the firmware stopped polling on the
+> strength of having asked). And power-on calibration went 11 s → 1.3 s via a
+> two-stage approach, with 0.77 mrad of spread over five power cycles against a
+> 29 mrad open-limit margin.
+>
+> Leader 1.2.3, on `TCGU01A28Z0023m` and `TCGU01A28Z0024m`: encoder and IMU
+> both read (accel magnitude 9.72 / 9.64 m/s² at rest), the data stream holds
+> ~100 Hz over 2 s, and an unassigned command code answers
+> `ProtocolError(NACK: InvalidCmd)`. That last one is the whole reason the
+> leader had to be reflashed at all: it proves the V2.3 error semantics reached
+> the shared protocol layer on this role too. Key handling carries an upstream
+> change (`823e351`, timing constants), validated separately.
+>
+> The earlier leader 1.2.2 measurements still stand, since 1.2.3 contains that
+> code — leader 1.2.2, upgraded from 1.2.0: IMU and encoder both stream at ~99 Hz
 > under a concurrent 100 Hz command load, with zero retries and zero ACK
 > timeouts. The comparison against 1.2.0 on the same bench is the point —
 >

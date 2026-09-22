@@ -2,6 +2,8 @@
 
 #include <taccap/force_position_controller.hpp>
 
+#include <cstring>
+
 #include <taccap/log.hpp>
 #include <taccap/protocol/payloads.hpp>
 
@@ -15,13 +17,33 @@ namespace xense::taccap {
 namespace {
 
 constexpr float kEpsilon = 1e-5f;
+// Ceiling on the closing/opening velocity-damping gain.
+constexpr float kMaxDampingGain = 5.0f;
+// "Holding" is the RAMP having run as far ahead of the jaw as the budget lets
+// it while the jaw is not following.
+//
+// Not "the command reached its budget", which is what this used to test and
+// which is true the instant a target changes: the setpoint jumps, the command
+// saturates, and the jaw has not moved yet because it has not had time to. The
+// force-position example caught exactly that -- every blocked step "settled"
+// into a grasp in 0.01 s with 0.016 Nm of measured torque, i.e. gripping
+// nothing at all, and the verification passed while never moving the jaw.
+//
+// The lead is self-timing and needs no confirmation window: it starts at zero
+// because the ramp is seeded on the jaw, and only fills up if the jaw refuses to
+// follow. Free travel sits near friction/kp -- 0.005 rad against a 0.055 rad
+// limit at the defaults -- so the separation is an order of magnitude.
+constexpr float kHoldingLeadRatio = 0.5f;
+constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
+// The closed endpoint for preload purposes. Normalized, so it scales with the
+// calibrated stroke: 1e-3 of a 1.215 rad travel is 1.2 mrad. It exists only to
+// absorb float sloppiness in a caller that means 0.0 -- the preload is for the
+// endpoint, not for "somewhere near the closed side", because pressing while
+// holding a mid-stroke target would drag the jaw off that target.
+constexpr float kClosedEndpointEps = 1e-3f;
 
 void validate_config(const ForcePositionConfig& cfg) {
     auto finite = [](float v) { return std::isfinite(v); };
-    if (!finite(cfg.close_position) || cfg.close_position < 0.0f ||
-        cfg.close_position > 1.0f) {
-        throw std::invalid_argument("ForcePositionConfig.close_position must be in [0,1]");
-    }
     if (!finite(cfg.close_speed_radps) || cfg.close_speed_radps <= 0.0f) {
         throw std::invalid_argument("ForcePositionConfig.close_speed_radps must be > 0");
     }
@@ -46,49 +68,44 @@ void validate_config(const ForcePositionConfig& cfg) {
         throw std::invalid_argument(
             "ForcePositionConfig.grasp_torque_nm must not exceed hold_torque_limit_nm");
     }
-    if (!finite(cfg.contact_torque_nm) || cfg.contact_torque_nm <= 0.0f) {
+    if (!finite(cfg.close_preload_nm) || cfg.close_preload_nm < 0.0f) {
         throw std::invalid_argument(
-            "ForcePositionConfig.contact_torque_nm must be > 0");
+            "ForcePositionConfig.close_preload_nm must be >= 0");
     }
-    // A floor above the torque the closing command can produce is unreachable:
-    // the jaw would push at grasp_torque_nm forever and never latch, which is
-    // the stall this controller exists to prevent. Feedback torque runs well
-    // under the command at stall, so the real headroom is smaller than this
-    // check implies -- see the start() warning.
-    if (cfg.contact_torque_nm > cfg.grasp_torque_nm) {
+    // Bounded by the GRASP BUDGET, not by hold_torque_limit_nm: the preload is
+    // reserved out of that budget in position_hold_, so a preload above it would
+    // leave the position term nothing to work with and stall the approach.
+    if (cfg.close_preload_nm > cfg.grasp_torque_nm) {
         throw std::invalid_argument(
-            "ForcePositionConfig.contact_torque_nm must not exceed "
-            "grasp_torque_nm -- the closing command cannot reach it");
+            "ForcePositionConfig.close_preload_nm must not exceed grasp_torque_nm");
     }
-    if (!finite(cfg.contact_vel_radps) || cfg.contact_vel_radps <= 0.0f) {
-        throw std::invalid_argument(
-            "ForcePositionConfig.contact_vel_radps must be > 0");
-    }
-    if (!finite(cfg.contact_vel_ratio) || cfg.contact_vel_ratio <= 0.0f ||
-        cfg.contact_vel_ratio > 1.0f) {
-        throw std::invalid_argument(
-            "ForcePositionConfig.contact_vel_ratio must be in (0, 1]");
-    }
-    if (!finite(cfg.contact_moved_rad) || cfg.contact_moved_rad < 0.0f) {
-        throw std::invalid_argument(
-            "ForcePositionConfig.contact_moved_rad must be >= 0");
-    }
-    if (!finite(cfg.position_kp) || cfg.position_kp <= 0.0f ||
-        !finite(cfg.position_kd) || cfg.position_kd < 0.0f) {
-        throw std::invalid_argument(
-            "ForcePositionConfig position gains require kp > 0 and kd >= 0");
-    }
-    if (!finite(cfg.brake_distance_rad) || cfg.brake_distance_rad < 0.0f) {
-        throw std::invalid_argument("ForcePositionConfig.brake_distance_rad must be >= 0");
-    }
-    if (!finite(cfg.close_endpoint_tolerance_rad) || cfg.close_endpoint_tolerance_rad < 0.0f) {
-        throw std::invalid_argument("ForcePositionConfig.close_endpoint_tolerance_rad must be >= 0");
-    }
-    if (cfg.contact_samples == 0 || cfg.status_timeout_ms == 0 ||
+    // No coupling rule between close_speed_radps and grasp_torque_nm any more.
+    // It existed because the travel damping gain WAS grasp/speed; the ramp now
+    // regulates speed and the budget split sets the gains, so a slow close is
+    // just a slow close.
+    if (cfg.status_timeout_ms == 0 ||
         cfg.motor_stream_hz == 0 || cfg.motor_stream_hz > 100) {
         throw std::invalid_argument(
-            "ForcePositionConfig requires contact_samples/status_timeout_ms > 0 "
-            "and motor_stream_hz in [1,100]");
+            "ForcePositionConfig requires status_timeout_ms > 0 and "
+            "motor_stream_hz in [1,100]");
+    }
+}
+
+void validate_tuning(const detail::ForcePositionTuning& t,
+                     const ForcePositionConfig& cfg) {
+    auto finite = [](float v) { return std::isfinite(v); };
+    (void)cfg;
+    if (!finite(t.position_kp) || t.position_kp <= 0.0f ||
+        !finite(t.position_kd) || t.position_kd < 0.0f) {
+        throw std::invalid_argument(
+            "ForcePositionTuning position gains require kp > 0 and kd >= 0");
+    }
+    if (!finite(t.travel_kd) || t.travel_kd < 0.0f) {
+        throw std::invalid_argument("ForcePositionTuning.travel_kd must be >= 0");
+    }
+    if (!finite(t.arrival_eps_rad) || t.arrival_eps_rad < 0.0f) {
+        throw std::invalid_argument(
+            "ForcePositionTuning.arrival_eps_rad must be >= 0");
     }
 }
 
@@ -107,9 +124,10 @@ void validate_target(const ForcePositionConfig& cfg,
 
 // MotorStatusBit::Stalled (0x0004) is deliberately NOT in this mask. Holding
 // an object is a stall by the motor's own definition, so treating it as a fault
-// would abort every successful grasp the instant it succeeds. Contact detection
-// (contact_candidate_) is what interprets an arrested jaw here; this mask is
-// only for conditions that make further motion unsafe. Do not "complete" it.
+// would abort every successful grasp the instant it succeeds -- an arrested jaw
+// at the torque budget is the SUCCESS condition, reported as holding(). This
+// mask is only for conditions that make further motion unsafe. Do not
+// "complete" it.
 bool has_serious_fault(uint16_t status) noexcept {
     constexpr uint16_t mask =
         protocol::MotorStatusBit::Fault |
@@ -143,127 +161,87 @@ namespace detail {
 
 ForcePositionPolicy::ForcePositionPolicy(GripperPosition map,
                                          ForcePositionConfig cfg)
-    : map_(std::move(map)), cfg_(cfg) {
+    : ForcePositionPolicy(std::move(map), cfg, ForcePositionTuning{}) {}
+
+ForcePositionPolicy::ForcePositionPolicy(GripperPosition map,
+                                         ForcePositionConfig cfg,
+                                         ForcePositionTuning tune)
+    : map_(std::move(map)), cfg_(cfg), tune_(tune) {
     if (!map_.valid()) {
         throw std::invalid_argument("ForcePositionPolicy requires a valid position map");
     }
     validate_config(cfg_);
+    validate_tuning(tune_, cfg_);
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
 }
 
 void ForcePositionPolicy::reset(const MotorStatusSample& sample,
                                 std::chrono::steady_clock::time_point now) {
+    if (state_ == ForcePositionState::Fault) {
+        logger()->info("ForcePositionController: leaving Fault ({}), resuming at {:.4f}",
+                       fault_reason_, map_.to_position(sample.actual_pos));
+    }
     state_ = ForcePositionState::HoldingPosition;
     state_started_ = now;
     target_position_ = map_.to_position(sample.actual_pos);
     hold_raw_ = sample.actual_pos;
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     commanded_torque_nm_ = 0.0f;
-    contact_count_ = 0;
-    begin_motion_(sample);
+    holding_ = false;
+    arrived_ = true;
+    ramp_valid_ = false;
     fault_reason_.clear();
 }
 
 void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
-    state_ = ForcePositionState::Opening;
     state_started_ = now;
     target_position_ = 1.0f;
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
-    commanded_torque_nm_ = 0.0f;
-    contact_count_ = 0;
 }
 
-void ForcePositionPolicy::begin_motion_(const MotorStatusSample& sample) {
-    motion_start_raw_ = sample.actual_pos;
-    peak_abs_vel_ = std::abs(sample.actual_vel);
-}
-
-void ForcePositionPolicy::track_motion_(const MotorStatusSample& sample) noexcept {
-    peak_abs_vel_ = std::max(peak_abs_vel_, std::abs(sample.actual_vel));
-}
-
+// Commands only move the setpoint. There is no motion state to disturb and no
+// confirmation window to restart, which is what made the old version fragile
+// for a caller that streams its target: it reset the startup guard and the
+// travel history on every update, so contact could never confirm at 100 Hz.
 void ForcePositionPolicy::set_target(
         const MotorStatusSample& sample,
         float target_position,
         float grasp_torque_nm,
         std::chrono::steady_clock::time_point now) {
+    (void)sample;
     validate_target(cfg_, target_position, grasp_torque_nm);
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
-
-    constexpr float kTargetTolerance = 1e-4f;
-    const float current_position = map_.to_position(sample.actual_pos);
+    if (std::abs(target_position - target_position_) > 1e-4f) {
+        state_started_ = now;
+    }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
-    state_started_ = now;
-    commanded_torque_nm_ = 0.0f;
-    contact_count_ = 0;
-    begin_motion_(sample);
-
-    if (current_position > target_position + kTargetTolerance) {
-        state_ = ForcePositionState::Closing;
-    } else if (current_position < target_position - kTargetTolerance) {
-        state_ = ForcePositionState::Opening;
-    } else {
-        hold_raw_ = sample.actual_pos;
-        if (target_position <= cfg_.close_position + kTargetTolerance) {
-            state_ = ForcePositionState::HoldingForce;
-        } else {
-            state_ = ForcePositionState::HoldingPosition;
-            hold_raw_ = map_.to_rad(target_position);
-        }
-    }
 }
 
 void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
-    state_ = ForcePositionState::HoldingPosition;
     target_position_ = map_.to_position(sample.actual_pos);
     hold_raw_ = sample.actual_pos;
-    commanded_torque_nm_ = 0.0f;
-    contact_count_ = 0;
-    begin_motion_(sample);
+    ramp_valid_ = false;
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
+    // EDGE-TRIGGERED, and it has to be: step() re-calls fail() on every frame
+    // while the condition persists, so logging unconditionally would put 100
+    // lines a second in the session file.
+    if (state_ != ForcePositionState::Fault) {
+        logger()->error("ForcePositionController: entering Fault -- {}", reason);
+    }
     state_ = ForcePositionState::Fault;
     commanded_torque_nm_ = 0.0f;
-    contact_count_ = 0;
+    holding_ = false;
+    ramp_valid_ = false;
     fault_reason_ = std::move(reason);
 }
 
 float ForcePositionPolicy::direction_open_() const noexcept {
     return map_.reverse() ? -1.0f : 1.0f;
-}
-
-float ForcePositionPolicy::contact_threshold_() const noexcept {
-    // A flat floor. Deliberately NOT derived from the commanded torque -- see
-    // the header: the feedback never reaches the command at stall, so any
-    // cap-derived threshold is unreachable under a kd-only MIT frame.
-    return cfg_.contact_torque_nm;
-}
-
-bool ForcePositionPolicy::contact_candidate_(const MotorStatusSample& sample,
-                                             float motion_sign) const noexcept {
-    // Torque saturation is necessary but NEVER sufficient -- see the header.
-    // The jaw's own restoring torque climbs smoothly through an empty close, so
-    // torque alone would latch part way down with nothing in the jaws.
-    if (std::abs(sample.actual_torque) < contact_threshold_()) return false;
-
-    // Firmware rule "torque": arrested outright, no travel history needed, so a
-    // jaw that starts already against the object still latches. Measured
-    // margin on 1.1.5 hardware: free travel never drops under 0.183 rad/s.
-    if (std::abs(sample.actual_vel) <= cfg_.contact_vel_radps) return true;
-
-    // Firmware rule "velocity": once the jaw has demonstrably moved, motion
-    // collapsing to a fraction of the commanded speed is enough. has_moved is
-    // what keeps a slow-but-free close from qualifying.
-    const float target_speed = cfg_.close_speed_radps;
-    const bool has_moved =
-        peak_abs_vel_ >= target_speed * 0.35f &&
-        std::abs(sample.actual_pos - motion_start_raw_) >= cfg_.contact_moved_rad;
-    if (!has_moved) return false;
-    return sample.actual_vel * motion_sign <= target_speed * cfg_.contact_vel_ratio;
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::zero_(
@@ -272,37 +250,180 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::zero_(
     return {sample.actual_pos, 0.0f, 0.0f, 0.0f, 0.0f};
 }
 
-protocol::MotorImpedanceCtrl ForcePositionPolicy::force_hold_() {
-    const float hold_torque = std::min(grasp_torque_nm_, cfg_.hold_torque_limit_nm);
-    const float signed_torque = -direction_open_() * hold_torque;
-    commanded_torque_nm_ = std::abs(signed_torque);
-    // kp=kd=0 is the essential safety property: position error cannot add to
-    // the requested holding torque after contact.
-    return {hold_raw_, 0.0f, 0.0f, signed_torque, 0.0f};
+// Signed feed-forward preload for the hold, nonzero only when the commanded
+// target IS the closed endpoint. The sign comes from the position map rather
+// than a constant: to_rad() multiplies by dir_, so a rising normalized position
+// means a FALLING raw angle on a reversed unit. Closing is therefore -dir_,
+// i.e. +1 when reversed and -1 when not. Hard-coding +1 would have pushed a
+// non-reversed gripper open instead of closed.
+float ForcePositionPolicy::close_preload_signed_() const {
+    if (cfg_.close_preload_nm <= 0.0f) return 0.0f;
+    if (target_position_ > kClosedEndpointEps) return 0.0f;
+    const float close_dir = map_.reverse() ? 1.0f : -1.0f;
+    return close_dir * cfg_.close_preload_nm;
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::position_hold_(
         const MotorStatusSample& sample, float desired_raw,
-        float torque_budget) {
-    // Bound the instantaneous PD request before it reaches the motor; motor
-    // 0x700B remains the independent hardware backstop. Force holding uses the
-    // separate, lower hold limit.
+        float torque_budget, float preload_nm) {
     const float budget = std::clamp(torque_budget, kEpsilon,
                                     cfg_.motion_torque_limit_nm);
     const float speed = std::abs(sample.actual_vel);
-    float kd = cfg_.position_kd;
+    float kd = tune_.position_kd;
     if (speed > kEpsilon) {
         kd = std::min(kd, budget / speed);
     }
     const float damping = -kd * sample.actual_vel;
-    const float position_budget = std::max(0.0f, budget - std::abs(damping));
-    const float error_limit = position_budget / cfg_.position_kp;
+    // The preload is RESERVED OUT of the budget before the position term gets
+    // its share, which keeps the invariant this function has always held: the
+    // total request never exceeds the budget. Reserving it (rather than adding
+    // it on top) is why close_preload_nm is validated against grasp_torque_nm.
+    const float preload = std::clamp(std::abs(preload_nm), 0.0f, budget);
+    const float position_budget =
+        std::max(0.0f, budget - std::abs(damping) - preload);
+    const float error_limit = position_budget / tune_.position_kp;
     const float error = std::clamp(desired_raw - sample.actual_pos,
                                    -error_limit, error_limit);
     const float target = sample.actual_pos + error;
-    const float predicted = cfg_.position_kp * error + damping;
+    const float tau_ff = (preload_nm < 0.0f) ? -preload : preload;
+    const float predicted = tune_.position_kp * error + damping + tau_ff;
     commanded_torque_nm_ = std::min(budget, std::abs(predicted));
-    return {target, cfg_.position_kp, kd, 0.0f, 0.0f};
+    return {target, tune_.position_kp, kd, tau_ff, 0.0f};
+}
+
+/* Move toward target_raw along a TIME-BASED ramp.
+ *
+ * The ramp is what regulates speed. Commanding "current position plus the error
+ * limit" instead would leave the position error permanently saturated, which is
+ * a constant-torque push, not a tracked velocity: the jaw then accelerates until
+ * damping balances the push, which at the measured friction works out to roughly
+ * twice the requested speed. So the setpoint advances at desired_vel per unit
+ * time and is anti-windup clamped to stay within the error limit of the jaw --
+ * far enough ahead to pull, never so far that a blocked jaw banks up an error
+ * it would have to pay back on release.
+ *
+ * THE BUDGET BACKS THE POSITION TERM ALONE, and that is sound because the
+ * velocity feed-forward follows the ramp rather than the requested speed. A
+ * blocked jaw pins the ramp against its clamp, the ramp stops, the feed-forward
+ * goes to zero, and the damping term asks for nothing -- so at stall the output
+ * is exactly kp*error_limit == budget. No more, which bounds the force on the
+ * object; no less, which is what makes a grasp hold. kd is then free to be
+ * whatever the plant is stable with, instead of being rationed against the grip.
+  */
+protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
+        const MotorStatusSample& sample, float target_raw, float desired_vel,
+        float torque_budget, std::chrono::steady_clock::time_point now) {
+    const float budget = std::clamp(torque_budget, kEpsilon,
+                                    cfg_.motion_torque_limit_nm);
+    const float kd = std::min(tune_.travel_kd, kMaxDampingGain);
+
+    float dt = 0.0f;
+    if (ramp_valid_) {
+        dt = std::chrono::duration<float>(now - last_step_).count();
+        // Floor at 1 ms, not at an epsilon: dt divides into the ramp velocity,
+        // so a microsecond dt turns a rounding-sized ramp move into a huge
+        // feed-forward. The stream is 100 Hz, so anything under 1 ms is a
+        // caller stepping the policy twice on one timestamp, not real time.
+        if (!std::isfinite(dt) || dt < 0.001f) { dt = 0.001f; }
+        dt = std::min(dt, 0.05f);   // a stalled loop must not jump the ramp
+    } else {
+        // SEEDING FRAME: the ramp starts where the jaw is and no time has passed,
+        // so it cannot have moved and there is nothing to bound. Command nothing
+        // and let the next frame, which has a real dt, do the work.
+        //
+        // It has to be an early return, not just a zero dt. With dt == 0 the
+        // ramp velocity is 0 by construction while the jaw may already be moving
+        // at the commanded speed, so the damping term invents a kd*|vel| of
+        // opposing torque -- 1.25 Nm against a 0.6 Nm budget at these gains.
+        // The budget interval then does the only thing it can and drags the ramp
+        // backwards to pay for it, which is exactly wrong: the jaw moving at the
+        // speed we asked for is the goal, not something to brake.
+        ramp_raw_ = sample.actual_pos;
+        ramp_valid_ = true;
+        last_step_ = now;
+        commanded_torque_nm_ = 0.0f;
+        return {ramp_raw_, tune_.position_kp, 0.0f, 0.0f, 0.0f};
+    }
+    last_step_ = now;
+
+    // RE-SEAT A STALE RAMP BEFORE USING IT. The setpoint may legitimately lead
+    // the jaw by the budget's error window and no further, so anything beyond
+    // that is history: a reversed target, a pause, a jump. Left alone, the
+    // budget interval below would haul the ramp back across that gap in a single
+    // step and the feed-forward derived from it would spike -- measured at
+    // -3.5 rad/s against a 0.5 rad/s command. Re-seat first, and carry the
+    // re-seated value into ramp_prev so the correction itself reads as no motion.
+    {
+        const float max_lead = budget / tune_.position_kp;
+        ramp_raw_ = std::clamp(ramp_raw_, sample.actual_pos - max_lead,
+                               sample.actual_pos + max_lead);
+    }
+    const float ramp_prev = ramp_raw_;
+    ramp_raw_ += desired_vel * dt;
+    if (desired_vel > 0.0f) { ramp_raw_ = std::min(ramp_raw_, target_raw); }
+    else                    { ramp_raw_ = std::max(ramp_raw_, target_raw); }
+    // Speed limit applied to the ramp POSITION, and applied here -- before the
+    // budget clamp, never after deriving the velocity from it. Capping the
+    // velocity afterwards would edit one side of the equation the budget
+    // interval below was solved for, and the bound would quietly stop holding.
+    {
+        const float step = std::abs(desired_vel) * dt;
+        ramp_raw_ = std::clamp(ramp_raw_, ramp_prev - step, ramp_prev + step);
+    }
+
+    // BOUND THE RAMP BY THE BUDGET ITSELF, not by a position-error window.
+    //
+    // A window on the position error alone is not enough, and the way it fails
+    // is easy to miss: while the ramp is still walking away from a jaw that has
+    // ALREADY stopped, the damping term is asking for kd*(ramp_vel - 0) on top
+    // of kp*error, and both point the same way. The two summed to 1.1 Nm
+    // against a 0.6 Nm budget for the ~60 ms the window took to fill -- an 83%
+    // overshoot on exactly the controller whose job is to bound force.
+    //
+    // So bound the thing that is actually promised. With
+    //     total = kp*(ramp - pos) + kd*((ramp - prev)/dt - vel)
+    // total is affine in ramp, so |total| <= budget is a closed-form interval:
+    //     total = a*ramp - b,   a = kp + kd/dt,
+    //                           b = kp*pos + kd*prev/dt + kd*vel
+    // and the admissible ramp is [(b - budget)/a, (b + budget)/a]. Clamping to
+    // that makes the command sit exactly on the budget while the ramp converges
+    // and exactly on it once the ramp is pinned -- tight at every step, not just
+    // in the steady state.
+    {
+        const float a = tune_.position_kp + kd / dt;
+        const float b = tune_.position_kp * sample.actual_pos
+                      + kd * ramp_prev / dt
+                      + kd * sample.actual_vel;
+        if (a > kEpsilon) {
+            ramp_raw_ = std::clamp(ramp_raw_, (b - budget) / a, (b + budget) / a);
+        }
+    }
+
+    // FEED FORWARD THE RAMP'S OWN VELOCITY, not the speed that was requested.
+    // They are the same while the jaw is free, and they differ exactly when it
+    // matters: a blocked jaw pins the ramp against the budget clamp, so the ramp
+    // stops, the feed-forward goes to zero, and the whole command migrates into
+    // the position term. That is what frees kd from the grasp force.
+    //
+    // Derived from the FINAL ramp and used unmodified in both the frame and the
+    // prediction. Do not post-clamp it to the requested speed: the budget
+    // interval above was solved for exactly this velocity, so altering it
+    // afterwards is altering one side of an equation the bound depends on, and
+    // the bound silently stops holding. The interval already limits how far the
+    // ramp can move in one step, which is the same protection that clamp was
+    // reaching for -- and it also subsumes the old
+    // "kd <= motion_limit/|vel_err|" guard, because the interval bounds the
+    // TOTAL, damping term included, whatever the jaw is doing.
+    const float ramp_vel = (ramp_raw_ - ramp_prev) / dt;
+
+    const float vel_err = ramp_vel - sample.actual_vel;
+    const float error = ramp_raw_ - sample.actual_pos;
+    // Report the honest prediction, bounded only by the motion limit. Clamping
+    // it to the grasp budget would hide the damping term's legitimate excursions.
+    commanded_torque_nm_ = std::min(
+        cfg_.motion_torque_limit_nm,
+        std::abs(tune_.position_kp * error + kd * vel_err));
+    return {ramp_raw_, tune_.position_kp, kd, 0.0f, ramp_vel};
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
@@ -319,101 +440,47 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     }
 
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) {
+        arrived_ = false;
+        holding_ = false;
         return zero_(sample);
     }
 
+    const float target_raw = map_.to_rad(target_position_);
+    const float to_target = target_raw - sample.actual_pos;
     const float open_position = map_.to_position(sample.actual_pos);
 
-    if (state_ == ForcePositionState::Closing) {
-        track_motion_(sample);
-        const auto guard = std::chrono::milliseconds(cfg_.startup_guard_ms);
-        const bool guard_done = now - state_started_ >= guard;
-        // motion_sign: +1 along the closing direction, matching the firmware's
-        // s_auto_close_sign.
-        const bool contact = contact_candidate_(sample, -direction_open_());
-        if (guard_done && contact) ++contact_count_;
-        else                       contact_count_ = 0;
+    hold_raw_ = sample.actual_pos;          // where the jaw actually is
+    arrived_ = std::abs(to_target) <= tune_.arrival_eps_rad;
 
-        if (contact_count_ >= cfg_.contact_samples) {
-            state_ = ForcePositionState::HoldingForce;
-            hold_raw_ = sample.actual_pos;
-            return force_hold_();
-        }
-
-        const bool endpoint_arrived =
-            target_position_ <= cfg_.close_position + 1e-4f &&
-            open_position <= cfg_.close_position + cfg_.close_endpoint_tolerance_rad &&
-            std::abs(sample.actual_vel) <= cfg_.contact_vel_radps;
-        if (endpoint_arrived || open_position <= target_position_ + 1e-4f) {
-            hold_raw_ = sample.actual_pos;
-            // A close-to-zero command is a grasp request, including an empty
-            // close that reaches the calibrated endpoint before the contact
-            // detector accumulates enough samples. Keep the configured grasp
-            // torque there instead of dropping into zero-error position hold,
-            // which otherwise lets the jaw unload and rebound.
-            if (target_position_ <= cfg_.close_position + 1e-4f) {
-                state_ = ForcePositionState::HoldingForce;
-                return force_hold_();
-            }
-            state_ = ForcePositionState::HoldingPosition;
-            hold_raw_ = map_.to_rad(target_position_);
-            return position_hold_(sample, hold_raw_, cfg_.motion_torque_limit_nm);
-        }
-
-        const float close_raw = map_.to_rad(target_position_);
-        if (std::abs(sample.actual_pos - close_raw) <= cfg_.brake_distance_rad) {
-            // Decelerating onto the target is still part of the caller's grasp,
-            // so it is bounded by the grasp torque -- NOT by the 6 Nm motion
-            // limit. Measured on hardware: with the motion limit here, a jaw
-            // blocked inside the last brake_distance_rad was a plain
-            // error-clamped PD push, i.e. exactly the stall this class exists
-            // to remove, and its low commanded torque also held the feedback
-            // under the contact floor so nothing ever latched.
-            return position_hold_(sample, close_raw, grasp_torque_nm_);
-        }
-
-        // Kp=0 prevents target-position error from generating torque. At zero
-        // actual velocity, base_kd*close_speed equals grasp_torque_nm. Kd is
-        // reduced further when the instantaneous velocity error would exceed
-        // motion_torque_limit_nm; motor 0x700B is an independent backstop.
-        const float close_velocity = -direction_open_() * cfg_.close_speed_radps;
-        const float velocity_error = close_velocity - sample.actual_vel;
-        const float base_kd = std::min(5.0f,
-            grasp_torque_nm_ / cfg_.close_speed_radps);
-        const float kd = std::min(base_kd, cfg_.motion_torque_limit_nm /
-            std::max(kEpsilon, std::abs(velocity_error)));
-        commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm,
-                                        std::abs(kd * velocity_error));
-        return {sample.actual_pos, 0.0f, kd, 0.0f, close_velocity};
+    protocol::MotorImpedanceCtrl cmd;
+    if (arrived_) {
+        ramp_valid_ = false;                // next move restarts the ramp here
+        cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
+                             close_preload_signed_());
+    } else {
+        const float dir = (to_target > 0.0f) ? 1.0f : -1.0f;
+        cmd = travel_track_(sample, target_raw, dir * cfg_.close_speed_radps,
+                            grasp_torque_nm_, now);
     }
 
-    if (state_ == ForcePositionState::HoldingForce) {
-        return force_hold_();
-    }
+    // OBSERVATIONS, not decisions. "Holding" is the clamp binding while the jaw
+    // is short of its target -- we are asking for every bit of torque we are
+    // allowed to ask for and still not getting there, which is what a grasp is.
+    // Same signal ImpedanceController reports as stall_clamped_, and for the
+    // same reason: it is reachable by construction, unlike a threshold on
+    // measured torque, which never reaches the command at stall.
+    const float max_lead = grasp_torque_nm_ / tune_.position_kp;
+    const float lead = std::abs(ramp_raw_ - sample.actual_pos);
+    holding_ = !arrived_ && ramp_valid_ && max_lead > kEpsilon &&
+               lead >= max_lead * kHoldingLeadRatio &&
+               std::abs(sample.actual_vel) <=
+                   cfg_.close_speed_radps * kHoldingVelRatio;
 
-    if (state_ == ForcePositionState::Opening) {
-        // No contact latch on the way open: an obstruction there is bounded by
-        // the same grasp_torque_nm velocity-damping cap, and stopping short
-        // would strand the jaw. Travel history is still tracked so a following
-        // Closing starts from an honest peak.
-        track_motion_(sample);
-        if (open_position >= target_position_ - 1e-4f) {
-            state_ = ForcePositionState::HoldingPosition;
-            hold_raw_ = map_.to_rad(target_position_);
-            return position_hold_(sample, hold_raw_, cfg_.motion_torque_limit_nm);
-        }
-        const float open_velocity = direction_open_() * cfg_.close_speed_radps;
-        const float velocity_error = open_velocity - sample.actual_vel;
-        const float base_kd = std::min(5.0f,
-            grasp_torque_nm_ / cfg_.close_speed_radps);
-        const float kd = std::min(base_kd, cfg_.motion_torque_limit_nm /
-            std::max(kEpsilon, std::abs(velocity_error)));
-        commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm,
-                                        std::abs(kd * velocity_error));
-        return {sample.actual_pos, 0.0f, kd, 0.0f, open_velocity};
-    }
-
-    return position_hold_(sample, hold_raw_, cfg_.motion_torque_limit_nm);
+    state_ = holding_            ? ForcePositionState::HoldingForce
+           : arrived_            ? ForcePositionState::HoldingPosition
+           : (open_position > target_position_) ? ForcePositionState::Closing
+                                                : ForcePositionState::Opening;
+    return cmd;
 }
 
 }  // namespace detail
@@ -509,16 +576,101 @@ void ForcePositionController::start() {
                         e.what());
     }
 
-    // Feedback torque runs well under the commanded value once the jaw stalls
-    // (~0.59 measured on 1.1.5 hardware), so a grasp torque only marginally
-    // above the contact floor produces feedback that never reaches it and the
-    // close never latches.
-    if (cfg_.grasp_torque_nm < cfg_.contact_torque_nm * 2.0f) {
-        logger()->warn(
-            "ForcePositionController: grasp torque {:.3f} Nm leaves little "
-            "headroom over the {:.3f} Nm contact floor; stall feedback runs "
-            "well under the commanded torque, so contact may never confirm",
-            cfg_.grasp_torque_nm, cfg_.contact_torque_nm);
+    // THE DEVICE IS THE AUTHORITY ON ITS OWN RATINGS. The MOTOR_*_TORQUE_NM
+    // constants this config defaults to are EL05 numbers compiled into the SDK;
+    // on an RS00 (5.0 rated / 14.0 peak) they are simply the wrong motor's
+    // limits, and validate_config() would have been enforcing them happily.
+    // Read the firmware's motor_spec table and check against that instead.
+    //
+    // Advisory, not fatal: a config that is too CONSERVATIVE for the installed
+    // motor is safe, just weaker than it could be, and refusing to start would
+    // strand a caller whose numbers are merely stale. Exceeding the ratings is
+    // what gets a warning. Skipped silently on firmware without 0x56.
+    try {
+        const auto spec = g_.motor().get_spec();
+        const std::string model(spec.name,
+                                ::strnlen(spec.name, sizeof(spec.name)));
+        if (spec.t_max_nm > 0.0f &&
+            cfg_.motion_torque_limit_nm > spec.t_max_nm + 1e-4f) {
+            logger()->warn(
+                "ForcePositionController: motion_torque_limit_nm {:.2f} Nm "
+                "exceeds the installed {} peak rating {:.2f} Nm",
+                cfg_.motion_torque_limit_nm, model, spec.t_max_nm);
+        }
+        if (spec.rated_torque_nm > 0.0f &&
+            cfg_.hold_torque_limit_nm > spec.rated_torque_nm + 1e-4f) {
+            logger()->warn(
+                "ForcePositionController: hold_torque_limit_nm {:.2f} Nm "
+                "exceeds the installed {} rated torque {:.2f} Nm",
+                cfg_.hold_torque_limit_nm, model, spec.rated_torque_nm);
+        }
+        if (spec.stall_cont_torque_nm > 0.0f &&
+            cfg_.grasp_torque_nm > spec.stall_cont_torque_nm + 1e-4f) {
+            logger()->warn(
+                "ForcePositionController: grasp {:.2f} Nm is above the {} "
+                "continuous stall rating {:.2f} Nm -- an indefinite hold will "
+                "heat past what this motor can sustain",
+                cfg_.grasp_torque_nm, model, spec.stall_cont_torque_nm);
+        }
+        logger()->info("ForcePositionController: motor {} rated={:.2f} peak={:.2f} "
+                       "cont_stall={:.2f} Nm",
+                       model, spec.rated_torque_nm, spec.t_max_nm,
+                       spec.stall_cont_torque_nm);
+    } catch (const std::exception& e) {
+        logger()->debug("ForcePositionController: motor spec unavailable ({}) "
+                        "-- falling back to the compiled-in EL05 ratings", e.what());
+    }
+
+    // Cross-check the grasp against the firmware's own SUSTAINED-torque budget.
+    //
+    // HoldingForce is indefinite by construction -- that is what it is for --
+    // so grasp_torque_nm is a CONTINUOUS rating request, not a transient one,
+    // and the envelope's cont_torque_nm is the device's own answer for what it
+    // can hold indefinitely. Exceeding it is not primarily a thermal problem:
+    // the motor's undervoltage protection is prompt, and a sustained draw can
+    // brown the board out and take the USB link with it, which surfaces to the
+    // host as SerialBus::write: Input/output error rather than as anything
+    // resembling a torque fault. Reported from the field at a 1.5 Nm grasp
+    // against a 1.6 Nm continuous envelope, on a gripper stood upright so the
+    // jaw's own weight added to the hold.
+    try {
+        const auto env = g_.get_envelope();
+        const bool enforced =
+            (env.flags & protocol::GripperEnvelopeFlag::Enforce) != 0;
+        if (std::isfinite(env.cont_torque_nm) && env.cont_torque_nm > 0.0f) {
+            if (cfg_.grasp_torque_nm > env.cont_torque_nm) {
+                logger()->warn(
+                    "ForcePositionController: grasp torque {:.3f} Nm exceeds the "
+                    "device's continuous envelope {:.3f} Nm, and a force hold is "
+                    "indefinite. {}",
+                    cfg_.grasp_torque_nm, env.cont_torque_nm,
+                    enforced ? "The firmware will derate it, so the actual grip "
+                               "will not be what was asked for."
+                             : "The envelope is NOT enforced, so nothing below "
+                               "this host limits the sustained draw.");
+            } else if (cfg_.grasp_torque_nm > env.cont_torque_nm * 0.9f &&
+                       cfg_.grasp_torque_nm > ForcePositionConfig{}.grasp_torque_nm) {
+                // Only when the caller asked for MORE than the default. The
+                // default IS the continuous rating, so testing the 90% band
+                // alone would fire on every default-configured session and
+                // teach people to tune warnings out.
+                logger()->warn(
+                    "ForcePositionController: grasp torque {:.3f} Nm is within "
+                    "10% of the continuous envelope {:.3f} Nm. A long hold at "
+                    "this level has browned out the 24 V rail and dropped the "
+                    "USB link; leave headroom if the grasp is load-bearing",
+                    cfg_.grasp_torque_nm, env.cont_torque_nm);
+            }
+        }
+        if (!enforced) {
+            logger()->warn(
+                "ForcePositionController: the motion envelope is not enforced, "
+                "so the firmware's I2t derate and temperature wall are inactive "
+                "and an indefinite force hold has no protection below this host");
+        }
+    } catch (const std::exception& e) {
+        logger()->debug("ForcePositionController: envelope unavailable ({})",
+                        e.what());
     }
 
     const MotorStatusSample initial = g_.motor().read_status();
@@ -559,11 +711,10 @@ void ForcePositionController::start() {
     thread_ = std::thread([this] { run_(); });
     cv_.notify_one();
     logger()->info(
-        "ForcePositionController started: close={:.3f} speed={:.3f}rad/s "
-        "grasp={:.3f}Nm hold_limit={:.3f}Nm motion_limit={:.3f}Nm "
-        "device_limit={:.3f}Nm",
-        cfg_.close_position, cfg_.close_speed_radps, cfg_.grasp_torque_nm,
-        cfg_.hold_torque_limit_nm, cfg_.motion_torque_limit_nm, device_limit_nm_);
+        "ForcePositionController started: speed={:.3f}rad/s grasp={:.3f}Nm "
+        "hold_limit={:.3f}Nm motion_limit={:.3f}Nm device_limit={:.3f}Nm",
+        cfg_.close_speed_radps, cfg_.grasp_torque_nm, cfg_.hold_torque_limit_nm,
+        cfg_.motion_torque_limit_nm, device_limit_nm_);
 }
 
 void ForcePositionController::stop() {
@@ -587,6 +738,14 @@ void ForcePositionController::stop() {
     if (have) {
         try { g_.motor().submit_impedance(last.actual_pos, 0.0f, 0.0f, 0.0f); }
         catch (...) {}
+    }
+    // Leave the motor DISABLED, not merely commanded to zero -- a zero-stiffness
+    // frame de-energizes nothing, and the firmware's host watchdog then fires
+    // T1 within 300 ms and switches the run mode out from under the next
+    // session. Full rationale and the measurement in ControlLoop::stop().
+    try { g_.motor().disable(); }
+    catch (const std::exception& e) {
+        logger()->warn("ForcePositionController: motor disable on stop failed: {}", e.what());
     }
     if (sub_active_) {
         g_.motor().off(sub_);
@@ -624,14 +783,31 @@ void ForcePositionController::set_target(float position) {
     set_target(position, cfg_.grasp_torque_nm);
 }
 
+// Caller commands are QUEUED, not applied here.
+//
+// Applying them on the caller's thread also submitted on the caller's thread,
+// at whatever moment that thread happened to call in. The MCU drops bytes out
+// of the middle of a status frame it is transmitting if host->MCU traffic
+// overlaps it, so an off-phase write costs a telemetry frame. Every submit now
+// happens in run_() on the status-frame doorbell, inside the ~9.8 ms the MCU
+// is known to be idle -- the same phase discipline ControlLoop's StreamLocked
+// uses. The cost is that a command takes effect on the next status frame
+// instead of instantly: at motor_stream_hz = 100 that is under 10 ms.
+//
+// Validation stays eager. Deferring it would turn a caller's out-of-range
+// argument into a silent no-op on a background thread instead of the
+// std::invalid_argument it has always been.
 void ForcePositionController::set_target(float position, float grasp_torque_nm) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::set_target called before start");
     }
-    policy_->set_target(latest_, position, grasp_torque_nm,
-                        std::chrono::steady_clock::now());
-    request_step_();
+    validate_target(cfg_, position, grasp_torque_nm);
+    pending_ = PendingCommand::SetTarget;
+    pending_position_ = position;
+    pending_grasp_torque_nm_ = grasp_torque_nm;
+    command_woke_ = true;
+    cv_.notify_one();
 }
 
 void ForcePositionController::release() {
@@ -639,8 +815,9 @@ void ForcePositionController::release() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::release called before start");
     }
-    policy_->release(std::chrono::steady_clock::now());
-    request_step_();
+    pending_ = PendingCommand::Release;
+    command_woke_ = true;
+    cv_.notify_one();
 }
 
 void ForcePositionController::hold_position() {
@@ -648,8 +825,9 @@ void ForcePositionController::hold_position() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::hold_position called before start");
     }
-    policy_->hold_position(latest_);
-    request_step_();
+    pending_ = PendingCommand::HoldPosition;
+    command_woke_ = true;
+    cv_.notify_one();
 }
 
 void ForcePositionController::reset() {
@@ -688,7 +866,8 @@ ForcePositionSnapshot ForcePositionController::snapshot() const {
         out.commanded_torque_nm = policy_->commanded_torque_nm();
         out.hold_torque_limit_nm = cfg_.hold_torque_limit_nm;
         out.motion_torque_limit_nm = cfg_.motion_torque_limit_nm;
-        out.contact_count = policy_->contact_count();
+        out.holding = policy_->holding();
+        out.arrived = policy_->arrived();
         out.fault_reason = policy_->fault_reason();
     }
     return out;
@@ -702,9 +881,11 @@ void ForcePositionController::run_() {
         {
             std::unique_lock<std::mutex> lk(mu_);
             cv_.wait_for(lk, std::chrono::milliseconds(100), [this] {
-                return stop_requested_ || step_requested_;
+                return stop_requested_ || step_requested_ || command_woke_;
             });
             if (stop_requested_) break;
+            const bool woke_by_command = command_woke_;
+            command_woke_ = false;
             const auto now = std::chrono::steady_clock::now();
             if (!policy_ || !have_sample_) continue;
 
@@ -716,12 +897,68 @@ void ForcePositionController::run_() {
             // dead stream faults first, and step() answers with zero torque
             // whatever the caller just asked for.
             const bool stale = now - latest_time_ >= timeout;
-            if (stale && policy_->state() != ForcePositionState::Fault) {
-                policy_->fail("motor status stream stale");
-                step_requested_ = true;   // push one zero-torque command out
+            if (stale) {
+                // Invalidating the observation is INDEPENDENT of why the policy
+                // is faulted. The last sample is history the moment frames stop
+                // arriving, whatever else went wrong.
+                //
+                // This used to be gated on `state != Fault` along with the
+                // fail() below, which meant it only ran when staleness was what
+                // CAUSED the fault -- and that is never the case when the link
+                // actually drops. A dead USB link makes the next submit throw
+                // (SerialBus::write: Input/output error), which faults the
+                // policy within one status period, well inside status_timeout_ms
+                // -- so by the time the stream was judged stale the policy was
+                // already in Fault, this was skipped, and the observation stayed
+                // "valid" indefinitely. Reported from the field as a console
+                // showing a plausible position and 1.540 Nm of torque beside
+                // age=10553.7ms. The one case the flag exists for was the one
+                // case it missed.
+                observation_.valid = false;
+                if (policy_->state() != ForcePositionState::Fault) {
+                    // Only the FIRST cause is worth recording. A submit failure
+                    // or a motor fault says what went wrong; "stream stale" is
+                    // just what happens next, and overwriting with it would
+                    // throw away the diagnosis.
+                    policy_->fail("motor status stream stale");
+                    step_requested_ = true;   // push one zero-torque command out
+                }
             }
+            // A caller command on a dead stream is answered immediately with the
+            // zero-torque frame step() produces in Fault. There is no phase to
+            // respect when no status frames are arriving, and the fault may
+            // already be latched from an earlier wake -- in which case the
+            // block above does not fire and the command would be swallowed with
+            // nothing on the wire and nothing for the caller to see.
+            if (woke_by_command && stale) step_requested_ = true;
+
             if (!step_requested_) continue;
             step_requested_ = false;
+
+            // Apply whatever the caller queued, now that we are on the status
+            // doorbell and about to submit inside the MCU's idle window. A dead
+            // stream drops it: policy_ is in Fault, where every command is a
+            // no-op anyway, and holding it back would fire it late on recovery.
+            if (pending_ != PendingCommand::None) {
+                if (!stale) {
+                    switch (pending_) {
+                        case PendingCommand::SetTarget:
+                            policy_->set_target(latest_, pending_position_,
+                                                pending_grasp_torque_nm_, now);
+                            break;
+                        case PendingCommand::Release:
+                            policy_->release(now);
+                            break;
+                        case PendingCommand::HoldPosition:
+                            policy_->hold_position(latest_);
+                            break;
+                        case PendingCommand::None:
+                            break;
+                    }
+                }
+                pending_ = PendingCommand::None;
+            }
+
             command = policy_->step(latest_, now);
             send = true;
         }

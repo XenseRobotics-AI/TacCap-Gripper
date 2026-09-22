@@ -219,6 +219,101 @@ struct MotorStatus {
     uint8_t  control_mode;    // MotorMode of the last applied command
 };
 
+// ---- Motor spec (Cmd 0x56) ------------------------------------------------
+//
+// THE DEVICE IS THE AUTHORITY ON ITS OWN MOTOR. MOTOR_RATED_TORQUE_NM and
+// MOTOR_PEAK_TORQUE_NM below are EL05 numbers compiled into this SDK, and they
+// are wrong the moment the gripper ships with a different actuator: an RS00 is
+// rated 5.0 Nm and peaks at 14.0, against EL05's 1.8 / 6.0. Two copies of one
+// table, one of them in a repository that does not know which motor is plugged
+// in -- so read it from the firmware, whose motor_spec.c is the single source.
+//
+// A zero field means "the datasheet does not give it" or "not measured on this
+// model yet" (most of the thermal fields on RS00..RS06 are still zero). Treat 0
+// as UNKNOWN, never as the number zero.
+struct __attribute__((packed)) MotorSpec {
+    char     name[8];               // model, NUL-padded
+    float    p_max_rad;             // position range, symmetric +/-
+    float    v_max_rad_s;           // velocity range, symmetric +/-
+    float    t_max_nm;              // torque range == peak load
+    float    kp_max;
+    float    kd_max;
+    float    rated_torque_nm;
+    float    stall_cont_torque_nm;  // indefinite stall rating; 0 = unknown
+    uint8_t  winding_limit_c;       // 0 = unknown
+    uint8_t  board_limit_c;         // 0 = unknown
+    uint8_t  reserved[2];
+};
+constexpr std::size_t MOTOR_SPEC_SIZE = 40;
+
+// ---- Auto-calibration diagnostics (Cmd 0x57) ------------------------------
+//
+// Homing has five failure paths and, before this command existed, NONE of them
+// were visible to a host: all five only reach LOG_E on UART7, which is not
+// wired to USB on this board. A host could see the aftermath -- stop_reason ==
+// StopReason::Emergency -- and nothing about which step failed or why.
+//
+// That cost real time. Chasing a "gripper closes but never opens" fault we
+// could only infer the step by comparing stop_timestamp_ms against the 30 s
+// timeout constant. With this report the answer was one sample: state == Open
+// while the motor self-reported Reset mode and torque sat at the noise floor.
+//
+// Read it any time, including while control runs -- it is a read-only snapshot
+// and deliberately does not go through the motor-admin gate, because a running
+// control loop is exactly when you most want to look.
+enum class HomeState : std::uint8_t {
+    Idle = 0, Init, ClearFault, Close, CloseBackoff, CloseAverageHold,
+    SetZero, PostZero, Open, OpenBackoff, SaveMax, OpenFinalBackoff,
+    Done, Error,
+};
+
+enum class HomeFail : std::uint8_t {
+    None = 0,
+    Timeout,        // whole-sequence budget (30 s) ran out
+    ClearFault,     // can_motor_clear_fault failed
+    SetZero,        // can_motor_set_zero_hold failed
+    MaxOpenTooSmall,
+    SaveConfig,
+};
+
+namespace HomeDiagFlag {
+    constexpr std::uint8_t Active    = 0x01;
+    constexpr std::uint8_t Done      = 0x02;
+    constexpr std::uint8_t Attempted = 0x04;
+    constexpr std::uint8_t HasMoved  = 0x08;  // stall monitor saw real motion
+}
+
+struct __attribute__((packed)) HomeDiagReport {
+    std::uint8_t  version;            // == HOME_DIAG_REPORT_VERSION
+    std::uint8_t  state;              // HomeState
+    std::uint8_t  fail_reason;        // HomeFail
+    std::uint8_t  flags;              // HomeDiagFlag::*
+    std::int32_t  fail_ret;           // ret that accompanied the failure, else 0
+    std::uint32_t elapsed_ms;         // since homing started
+    std::uint32_t state_elapsed_ms;   // in the current phase -- a hang is obvious
+    float         vel_cmd;            // last commanded velocity, signed
+    float         torque_limit_nm;    // last commanded current limit
+    float         stall_threshold_nm; // limit * saturation ratio * margin
+    float         last_abs_torque;    // |torque| at the last stall evaluation
+    float         last_abs_vel;
+    float         peak_vel;           // max |vel| seen in this phase
+    float         progress_rad;       // distance covered in this phase
+    float         last_pos;
+    float         close_pos;          // measured closed limit
+    float         open_pos;           // measured open limit
+    float         open_sign;          // +1/-1, derived from GripperConfigFlag::Reverse
+    std::uint16_t reenable_count;     // times the motor was found in Reset while
+                                      // the MCU believed it enabled (see
+                                      // can_motor_reconcile_enable)
+    std::uint16_t report_miss_count;  // times active reporting was requested but
+                                      // never delivered, so the firmware fell
+                                      // back to polling. Non-zero means this
+                                      // motor does not honour MIT instruction 13
+                                      // (needs motor firmware >= 1.0.5.0.4).
+};
+constexpr std::size_t HOME_DIAG_REPORT_SIZE = 64;
+constexpr std::uint8_t HOME_DIAG_REPORT_VERSION = 0x01;
+
 // ---- Extended motor status + fault report (V2.2 — Cmd 0x53 / 0x52) --------
 //
 // V2.2 grew the firmware's internal motor_status_t to 72 bytes, but deliberately
@@ -268,6 +363,14 @@ enum class MotorStopReason : uint8_t {
     ClearFault   = 0x03,  // stopped by a clear-fault
     LimitStall   = 0x04,  // limit / stall protection tripped
     ControlError = 0x05,  // firmware control-loop error
+    // The slave control task found its cached target stale -- the host stopped
+    // sending. Mirrors MOTOR_STOP_REASON_HOST_TIMEOUT.
+    //
+    // Note this is NOT the actuator's own 0x7028 CAN timeout, which cannot fire
+    // on host loss: the MCU keeps re-sending the cached target at 500 Hz, so
+    // the motor goes on receiving CAN commands. 0x7028 covers MCU/RTOS death;
+    // this covers the host going away.
+    HostTimeout  = 0x06,
 };
 
 // Bit positions inside the raw 32-bit motor fault word (MotorStatusExt::
@@ -935,6 +1038,8 @@ static_assert(sizeof(MotorPosCtrl)       == 12);
 static_assert(sizeof(MotorVelCtrl)       == 12);
 static_assert(sizeof(MotorTorqueCtrl)    == 12);
 static_assert(sizeof(MotorImpedanceCtrl) == 20);  // V1.7 (+ feed-forward vel)
+static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
+static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
 static_assert(sizeof(MotorStatus)        == 31);  // V1.9 motor_status_t (was 40)
 static_assert(sizeof(MotorStatus)        == MOTOR_STATUS_LEGACY_SIZE);
 // V2.2 — 0x53 payload. Its first 31 bytes must stay layout-identical to

@@ -44,13 +44,16 @@ python python/examples/ota_update.py --get-status right
 
 `ForcePositionController` 和纯阻抗的区别在被挡住之后:
 
-    kp=0 的速度阻尼闭合  ->  接触判定  ->  kp=kd=0 的纯 tau_ff 保持
+    一条有界力矩的控制律,全程不变 —— 误差钳位饱和在 grasp_torque_nm
 
 **要可设定的夹持力就必须用它。** 阻抗模式下夹持力不是设定值:堵转保持把命令目标
 钳在判定成立那一刻夹爪所在的位置(`control_loop.cpp` `stall_clamp_ = here`),之后
 位置误差 ~ 0,`kp x 误差` ~ 0,残余力矩只是物体回弹留下的那点误差 —— 既不可设定
-也不可复现(实测同一物体两次落在 0.30 / 0.40 Nm)。力位混合进入 `HOLDING_FORCE`
-后 `kp=kd=0`,帧里只剩前馈力矩,`grasp_torque_nm` 就是那个力矩本身。
+也不可复现(实测同一物体两次落在 0.30 / 0.40 Nm)。力位混合把 PD 请求按
+`grasp_torque_nm` 钳位,被挡住时命令**恰好**停在那个值,所以夹持力就是设定值。
+
+接触不需要判定:钳位饱和就是接触。2026-09 之前这里跑的是主机侧接触状态机,
+删除原因见 `docs/CONTROL_REFACTOR.md`。
 
 ### 0. 先写运动安全包络(每台设备一次,掉电保持)
 
@@ -95,22 +98,22 @@ python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 python python/examples/gripper_console.py --mode force-position
 python python/examples/gripper_console.py --mode force-position --grasp-torque 1.2
 python python/examples/gripper_console.py --mode force-position \
-       --grasp-torque 1.2 --close-speed 0.5 --contact-torque 0.080
+       --grasp-torque 1.2 --close-speed 0.5
 
 # 非交互版本:同一个控制器,跑一遍固定 target 序列
-python python/examples/force_position_control.py --grasp-torque 1.2
+python python/examples/force_position_control.py --grasp-torque 1.4
 ```
 
 ### 2. 命令行参数
 
 | 开关 | 映射到 | 默认 | 说明 |
 |---|---|---|---|
-| `--grasp-torque` | `grasp_torque_nm` | 0.35 | **接触后的保持力矩,就是夹持力设定值。**上限 `hold_torque_limit_nm` |
+| `--grasp-torque` | `grasp_torque_nm` | 1.1 | **力矩预算,就是夹持力设定值。**自由行程用不到,被挡住时停在这个值。上限 `hold_torque_limit_nm` |
 | `--close-speed` | `close_speed_radps` | 0.5 | 闭合速度 rad/s |
-| `--contact-torque` | `contact_torque_nm` | 0.080 | 接触力矩**下限**,不是阈值。见下 |
-| `--kp` | `position_kp` | 20.0 | 位置保持刚度。只收窄误差窗口(预算/kp),不抬高输出 |
-| `--kd` | `position_kd` | 1.0 | 位置保持阻尼 |
 | `--step` | — | 0.05 | `j`/`k` 步进量,归一化 0..1 |
+
+`--kp` / `--kd` 只喂 `--mode impedance`(`ImpedanceController`)。force-position 模式的
+位置增益不再可配 —— 见下。
 
 `--grasp-torque` 的硬上限是 **1.8 Nm**(`hold_torque_limit_nm`,即电机额定力矩),
 超了 `validate_config()` 直接抛 `invalid_argument`。另外**持续保持超过 `--cont`
@@ -118,47 +121,69 @@ python python/examples/force_position_control.py --grasp-torque 1.2
 
 ### 3. `ForcePositionConfig` 完整字段(API 用户)
 
-命令行只暴露了常用的几个,直接用 API 时全部可改:
+一共 6 个,**真正需要按任务标定的只有前两个**:
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `grasp_torque_nm` | 0.35 | 接触后的纯前馈保持力矩 |
+| `grasp_torque_nm` | 1.1 | 力矩预算,**就是夹持力**;EL05 连续堵转额定,600s 实测平台 ≈75℃ |
+| `close_speed_radps` | 0.5 | 闭合速度 |
 | `hold_torque_limit_nm` | 1.8 | 无限期保持上限 = 电机**额定**力矩,硬校验 (0, 1.8] |
 | `motion_torque_limit_nm` | 6.0 | 运动瞬态上限 = 电机**峰值**力矩,硬校验 (0, 6.0] |
-| `close_position` | 0.0 | 闭合目标,归一化 |
-| `close_speed_radps` | 0.5 | 闭合速度 |
-| `brake_distance_rad` | 0.10 | 距目标多远时从速度切到钳位 PD |
-| `contact_torque_nm` | 0.080 | 接触力矩下限(固件 `TASK_CANMOTOR_STALL_TORQUE_FLOOR_NM`) |
-| `contact_vel_radps` | 0.035 | 该值以下即算"停住",与行程史无关 |
-| `contact_vel_ratio` | 0.25 | 已移动过之后,沿运动方向速度低于命令速度的这个比例也算停住 |
-| `contact_moved_rad` | 0.010 | 比例判据的解锁行程 |
-| `contact_samples` | 3 | 连续确认帧数;100 Hz 下对应固件 30 ms `stall_hold_ms` |
-| `position_kp` / `position_kd` | 20.0 / 1.0 | 位置保持增益 |
-| `startup_guard_ms` | 250 | 闭合起步阶段忽略加速力矩 |
 | `status_timeout_ms` | 350 | 状态流超时 → 零命令 + `FAULT` |
 | `motor_stream_hz` | 100 | 状态流速率 |
 
-### 4. 接触判定:三条同时成立
+前两个现在是**独立的**。2026-09 之前有一条耦合规则(闭合阻尼增益曾经就是
+`grasp_torque_nm / close_speed_radps`,所以速度太低会让增益饱和、夹持力悄悄变软),
+随着行进段改用斜坡跟随而失效 —— 慢速闭合现在就只是慢,不会变软。
 
-```
-contact = |torque| >= contact_torque_nm  且  运动停止  且  连续 contact_samples 帧
-```
+#### 不再可配的字段
 
-**做分离的是速度门,不是力矩数字。** 1.1.5 上空载闭合全行程实测(1578 采样):
-自由行程 `|vel| >= 0.183 rad/s`(五倍于 0.035 的门)而 `|torque| <= 0.142 Nm`;
-机械止点 `|vel| ~ 0.012`、`|torque| ~ 0.21`。零个自由行程采样同时通过两项。
+位置增益(`position_kp`、`position_kd`)、预算劈分比例
+(`travel_damping_fraction`)与到位半径(`arrival_eps_rad`)是在这台硬件上实测
+出来的,对这台夹爪只有一个正确答案,所以留在 C++ 侧的
+`detail::ForcePositionTuning`,只有单元测试构造得到。
 
-所以**不要把 `--contact-torque` 往上调**。它只负责排除"停住但没受力",调高了会
-变成够不着 —— kd 形式的 MIT 帧在堵转时反馈力矩只有命令的约 0.59,门放在命令值
-附近就永远判不到接触,夹爪会一直推下去,而那正是这个控制器要防的堵转。
+接触判定的那一批常数(`contact_torque_nm`、`contact_vel_radps`、
+`contact_vel_ratio`、`contact_moved_rad`、`stall_hold_ms`、`startup_guard_ms`)
+以及 `brake_distance_rad`、`arrival_band_rad` 随接触状态机一并**删除**。MCU 在
+500 Hz 上已经在跑同一套判据,主机不该有第二份。
+
+`close_position` 已删除:它从来没有被任何控制路径读过,目标位置一律由
+`set_target()` 传入。
+
+### 4. 为什么不再做接触判定
+
+饱和就是接触。被挡住时误差钳位把 PD 请求压在 `grasp_torque_nm` 上,这既是夹持力
+也是接触信号,不需要第二套判据去"发现"它。
+
+主机侧曾经有一套完整的堵转判定(力矩下限 + 运动停止 + 连续 30 ms 确认 + 到位优先
+判定),2026-09 删除,三个原因:
+
+1. **重复 MCU。** `task_canmotor_is_stalled()` 在 500 Hz 上跑同一套判据,而
+   `docs/CONTROL_LAYERING.md` §3 早就把接触判定划给固件。两份拷贝会各自漂移。
+2. **它逼着控制变软。** 为了让堵转特征干净,行进段被**刻意**写成 `kp=0` 的纯速度
+   阻尼(增益 `grasp/close_speed`,旧默认下只有 0.7 N·m/(rad/s))。实测代价:闭合
+   方向 37% 的相对速度纹波、0.59 rad/s 峰峰、12 Hz 极限环,均速只有命令值的 77%。
+   四组对照证明纹波跟增益走而不跟速度走,是环太软而非机械共振。
+3. **它最核心的判断不可测。** 区分"到位"与"被挡住"要在距目标距离上切一刀,而空爪
+   场景下这两者物理上本就连续。
+
+完整推导与实测数据见 `docs/CONTROL_REFACTOR.md`。
 
 ### 5. 状态机
 
-`IDLE` → `HOLDING_POSITION` / `CLOSING` → `HOLDING_FORCE` / `OPENING` / `FAULT`。
-夹住的判据是走到 **`HOLDING_FORCE`**。控制台底部状态行:
+**状态是观测量,不是控制状态** —— `step()` 永远下发同一条控制律,状态每帧从结果
+导出,只用于显示。`FAULT` 是唯一真正的状态(它必须锁存)。
+
+| 观测 | 含义 |
+|---|---|
+| `arrived` | `\|位置误差\| <= arrival_eps_rad` |
+| `holding` | 设定点已跑到预算允许的最前面(前导量 ≥ 一半上限)**且**爪子没跟上(速度 ≤ 命令速度的 25%) |
+
+夹住的判据是 `holding`。控制台底部状态行:
 
 ```
-state=HOLDING_FORCE   contact=3  cmd=1.200Nm  grasp=1.200Nm  limit hold=1.80/motion=6.00/dev=6.00Nm
+state=HOLDING_FORCE   hold=Y arr=N  cmd=1.100Nm  grasp=1.100Nm  limit hold=1.80/motion=6.00/dev=6.00Nm
 ```
 
 `cmd` / `grasp` 是**设定值**,实测力矩看 `Torq(Nm)` 那一列 —— 两者之差就是固件的

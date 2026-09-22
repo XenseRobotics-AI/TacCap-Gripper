@@ -110,8 +110,11 @@ def pascal(macro_tail: str) -> str:
 
 def parse_firmware_macros(path: Path, prefix: str) -> dict[str, int]:
     """Collect ``#define <prefix>NAME <int>`` from a firmware header."""
+    # The trailing [uUlL]* matters: the command/error tables are written without
+    # an integer suffix, but MOTOR_STOP_REASON_* uses `0x00U`, and `\b` after
+    # the digits never matches when a suffix letter follows.
     pattern = re.compile(
-        r"^\s*#\s*define\s+" + prefix + r"(\w+)\s+(0[xX][0-9A-Fa-f]+|\d+)\b"
+        r"^\s*#\s*define\s+" + prefix + r"(\w+)\s+(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*\b"
     )
     out: dict[str, int] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -326,6 +329,16 @@ def main() -> int:
     sdk_errs = parse_sdk_enum(commands_hpp, "ErrorCode")
     print(f"error codes: firmware {len(fw_errs):>3}   SDK {len(sdk_errs):>3}")
     errors += compare_tables("error code", fw_errs, sdk_errs)
+
+    # Stop reasons. This table was NOT covered until a firmware change added
+    # MOTOR_STOP_REASON_HOST_TIMEOUT (0x06) and the script still reported "OK":
+    # exactly the "the firmware added something and we never noticed" case this
+    # script exists to catch, just on a table nobody had wired up.
+    payloads_hpp = REPO / "cpp" / "include" / "taccap" / "protocol" / "payloads.hpp"
+    fw_stops = parse_firmware_macros(data_h, "MOTOR_STOP_REASON_")
+    sdk_stops = parse_sdk_enum(payloads_hpp, "MotorStopReason")
+    print(f"stop reasons: firmware {len(fw_stops):>2}   SDK {len(sdk_stops):>3}")
+    errors += compare_tables("stop reason", fw_stops, sdk_stops)
 
     print(f"payloads:    {len(STRUCT_MAP)} structs size-checked "
           f"({args.cc} / {args.cxx})")

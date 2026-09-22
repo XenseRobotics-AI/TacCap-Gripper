@@ -20,6 +20,22 @@
 
 namespace xense::taccap {
 
+// The EduLite05's two torque ratings. Every ceiling in this SDK is one of these
+// rather than an invented margin: RATED is what the motor may hold
+// indefinitely, PEAK what it may draw transiently. 6.0 Nm is also the
+// firmware's own default AND maximum for the persisted 0x700B startup limit
+// (storage.c STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM).
+//
+// Holding above RATED is not primarily a thermal risk: the motor's undervoltage
+// protection is prompt, and a sustained draw can brown out the 24 V rail and
+// take the USB link with it.
+// FALLBACK DEFAULTS ONLY -- EL05 numbers. They exist so the config structs have
+// something to initialise to before a device is open; they are NOT the authority.
+// Ask the device with Motor::get_spec(): an RS00 is rated 5.0 Nm and peaks at
+// 14.0, and nothing in this repository knows which actuator is plugged in.
+constexpr float MOTOR_RATED_TORQUE_NM = 1.8f;   // EL05 rated  — fallback
+constexpr float MOTOR_PEAK_TORQUE_NM  = 6.0f;   // EL05 peak   — fallback
+
 struct MotorStatusSample {
     std::chrono::steady_clock::time_point host_time;
     float    actual_pos;        // rad
@@ -34,7 +50,22 @@ struct MotorStatusSample {
     float    target_torque;     // Nm
     uint8_t  control_mode;      // protocol::MotorMode
 
-    protocol::MotorStatus raw;
+    // DIAGNOSTICS, carried by the DATA stream since the follower started
+    // emitting the 59-byte V2 status instead of the 31-byte legacy prefix.
+    //
+    // They used to be reachable only by polling Cmd::GetMotorStatusExt, and
+    // polling collides with the phase-locked control frames -- so diagnosing a
+    // fault meant stopping control, and faults happen while controlling. Zero
+    // on firmware that still streams the 31-byte prefix, because the decoder
+    // zero-fills the tail; check `stop_reason`/`monitor_version` against that
+    // rather than assuming a field is meaningful.
+    uint8_t  monitor_version;   // protocol::MOTOR_MONITOR_VERSION when present
+    uint8_t  stop_reason;       // protocol::MotorStopReason
+    uint8_t  monitor_reserved;  // MOTOR_MONITOR_DIAG_* bits
+    uint32_t fault_code;        // live motor fault word
+    uint32_t latched_fault_code;// OR of everything seen since power-on
+
+    protocol::MotorStatusExt raw;
 };
 
 class Motor {
@@ -125,6 +156,39 @@ public:
     // dropped (no-ACK). There is no protocol query for this state; detect it by
     // watching control_stats().applied_seq stop advancing (or the motor not
     // moving) and hold off until auto-cal settles after power-on.
+    // NOTHING TIMES THESE OUT ON THE DEVICE. The firmware's slave control task
+    // keeps applying the LAST submitted frame forever: there is no host-command
+    // watchdog anywhere in tc-gu-01's tasks (no last-command timestamp, no
+    // staleness check), and the hardware IWDG in task_monitor.c is commented
+    // out. So a control frame is not "valid until superseded", it is valid
+    // until the end of time.
+    //
+    // The consequence is the failure this SDK cannot fix from the host.
+    // Measured on 1.1.6: a grasp at 1.2 Nm, the USB link dropped mid-close, and
+    // the motor was still pushing 1.256 Nm two minutes later with its
+    // temperature risen 33 -> 45 C. Both host-side safe states failed with
+    // Input/output error, because the device they needed to write to was gone
+    // -- the controllers' stop() zero-torque frame and Motor::disable() alike.
+    // Recovery took a manual reconnect and disable; nothing on the host could
+    // have done it automatically.
+    //
+    // The only backstops left are thermal and slow: the motion envelope's I2t
+    // derate and temperature wall, and only if the envelope is ENFORCED.
+    //
+    // FIXED IN FIRMWARE on tc-gu-01 branch feat/actuator-can-timeout: the slave
+    // control task now watches how old its cached target is and degrades in two
+    // stages (300 ms -> zero-speed hold at 0.35 Nm, 30 s -> disable), reporting
+    // MotorStopReason::HostTimeout. Verified on hardware: 0.851 -> 0.157 Nm
+    // within 1 s with the workpiece still held.
+    //
+    // Note the actuator's own 0x7028 CAN timeout does NOT cover this case, even
+    // though it sounds like it should: this task re-sends its cached target
+    // every 2 ms, so the motor keeps receiving CAN commands and that timeout
+    // never fires. 0x7028 covers the MCU dying; the task watchdog covers the
+    // host dying. Both are needed.
+    //
+    // Until a gripper is running firmware with that fix, treat "the link can
+    // drop while loaded" as a physical hazard rather than a software state.
     void submit(const protocol::MotorImpedanceCtrl& c);  // primary (MIT hybrid)
     void submit(const protocol::MotorPosCtrl& c);
     void submit(const protocol::MotorVelCtrl& c);
@@ -223,6 +287,13 @@ public:
     // private-protocol torque tweak silently becomes the new boot default.
     void  set_startup_limit_torque(float torque_nm);
     float get_startup_limit_torque();
+
+    // The device's own motor ratings. Prefer these over the MOTOR_*_TORQUE_NM
+    // constants below, which are EL05 values compiled in as a fallback and are
+    // wrong for any other actuator (RS00: 5.0 rated / 14.0 peak). A zero field
+    // means the firmware's table does not have that number yet -- unknown, not
+    // zero. Throws on firmware older than the command (1.1.6.26).
+    protocol::MotorSpec get_spec();
 
     static MotorStatusSample decode(const std::uint8_t* payload, std::size_t len);
 

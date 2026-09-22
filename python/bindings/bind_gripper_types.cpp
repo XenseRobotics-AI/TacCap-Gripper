@@ -25,7 +25,8 @@ void bind_gripper_types(py::module_& m) {
         .value("Emergency",    protocol::MotorStopReason::Emergency)
         .value("ClearFault",   protocol::MotorStopReason::ClearFault)
         .value("LimitStall",   protocol::MotorStopReason::LimitStall)
-        .value("ControlError", protocol::MotorStopReason::ControlError);
+        .value("ControlError", protocol::MotorStopReason::ControlError)
+        .value("HostTimeout",  protocol::MotorStopReason::HostTimeout);
 
     py::class_<protocol::GripperConfig>(m, "GripperConfig")
         .def(py::init([]() {

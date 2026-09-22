@@ -60,6 +60,12 @@ public:
     Pty& operator=(const Pty&) = delete;
 
     int master() const { return master_; }
+
+    // Drop the link the way a yanked USB cable does: writes from the slave end
+    // fail with EIO. Idempotent; the destructor tolerates the double close.
+    void close_master() {
+        if (master_ >= 0) { ::close(master_); master_ = -1; }
+    }
     const std::string& slave_path() const { return slave_path_; }
 
     std::optional<tb::Frame> expect_frame(int timeout_ms = 1000) {

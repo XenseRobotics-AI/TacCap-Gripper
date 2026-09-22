@@ -15,10 +15,18 @@ Top-level surface today:
                        ``TimeoutError``
 """
 
-from ._version import __version__
 from . import _taccap_native
 
 # ---- Versioning -------------------------------------------------------------
+# Derived, never written here. The one hand-written copy is [project].version in
+# pyproject.toml; CMake reads it into PROJECT_VERSION, version.hpp.in bakes it
+# into the extension, and we take it from there.
+#
+# This was a hand-maintained _version.py until 0.2.1, and it had drifted: the
+# package said 0.2.0 while the extension, hello() and the wheel metadata all
+# said 0.2.1. A version the public API reports wrongly is worse than no version,
+# because it reads as authoritative.
+__version__ = _taccap_native.__version__
 hello = _taccap_native.hello
 
 # ---- Logging (spdlog-backed, shared with C++ core) --------------------------
@@ -80,6 +88,12 @@ GripperObservation = _taccap_native.GripperObservation  # ControlLoop latest obs
 ControlLoop = _taccap_native.ControlLoop              # fixed-rate send/recv loop
 SubmitPhase = _taccap_native.SubmitPhase              # ControlLoop send phasing
 StallAction = _taccap_native.StallAction              # ControlLoop blocked-jaw guard
+ImpedanceState = _taccap_native.ImpedanceState        # supervised impedance FSM
+ImpedanceConfig = _taccap_native.ImpedanceConfig
+ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
+ImpedanceController = _taccap_native.ImpedanceController
+MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM   # 1.8 Nm, indefinite
+MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM     # 6.0 Nm, transient
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
 ForcePositionSnapshot = _taccap_native.ForcePositionSnapshot
@@ -194,6 +208,12 @@ __all__ = [
     "ControlLoop",
     "SubmitPhase",
     "StallAction",
+    "ImpedanceState",
+    "ImpedanceConfig",
+    "ImpedanceSnapshot",
+    "ImpedanceController",
+    "MOTOR_RATED_TORQUE_NM",
+    "MOTOR_PEAK_TORQUE_NM",
     "ForcePositionState",
     "ForcePositionConfig",
     "ForcePositionSnapshot",

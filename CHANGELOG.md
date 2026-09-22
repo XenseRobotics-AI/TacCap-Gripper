@@ -7,13 +7,251 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-22
+
+Paired with firmware **1.2.5** (one version for both roles — 1.2.5 collapses the
+two `#ifdef`-guarded version definitions into a single one, so a role can no
+longer be left behind).
+
+### Added
+
+- **`ForcePositionConfig::close_preload_nm`, default 0.25 N·m.** Feed-forward
+  torque applied only while holding the *closed endpoint*, to seat the jaw
+  against its mechanical stop and take up the gear train's backlash.
+
+  The jaw used to arrive at the closed end and stop pressing, because
+  `position_hold_` commands `kp*(target − actual)` and that goes to zero exactly
+  at the target: measured holding torque at the closed position was **0.001 N·m**
+  — parked, not clamped, with the backlash unseated and visible as a gap.
+
+  A position bias cannot fix it. The firmware clamps every target to the
+  calibrated range, and that range's closed end is hard-coded `0.0f` in
+  `can_motor_get_gripper_target_range()`, so a target biased past the stop is
+  simply truncated — measured: sweeping the commanded target from 0 to +40 mrad
+  past the stop moved the jaw not at all and left the torque flat at 0.061 N·m.
+  A feed-forward term has no such clamp.
+
+  **Why 0.25.** Pure feed-forward (`kp=kd=0`) swept against the closed stop on
+  `TCGU01A28Z0018s`:
+
+  | feed-forward | resulting raw |
+  |---|---|
+  | 0.05 N·m | −0.00249 |
+  | 0.10 N·m | −0.00096 |
+  | 0.15 N·m | **+0.00000** |
+  | 0.20 / 0.30 / 0.40 / 0.50 N·m | +0.00000 (unmoved) |
+
+  raw 0 is a *hard stop*, not a compliant region: 0.15 N·m seats the jaw fully
+  and 3.3× more torque moves it not one microradian. So the useful range ends at
+  ~0.15 N·m, and 0.25 is that with 1.7× headroom for friction growth and
+  mechanical drift. **Raising it further buys heat and gear load, never a tighter
+  close** — worth stating because "more torque = tighter" is the obvious guess
+  and it is wrong here.
+
+  Bounded and thermally governed: the preload is *reserved out of*
+  `grasp_torque_nm` rather than added on top, so the invariant that the total
+  request never exceeds the budget still holds; and it passes through the
+  firmware's `can_motor_envelope_clamp_torque()`, which is applied
+  unconditionally alongside the target clamp. At 0.25 N·m it is 23% of the
+  envelope's measured `cont_torque_nm` (1.1 N·m), so the I²t accumulator stays
+  pinned at 0. Measured over a five-minute continuous hold: position did not
+  drift, torque decayed 1.2%, temperature rose **+1.0 °C** and was flat within
+  the sensor's 1 °C resolution after 90 s.
+
+  Self-compensating, which a fixed position inset is not: however far the stop
+  drifts with wear, the force presses until the jaw is seated again.
+
+  Its sign is derived from the position map, not a constant — `to_rad()`
+  multiplies by the direction, so a rising normalized position is a *falling*
+  raw angle on a reversed unit. Set it to 0 to restore the pure spring hold.
+
 ### Changed
+
+- **Paired firmware is 1.2.5.** Follower closed zero (`min_open_rad`, written by
+  auto-calibration) goes 20 mrad → 5 mrad → **0**: normalized 0.0 is now the
+  closed hard stop itself. The 20 mrad inset had been measured under the
+  pre-`5b8b3bf` kd-form control law and was never revisited when the law
+  changed; the 5 mrad step assumed a residual the control could not close, which
+  the feed-forward sweep above disproved. Leader code is untouched by this (its
+  binary differs from 1.2.3 by 2 bytes, the version byte) and is bumped only to
+  keep the roles on one number.
+
+  Closed position on `TCGU01A28Z0018s`, six cycles each, `arrived` true and
+  `HOLDING_POSITION` throughout:
+
+  | | closed raw | holding torque |
+  |---|---|---|
+  | 1.2.3 | −0.02014 | 0.001 N·m |
+  | 1.2.4 | −0.00403 | 0.001 N·m |
+  | **1.2.5 + preload** | **−0.00049** | **0.298 N·m** |
+
+  19.65 mrad tighter than 1.2.3, repeatability 0.383 mrad.
+
+## [0.2.0] - 2026-09-22
+
+Paired with firmware **1.2.3** (both roles — 1.2.3 is where the leader and
+follower version lines merge) and command set **V2.3**. Both were
+developed and hardware-validated together; the SDK's protocol mirror is checked
+against the firmware headers by `scripts/check_protocol_drift.py`.
+
+### Changed
+
+- **A failed command now answers with `cmd == 0`.** Success keeps the original
+  command code; failure comes back as a pure ACK carrying a one-byte error
+  code. Previously a failure also carried the command code with a one-byte
+  error payload, which is byte-for-byte identical to a success returning one
+  byte of data — so the failure of every no-data command was invisible and the
+  SDK had to treat it as success. Requires firmware >= 1.2.3 on whichever role
+  you are talking to; older firmware still answers the old, ambiguous way.
+
+- **The motor-status DATA stream is 59 bytes, not 31.** Firmware 1.1.6 started
+  streaming `MOTOR_STATUS_V2_SIZE` so that diagnostics arrive with the stream
+  instead of forcing a `GetMotorStatusExt` poll — polling during control
+  collides with the control frames. The `GetMotorStatus` (0x50) ACK is still
+  31 bytes, so payload length remains useless as a version probe; use
+  `GetVersion`.
+
+
+- **BREAKING: `ForcePositionController` lost its contact state machine.** It is
+  now ONE control law: the jaw is commanded toward the target with the PD
+  request error-clamped against `grasp_torque_nm`, for the whole move. Free
+  travel costs only friction (~0.1 Nm measured), an obstruction saturates the
+  clamp at exactly the grasp torque and holds there. Contact is not detected --
+  saturation is what contact IS.
+
+  Deleted with it: the velocity/torque stall test, the N-frame confirmation
+  window, the startup guard, the arrival band, the effort test that separated
+  "arrived" from "blocked", the brake phase, and the `kp=0` velocity-damped
+  travel command. `ForcePositionConfig` keeps its six fields; the tuning struct
+  loses `contact_torque_nm`, `contact_vel_radps`, `contact_vel_ratio`,
+  `contact_moved_rad`, `stall_hold_ms`, `startup_guard_ms`, `arrival_band_rad`
+  and `brake_distance_rad`, and gains `travel_damping_fraction` and
+  `arrival_eps_rad`. `contact_samples_for()` is gone.
+
+  **Why.** The MCU already runs that stall test at 500 Hz
+  (`task_canmotor_is_stalled()`), and `docs/CONTROL_LAYERING.md` section 3
+  already assigns contact detection to the firmware -- the host was keeping a
+  second copy of one physical event. Worse, the state machine forced the travel
+  command to carry `kp=0` so the stall signature stayed clean, which left a
+  0.7 Nm/(rad/s) proportional velocity loop. Measured over 10 runs at full
+  stream rate: 37% relative velocity ripple closing, a 12 Hz limit cycle, and a
+  mean speed 77% of what was asked for. And its central judgement -- arrived
+  versus blocked -- is a threshold on distance-to-target, which on empty jaws is
+  physically continuous. Full derivation in `docs/CONTROL_REFACTOR.md`.
+
+  **Measured after** (same rig, same script): ripple 19.5% closing / 18%
+  opening, mean speed 98% / 104% of commanded, arrival error 0.0013-0.0060 rad
+  against 0.0087 before, no false contact in 6 runs.
+
+- **BREAKING: `ForcePositionSnapshot.contact_count` is replaced by `holding`
+  and `arrived`.** They are observations derived per frame, not states the
+  controller switches on: `arrived` is `|position error| <= arrival_eps_rad`,
+  `holding` is the setpoint having run as far ahead of the jaw as the force
+  budget allows while the jaw moves at no more than 25% of the commanded speed.
+  That velocity share is the firmware's own `TASK_CANMOTOR_STALL_VEL_RATIO`,
+  deliberately the same number so host and MCU describe one event the same way.
+
+  It deliberately is NOT "the command reached its budget", which is true the
+  instant a target changes -- the setpoint jumps, the command saturates, and the
+  jaw has not moved because it has not had time to. `force_position_control.py`
+  caught that: every blocked step "settled" into a grasp in 0.01 s carrying
+  0.016 Nm, gripping nothing, and the verification passed without ever moving
+  the jaw. The ramp's lead is self-timing instead -- it starts at zero because
+  the ramp is seeded on the jaw, and only fills if the jaw refuses to follow. `ForcePositionState` still
+  exists and is still reported, but it is derived from these two plus the
+  direction of travel; only `Fault` latches.
+
+- **BREAKING: `ForcePositionConfig::grasp_torque_nm` default is 1.1 Nm, up from
+  0.35.** 1.1 Nm is the EL05's continuous stall rating and the grip force this
+  gripper is specified to deliver. The old 0.35 had been copied from the
+  firmware's `GRIPPER_AUTO_CAL_DEFAULT_CLOSE_TORQUE` -- the push
+  auto-calibration uses to find the mechanical stop during homing -- and was
+  never justified as a grip force. **Callers who relied on the default now grip
+  about three times harder.** Pass `grasp_torque_nm` explicitly if that matters.
+
+  Sustained holds on a real workpiece, 24 V, envelope enforced, winding
+  temperature from the status stream:
+
+  | grasp | 600 s | rate |
+  |---|---|---|
+  | 1.1 Nm | 36 -> 70 C | 8 -> 4 -> 3 -> 2 -> 1 C/min |
+  | 0.6 Nm | 41 -> 49 C | flat by the end |
+
+  At 1.1 Nm the rate decays the whole way, which is a first-order approach
+  rather than a linear climb; fitting it puts the plateau near 75 C, about 15 C
+  under the firmware's 90 C temperature wall. No fault, no undervoltage latch,
+  no link loss, no drift in the grasp. The margin is real but not generous --
+  both runs started from 36-41 C rather than cold, and a warm ambient eats into
+  it directly, so a hold measured in tens of minutes is worth confirming on the
+  unit and ambient it will run in.
+
+- **`grasp_torque_nm` is not a hard ceiling.** Measured feedback runs 5-7% above
+  the budget at a settled hold (0.643 Nm against 0.600, 1.154 against 1.100).
+  The budget shapes the command; the firmware's motion envelope is what bounds
+  the output.
+
+- **`ForcePositionConfig` no longer couples `close_speed_radps` to
+  `grasp_torque_nm`.** The rule that rejected `close_speed < grasp/5` existed
+  because the travel damping gain WAS `grasp/close_speed` and would saturate; a
+  time-based ramp regulates speed now, so a slow close is just slow, not soft.
+
+- **`ForcePositionController::start()` now cross-checks the grasp against the
+  device's continuous envelope.** `HoldingForce` is indefinite by construction,
+  so `grasp_torque_nm` is a *continuous* rating request and `cont_torque_nm` is
+  the device's own answer for what it can hold indefinitely. Exceeding it is not
+  mainly a thermal problem — the motor's undervoltage protection is prompt, and
+  a sustained draw can brown out the 24 V rail and take the USB link with it,
+  which reaches the host as `SerialBus::write: Input/output error` rather than
+  as anything resembling a torque fault. It now warns when the grasp is over the
+  continuous envelope or within 10% of it, and separately when the envelope is
+  not enforced at all (the firmware's I²t derate and temperature wall are then
+  inactive and an indefinite hold has no protection below the host). Advisory
+  only, and skipped silently on firmware that cannot answer.
+
+- **`ControlLoop::Config::rated_torque_nm` default lowered 2.0 → 1.8 Nm**, the
+  EduLite05's rated torque and the same ceiling `ForcePositionController` uses
+  for its indefinite hold. Nothing bounds how *long* the ceiling holds, so the
+  old default applied a peak-torque allowance continuously.
+
+- **`ControlLoop`'s Python constructor now takes `status_timeout_ms`**, and all
+  of its kwarg defaults are read from `ControlLoop::Config{}` instead of being
+  written out a second time in the binding. The hand-copied list had already
+  drifted: the C++ `rated_torque_nm` default moved to 1.8 Nm and Python went on
+  receiving 2.0.
+
+- **`gripper_console.py --mode impedance` now drives `ImpedanceController`**
+  and shows `state` and any fault reason on its detail line, the way the
+  force-position mode already did. `--kp` / `--kd` / `--max-position-torque` /
+  `--rated-torque` are unchanged; `--hz` is now only the UI refresh rate, since
+  both controllers lock their submits to the status stream.
+
+- **`impedance_control.py` drives `ImpedanceController`** and is now a
+  verification run too: it settles on velocity rather than a fixed 2 s sleep,
+  and checks the same invariant as the force-position script — a guard
+  (`STALLED` / `TORQUE_CAPPED`) may only be reported when the jaw is measurably
+  short of the commanded position.
+
+- **`python/examples/force_position_control.py` is now a verification run**, not
+  a print. Its target sequence carries intermediate positions
+  (`1.0,0.5,0.0,0.5,1.0`, overridable with `--targets`) because an endpoints-only
+  sweep cannot see the arrival/contact confusion above at all, and it checks the
+  invariant that separates them — **a force hold requires the jaw to be
+  measurably short of the commanded position** — exiting non-zero on any step
+  that violates it.
+
+  Both verification scripts wait for the controller to actually pick the target
+  up (`snapshot().target_position`) before judging the outcome. Without that
+  they raced the queued command, read the *previous* target's terminal state,
+  and passed every step in 0.00 s with the jaw never moving.
 
 - **BREAKING: the raw motor primitives are no longer exposed to Python.**
   Removed from the bindings: `Motor.set_impedance` / `set_position` /
-  `set_velocity` / `set_torque`, their no-ACK `submit_*` counterparts, and
-  `FollowerGripper.set_position` (a normalized wrapper that was itself just
-  `motor_.submit_impedance()`).
+  `set_velocity` / `set_torque` and `FollowerGripper.set_position` (a
+  normalized wrapper that was itself just `motor_.submit_impedance()`).
+
+  **The no-ACK `submit_*` forms are exposed again** -- see the separate entry
+  below. The incident that motivated removing everything happened on firmware
+  1.1.5, before the motion envelope existed.
 
   Every one of them writes a control frame straight to the wire with no error
   clamp, no torque ceiling and no stall guard — those live in `ControlLoop` and
@@ -37,6 +275,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   demonstrating the raw MIT primitive), `gripper_force_grasp_test.py`
   (host-side contact detection, superseded by `ForcePositionController`),
   `v4l2_probe.py` / `v4l2_sweep.py`, and `rerun_dual_with_tracker.py`.
+
+- **`Motor.get_spec()` — the device now tells you its own motor ratings**
+  (`Cmd::GetMotorSpec`, firmware `f204ff3`). Returns the model name, the
+  position/velocity/torque ranges, the kp/kd ceilings, rated and continuous-stall
+  torque, and the winding/board temperature limits.
+
+  `MOTOR_RATED_TORQUE_NM` and `MOTOR_PEAK_TORQUE_NM` are **demoted to fallback
+  defaults** — they are EL05 numbers compiled into this SDK, and this repository
+  has no way to know which actuator is plugged in. An RS00 is rated 5.0 Nm and
+  peaks at 14.0 against EL05's 1.8 / 6.0, so with the ratings hardcoded
+  `validate_config()` would cheerfully enforce the wrong motor's limits. The
+  firmware's `motor_spec.c` is now the single source and the constants only
+  initialise the config structs.
+
+  `ForcePositionController::start()` cross-checks the configured limits against
+  what the device reports and warns on anything above the installed motor's
+  ratings. Advisory, not fatal: a config that is too *conservative* is safe, just
+  weaker than it could be, and refusing to start would strand a caller whose
+  numbers are merely stale. Skipped silently on firmware without 0x56.
+
+  A zero field means the firmware's table does not have that number yet — most
+  of RS00..RS06's thermal fields are still zero. Treat 0 as unknown, not as zero.
+
+- **`MotorStatusSample` carries the follower's diagnostics now** —
+  `stop_reason`, `fault_code`, `latched_fault_code`, `monitor_reserved` and
+  `monitor_version`, exposed to Python as well. They arrive on the DATA stream
+  because the follower started emitting the 59-byte V2 status instead of the
+  31-byte legacy prefix (firmware `f5264ef`).
+
+  They were previously reachable only by polling `Cmd::GetMotorStatusExt`, and
+  polling collides with the phase-locked control frames — `docs/CONTROL_LAYERING.md`
+  section 1 says so and this refactor hit it anyway: a 0.25 s poll loop during a
+  432 s hold eventually lost the race, produced a `TimeoutError`, and the failure
+  was briefly misread as the documented 24 V brownout. Diagnosing a fault no
+  longer requires stopping control, which matters because faults happen while
+  controlling.
+
+  On firmware that still streams the 31-byte prefix the new fields decode as
+  zero — the decoder zero-fills the tail — so check `monitor_version` rather than
+  assuming a field is meaningful.
+
+- **`Motor.submit_impedance` / `submit_position` / `submit_velocity` /
+  `submit_torque` are exposed to Python again.** They are no-ACK direct
+  commands: the frame goes on the wire and returns, with none of the host-side
+  error clamp, torque ceiling or stall handling that lives in the controllers.
+
+  They were withheld after a customer console drove `submit_impedance()` at
+  kp=20 into a rigid object, walked the torque up to the motor's own 0x700B
+  ceiling, and browned out the whole board at 24 V -- the jaw dropped its
+  workpiece and the USB link disappeared. **That was firmware 1.1.5, before the
+  motion envelope.** The envelope sits on the firmware's MIT branch, the single
+  path every impedance/position/torque command must pass, so a raw command
+  cannot get around it; on the same rig and object, flipping only the envelope
+  flag turned "board reboots" into "25 s stable hold at a constant 0.549 Nm"
+  (`docs/CONTROL_LAYERING.md` section 1). Exposing the command layer is also
+  what section 3's split already prescribed: the SDK states intent, the firmware
+  enforces the envelope at 500 Hz.
+
+  Two limits survive and are documented on the bindings: there is **no
+  low-level thermal protection** (the motor's own over-temperature protection
+  did not act at 100 C case temperature; the firmware temperature wall is part
+  of the envelope), and the host watchdog still runs -- 300 ms to the T1
+  zero-speed hold, 30 s to T2 disable.
 
 - **BREAKING: the example device selector is a positional argument everywhere.**
   `impedance_control.py`, `force_position_control.py` and the new
@@ -67,6 +368,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Cmd::GetHomeDiag` (0x57) and `HomeDiagReport`** — the follower's
+  auto-calibration state machine, exposed. Homing has five failure paths and
+  before this command none of them were visible to a host: they only reach
+  `LOG_E` on UART7, which is not wired to USB on this board. All a host could
+  see was `StopReason::Emergency` after the fact, with no indication of which
+  step failed.
+
+  The report carries the current phase, how long it has sat there, the
+  commanded velocity and current limit, the stall threshold, and the torque,
+  velocity, peak velocity and travel actually observed. That turns three
+  distinct faults into three distinct readings: no travel and no torque means
+  the speed frames are not being executed; no travel with torque at the
+  threshold means the stall test is not satisfied; travel that stops short
+  means resistance exceeds the current limit.
+
+  It is a read-only snapshot and deliberately bypasses the motor-admin gate —
+  a running control loop is exactly when you most want to read it.
+
+- **`Cmd::GetMotorSpec` (0x56) reached `to_string`.** The enumerator was added
+  earlier but its `to_string` branch was missed, so it logged as an unknown
+  command.
+
+- **`python/tests/conftest.py`** — `pytest python/tests` now tests *this*
+  checkout. The `taccap` and `lerobot-xense` envs each carry an editable
+  install whose `ScikitBuildRedirectingFinder` sits on `sys.meta_path`, which
+  runs before `sys.path` and therefore beats both `PYTHONPATH` and a
+  `sys.path.insert`. The symptom was not an import error but 38 assertion
+  failures claiming `ForcePositionConfig` still had `brake_distance_rad` —
+  fields this release deletes — which reads exactly like a regression here and
+  was a different repository answering. The conftest also asserts that
+  `_taccap_native` came from this checkout, since `xense.taccap` is a namespace
+  package and `__file__` pointing here does not prove the extension did.
+
+
+- **`MotorStopReason::HostTimeout` (0x06)** — mirrors the firmware's new
+  `MOTOR_STOP_REASON_HOST_TIMEOUT`, set when the slave control task finds its
+  cached target stale because the host stopped sending.
+
+- **`scripts/check_protocol_drift.py` now covers the stop-reason table**, and
+  its macro parser accepts integer suffixes. Both gaps were found the hard way:
+  a firmware change added `MOTOR_STOP_REASON_HOST_TIMEOUT` and the script still
+  printed "OK", because that table was never wired up and because
+  `MOTOR_STOP_REASON_*` is written `0x00U` — the `\b` after the digits never
+  matches when a suffix letter follows, so every one of those macros parsed as
+  nothing. That is precisely the "the firmware added something and we never
+  noticed" case the script exists to catch. Verified by deleting the SDK
+  enumerator and confirming the check fails.
+
+- **`ImpedanceController`** — the supervised sibling of
+  `ForcePositionController`, same shape: a pure `detail::ImpedancePolicy` state
+  machine that tests drive without hardware, wrapped in a transport owner that
+  submits on the status-frame doorbell. Use it when the task is "follow a
+  position" (teleoperation, a leader-follower relay).
+
+  `ControlLoop` implements the same control law but keeps it inline in its
+  status callback, reports `stalled` and `torque_capped` as independent flags
+  read through independent locks — so a caller polling both can observe a
+  combination that never existed — and has no notion of being faulted at all: a
+  failed submit breaks its loop and `running` goes false with nothing saying
+  why. Here the guards are ordered states (`FAULT` > `TORQUE_CAPPED` >
+  `STALLED` > `TRACKING`), every field comes from one `snapshot()` under one
+  lock, and a fault carries a reason and clears through `reset()`. The stall
+  flag tracks the clamp rather than the instantaneous test, so it cannot blink
+  once and go quiet while the gripper is still clamped.
+
+  **`ControlLoop` is unchanged and is not deprecated.** It keeps
+  `SubmitPhase::FreeRunning`, runtime gain changes and the smallest possible
+  wrapper around `submit_impedance()`; `ImpedanceController` gives up the
+  free-running phase (measured to cost status frames) in exchange for
+  supervision. `ImpedanceConfig` is seven fields — the gains and the error
+  clamp are what a task tunes, `rated_torque_nm` is the motor's own rating, two
+  describe the transport — with the measured stall/ceiling constants in
+  `detail::ImpedanceTuning`, unreachable from Python. `rated_torque_nm` is
+  capped at the RATED torque rather than the peak because the hold it produces
+  is indefinite. Covered by `test_impedance_controller.cpp` (15 hardware-free
+  policy cases) and `test_impedance_pty.cpp` (7).
+
+- **`MOTOR_RATED_TORQUE_NM` / `MOTOR_PEAK_TORQUE_NM`** in
+  `components/motor.hpp`, exported to Python. The two nameplate ratings now
+  have one home; `FORCE_POSITION_MAX_{HOLD,MOTION}_TORQUE_NM` remain as aliases.
+
+- **`python/tests/test_control_config_surface.py`** — the Python-facing config
+  surface of both controllers had no tests, and the surface *is* the contract:
+  the ROS2 sibling and every customer script address the controllers through
+  these attribute names and constructor kwargs. pybind11 restates every default
+  by hand on the far side of the boundary, so a C++ default can change and
+  Python keep the old one with nothing failing — which is exactly what happened
+  to `rated_torque_nm` (see below). Hardware-free.
+
+- **`cpp/tests/test_control_loop_pty.cpp`** — `ControlLoop` previously had no
+  behavioural tests at all, despite being the layer that exists to stop a
+  measured 6 Nm runaway. Six pty-driven cases cover the error clamp, the stall
+  clamp and its release, the torque ceiling entering and releasing, and the new
+  stream-liveness safe state. The fake follower firmware moved to
+  `cpp/tests/fake_follower.hpp` so both controller suites drive the same device.
 
 - **`python/examples/read_intrinsics.py`** — read-only wrist-camera intrinsics
   export as JSON. Goes through `Calibration.resolve_fisheye()` rather than
@@ -99,6 +495,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FollowerGripper` (defaulting to RGB).
 
 ### Fixed
+
+- **Fixed in firmware: a dropped link mid-grasp left the motor pushing
+  forever.** Previously documented here as a hazard; now fixed on
+  `tc-gu-01` branch `feat/actuator-can-timeout` and verified on hardware.
+
+  Two layers, and the distinction is the whole point. The actuator's own
+  `0x7028` CAN timeout (manual §3.3.6: no CAN command within the window → the
+  motor enters Reset mode) covers **MCU/RTOS death** — it is now written and
+  independently read back as an enable prerequisite, having been a bare
+  `#define` never written since 1.1.5. It provably **cannot** cover host loss:
+  the slave control task re-sends its cached target every 2 ms, so the motor
+  goes on receiving CAN commands and the timeout never fires. Measured: 0x7028
+  written, ACKed, read back as 4000, saved — and killing the host mid-grasp
+  still left the motor at 0.854 Nm, twice.
+
+  Host loss is covered by a two-stage watchdog in the slave control task:
+  300 ms → zero-speed hold at 0.35 Nm (keeps the workpiece, kills the runaway),
+  30 s → disable. Verified on hardware with a real grasp: torque fell
+  **0.851 → 0.157 Nm within 1 s** with the object still held, then the motor
+  disabled on its own. Before the fix the same test held 0.854 Nm indefinitely
+  and heated 33 → 45 °C.
+
+- **Documented: the hazard, as it stood before the fix.**
+  Not a code change — a hazard found while bench-testing and written down where
+  the submit path is defined (`components/motor.hpp`). The firmware has no
+  host-command watchdog (no last-command timestamp or staleness check anywhere
+  in tc-gu-01's tasks, and the hardware IWDG in `task_monitor.c` is commented
+  out), so it keeps applying the last submitted frame indefinitely.
+
+  Measured on 1.1.6: a 1.2 Nm grasp, USB link dropped 4 s into the close, and
+  the motor was still pushing **1.256 Nm two minutes later** with its
+  temperature risen 33 → 45 °C. Both host-side safe states failed with
+  `Input/output error` — the controllers' zero-torque frame and
+  `Motor::disable()` alike — because the device they needed to write to was
+  gone. This is the case the safe states exist for and the one case they cannot
+  cover; only a manual reconnect and disable recovered it. The remaining
+  backstops are the envelope's I²t derate and temperature wall, which are slow
+  and only apply when the envelope is ENFORCED. Fixing it needs a
+  control-frame timeout in the firmware.
+
+- **Entering `Fault` left no trace in the session log.** `fail()` set the reason
+  and returned, so a run that died because its device disappeared was
+  indistinguishable in `~/.taccaplogs/` from one that exited cleanly — which is
+  precisely the case where the log is the only evidence left. Both controllers
+  now log the transition into `Fault` at error level with the reason, and the
+  transition out of it on `reset()`. Edge-triggered, because `step()` re-calls
+  `fail()` on every frame while the condition persists and an unconditional log
+  would write 100 lines a second.
+
+- **`stop()` verified not to hang when the device disappears mid-run**
+  (`StopReturnsAfterTheDeviceDisappears`, both controllers). Reported from the
+  field as the controller hanging; measured on the same bench, the USB tree
+  dropped and re-enumerated 15 times in 45 minutes, most of them while nothing
+  was running, so the controller kept losing its device underneath it. `stop()`
+  returns in ~25 ms with the link dead. Note that ACK-bearing calls around it
+  (`motor.disable()`, `clear_fault()`) still cost up to
+  `ack_timeout_ms * (max_retries + 1)` = 3 s each against a dead device, which
+  reads as an unresponsive console.
+
+- **`ImpedanceController`'s stall guard could not fire under its own error
+  clamp.** Inherited from `ControlLoop`, it tripped on an absolute 1.2 Nm of
+  *feedback* torque — but the command is bounded by `max_position_torque_nm`
+  and the feedback runs under the command, so that trip is unreachable.
+  Measured on 1.1.6 hardware with a genuine 5-second stall at
+  `max_position_torque_nm = 0.35`: the command saturated at 0.362 Nm, the
+  feedback peaked at **0.271 Nm** — 4.4x below the trip — and the controller
+  reported `TRACKING` for the entire time with the jaw hard against the
+  mechanism. At the 1.5 Nm default clamp the measured command-to-feedback ratio
+  (0.18–0.21 free, 0.75 stalled) still leaves it on the wrong side of 1.2 Nm.
+
+  This is the same structural error `ForcePositionController` documents at
+  length — a threshold placed near the commanded cap can never be reached — and
+  it mattered rather than being cosmetic: with the guard silent, a blocked jaw
+  sits at the full clamp torque indefinitely, and sustained torque is what
+  browns out the 24 V rail and drops the USB link.
+
+  The trip is now **the error clamp binding while the jaw is not moving**, which
+  is reachable by construction: it means the controller is asking for every bit
+  of torque it is allowed to ask for. `stall_torque_nm` becomes
+  `stall_torque_floor_nm` (0.080 Nm), a floor whose only job is to reject
+  "commanded but the motor is not actually pushing". Verified on the same
+  bench: the identical run went from 0 trips / 100% `TRACKING` to 3 trips with
+  `STALLED` reported, while normal motion at the default clamp still completes
+  with 0 trips.
+
+- **A dead status stream left `snapshot().observation.valid` true whenever the
+  fault arrived by any route other than staleness.** Reported from the field: a
+  console showing a plausible position and 1.540 Nm of torque beside
+  `age=10553.7ms` and `fault: submit failed: SerialBus::write: Input/output
+  error` — ten seconds of frozen numbers presented as a live reading.
+
+  The invalidation was gated together with the `fail()` on
+  `stale && state != Fault`, so it only ran when staleness was what *caused* the
+  fault — and that is never the case when the link actually drops. A dead USB
+  link makes the next submit throw, which faults the policy within one status
+  period, well inside `status_timeout_ms`; by the time the stream was judged
+  stale the policy was already in `Fault` and the branch was skipped. The one
+  case the flag exists for was the one case it missed. Invalidation is now
+  independent of why the policy is faulted, and the *first* fault reason is kept
+  rather than being overwritten by "stream stale" — the submit error is the
+  diagnosis, staleness is only what happened next.
+
+- **`ControlLoop` left a live-looking observation behind when the link died.**
+  Same shape: a failed submit breaks straight out of the phase loop, so
+  `guard_stale_()` never runs again and nothing else clears `obs_`. A caller
+  polling `observation()` kept reading the last frame as live, with only
+  `age_ms` rising to give it away. The loop now invalidates on exit.
+
+- **A streamed target made contact detection unreachable.** A caller relaying a
+  leader gripper at 100 Hz restarted the startup guard and the travel history on
+  every target update, so the confirmation counter was zeroed on every tick and
+  contact could never confirm. Fixed at the time by tying the guard to the
+  motion rather than to the target value; moot now that the contact state
+  machine is gone, but recorded because the failure mode -- a control decision
+  reset by a stream of commands that were not meant to disturb it -- is easy to
+  reintroduce.
+
+- **`ControlLoop::stalled()` read false while the stall clamp was engaged.**
+  Clamping the effective target drops the position error to ~0, so the torque
+  falls back under `stall_torque_nm` on the next frame — that is the clamp
+  working — and the flag was being recomputed from that instantaneous test. A
+  caller polling it saw one blink and then false for the whole time the gripper
+  was still clamped. It now tracks the clamp, which is what the header always
+  documented.
+
+- **`ControlLoop` had no safe state when the motor-status stream died.** Every
+  guard in the class reasons from that stream, so losing it froze them rather
+  than degrading them: the error clamp kept bounding against an `obs_.raw_pos`
+  that no longer moved, and — the sharp edge — a torque ceiling that was
+  *engaged* when the stream died could never release, because both of its
+  release tests are evaluated against frames that had stopped arriving. The
+  motor would sit at `rated_torque_nm` indefinitely. There is now a
+  `status_timeout_ms` (350 ms): the loop drops any latched ceiling, invalidates
+  the observation, puts one zero-torque frame on the wire, and stays off the wire
+  until frames resume.
 
 - **The 0.1.8 entry described the wrong fisheye behaviour.** It said a unit that
   cannot supply a calibration "degrades to raw frames with a warning" — the

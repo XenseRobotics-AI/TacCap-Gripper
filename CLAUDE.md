@@ -48,23 +48,28 @@ carries deep background; this file is *house rules*.
   when no gripper is connected. Guards against zero-stride numpy views (see
   `test_numpy_views.py`); `py::array_t<T> a(n)` is a trap on pybind11 2.9.
   `test_dispatch_decoupling.py` is pty-backed and needs no hardware.
-- **`pytest` is not in `xense-taccap`** (it is in `taccap` / `lerobot-xense`),
-  and *both* envs carry an editable install of `taccap_gripper` that redirects
-  `xense.taccap` to a **different checkout** through a `sys.meta_path` finder.
-  That finder beats `PYTHONPATH`, so the obvious invocation silently tests
-  someone else's code — a second, nastier variant of the `PYTHONPATH` trap
-  below. Strip the finder first:
+- `pytest` is available in all three envs (`xense-taccap`, `taccap`,
+  `lerobot-xense`) — an older note here claimed it was missing from
+  `xense-taccap`; that is wrong.
+- **The `sys.meta_path` hijack is now handled by `python/tests/conftest.py`**,
+  so a plain `pytest python/tests` tests *this* checkout. Keep that file: both
+  `taccap` and `lerobot-xense` carry an editable install of `taccap_gripper`
+  whose `ScikitBuildRedirectingFinder` beats `PYTHONPATH` *and* a
+  `sys.path.insert`, silently redirecting `xense.taccap` to a different
+  checkout. The symptom is not an import error — it is ~38 assertion failures
+  claiming `ForcePositionConfig` still has `brake_distance_rad`, which reads
+  exactly like a regression in this repo and is not.
+  Scripts outside `python/tests/` still have to strip it themselves:
   ```python
   import sys
   sys.meta_path[:] = [f for f in sys.meta_path
                       if 'taccap' not in type(f).__module__.lower()]
   sys.path.insert(0, '<repo>/python')
   ```
-  Then assert `xense.taccap.__file__` really points into this repo before
-  trusting a green run. The build copies `_taccap_native*.so` and
-  `libtaccap_core.so*` straight into `python/xense/taccap/`, so no install step
-  is needed — but importing still needs `LD_LIBRARY_PATH=<xense-taccap>/lib`
-  for OpenCV.
+  The conftest also asserts that `_taccap_native` came from this checkout —
+  `xense.taccap` is a namespace package, so `__file__` pointing here does not
+  prove the compiled extension did. Importing still needs
+  `LD_LIBRARY_PATH=<xense-taccap>/lib` for OpenCV.
 
 ## Build & install (Python wheel)
 - conda env `xense-taccap` (py3.12, primary dev env):
@@ -133,6 +138,46 @@ means firmware hasn't burned the SN yet, or firmware < V1.6. The raw V4L2
 bringup probes were removed in the example cleanup; use `v4l2-ctl --list-devices`
 directly if you need to go below the MCU.
 
+## 从爪现场排查（实测得来，别再重走）
+
+**设备路径永远用 `/dev/serial/by-id/`，不要写死 `/dev/ttyACM1`。** 每次重新枚举
+内核都可能换 minor：实测见过 `ttyACM1 → ttyACM2`，脚本里写死的路径会一直等不
+到设备，或者对着旧 fd 写出 `IoError: Input/output error`。`find_follower()`
+返回的 `mcu_device` 就是稳定的 by-id 路径。
+
+**判断"是否真的断电重插"看枚举时间戳**，不要凭记忆：
+```bash
+stat -c '%y' /dev/serial/by-id/usb-1a86_USB_Dual_Serial_*-if02
+```
+OTA 的 bank-swap 软复位会在**同一秒**重新枚举；物理重插则晚十几秒以上。这条
+拦下过好几次"以为拔过了其实没拔"的过早测量。
+
+**"power-cycle" 指断 24V，不只是拔 USB。** 24V 是独立电源；拔 USB 只重启
+MCU 和 CH343，电机一直带电。两次"OTA 后只拔 USB"的开机出现了自动标定卡死或
+读到中途值，三次断过 24V 的都正常 —— 相关性，未做对照实验证实，但代价是断一次
+电，没必要赌。**切换电机协议也必须断 24V**，MCU 重启不生效。
+
+**读状态前要等自动标定跑完（约 9–10 秒）。** 标定期间读到的是中途值：位置在
+−1.23 和 0 之间任意一点，`stop_reason` 还停在 3(CLEAR_FAULT)。判据是
+`stop_reason == 1` 且位置连续两次不变。更糟的是在标定期间发命令（尤其
+`switch_protocol`，内含 350ms `HAL_Delay` 和一次 `rb_flush`）会干扰它。
+
+**`/dev/ttyACM0`(if00) 不是固件 DEBUG 口。** 把日志开到 DEBUG +
+`output_mask=0x01` 之后 if00 十四秒零字节。日志走物理 UART7，没引到 USB，要看
+只能上硬件串口探头。另外 `LOG_BAUDRATE` 是 **921600**，DESIGN.md 写的 115200
+是过时的（DESIGN.md 整体停在 v1.1，从爪相关内容一概不可信）。
+
+**本机电机固件低于 1.0.5.0.4，缺一批能力**（手册对这些命令都标了版本门槛）：
+MIT Command 12/13/14/15（保存/主动上报/读参数/写参数）一律不应答。后果是
+**MIT 模式下读不到任何电机参数**，型号版本、`vBus`、`boardTemp` 都要切私有协议
+才能读。`0x7028`(canTimeout) 存得下、读得回、跨断电保持，但**电机不执行它** ——
+实测使能后静默 6 秒（指令5 间隔 1000ms，远超 200ms 阈值）电机始终停在 Motor
+模式。详见 `can_motor.c` 文件头的实测记录。
+
+**电机规格的单一真值源是 `App/drivers/motor_spec.c`**（EL05 数据取自 260713 版
+官方说明书）。母线 24V，实测 `0x701C VBUS = 24.21V`。改量程、力矩↔电流换算、
+温度限、堵转额定都改那里，不要再往 `can_motor.c` 里加常数。
+
 ## Commit convention
 - Conventional commits with subsystem scope:
   `feat(protocol): ...`, `fix(parser): ...`, `test: ...`, `chore: ...`,
@@ -151,9 +196,19 @@ So the only push is `git push origin main`. There is no `github` remote here —
 clones name the remotes the other way round, `origin` = internal GitLab and
 `github` = GitHub. Check `git remote -v` before trusting either convention.)
 
-The internal GitLab is **out of scope from here**: it is not reachable on this
-network and the maintainer syncs it by hand from somewhere that is. Do not try
-to add, fetch, or push a GitLab remote.
+The internal GitLab **is reachable from this machine** (verified 2026-09-22;
+an older note here said it was not). It mirrors the **firmware** repo only:
+
+```
+# in third_party/firmware/tc-gu-01
+gitlab  git@192.168.110.140:xense/tc-gu-01.git
+```
+
+Use SSH, not HTTP — HTTP prompts for a username that a non-interactive shell
+cannot supply. The shared trunk there is `hw_v1.1.0`, same name as on GitHub,
+and it carries other people's commits, so rebase onto it before pushing and
+open an MR rather than pushing the trunk directly. No GitLab mirror of this
+SDK repo is known; if one exists, ask for its URL rather than guessing.
 
 `origin/main` takes external contributions, so **expect a rejected push**.
 Fetch, look at what landed, then rebase — never force-push to `main` as a
@@ -228,7 +283,9 @@ archive format never changes (keeps historical greps parseable).
   that looks entirely healthy — right version, stream running, counters clean —
   while quietly dropping status frames. Measured: 35-39 lost per 60s run after
   OTA alone, zero after a replug, same unit and firmware both ways. Any number
-  you take before replugging is suspect.
+  you take before replugging is suspect. **从爪上"power-cycle"指断 24V，不是
+  只拔 USB** —— 24V 独立供电，拔 USB 时电机一直带电；判断是否真的重插看枚举
+  时间戳，见「从爪现场排查」。
 - Any change under `third_party/firmware/` or to the firmware-protocol
   mirror headers in `cpp/include/taccap/protocol/`.
 - `git push --force*` to `main` (the only remote here is GitHub `origin`).

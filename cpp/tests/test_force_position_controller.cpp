@@ -1,10 +1,15 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
+//
+// ForcePositionPolicy is ONE CONTROL LAW plus guards. These tests exercise the
+// law's bounds and the observations derived from it. The contact state machine
+// they used to cover is gone -- see docs/CONTROL_REFACTOR.md and the header.
 
 #include <gtest/gtest.h>
 
 #include <taccap/force_position_controller.hpp>
 
 #include <chrono>
+#include <cmath>
 
 namespace {
 
@@ -13,6 +18,7 @@ using xense::taccap::ForcePositionState;
 using xense::taccap::GripperPosition;
 using xense::taccap::MotorStatusSample;
 using xense::taccap::detail::ForcePositionPolicy;
+using xense::taccap::detail::ForcePositionTuning;
 
 MotorStatusSample sample(float pos, float vel = 0.0f, float torque = 0.0f,
                          uint16_t status = 0) {
@@ -24,129 +30,359 @@ MotorStatusSample sample(float pos, float vel = 0.0f, float torque = 0.0f,
     return s;
 }
 
+// The whole budget backs the position term; the damping term costs nothing at
+// stall because the feed-forward follows the ramp, which stops when blocked.
+float error_limit_for(const ForcePositionTuning& t, float budget) {
+    return budget / t.position_kp;
+}
+
 }  // namespace
 
-TEST(ForcePositionPolicy, ClosingUsesVelocityDampingWithoutPositionSpring) {
+// ---------------------------------------------------------------------------
+// The control law
+// ---------------------------------------------------------------------------
+
+// Travel carries the position spring. The old command set kp=0 so that a stall
+// signature stayed clean for the contact test; that cost 37% velocity ripple.
+TEST(ForcePositionPolicy, TravelCommandsThePositionSpringAndTheFeedForward) {
     ForcePositionConfig cfg;
-    cfg.close_speed_radps = 0.5f;
-    cfg.grasp_torque_nm = 0.35f;
+    const ForcePositionTuning tune;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     const auto t0 = std::chrono::steady_clock::now();
     p.reset(sample(0.8f), t0);
-    p.set_target(sample(0.8f), cfg.close_position, cfg.grasp_torque_nm, t0);
+    p.set_target(sample(0.8f), 0.0f, cfg.grasp_torque_nm, t0);
 
-    const auto c = p.step(sample(0.8f), t0);
+    // Seeding frame: the ramp starts at the jaw, no time has passed, so the
+    // controller commands nothing at all.
+    const auto seed = p.step(sample(0.8f), t0);
     EXPECT_EQ(p.state(), ForcePositionState::Closing);
-    EXPECT_FLOAT_EQ(c.target_pos, 0.8f);
-    EXPECT_FLOAT_EQ(c.kp, 0.0f);
+    EXPECT_FLOAT_EQ(seed.kd, 0.0f);
+    EXPECT_FLOAT_EQ(seed.vel, 0.0f);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+
+    // The frame after it carries the spring and the feed-forward.
+    const auto c = p.step(sample(0.8f), t0 + std::chrono::milliseconds(10));
+    EXPECT_FLOAT_EQ(c.kp, tune.position_kp);
     EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
-    EXPECT_FLOAT_EQ(c.vel, -0.5f);
-    EXPECT_NEAR(c.kd * std::abs(c.vel), 0.35f, 1e-6f);
-    EXPECT_LE(p.commanded_torque_nm(), cfg.motion_torque_limit_nm);
+    EXPECT_FALSE(p.arrived());
+    EXPECT_NEAR(c.kd, tune.travel_kd, 1e-6f);
+    EXPECT_LT(c.vel, 0.0f);
 }
 
-TEST(ForcePositionPolicy, ClosingDampingIncludesActualVelocityInTorqueBound) {
+// THE SAFETY INVARIANT. A jaw that cannot move is pushed at exactly the budget:
+// no more, which bounds the force on the object, and no less, which is what
+// makes a grasp actually hold. Both terms push the same way here, so the split
+// between them is what has to add up.
+TEST(ForcePositionPolicy, BlockedTravelPushesExactlyTheGraspTorque) {
     ForcePositionConfig cfg;
-    cfg.close_speed_radps = 0.5f;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.motion_torque_limit_nm = 1.8f;
+    const ForcePositionTuning tune;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.8f), now);
-    p.set_target(sample(0.8f), cfg.close_position, cfg.grasp_torque_nm, now);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), t);
+    p.set_target(sample(0.8f), 0.0f, cfg.grasp_torque_nm, t);
 
-    const float actual_velocity = 4.0f;  // moving opposite the close target
-    const auto c = p.step(sample(0.8f, actual_velocity), now);
-    const float predicted = c.kd * (c.vel - actual_velocity);
-    EXPECT_LE(std::abs(predicted), cfg.motion_torque_limit_nm + 1e-6f);
-    EXPECT_NEAR(std::abs(predicted), p.commanded_torque_nm(), 1e-6f);
+    // The bound is tight from the FIRST step, not only in the steady state:
+    // the ramp is clamped to the interval where |kp*error + kd*vel_err| is the
+    // budget, so the force is right immediately and only the split between the
+    // two terms migrates afterwards.
+    auto last = p.step(sample(0.8f), t);
+    for (int i = 0; i < 40; ++i) {
+        t += std::chrono::milliseconds(10);
+        last = p.step(sample(0.8f), t);   // jaw does not move at all
+        EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-4f);
+        EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+    }
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+
+    // Converged: the ramp settles the error limit ahead and stops, so the whole
+    // command has migrated into the position term and the feed-forward is gone.
+    EXPECT_NEAR(0.8f - last.target_pos,
+                error_limit_for(tune, cfg.grasp_torque_nm), 3e-3f);
+    EXPECT_NEAR(last.vel, 0.0f, 3e-2f);
 }
 
-TEST(ForcePositionPolicy, RuntimeTargetSelectsDirectionAndTorque) {
+// Free travel costs what friction costs, not what the budget allows. The ramp
+// stays close to the jaw, so the spring is nowhere near its clamp.
+TEST(ForcePositionPolicy, FreeTravelCostsOnlyFrictionNotTheWholeBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), t);
+    p.set_target(sample(0.8f), 0.0f, cfg.grasp_torque_nm, t);
+
+    float pos = 0.8f;
+    p.step(sample(pos, -cfg.close_speed_radps), t);
+    for (int i = 0; i < 20; ++i) {              // jaw tracks the ramp exactly
+        t += std::chrono::milliseconds(10);
+        pos -= cfg.close_speed_radps * 0.010f;
+        p.step(sample(pos, -cfg.close_speed_radps), t);
+    }
+    EXPECT_LT(p.commanded_torque_nm(), cfg.grasp_torque_nm * 0.25f);
+    EXPECT_FALSE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
+}
+
+// The ramp is what regulates speed: the setpoint advances at close_speed, it
+// does not jump to the clamp and let torque balance decide the velocity.
+TEST(ForcePositionPolicy, RampAdvancesAtTheCommandedSpeed) {
     ForcePositionConfig cfg;
     cfg.close_speed_radps = 0.5f;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.8f), t);
+    p.set_target(sample(0.8f), 0.0f, cfg.grasp_torque_nm, t);
+
+    const float pos = 0.8f;
+    p.step(sample(pos, -0.5f), t);              // seeds the ramp at 0.8
+    t += std::chrono::milliseconds(20);
+    const auto c = p.step(sample(pos, -0.5f), t);
+    // 20 ms at 0.5 rad/s is 0.010 rad of ramp travel, and the jaw has not moved,
+    // so the whole 0.010 shows up as commanded error (still inside the clamp).
+    EXPECT_NEAR(pos - c.target_pos, 0.010f, 1e-6f);
+    EXPECT_NEAR(c.vel, -0.5f, 1e-5f);        // feed-forward follows the ramp
+}
+
+// Arrival is an observation. There is no arrival branch that changes the law --
+// the same clamped PD simply stops asking for much once the error is gone.
+TEST(ForcePositionPolicy, ArrivalIsReportedAndCostsAlmostNoTorque) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto t0 = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), t0);
+    p.set_target(sample(0.5f), 0.5f, cfg.grasp_torque_nm, t0);
+
+    p.step(sample(0.5f), t0);
+    EXPECT_TRUE(p.arrived());
+    EXPECT_FALSE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+}
+
+TEST(ForcePositionPolicy, RuntimeTargetSelectsDirection) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto now = std::chrono::steady_clock::now();
     p.reset(sample(0.8f), now);
 
     p.set_target(sample(0.8f), 0.4f, 0.6f, now);
-    const auto closing = p.step(sample(0.8f), now);
+    p.step(sample(0.8f), now);                       // seeds the ramp
+    now += std::chrono::milliseconds(10);
+    const auto closing = p.step(sample(0.8f, -cfg.close_speed_radps), now);
     EXPECT_EQ(p.state(), ForcePositionState::Closing);
     EXPECT_FLOAT_EQ(p.target_position(), 0.4f);
     EXPECT_FLOAT_EQ(p.grasp_torque_nm(), 0.6f);
-    EXPECT_FLOAT_EQ(closing.vel, -0.5f);
-    EXPECT_NEAR(closing.kd * std::abs(closing.vel), 0.6f, 1e-6f);
+    EXPECT_LT(closing.vel, 0.0f);                    // ramp advancing to close
 
+    // Moving at the commanded speed: a jaw that is merely far from its target
+    // also saturates the budget while it accelerates, so `holding` needs the
+    // velocity gate to tell that apart from an obstruction.
     p.set_target(sample(0.2f), 0.6f, 0.4f, now);
-    const auto opening = p.step(sample(0.2f), now);
+    now += std::chrono::milliseconds(10);
+    p.step(sample(0.2f, cfg.close_speed_radps), now);   // re-seeds after the jump
+    now += std::chrono::milliseconds(10);
+    const auto opening = p.step(sample(0.2f, cfg.close_speed_radps), now);
     EXPECT_EQ(p.state(), ForcePositionState::Opening);
-    EXPECT_FLOAT_EQ(opening.vel, 0.5f);
+    EXPECT_FALSE(p.holding());
+    EXPECT_GT(opening.vel, 0.0f);
 
+    now += std::chrono::milliseconds(10);
     const auto arrived = p.step(sample(0.6f), now);
     EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
-    EXPECT_FLOAT_EQ(arrived.target_pos, 0.6f);
+    EXPECT_TRUE(p.arrived());
+    EXPECT_NEAR(arrived.target_pos, 0.6f, 1e-4f);
 }
 
-TEST(ForcePositionPolicy, CloseEndpointArrivalKeepsForceHold) {
+TEST(ForcePositionPolicy, ReverseMapFlipsTheCommandedVelocity) {
     ForcePositionConfig cfg;
-    cfg.close_position = 0.0f;
-    cfg.grasp_torque_nm = 1.0f;
-    cfg.startup_guard_ms = 1000;
-    cfg.contact_samples = 3;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f, 0.0f, true), cfg);
     const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.2f), now);
-    p.set_target(sample(0.2f), cfg.close_position, cfg.grasp_torque_nm, now);
+    p.reset(sample(-0.8f), now);
+    p.set_target(sample(-0.8f), 0.0f, cfg.grasp_torque_nm, now);
 
-    const auto holding = p.step(sample(0.0f), now);
-
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(holding.kp, 0.0f);
-    EXPECT_FLOAT_EQ(holding.kd, 0.0f);
-    EXPECT_FLOAT_EQ(holding.target_torque, -1.0f);
-    EXPECT_FLOAT_EQ(holding.target_pos, 0.0f);
-
-    ForcePositionPolicy already_closed(GripperPosition::from_travel(1.0f), cfg);
-    already_closed.reset(sample(0.0f), now);
-    already_closed.set_target(sample(0.0f), cfg.close_position, cfg.grasp_torque_nm, now);
-    const auto already_holding = already_closed.step(sample(0.0f), now);
-    EXPECT_EQ(already_closed.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(already_holding.target_torque, -1.0f);
+    // The jaw has to be moving: a stationary jaw carrying the full budget is a
+    // blocked one by definition, and gets reported as holding regardless of
+    // which way the map runs.
+    const float v = cfg.close_speed_radps;
+    p.step(sample(-0.8f, v), now);
+    const auto c = p.step(sample(-0.8f, v), now + std::chrono::milliseconds(10));
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
+    EXPECT_GT(c.vel, 0.0f);                          // mirrored
 }
 
-TEST(ForcePositionPolicy, LowTorqueArrestNearCloseEndpointKeepsForceHold) {
+// A streamed target is the normal case for teleop. Nothing restarts, because
+// there is no guard or confirmation window left to restart.
+TEST(ForcePositionPolicy, JitteringStreamedTargetDoesNotDisturbAHold) {
     ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 1.0f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 3;
-    cfg.close_endpoint_tolerance_rad = 0.03f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), t);
+
+    for (int i = 0; i < 40; ++i) {
+        t += std::chrono::milliseconds(10);
+        const float dither = (i % 2) ? 0.0008f : -0.0008f;   // +/-0.08% of travel
+        p.set_target(sample(0.5f), 0.0f + (dither < 0 ? 0.0f : 0.0008f),
+                     cfg.grasp_torque_nm, t);
+        p.step(sample(0.5f), t);                             // blocked throughout
+    }
+    EXPECT_TRUE(p.holding());
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+}
+
+// ---------------------------------------------------------------------------
+// Guards and faults (unchanged behaviour)
+// ---------------------------------------------------------------------------
+
+TEST(ForcePositionPolicy, SettledHoldIsBoundedByTheGraspBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg, tune);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);          // target is raw 0.0
+
+    // Jaw dragged a long way off the target: the clamp bounds the request at the
+    // grasp budget, NOT at the 6 Nm motion limit. Everything this class commands
+    // is bounded by the force the caller asked for.
+    const auto c = p.step(sample(1.0f), now);
+    const float predicted = c.kp * (c.target_pos - 1.0f);
+    EXPECT_LE(std::abs(predicted), cfg.grasp_torque_nm + 1e-5f);
+    EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-5f);
+}
+
+// ---------------------------------------------------------------------------
+// Closed-endpoint preload
+// ---------------------------------------------------------------------------
+
+// The whole point: kp*(target-actual) vanishes AT the target, so without a
+// feed-forward term the jaw reaches the closed stop and stops pressing, leaving
+// the gear backlash unseated. Measured on hardware: 0.15 Nm of feed-forward
+// seats it at raw 0.00000 and 0.50 Nm moves it no further.
+TEST(ForcePositionPolicy, ClosedEndpointHoldCarriesThePreload) {
+    ForcePositionConfig cfg;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.2f), now);
-    p.set_target(sample(0.2f), cfg.close_position, cfg.grasp_torque_nm, now);
+    p.reset(sample(0.0f), now);                  // target_position == 0
+    const auto c = p.step(sample(0.0f), now);
 
-    const auto c = p.step(sample(0.002f, 0.01f, 0.06f), now);
+    EXPECT_TRUE(p.arrived());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+    // Sitting exactly on the target, so the spring contributes nothing and the
+    // command is the preload alone -- closing is -raw on a non-reversed map.
+    EXPECT_FLOAT_EQ(c.target_torque, -cfg.close_preload_nm);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.close_preload_nm, 1e-5f);
+}
 
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+// A mid-stroke hold must NOT press: the preload is for seating against a
+// mechanical stop, and applying it anywhere else would drag the jaw off the
+// position the caller asked it to hold.
+TEST(ForcePositionPolicy, MidStrokeHoldCarriesNoPreload) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_target(sample(0.5f), 0.5f, cfg.grasp_torque_nm, now);
+    const auto c = p.step(sample(0.5f), now);
+
+    EXPECT_TRUE(p.arrived());
+    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+}
+
+// The sign comes from the map, not a constant. to_rad() multiplies by dir_, so
+// a rising normalized position is a FALLING raw angle when reversed -- closing
+// is -dir_. Hard-coding +1 would push a non-reversed gripper OPEN.
+TEST(ForcePositionPolicy, PreloadSignFollowsTheMapDirection) {
+    ForcePositionConfig cfg;
+    const auto now = std::chrono::steady_clock::now();
+
+    ForcePositionPolicy normal(GripperPosition::from_travel(1.0f), cfg);
+    normal.reset(sample(0.0f), now);
+    EXPECT_LT(normal.step(sample(0.0f), now).target_torque, 0.0f);
+
+    ForcePositionPolicy reversed(GripperPosition::from_travel(1.0f, 0.0f, true),
+                                 cfg);
+    reversed.reset(sample(0.0f), now);
+    EXPECT_GT(reversed.step(sample(0.0f), now).target_torque, 0.0f);
+}
+
+// The preload is RESERVED OUT of the grasp budget, not added on top of it, so
+// the bound this class has always held still holds at the endpoint: a jaw
+// dragged far off the closed target cannot be asked for more than the budget.
+TEST(ForcePositionPolicy, PreloadIsReservedOutOfTheGraspBudget) {
+    ForcePositionConfig cfg;
+    ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg, tune);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);
+
+    const auto c = p.step(sample(1.0f), now);
+    const float spring = c.kp * (c.target_pos - 1.0f);
+    // Spring alone is capped at budget-preload; spring plus preload at budget.
+    EXPECT_LE(std::abs(spring),
+              cfg.grasp_torque_nm - cfg.close_preload_nm + 1e-5f);
+    EXPECT_LE(std::abs(spring) + std::abs(c.target_torque), cfg.grasp_torque_nm + 1e-5f);
+    EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-5f);
+}
+
+TEST(ForcePositionPolicy, ZeroPreloadRestoresThePureSpringHold) {
+    ForcePositionConfig cfg;
+    cfg.close_preload_nm = 0.0f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.0f), now);
+    const auto c = p.step(sample(0.0f), now);
+
+    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
+    EXPECT_NEAR(p.commanded_torque_nm(), 0.0f, 1e-5f);
+}
+
+TEST(ForcePositionPolicy, DefaultPreloadIsTheMeasuredSeatingTorque) {
+    // 0.15 Nm seats the jaw on hardware; 0.25 is that with headroom for
+    // friction growth and drift. Above ~0.15 buys heat, never closure.
+    EXPECT_FLOAT_EQ(ForcePositionConfig{}.close_preload_nm, 0.25f);
+}
+
+TEST(ForcePositionPolicy, RejectsNegativePreload) {
+    ForcePositionConfig cfg;
+    cfg.close_preload_nm = -0.01f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
+}
+
+TEST(ForcePositionPolicy, RejectsPreloadAboveTheGraspBudget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm  = 0.30f;
+    cfg.close_preload_nm = 0.31f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
+}
+
+TEST(ForcePositionPolicy, FeedbackBetweenHoldAndMotionLimitsIsAllowed) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_target(sample(0.5f), 0.0f, cfg.grasp_torque_nm, now);
+
+    p.step(sample(0.5f, 0.0f, 3.3f), now);
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
+    EXPECT_TRUE(p.fault_reason().empty());
+}
+
+TEST(ForcePositionPolicy, FeedbackOverMotionLimitTransitionsToZeroTorqueFault) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto now = std::chrono::steady_clock::now();
+    p.reset(sample(0.5f), now);
+    p.set_target(sample(0.5f), 0.0f, cfg.grasp_torque_nm, now);
+
+    const auto c = p.step(sample(0.5f, 0.0f, 6.01f), now);
+    EXPECT_EQ(p.state(), ForcePositionState::Fault);
     EXPECT_FLOAT_EQ(c.kp, 0.0f);
     EXPECT_FLOAT_EQ(c.kd, 0.0f);
-    EXPECT_FLOAT_EQ(c.target_torque, -1.0f);
-}
-
-TEST(ForcePositionPolicy, RuntimeTargetContactUsesDynamicTorque) {
-    ForcePositionConfig cfg;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.8f), now);
-    p.set_target(sample(0.8f), 0.2f, 0.6f, now);
-
-    const auto holding = p.step(sample(0.5f, 0.0f, 0.6f), now);
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(holding.target_torque, -0.6f);
-    EXPECT_FLOAT_EQ(p.target_position(), 0.2f);
-    EXPECT_FLOAT_EQ(p.hold_position(), 0.5f);
+    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
+    EXPECT_FALSE(p.fault_reason().empty());
+    EXPECT_FALSE(p.holding());
 }
 
 TEST(ForcePositionPolicy, RuntimeTargetRejectsUnsafeValues) {
@@ -161,361 +397,65 @@ TEST(ForcePositionPolicy, RuntimeTargetRejectsUnsafeValues) {
                  std::invalid_argument);
 }
 
-TEST(ForcePositionPolicy, ConfirmedContactSwitchesToPureBoundedTorqueHold) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.startup_guard_ms = 250;
-    cfg.contact_samples = 2;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.8f), t0);
-    p.set_target(sample(0.8f), cfg.close_position, cfg.grasp_torque_nm, t0);
+// ---------------------------------------------------------------------------
+// Configuration validation
+// ---------------------------------------------------------------------------
 
-    const auto after_guard = t0 + std::chrono::milliseconds(300);
-    // Below the contact floor: the jaw is arrested but not loaded.
-    p.step(sample(0.5f, 0.0f, 0.05f), after_guard);
-    p.step(sample(0.5f, 0.0f, 0.05f),
-           after_guard + std::chrono::milliseconds(10));
-    EXPECT_EQ(p.state(), ForcePositionState::Closing);
-
-    p.step(sample(0.5f, 0.0f, 0.12f),
-           after_guard + std::chrono::milliseconds(20));
-    const auto c = p.step(sample(0.5f, 0.0f, 0.12f),
-                          after_guard + std::chrono::milliseconds(30));
-
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(c.kp, 0.0f);
-    EXPECT_FLOAT_EQ(c.kd, 0.0f);
-    EXPECT_FLOAT_EQ(c.target_torque, -0.35f);
-    EXPECT_FLOAT_EQ(c.target_pos, 0.5f);
-    EXPECT_LE(std::abs(c.target_torque), cfg.hold_torque_limit_nm);
-}
-
-TEST(ForcePositionPolicy, ForceHoldUsesSoftwareCeilingNotMotionLimit) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 1.8f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.8f), now);
-    p.set_target(sample(0.8f), cfg.close_position, cfg.grasp_torque_nm, now);
-
-    const auto holding = p.step(sample(0.5f, 0.0f, 1.8f), now);
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(holding.kp, 0.0f);
-    EXPECT_FLOAT_EQ(holding.kd, 0.0f);
-    EXPECT_FLOAT_EQ(holding.target_torque, -1.8f);
-    EXPECT_LT(std::abs(holding.target_torque), cfg.motion_torque_limit_nm);
-}
-
-TEST(ForcePositionPolicy, ReverseMapFlipsCloseTorqueAndVelocity) {
-    ForcePositionConfig cfg;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f, 0.0f, true), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(-0.8f), t0);
-    p.set_target(sample(-0.8f), cfg.close_position, cfg.grasp_torque_nm, t0);
-
-    const auto moving = p.step(sample(-0.8f), t0);
-    EXPECT_GT(moving.vel, 0.0f);
-    const auto holding = p.step(sample(-0.5f, 0.0f, 0.4f),
-                                t0 + std::chrono::milliseconds(1));
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(holding.target_torque, cfg.grasp_torque_nm);
-}
-
-TEST(ForcePositionPolicy, PositionHoldUsesMotionLimitAboveHoldLimit) {
-    ForcePositionConfig cfg;
-    cfg.position_kp = 20.0f;
-    cfg.position_kd = 1.0f;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.0f), now);  // desired hold stays at raw zero
-
-    const auto c = p.step(sample(1.0f), now);
-    const float predicted = c.kp * (c.target_pos - 1.0f);
-    EXPECT_NEAR(c.target_pos, 0.7f, 1e-6f);
-    EXPECT_NEAR(std::abs(predicted), 6.0f, 1e-5f);
-    EXPECT_LE(p.commanded_torque_nm(), cfg.motion_torque_limit_nm);
-}
-
-TEST(ForcePositionPolicy, FeedbackBetweenHoldAndMotionLimitsIsAllowed) {
-    ForcePositionConfig cfg;
-    cfg.startup_guard_ms = 1000;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.5f), now);
-    p.set_target(sample(0.5f), cfg.close_position, cfg.grasp_torque_nm, now);
-
-    p.step(sample(0.5f, 0.0f, 3.3f), now);
-    EXPECT_EQ(p.state(), ForcePositionState::Closing);
-    EXPECT_TRUE(p.fault_reason().empty());
-}
-
-TEST(ForcePositionPolicy, FeedbackOverMotionLimitTransitionsToZeroTorqueFault) {
-    ForcePositionConfig cfg;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto now = std::chrono::steady_clock::now();
-    p.reset(sample(0.5f), now);
-    p.set_target(sample(0.5f), cfg.close_position, cfg.grasp_torque_nm, now);
-
-    const auto c = p.step(sample(0.5f, 0.0f, 6.01f), now);
-    EXPECT_EQ(p.state(), ForcePositionState::Fault);
-    EXPECT_FLOAT_EQ(c.kp, 0.0f);
-    EXPECT_FLOAT_EQ(c.kd, 0.0f);
-    EXPECT_FLOAT_EQ(c.target_torque, 0.0f);
-    EXPECT_FALSE(p.fault_reason().empty());
+TEST(ForcePositionPolicy, DefaultGraspIsTheMeasuredIndefiniteHold) {
+    // Set by a thermal measurement, not by the datasheet: 0.6 Nm plateaus at
+    // 49 C on a 600 s hold, while the datasheet's 1.1 Nm continuous rating was
+    // still climbing 1 C/min after 432 s. See the header.
+    EXPECT_FLOAT_EQ(ForcePositionConfig{}.grasp_torque_nm, 1.1f);
+    EXPECT_LE(ForcePositionConfig{}.grasp_torque_nm,
+              ForcePositionConfig{}.hold_torque_limit_nm);
 }
 
 TEST(ForcePositionPolicy, RejectsGraspTorqueAboveMaximum) {
     ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 2.0f;
-    EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-        std::invalid_argument);
+    cfg.grasp_torque_nm = 1.81f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
 }
 
 TEST(ForcePositionPolicy, RejectsHoldLimitAboveSoftwareMaximum) {
     ForcePositionConfig cfg;
     cfg.hold_torque_limit_nm = 1.81f;
-    EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-        std::invalid_argument);
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
 }
 
 TEST(ForcePositionPolicy, RejectsMotionLimitAboveDeviceMaximum) {
     ForcePositionConfig cfg;
     cfg.motion_torque_limit_nm = 6.01f;
-    EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-        std::invalid_argument);
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
 }
 
 TEST(ForcePositionPolicy, RejectsHoldLimitAboveMotionLimit) {
     ForcePositionConfig cfg;
-    cfg.hold_torque_limit_nm = 1.0f;
-    cfg.motion_torque_limit_nm = 0.8f;
+    cfg.grasp_torque_nm = 0.3f;
+    cfg.hold_torque_limit_nm = 1.5f;
+    cfg.motion_torque_limit_nm = 1.0f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+                 std::invalid_argument);
+}
+
+TEST(ForcePositionPolicy, RejectsNegativeTravelDamping) {
+    ForcePositionConfig cfg;
+    ForcePositionTuning tune;
+    tune.travel_kd = -0.1f;
     EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
+        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg, tune),
         std::invalid_argument);
 }
 
-// The regression that motivated mirroring task_canmotor_is_stalled(): the jaw's
-// own restoring torque climbs past the threshold part way down an EMPTY close.
-// A bare torque test latches there; torque-plus-arrested-motion does not.
-TEST(ForcePositionPolicy, MovingJawAtThresholdTorqueIsNotContact) {
+// A slow close is just a slow close now. The old rule rejected
+// close_speed < grasp/5 because the travel damping gain WAS grasp/close_speed
+// and would saturate; the ramp regulates speed instead, so the coupling is gone.
+TEST(ForcePositionPolicy, SlowCloseWithAStrongGraspIsAccepted) {
     ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.close_speed_radps = 0.5f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.9f), t0);
-    p.set_target(sample(0.9f), 0.0f, cfg.grasp_torque_nm, t0);
-
-    // Torque at the threshold, but the jaw is still travelling at the
-    // commanded speed -- restoring torque, not an object.
-    for (int i = 1; i <= 5; ++i) {
-        p.step(sample(0.9f - 0.05f * static_cast<float>(i), -0.5f, 0.40f),
-               t0 + std::chrono::milliseconds(10 * i));
-        EXPECT_EQ(p.state(), ForcePositionState::Closing) << "sample " << i;
-    }
-}
-
-TEST(ForcePositionPolicy, ArrestedJawAtThresholdTorqueIsContact) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.close_speed_radps = 0.5f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.9f), t0);
-    p.set_target(sample(0.9f), 0.0f, cfg.grasp_torque_nm, t0);
-
-    // Firmware rule "torque": |vel| under contact_vel_radps, no travel history
-    // needed, so a jaw that starts against the object still latches.
-    const auto c = p.step(sample(0.6f, 0.01f, 0.36f),
-                          t0 + std::chrono::milliseconds(10));
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(c.kp, 0.0f);
-    EXPECT_FLOAT_EQ(c.kd, 0.0f);
-    EXPECT_FLOAT_EQ(c.target_torque, -0.35f);
-}
-
-// Firmware rule "velocity": having moved, a collapse to under
-// contact_vel_ratio of the commanded speed counts even above contact_vel_radps.
-TEST(ForcePositionPolicy, CollapsedVelocityAfterTravelIsContact) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.close_speed_radps = 0.5f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.9f), t0);
-    p.set_target(sample(0.9f), 0.0f, cfg.grasp_torque_nm, t0);
-
-    // Travel at full speed first so has_moved arms (peak >= 35% of commanded,
-    // progress >= contact_moved_rad).
-    p.step(sample(0.70f, -0.5f, 0.10f), t0 + std::chrono::milliseconds(10));
-    p.step(sample(0.50f, -0.5f, 0.20f), t0 + std::chrono::milliseconds(20));
-    EXPECT_EQ(p.state(), ForcePositionState::Closing);
-
-    // 0.05 rad/s is above contact_vel_radps (0.035) but only 10% of the
-    // commanded 0.5 rad/s, and the torque has saturated.
-    p.step(sample(0.49f, -0.05f, 0.36f), t0 + std::chrono::milliseconds(30));
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-}
-
-// Same collapse, but the jaw never travelled: has_moved is what stops a
-// slow-but-free close from qualifying under the ratio rule.
-TEST(ForcePositionPolicy, CollapsedVelocityWithoutTravelIsNotContact) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.close_speed_radps = 0.5f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.9f), t0);
-    p.set_target(sample(0.9f), 0.0f, cfg.grasp_torque_nm, t0);
-
-    p.step(sample(0.9f, -0.05f, 0.36f), t0 + std::chrono::milliseconds(10));
-    EXPECT_EQ(p.state(), ForcePositionState::Closing);
-}
-
-// The threshold is a flat floor, independent of the grasp torque. Deriving it
-// from the commanded cap (the firmware's ratio 1.00) is unreachable under a
-// kd-only MIT frame: measured on 1.1.5 hardware the command asked 0.359 Nm at
-// stall and the feedback saturated at 0.213 Nm.
-TEST(ForcePositionPolicy, ContactFloorIsIndependentOfRuntimeGraspTorque) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.startup_guard_ms = 0;
-    cfg.contact_samples = 1;
-    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
-    const auto t0 = std::chrono::steady_clock::now();
-    p.reset(sample(0.9f), t0);
-    p.set_target(sample(0.9f), 0.0f, 0.10f, t0);
-
-    const auto c = p.step(sample(0.6f, 0.0f, 0.11f),
-                          t0 + std::chrono::milliseconds(10));
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
-    EXPECT_FLOAT_EQ(c.target_torque, -0.10f);
-}
-
-TEST(ForcePositionPolicy, RejectsContactTorqueAboveGraspTorque) {
-    ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.contact_torque_nm = 0.40f;  // unreachable: the close caps at 0.35
-    EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-        std::invalid_argument);
-}
-
-TEST(ForcePositionPolicy, RejectsContactVelocityRatioOutOfRange) {
-    ForcePositionConfig cfg;
-    cfg.contact_vel_ratio = 1.5f;
-    EXPECT_THROW(
-        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-        std::invalid_argument);
-}
-
-// ---------------------------------------------------------------------------
-// Replay of a REAL empty-jaw close, follower firmware 1.1.5, 1578 samples
-// decimated to the three regimes that matter. Recorded 2026-08-27 on the unit
-// whose travel is 1.2076 rad with the Reverse flag set.
-//
-// This is the test that would have caught both wrong turns taken on the way
-// here: first a threshold low enough to be assumed a false-trigger risk, then
-// one derived from the commanded torque cap and therefore unreachable. Neither
-// survives contact with the actual numbers.
-// ---------------------------------------------------------------------------
-namespace {
-struct Reading { float raw_pos, vel, torque; };
-
-const Reading kEmptyClose1_1_5[] = {
-    // --- stationary at the open end, unloaded (2) ---
-    {-1.207573f, -0.012211f, +0.054213f},  // pos=1.0000
-    {-1.207573f, -0.012211f, +0.054213f},  // pos=1.0000
-    // --- free travel (30) ---
-    {-1.146808f, +0.549450f, +0.024909f},  // pos=0.9497
-    {-1.112666f, +0.451771f, +0.030769f},  // pos=0.9214
-    {-1.079291f, +0.500610f, +0.024909f},  // pos=0.8938
-    {-1.046302f, +0.427349f, +0.045421f},  // pos=0.8665
-    {-1.012927f, +0.402931f, +0.051282f},  // pos=0.8388
-    {-0.978786f, +0.354092f, +0.060073f},  // pos=0.8105
-    {-0.945027f, +0.402931f, +0.063004f},  // pos=0.7826
-    {-0.909735f, +0.378510f, +0.065934f},  // pos=0.7534
-    {-0.870991f, +0.402931f, +0.060073f},  // pos=0.7213
-    {-0.836082f, +0.402931f, +0.051282f},  // pos=0.6924
-    {-0.801173f, +0.427349f, +0.039560f},  // pos=0.6635
-    {-0.765497f, +0.451771f, +0.033700f},  // pos=0.6339
-    {-0.731740f, +0.500610f, +0.021978f},  // pos=0.6060
-    {-0.697214f, +0.500610f, +0.036630f},  // pos=0.5774
-    {-0.663073f, +0.451771f, +0.039560f},  // pos=0.5491
-    {-0.627781f, +0.427349f, +0.048352f},  // pos=0.5199
-    {-0.592872f, +0.451771f, +0.042491f},  // pos=0.4910
-    {-0.551826f, +0.598289f, +0.004395f},  // pos=0.4570
-    {-0.516150f, +0.598289f, -0.001465f},  // pos=0.4274
-    {-0.479707f, +0.500610f, +0.010256f},  // pos=0.3972
-    {-0.444031f, +0.500610f, +0.007326f},  // pos=0.3677
-    {-0.407970f, +0.476189f, +0.013187f},  // pos=0.3378
-    {-0.372295f, +0.427349f, +0.007326f},  // pos=0.3083
-    {-0.337386f, +0.427349f, +0.007326f},  // pos=0.2794
-    {-0.302094f, +0.427349f, -0.001465f},  // pos=0.2502
-    {-0.266802f, +0.427349f, +0.001465f},  // pos=0.2209
-    {-0.228058f, +0.280830f, +0.068864f},  // pos=0.1889
-    {-0.192765f, +0.329670f, +0.080586f},  // pos=0.1596
-    {-0.156705f, +0.354092f, +0.071795f},  // pos=0.1298
-    {-0.121030f, +0.402931f, +0.077656f},  // pos=0.1002
-    // --- mechanical closed stop (10) ---
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.209524f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.206594f},  // pos=0.0179
-    {-0.021674f, -0.012211f, +0.206594f},  // pos=0.0179
-};
-}  // namespace
-
-TEST(ForcePositionPolicy, RealEmptyCloseLatchesOnlyAtTheMechanicalStop) {
-    ForcePositionConfig cfg;
-    cfg.close_speed_radps = 0.5f;
-    cfg.grasp_torque_nm = 0.35f;
-    cfg.startup_guard_ms = 0;   // exercise the floor on the stationary samples
-    ForcePositionPolicy p(GripperPosition::from_travel(1.2076f, 0.0f, true), cfg);
-
-    auto t = std::chrono::steady_clock::now();
-    const Reading& first = kEmptyClose1_1_5[0];
-    p.reset(sample(first.raw_pos, first.vel, first.torque), t);
-    p.set_target(sample(first.raw_pos, first.vel, first.torque), 0.0f,
-                 cfg.grasp_torque_nm, t);
-
-    std::size_t latched_at = 0;
-    const std::size_t n = std::size(kEmptyClose1_1_5);
-    for (std::size_t i = 0; i < n; ++i) {
-        const Reading& r = kEmptyClose1_1_5[i];
-        t += std::chrono::milliseconds(10);
-        p.step(sample(r.raw_pos, r.vel, r.torque), t);
-        if (!latched_at && p.state() == ForcePositionState::HoldingForce) {
-            latched_at = i + 1;
-        }
-    }
-
-    // Stationary-but-unloaded (torque 0.054 Nm, under the 0.080 floor) and the
-    // whole free travel (|vel| never under 0.183 rad/s, five times the gate)
-    // must all pass through without latching. Only the mechanical stop counts.
-    ASSERT_NE(latched_at, 0u) << "never latched -- the jaw would push forever";
-    EXPECT_GT(latched_at, n - 10) << "latched during travel, at sample "
-                                  << latched_at << " of " << n;
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    cfg.grasp_torque_nm = 1.1f;
+    cfg.close_speed_radps = 0.05f;         // far below the old grasp/5 = 0.22
+    EXPECT_NO_THROW(
+        ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg));
 }
