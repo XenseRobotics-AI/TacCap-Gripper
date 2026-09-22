@@ -9,8 +9,15 @@ directory's git history, not from extra files.
 
 | Image | Role | Version | Protocol | Source | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.3 | `5e4ea62` | 118,236 B | `0x42c83731` |
-| `tc-gu-01-slave.bin` | follower (SN ends **`s`**) | **1.2.5** | V2.3 + envelope | `5e4ea62` | 162,468 B | `0xd0ef491a` |
+| `tc-gu-01-master-1.2.5.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.3 | `5e4ea62` | 118,236 B | `0x42c83731` |
+| `tc-gu-01-slave-1.2.5.bin` | follower (SN ends **`s`**) | **1.2.5** | V2.3 + envelope | `5e4ea62` | 162,468 B | `0xd0ef491a` |
+
+**The filename carries the version**, so a `.bin` copied out of here stays
+identifiable. That makes `manifest.json` load-bearing rather than merely
+descriptive: its `file` entry is how `ota_update.py`'s role selectors and
+`--all` find the current image, so bumping the version means renaming the
+`.bin` *and* updating the manifest together. `test_ota_update_all.py` fails
+if they ever disagree.
 
 Both from firmware branch `feat/actuator-can-timeout`, **one commit, one
 version number**. `manifest.json` has the same data machine-readably.
@@ -240,7 +247,7 @@ python python/examples/fisheye_cal.py show
 # 2. Flash. --side picks the gripper; the image must match the ROLE.
 #    Naming the image is enough — the script looks here for it, so this
 #    line also works from a parent repo that vendors this one.
-python python/examples/ota_update.py tc-gu-01-master.bin \
+python python/examples/ota_update.py master \
     --side left --target-version 1.2.1
 
 # 3. Power-cycle the gripper. Not optional — see below.
@@ -273,7 +280,7 @@ The manifest's CRC32 is the same value `ota_update.py` prints and sends in
 ```bash
 python -c "
 from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.5.bin','rb').read())))"
 # → 0xec491cbd
 ```
 

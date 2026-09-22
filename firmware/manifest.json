@@ -1,7 +1,7 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master.bin",
+      "file": "tc-gu-01-master-1.2.5.bin",
       "version": "1.2.5",
       "size_bytes": 118236,
       "crc32": "0x42c83731",
@@ -16,7 +16,7 @@
       "note": "Built locally, NOT by the firmware team's release toolchain. BYTE-IDENTICAL to 1.2.3 except the version byte (two bytes differ): this release changes follower-only code, and the leader is rebuilt solely to keep both roles on one version number. 1.2.5 makes that policy structural -- 1.2.3 aligned the two numbers but left two #ifdef-guarded version definitions in the source, so the drift cause survived; 1.2.5 collapses them into one, and a role can no longer be left behind. The 1.2.3 leader validation therefore still stands (TCGU01A28Z0023m / 0024m: version reports, encoder and IMU both read at 9.72 / 9.64 m/s^2 at rest, ~100 Hz data stream over 2 s, and an unassigned command code answers ProtocolError(NACK: InvalidCmd), which is what proves the V2.3 error semantics reached this role). POWER-CYCLE THE GRIPPER AFTER FLASHING."
     },
     "slave": {
-      "file": "tc-gu-01-slave.bin",
+      "file": "tc-gu-01-slave-1.2.5.bin",
       "version": "1.2.5",
       "size_bytes": 162468,
       "crc32": "0xd0ef491a",

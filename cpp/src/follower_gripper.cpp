@@ -127,7 +127,7 @@ FollowerGripper::FollowerGripper(const Config& cfg)
                 "    python python/examples/ota_update.py slave\n"
                 "\n"
                 "  (role 选择器,自动找从爪并挑对应镜像;插了多台时也可用\n"
-                "   SN 精确指定: ota_update.py firmware/tc-gu-01-slave.bin "
+                "   SN 精确指定: ota_update.py slave "
                 + fw_sn_str + ")\n"
                 "  刷完后必须断电重启 / power-cycle after flashing\n"
                 "==========================================================";

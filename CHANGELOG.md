@@ -67,6 +67,52 @@ longer be left behind).
 
 ### Changed
 
+- **BREAKING — the shipped firmware images are now named with their version.**
+
+  ```
+  firmware/tc-gu-01-master.bin  ->  firmware/tc-gu-01-master-1.2.5.bin
+  firmware/tc-gu-01-slave.bin   ->  firmware/tc-gu-01-slave-1.2.5.bin
+  ```
+
+  A `.bin` copied out of `firmware/` used to be unidentifiable: the version
+  lived only inside the binary and in `manifest.json`, so a file sitting in a
+  download folder told you nothing about what it was.
+
+  **If you pass the image by name, update it** — a script that says
+  `ota_update.py tc-gu-01-master.bin` will now fail. It fails loudly, listing
+  what is actually in `firmware/`, not silently:
+
+  ```
+  [ERROR] firmware file not found: tc-gu-01-master.bin
+          shipped images live in .../firmware
+          shipped images: tc-gu-01-master-1.2.5.bin, tc-gu-01-slave-1.2.5.bin
+          release filenames carry the version, so a name from an older README
+          will not resolve — prefer the role selectors (master / slave / --all),
+          which read the current name from manifest.json.
+  ```
+
+  **Prefer the role selectors**, which are unaffected by this and by every
+  future bump, because they resolve the current filename from the manifest:
+
+  ```bash
+  python python/examples/ota_update.py --all      # both roles, matched by SN suffix
+  python python/examples/ota_update.py slave      # one role
+  ```
+
+  Consequence worth knowing if you maintain this repo: `manifest.json` is now
+  load-bearing rather than descriptive. Its `images.<role>.file` entry is how
+  role selectors and `--all` find an image, so a version bump must rename the
+  `.bin` *and* update the manifest in the same change. Getting that wrong
+  breaks exactly the path customers are told to use while explicitly-named
+  flashing still works — so it would survive casual testing.
+  `test_ota_update_all.py` now fails if the manifest names a file that is not
+  on disk, or if a filename disagrees with its declared version.
+
+  Build artifacts keep the Makefile's unversioned names
+  (`build/master/tc-gu-01-master.bin`); only released images are versioned. A
+  build artifact is whatever you just compiled, a release is a specific version
+  someone may still be holding months later.
+
 - **Paired firmware is 1.2.5.** Follower closed zero (`min_open_rad`, written by
   auto-calibration) goes 20 mrad → 5 mrad → **0**: normalized 0.0 is now the
   closed hard stop itself. The 20 mrad inset had been measured under the

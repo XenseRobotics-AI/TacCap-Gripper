@@ -79,6 +79,49 @@ class FakeEndpoint:
         self.mcu_serial = "fake-serial"
 
 
+def _manifest_file(role: str) -> str:
+    """The release filename for a role, per firmware/manifest.json.
+
+    Asserted against rather than hard-coded: shipped names carry the version
+    (tc-gu-01-slave-1.2.5.bin), so a literal here would have to be edited on
+    every firmware bump and would fail as a stale test rather than a real one.
+    """
+    return mod._load_manifest()["images"][role]["file"]
+
+
+def test_manifest_names_match_the_files_on_disk():
+    """The manifest's `file` is how role selectors and --all find an image.
+
+    This is the failure mode that versioned filenames introduce: bump the
+    version in the manifest but forget to rename the .bin (or the reverse) and
+    every role-selector invocation dies with "firmware file not found", while
+    an explicitly-named flash still works — so it survives casual testing and
+    breaks exactly the path customers are told to use.
+    """
+    firmware_dir = Path(mod._firmware_dir())
+    for role in ("master", "slave"):
+        name = _manifest_file(role)
+        assert (firmware_dir / name).is_file(), (
+            f"manifest names {name} for {role}, but it is not in {firmware_dir}. "
+            f"Present: {sorted(p.name for p in firmware_dir.glob('*.bin'))}"
+        )
+
+
+def test_manifest_filename_carries_its_declared_version():
+    """Filename and manifest version must agree, or the name lies.
+
+    The whole point of putting the version in the filename is that a bare .bin
+    is identifiable on sight; a name that disagrees with the manifest is worse
+    than no version at all.
+    """
+    for role in ("master", "slave"):
+        entry = mod._load_manifest()["images"][role]
+        assert entry["version"] in entry["file"], (
+            f"{role}: file {entry['file']!r} does not carry version "
+            f"{entry['version']!r}"
+        )
+
+
 def test_role_upgrade_plan_includes_both_master_and_slave():
     eps_list = [
         FakeEndpoint("TCGU01A28Z0001m", side="left"),
@@ -95,8 +138,8 @@ def test_role_upgrade_plan_includes_both_master_and_slave():
     roles = [job["role"] for job in jobs]
     assert roles == ["master", "slave"]
     assert [Path(job["firmware"]).name for job in jobs] == [
-        "tc-gu-01-master.bin",
-        "tc-gu-01-slave.bin",
+        _manifest_file("master"),
+        _manifest_file("slave"),
     ]
 
 
@@ -115,7 +158,7 @@ def test_single_slave_role_target_is_supported():
 
     assert len(jobs) == 1
     assert jobs[0]["role"] == "slave"
-    assert Path(jobs[0]["firmware"]).name == "tc-gu-01-slave.bin"
+    assert Path(jobs[0]["firmware"]).name == _manifest_file("slave")
 
 
 def test_cli_treats_role_name_as_target_not_firmware_path():

@@ -15,18 +15,17 @@ same cable, 60-second runs: 35-39 frames lost per run after OTA alone, zero
 after unplugging and replugging, three runs each way. Treat the replug as part
 of the update, not as troubleshooting.
 
-The released images ship in this repo under `firmware/`, so the usual
-argument is just their name — it resolves against that directory from any
+The released images ship in this repo under `firmware/`, and their filenames
+carry the version (tc-gu-01-slave-1.2.5.bin). Prefer the role selectors below:
+they read the current filename from firmware/manifest.json, so they keep
+working across releases, while a literal filename goes stale the next time the
+firmware is bumped. A name you do pass resolves against firmware/ from any
 working directory, including a parent repo that vendors this one.
 
 Usage:
 
-    # Single gripper, no selector: exactly one gripper must be plugged in.
-    python python/examples/ota_update.py tc-gu-01-master.bin
-
-    # Side selector: update the left or right half of the rig.
-    python python/examples/ota_update.py tc-gu-01-master.bin left
-    python python/examples/ota_update.py tc-gu-01-slave.bin right
+    # Upgrade every attached gripper with its matching role image. The usual one.
+    python python/examples/ota_update.py --all
 
     # Role selector: update whichever attached gripper matches the role.
     # The last character of the firmware SN decides the role: 'm' == master,
@@ -34,13 +33,17 @@ Usage:
     python python/examples/ota_update.py master
     python python/examples/ota_update.py slave
 
-    # Upgrade every attached gripper with its matching role image.
-    python python/examples/ota_update.py --all
+    # Side selector: update the left or right half of the rig.
+    python python/examples/ota_update.py master left
+    python python/examples/ota_update.py slave right
+
+    # An explicit image, when you mean a specific build rather than the
+    # current release.
+    python python/examples/ota_update.py tc-gu-01-master-1.2.5.bin
 
     # Tag the target version (informational; firmware uses it for the
     # post-install verification log + bank metadata).
-    python python/examples/ota_update.py tc-gu-01-master.bin \\
-        --target-version 1.2.2
+    python python/examples/ota_update.py master --target-version 1.2.5
 
     # Just probe — don't flash anything
     python python/examples/ota_update.py --get-status right
@@ -157,10 +160,28 @@ def _gripper_role(eps) -> str:
 
 
 def _default_firmware_for_role(role: str) -> str:
+    """The shipped image for a role, named by firmware/manifest.json.
+
+    The filename carries the version (tc-gu-01-slave-1.2.5.bin), so it cannot be
+    derived from the role alone — the manifest is the single place the current
+    release's filename is written, and `file` there is what this reads. That
+    also means the manifest is load-bearing for every role-selector and --all
+    invocation, so a missing or stale entry fails loudly here rather than
+    resolving to some older image that happens to still be on disk.
+    """
     role = role.lower()
     if role not in {"master", "slave"}:
         raise SystemExit(f"unknown role {role!r}: expected 'master' or 'slave'")
-    return os.path.join(_firmware_dir(), f"tc-gu-01-{role}.bin")
+    entry = _load_manifest().get("images", {}).get(role, {})
+    name = entry.get("file")
+    if not name:
+        raise SystemExit(
+            f"cannot resolve the {role} image: firmware/manifest.json is "
+            f"missing or has no images.{role}.file entry.\n"
+            f"Shipped images live in {_firmware_dir()}; pass one by name "
+            f"instead of using a role selector."
+        )
+    return os.path.join(_firmware_dir(), name)
 
 
 def _role_selector(target: str | None) -> str | None:
@@ -300,11 +321,15 @@ def _resolve_firmware(path: str) -> Optional[str]:
     """Find the image whether `path` is relative to the cwd or to this repo.
 
     The images ship inside this repo, but the repo is usually vendored as a
-    submodule of something else — so `firmware/tc-gu-01-master.bin`, the path
+    submodule of something else — so `firmware/tc-gu-01-master-1.2.5.bin`, the path
     our docs print because it works from the SDK root, is not the path that
     works from the parent repo's root. Rather than making every downstream
     README carry its own prefix, accept both: the literal path first, then the
     same path and the bare filename under our own firmware/.
+
+    Note the shipped names carry a version, so a hard-coded one from an older
+    README will simply not be found; the caller reports what is actually in
+    firmware/ so the fix is obvious.
     """
     if os.path.isfile(path):
         return path
@@ -320,9 +345,22 @@ def _resolve_firmware(path: str) -> Optional[str]:
 def _resolve_or_report(path: str) -> Optional[str]:
     resolved = _resolve_firmware(path)
     if resolved is None:
+        shipped = sorted(
+            n for n in os.listdir(_firmware_dir())
+            if n.endswith(".bin")
+        ) if os.path.isdir(_firmware_dir()) else []
+        hint = (
+            "        shipped images: " + ", ".join(shipped)
+            if shipped else "        no .bin found there"
+        )
         print(
             f"[ERROR] firmware file not found: {path}\n"
-            f"        shipped images live in {_firmware_dir()}",
+            f"        shipped images live in {_firmware_dir()}\n"
+            f"{hint}\n"
+            f"        release filenames carry the version, so a name from an "
+            f"older README will not resolve — prefer the role selectors "
+            f"(master / slave / --all), which read the current name from "
+            f"manifest.json.",
             file=sys.stderr,
         )
     return resolved

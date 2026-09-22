@@ -76,8 +76,18 @@ inactive bank and uses the STM32H5 bank swap, so one build serves both banks.
 ```bash
 python python/examples/ota_update.py \
     third_party/firmware/tc-gu-01/build/master/tc-gu-01-master.bin \
-    left --target-version 1.2.1
+    left --target-version 1.2.5
 ```
+
+Note the build output keeps the Makefile's unversioned name
+(`build/master/tc-gu-01-master.bin`), while the images released under
+`firmware/` carry the version (`tc-gu-01-master-1.2.5.bin`). That is deliberate:
+a build artifact is whatever you just compiled, a release is a specific version
+someone may still be holding a copy of months later. **If you promote a local
+build into `firmware/`, rename it and update `firmware/manifest.json` in the
+same change** — the manifest's `file` entry is what the role selectors and
+`--all` resolve, so the two drifting apart breaks exactly the path customers
+are told to use. `test_ota_update_all.py` fails if they disagree.
 
 > **刷完必须断电重插，这是升级流程的一部分，不是排障手段。**
 >
@@ -99,8 +109,7 @@ python python/examples/ota_update.py \
 > vendors this one as a submodule:
 >
 > ```bash
-> python python/examples/ota_update.py tc-gu-01-master.bin \
->     left --target-version 1.2.1
+> python python/examples/ota_update.py master left
 > ```
 
 Notes:

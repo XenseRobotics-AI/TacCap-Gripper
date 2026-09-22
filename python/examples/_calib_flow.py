@@ -249,7 +249,7 @@ def require_support(gripper, fw_version: str | None = None) -> None:
             f"(leader >= 1.2.0); this gripper reports {fw_version}.\n"
             f"  {e}\n"
             f"  Nothing was changed. Flash it first:\n"
-            f"      python {_ota_script_path()} tc-gu-01-master.bin \\\n"
+            f"      python {_ota_script_path()} master \\\n"
             f"          <left|right> --target-version 1.2.1\n"
             f"  (that image ships in this SDK under firmware/; pick it by the\n"
             f"   gripper's ROLE — the last character of its firmware SN, 'm'\n"

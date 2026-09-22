@@ -17,7 +17,7 @@ python python/examples/calibrate.py right
 python python/examples/fisheye_cal.py show right
 python python/examples/leader_normalized_position.py right
 python python/examples/wrist_camera.py right
-python python/examples/ota_update.py tc-gu-01-master.bin right
+python python/examples/ota_update.py master right
 python python/examples/ota_update.py --get-status right
 ```
 
