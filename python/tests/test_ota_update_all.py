@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 import types
+import zlib
 from pathlib import Path
 
 
@@ -29,7 +30,12 @@ taccap.Side = _DummySide
 taccap.LeaderGripper = object
 taccap.OtaSession = object
 taccap.OtaTargetVersion = _DummyOtaTargetVersion
-taccap.crc32_iso_hdlc = lambda data: 0
+# A real CRC-32, not a constant: the manifest lookup that identifies an image
+# (and therefore the version we send the firmware) is keyed on this value, so a
+# stub returning 0 would make every identification test pass or fail for the
+# wrong reason. zlib.crc32 IS CRC-32/ISO-HDLC -- the same polynomial, init and
+# final XOR -- which is why the manifest's crc32 fields verify against it.
+taccap.crc32_iso_hdlc = lambda data: zlib.crc32(data) & 0xFFFFFFFF
 
 taccap.log = types.SimpleNamespace(set_level=lambda *args, **kwargs: None)
 
@@ -87,6 +93,52 @@ def _manifest_file(role: str) -> str:
     every firmware bump and would fail as a stale test rather than a real one.
     """
     return mod._load_manifest()["images"][role]["file"]
+
+
+def _shipped(role: str) -> bytes:
+    return (Path(mod._firmware_dir()) / _manifest_file(role)).read_bytes()
+
+
+def test_image_version_is_identified_by_content_not_filename():
+    """A renamed .bin must still report its real version.
+
+    The filename carries the version, which is what makes a file in a download
+    folder identifiable — but a name is just a name: copy it, rename it, and it
+    starts lying. CRC32 against the manifest cannot: it identifies the bytes.
+    """
+    role, meta = mod._identify_image(_shipped("slave"))
+    assert role == "slave"
+    assert meta["version"] == mod._load_manifest()["images"]["slave"]["version"]
+
+
+def test_tampered_image_is_not_identified():
+    """One flipped byte makes it "not one of ours", which is the honest answer.
+
+    Failing to identify is not an error — a locally built or third-party image
+    is simply unknown, and the caller falls back to 0.0.0 rather than claiming
+    a version it cannot support.
+    """
+    raw = bytearray(_shipped("master"))
+    raw[100] ^= 0xFF
+    assert mod._identify_image(bytes(raw)) == (None, None)
+
+
+def test_target_version_defaults_to_the_identified_image_version():
+    """What we send the firmware should say what we are actually flashing.
+
+    The firmware writes this into its bank metadata and post-install log. It
+    used to default to 0.0.0 — "we do not know what this is" — while the CRC
+    lookup right next to it had already worked out the answer.
+    """
+    declared = mod._load_manifest()["images"]["slave"]["version"]
+    _role, meta = mod._identify_image(_shipped("slave"))
+    v = mod._parse_version(meta["version"])
+    assert f"{v.major}.{v.minor}.{v.patch}" == declared
+    assert v.build == 0
+
+    # An unidentified image still falls back to 0.0.0 rather than guessing.
+    zero = mod._parse_version(None)
+    assert (zero.major, zero.minor, zero.patch, zero.build) == (0, 0, 0, 0)
 
 
 def test_manifest_names_match_the_files_on_disk():

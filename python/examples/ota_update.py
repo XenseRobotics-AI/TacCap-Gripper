@@ -41,8 +41,11 @@ Usage:
     # current release.
     python python/examples/ota_update.py tc-gu-01-master-1.2.5.bin
 
-    # Tag the target version (informational; firmware uses it for the
-    # post-install verification log + bank metadata).
+    # The version sent to the firmware (it writes bank metadata and the
+    # post-install verification log with it) is taken from manifest.json by
+    # matching the image's CRC32 -- by CONTENT, not by filename, which anyone
+    # can rename. Pass --target-version only to override that, or to tag an
+    # image the manifest does not know.
     python python/examples/ota_update.py master --target-version 1.2.5
 
     # Just probe — don't flash anything
@@ -366,6 +369,35 @@ def _resolve_or_report(path: str) -> Optional[str]:
     return resolved
 
 
+def _identify_image(fw_bytes: bytes):
+    """CRC32 反查 firmware/manifest.json,返回 (role, meta) 或 (None, None)。
+
+    **按内容认,不按文件名认。** 发布镜像的文件名带版本
+    (tc-gu-01-slave-1.2.5.bin),但文件名是可以被改的 —— 拷走、重命名、从别处
+    下载,名字就开始说谎。CRC32 不会:它认的是这一份字节。
+
+    认不出来不是错误,只是"不是我们发布的镜像"(自己编的、第三方的),调用方按
+    未知处理即可。
+    """
+    images = _load_manifest().get("images", {})
+    if not images:
+        return None, None
+
+    # 按整数比,不要按字符串:"0x...".upper() 会把前缀里的 "x" 也大写,
+    # 于是字符串比较永远不匹配 —— 这个坑踩过一次。
+    def _crc_of(meta) -> int:
+        try:
+            return int(str(meta.get("crc32", "")), 16)
+        except ValueError:
+            return -1
+
+    crc = crc32_iso_hdlc(fw_bytes)
+    for role, meta in images.items():
+        if _crc_of(meta) == crc:
+            return role, meta
+    return None, None
+
+
 def _check_role(fw_bytes: bytes, firmware_sn: str, force: bool) -> int:
     """Refuse to flash an image built for the other role.
 
@@ -378,28 +410,17 @@ def _check_role(fw_bytes: bytes, firmware_sn: str, force: bool) -> int:
     fires for our released images; a hand-built or third-party .bin is
     unidentifiable and passes through with a note.
     """
-    manifest = _load_manifest()
-    images = manifest.get("images", {})
-    if not images or not firmware_sn:
+    if not firmware_sn:
         return 0
-
-    # Compare as integers, not strings: "0x...".upper() also uppercases the
-    # "x" in the prefix, so a string compare silently never matches.
-    def _crc_of(meta) -> int:
-        try:
-            return int(str(meta.get("crc32", "")), 16)
-        except ValueError:
-            return -1
-
-    crc = crc32_iso_hdlc(fw_bytes)
-    matched = next(
-        (role for role, meta in images.items() if _crc_of(meta) == crc), None
-    )
+    matched, meta = _identify_image(fw_bytes)
     if matched is None:
         print(f"  role check  : {_dim('image not in manifest, cannot verify')}")
         return 0
 
-    want = images[matched].get("sn_suffix", "")
+    # matched 之后还要 images,是为了反查「那这台其实该刷哪个」—— 给出替代文件名
+    # 比只说「刷错了」有用得多。
+    images = _load_manifest().get("images", {})
+    want = meta.get("sn_suffix", "")
     have = firmware_sn[-1:]
     if have == want:
         print(f"  role check  : OK — {matched} image, SN ends {have!r}")
@@ -441,14 +462,28 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
         return 1
 
     crc = crc32_iso_hdlc(fw_bytes)
-    target = _parse_version(args.target_version)
+    role, meta = _identify_image(fw_bytes)
+    image_ver = meta.get("version") if meta else None
+
+    # 没显式指定就用镜像自报的版本。这个字段是发给固件的,它拿去写 bank 元数据和
+    # 安装后的校验日志;缺省的 0.0.0 等于告诉固件"不知道刷的是什么",而我们其实
+    # 知道 —— CRC 刚刚认出来了。认不出来(自编/第三方镜像)才退回 0.0.0。
+    target = _parse_version(args.target_version or image_ver)
 
     print("=== OTA update ===")
     print(f"  firmware     : {fw_path}")
     print(f"  size         : {_format_size(fw_size)}")
     print(f"  CRC32        : 0x{crc:08X}")
+    if image_ver:
+        src = "manifest, matched by CRC32" if not args.target_version else \
+              "manifest, matched by CRC32; --target-version overrides what is sent"
+        print(f"  image ver    : {image_ver} ({role})  [{src}]")
+    else:
+        print(f"  image ver    : {_dim('未知 —— CRC32 不在 manifest 里,不是发布镜像')}")
     print(
         f"  target ver   : {_calib_flow.format_version(target.major, target.minor, target.patch)}"
+        + ("" if args.target_version or image_ver else
+           _dim("  (没有版本可报,固件会记下 0.0.0)"))
     )
     if _check_role(fw_bytes, getattr(eps, "firmware_sn", "") or "", args.force):
         return 1
