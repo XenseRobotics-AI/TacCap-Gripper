@@ -205,10 +205,28 @@ gitlab  git@192.168.110.140:xense/tc-gu-01.git
 ```
 
 Use SSH, not HTTP — HTTP prompts for a username that a non-interactive shell
-cannot supply. The shared trunk there is `hw_v1.1.0`, same name as on GitHub,
-and it carries other people's commits, so rebase onto it before pushing and
-open an MR rather than pushing the trunk directly. No GitLab mirror of this
-SDK repo is known; if one exists, ask for its URL rather than guessing.
+cannot supply. No GitLab mirror of this SDK repo is known; if one exists, ask
+for its URL rather than guessing.
+
+**GitHub is canonical for the firmware; GitLab is a mirror.** Land every change
+by merging the PR on GitHub, then push the resulting `hw_v1.1.0` to GitLab.
+**Never open an MR on GitLab** — that is what caused the divergence this rule
+exists to prevent: the same branch got merged separately on each side, so
+`hw_v1.1.0` carried a different merge commit per remote while the trees stayed
+identical. Two rounds of that were force-pushed away on 2026-09-22 (GitLab
+`b66d97c` / `89d8f2c` dropped in favour of GitHub `7b52fa5`), with the branch
+owner's agreement. It was harmless only because each feature branch happened to
+sit on a common ancestor, so both sides could still merge cleanly; a third round
+would not have been.
+
+```bash
+# after the GitHub PR is merged
+git fetch origin && git push gitlab origin/hw_v1.1.0:hw_v1.1.0
+```
+
+That push is a fast-forward as long as nobody merges on GitLab. If it is ever
+rejected, someone did — do not reach for `--force` on your own, ask first: the
+trunk is shared and a rewrite makes every other clone of it need a hard reset.
 
 `origin/main` takes external contributions, so **expect a rejected push**.
 Fetch, look at what landed, then rebase — never force-push to `main` as a
