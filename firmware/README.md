@@ -84,9 +84,15 @@ Measured on the same unit, same firmware, same cable, 60-second runs:
 | after OTA alone | 35–39 per run, three runs |
 | after unplug + replug | **0**, three runs |
 
-**Any measurement taken before the power cycle is suspect.** On a follower,
-"power-cycle" means cutting the **24 V** supply, not just unplugging USB: 24 V is
-a separate rail, so a USB replug restarts the MCU while the motor stays powered.
+**Any measurement taken before the power cycle is suspect.**
+
+"Power-cycle" here means **unplug the USB cable and the power cable together,
+and have both out at the same time**, then plug them back in. The two feed
+different domains — USB powers the MCU and its USB-serial bridge, the 24 V line
+powers the motor — so pulling either one on its own leaves the other half
+energised. Pulling them one after another, with the first already back in, never
+gives the board a moment with no power at all, which is the thing that resets
+it.
 
 ## How OTA works, briefly
 

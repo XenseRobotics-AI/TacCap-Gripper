@@ -89,7 +89,12 @@ same change** — the manifest's `file` entry is what the role selectors and
 `--all` resolve, so the two drifting apart breaks exactly the path customers
 are told to use. `test_ota_update_all.py` fails if they disagree.
 
-> **刷完必须断电重插，这是升级流程的一部分，不是排障手段。**
+> **刷完必须重新插拔,这是升级流程的一部分,不是排障手段。**
+>
+> 做法:**USB 数据线和电源线同时拔下**,两条都断开之后再一起插回。这两条线供的
+> 是不同的部分 —— USB 给 MCU 和 USB 转串口桥,24 V 给电机 —— 所以只拔其中一条,
+> 另一半始终带电。先后拔、拔第二条时第一条已经插回去了,板子就从来没有过完全
+> 断电的一刻,也就没有复位。
 >
 > bank-swap 重启是软复位：MCU 重新初始化，但片外的 USB 转串口桥从没断过电。设备
 > 回来之后停在一个降级状态，而这个状态和健康状态**从任何可观测的角度都分不出来**
@@ -101,7 +106,7 @@ are told to use. `test_ota_update_all.py` fails if they disagree.
 >
 > 在这上面栽过两次：先把它误判成"某只夹爪链路劣化、疑似硬件损坏"，又用两组都没
 > 断电的数据去比较固件版本，得出了并不存在的版本差异。**任何在断电之前取的数字
-> 都不可信。** 固件侧跟踪见 tc-gu-01 issue #6。
+> 都不可信。**
 
 > Only builds you made yourself need that path. To flash the **released**
 > images, name them and let the script find them in [`firmware/`](../firmware/) —

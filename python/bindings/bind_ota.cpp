@@ -59,9 +59,10 @@ void bind_ota(py::module_& m) {
         "FLASHING IS DESTRUCTIVE: update_from_file() and update_from_bytes()\n"
         "overwrite the MCU's inactive flash bank and swap it in. The wrong image\n"
         "for the unit leaves it unbootable, and there is no undo once apply has\n"
-        "gone through. POWER-CYCLE the gripper afterwards -- on a follower that\n"
-        "means cutting the 24 V supply, not just unplugging USB, because 24 V is a\n"
-        "separate rail that a USB replug never interrupts.\n\n"
+        "gone through. POWER-CYCLE the gripper afterwards: unplug the USB cable AND\n"
+        "the power cable at the same time, then reconnect both. They feed different\n"
+        "domains -- USB the MCU and its serial bridge, 24 V the motor -- so pulling\n"
+        "either one alone leaves the other half energised and does not reset it.\n\n"
         "get_status() and abort() are the recovery half: they tell you why an\n"
         "earlier attempt left the state machine stuck, and clear it.")
         .def("update_from_file", [](OtaSession& self,
@@ -94,10 +95,10 @@ void bind_ota(py::module_& m) {
             "every further command on this transport times out -- that is the\n"
             "expected end, not a failure; re-open the gripper once USB has\n"
             "re-enumerated.\n\n"
-            "POWER-CYCLE before trusting any measurement afterwards. The bank swap is\n"
+            "POWER-CYCLE before trusting any measurement afterwards -- unplug USB and\n"
+            "power together, then reconnect both. The bank swap is\n"
             "a soft reset: the unit comes back with the right version, a running\n"
-            "stream and clean counters while quietly dropping status frames. Cut the\n"
-            "24 V supply, not just USB.\n\n"
+            "stream and clean counters while quietly dropping status frames.\n\n"
             "Raises IoError when the file cannot be read, ProtocolError on a NACK, on\n"
             "an empty image, or on one past the 456 KiB single-bank maximum.")
         .def("update_from_bytes", [](OtaSession& self,

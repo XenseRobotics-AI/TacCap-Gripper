@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The post-OTA power-cycle is now stated as "unplug USB and power at the same
+  time".** Every place that documented it said "cut 24 V, not just USB", which
+  is necessary but not sufficient: the two cables feed different domains — USB
+  the MCU and its serial bridge, 24 V the motor — so pulling either alone leaves
+  the other half energised, and pulling them one after another (the first
+  already back in) never gives the board a moment with no power at all.
+  Corrected in the READMEs, `docs/FIRMWARE.md`, `docs/USAGE.md`,
+  `docs/EXAMPLES.md`, `manifest.json`, the `OtaSession` docstrings,
+  `ota_update.py`'s banner and the firmware-gate hint printed on a refusal.
+
 ## [0.2.3] - 2026-09-23
 
 Paired with firmware **1.2.6**.

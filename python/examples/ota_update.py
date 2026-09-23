@@ -6,7 +6,10 @@ TacCap-Gripper firmware over-the-air (OTA) update demo.
 Pushes a firmware .bin to the MCU's inactive Flash bank, verifies its
 CRC32, and triggers the bank-swap reboot. No SWD probe needed.
 
-POWER-CYCLE THE GRIPPER AFTERWARDS. The bank-swap reboot is a soft reset: it
+POWER-CYCLE THE GRIPPER AFTERWARDS -- unplug the USB cable AND the power cable
+at the same time, then plug both back in. They feed different domains, so
+pulling only one leaves the other half of the board energised.
+The bank-swap reboot is a soft reset: it
 restarts the MCU but never powers down the USB-serial bridge, and the device
 comes back in a degraded state that is indistinguishable from a healthy one --
 right version string, stream running, counters clean. The only symptom is that
@@ -530,6 +533,9 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     print("to confirm GetVersion returns the new version.")
     print()
     print("!! POWER-CYCLE THE GRIPPER BEFORE YOU TRUST ANY MEASUREMENT.")
+    print("   Unplug the USB cable AND the power cable at the same time, then")
+    print("   plug both back in. Pulling only one leaves the other half of the")
+    print("   board energised, which does not reset it.")
     print("   The reboot above is a SOFT reset: it restarts the MCU but does")
     print("   not power the USB-serial bridge down, and the device comes back")
     print("   in a degraded state that looks completely healthy. Measured on")

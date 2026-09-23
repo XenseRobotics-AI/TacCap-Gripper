@@ -110,9 +110,11 @@ python python/examples/ota_update.py slave left    # role selector picks the ima
 python python/examples/ota_update.py --all         # every attached gripper
 ```
 
-**Power-cycle after any flash** — on a follower that means cutting the **24 V**
-supply, not just unplugging USB. The bank-swap reboot is a soft reset that
-leaves the device looking healthy while dropping status frames.
+**Power-cycle after any flash.** Unplug **both the USB cable and the power
+cable, at the same time**, then reconnect — they feed different domains, so
+pulling only one leaves the other half of the board energised and does not reset
+it. The bank-swap reboot is a soft reset that leaves the device looking healthy
+while quietly dropping status frames.
 
 [`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
 the rest of the flashing detail.
@@ -476,7 +478,7 @@ g.set_auto_cal_config(cfg)                # (close-to-stall) + captures max_open
 ```bash
 python python/examples/ota_update.py slave      # role 选择器,自动挑镜像
 python python/examples/ota_update.py --all      # 所有在插的夹爪各刷各的镜像
-# 刷完必须断电重启
+# 刷完必须重新插拔:USB 线和电源线同时拔下,再一起插回
 ```
 
 OTA 本身走 `LeaderGripper`(角色无关),**不受这个检查影响**,升级通道始终可用。
@@ -686,7 +688,7 @@ python python/examples/leader_normalized_position.py left
 **Firmware:**
 
 ```bash
-python python/examples/ota_update.py slave left   # then CUT 24 V, not just USB
+python python/examples/ota_update.py slave left   # then unplug USB + power together
 ```
 
 ### What each one does to the device
@@ -698,7 +700,7 @@ Check this column before running anything on a rig that matters.
 | **Read-only** | `follower_status`, `read_intrinsics`, `wrist_camera`, `leader_normalized_position`, `fisheye_cal show` |
 | **Moves the motor** | `impedance_control`, `force_position_control`, `control_and_read`, `control_ripple`, `gripper_console` |
 | **Writes flash** | `calibrate`, `fisheye_cal set-*`, `--set-envelope` on `impedance_control` / `gripper_console` |
-| **Flashes firmware** | `ota_update` — destructive; power-cycle by cutting 24 V afterwards |
+| **Flashes firmware** | `ota_update` — destructive; afterwards unplug USB and power together, then reconnect |
 
 ### Two shared modules, not runnable
 

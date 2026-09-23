@@ -580,7 +580,8 @@ finally:
 - **日志。** 全 SDK 一个单例 logger(`xense.taccap.log`),控制台默认 INFO,
   文件 sink 恒为 DEBUG,落在 `~/.taccaplogs/session_*.log`(可用 `$TACCAP_LOG_DIR`
   改),最多留 10 份。出问题先翻这个文件,里面有控制台被过滤掉的那些行。
-- **固件刷完必须断电重插。** bank-swap 之后是软复位,设备看起来完全正常
+- **固件刷完必须重新插拔 —— USB 线与电源线同时拔下再一起插回。** bank-swap
+  之后是软复位,设备看起来完全正常
   (版本对、流在跑、计数干净),但会静默丢状态帧。见 [docs/FIRMWARE.md](FIRMWARE.md)。
 
 ---
