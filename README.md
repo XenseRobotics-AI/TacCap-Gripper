@@ -415,35 +415,8 @@ A blocked jaw is not a fault here: the error clamp saturates at
 `max_position_torque_nm` (default 1.1 Nm, the EL05's continuous stall rating)
 and holds there. Contact needs no detecting; saturation is what it looks like.
 
-> **Why the phase matters, and why 500 Hz is not a budget.** The firmware
-> applies the latest target at 500 Hz, but that says nothing about what
-> submitting at that rate costs. Every host→MCU frame that lands while the MCU
-> is transmitting makes it drop bytes out of the frame it is sending, and that
-> frame is discarded whole. A 41-byte status frame at 3 Mbps fills only ~137 µs
-> of each 10 ms period, so whether a submit collides depends on **when** it
-> lands, not how many you send: 250 Hz lost 154 status frames on one 60 s run
-> and none on the next.
->
-> Both controllers remove the collision instead of making it rarer — one submit
-> per received status frame, landing in the ~9.86 ms the MCU is known to be
-> idle. Measured with every camera on both grippers streaming and the motor
-> cycling: **6000 submits : 6000 frames : 0 missing**, four runs, both units
-> (taken on the since-removed `ControlLoop`, which used the same stream-locked
-> discipline). Free-running at 100 Hz on the same bench lost 156–308 frames per
-> run.
->
-> It does not protect ACK responses — a controller knows when the MCU emits
-> telemetry, not when it is answering somebody's command. Those survive because
-> commands retry, at ~31 ms of latency each.
->
-> **Feedback rate.** The motor's `actual_*` telemetry refreshes at ~50–100 Hz.
-> Read observations from the **stream**, not by polling `read_status()` —
-> polling `GetMotorStatus` above ~100 Hz can stall the firmware's refresh.
-
-**`ForcePositionController`** — use this one to **grasp something**.
-`ImpedanceController` also settles on a blocked jaw, but at its error budget, a
-config-time constant tuned for tracking. This one takes the grip force with each
-command (`set_target(p, grasp_torque_nm)`), ramps the travel speed, and reports
+**`ForcePositionController`** — the one for **grasping**. It takes the grip
+force with each command (`set_target(p, grasp_torque_nm)`) and reports
 `holding`, so a blocked jaw settles at exactly the force you asked for.
 
 ```python
