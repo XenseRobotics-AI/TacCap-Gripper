@@ -763,6 +763,28 @@ taccap-gripper/
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — layered stack, module map,
   threading model, and the boundary between this SDK and downstream consumers.
 
+## Citation
+
+If this SDK supports published work, please cite the release you actually used —
+the behaviour it documents is version-specific, and several defaults have moved
+between releases.
+
+```bibtex
+@software{taccap_gripper,
+  title        = {taccap-gripper: an SDK for the TacCap multimodal tactile gripper},
+  author       = {{XenseRobotics Co., Ltd.}},
+  year         = {2026},
+  url          = {https://github.com/XenseRobotics-AI/TacCap-Gripper},
+  version      = {VERSION},
+  license      = {Apache-2.0}
+}
+```
+
+Replace `VERSION` with the tag you built against — `python -c "import
+xense.taccap as t; print(t.__version__)"` reports what is installed. Firmware
+matters too: a measurement depends on the gripper firmware as much as on this
+SDK, so state that version as well (`g.firmware_version`).
+
 ## License
 
 Apache-2.0. Copyright (c) 2026 XenseRobotics Co., Ltd.

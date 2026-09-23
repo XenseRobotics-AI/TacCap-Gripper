@@ -706,6 +706,27 @@ taccap-gripper/
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** —— 分层结构、模块地图、
   线程模型,以及本 SDK 与下游使用方之间的边界。
 
+## 引用
+
+如果本 SDK 支撑了公开发表的工作,请引用你**实际使用的那个版本** —— 文档描述的
+行为是跟版本走的,好几个默认值在不同版本之间变过。
+
+```bibtex
+@software{taccap_gripper,
+  title        = {taccap-gripper: an SDK for the TacCap multimodal tactile gripper},
+  author       = {{XenseRobotics Co., Ltd.}},
+  year         = {2026},
+  url          = {https://github.com/XenseRobotics-AI/TacCap-Gripper},
+  version      = {VERSION},
+  license      = {Apache-2.0}
+}
+```
+
+把 `VERSION` 换成你构建时用的 tag —— `python -c "import xense.taccap as t;
+print(t.__version__)"` 会打印当前装的是哪个版本。固件同样要写:一次测量取决于
+夹爪固件的程度不亚于取决于本 SDK,所以把固件版本也一并注明
+(`g.firmware_version`)。
+
 ## 许可证
 
 Apache-2.0。Copyright (c) 2026 XenseRobotics Co., Ltd.
