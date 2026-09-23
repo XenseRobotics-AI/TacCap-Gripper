@@ -1,23 +1,21 @@
 # 示例脚本
 
-<!-- 从 README.md 拆出，保持内容不变；README 只保留入门路径。 -->
+`python/examples/` 下 12 个可运行脚本的参考手册:每个脚本做什么、对设备做什么、
+以及力位混合控制器的完整调参说明。
 
-## Examples
+**想先跑起来看** README 的
+[Examples](../README.md#examples) —— 那里是按顺序的上手路径(扫描 → 读状态 →
+配包络 → 试运动 → 夹持)。这里是逐脚本的细节。
 
-All scripts live under `python/examples/`. C++ examples build by default into
-`build/cpp/examples/` — they were off until 2026-09-22, which meant nothing
-compiled them and an SDK signature change could break them while CI stayed
-green. Pass `-DTACCAP_BUILD_EXAMPLES=OFF` to skip them; the wheel build already
-does.
+C++ 示例默认构建进 `build/cpp/examples/`。它们到 2026-09-22 之前一直是关的,
+意味着没人编译它们 —— SDK 改个签名就能把它们全弄坏而 CI 照样绿。
+`-DTACCAP_BUILD_EXAMPLES=OFF` 可以跳过;wheel 构建本来就关着。
 
 **刻意不提供电机原语的示例。** `submit_position` / `submit_velocity` /
 `submit_torque` / `submit_impedance` 是裸 MIT 帧,不经过主机侧的误差钳位、力矩
 天花板和堵转保护 —— 直接拿它们顶硬物体,`kp x 位置误差` 会一路涨到电机自己的
 0x700B 上限(6 Nm),24 V 母线被电流拉垮、打出 `EN|FAULT|UNDER_VOLT`,此后无力矩、
-必须重新上电。要控制就用上面两个控制器。
-
-C++ 示例和 Python 用**同一套目标选择**(`left` / `right` / SN):工位上常年插着
-四台,而 `FollowerGripper::open()` 走 `find_one()`,多于一台直接抛 `IoError`。
+必须重新上电。要控制就用下面两个控制器。
 
 ## 选谁:统一用 `left` / `right`
 
@@ -55,25 +53,61 @@ python python/examples/ota_update.py --get-status right
 不是夹爪,而它按 side+role 找夹爪读内参那段刻意保留自己的实现 —— 那里失败必须是
 可捕获的异常(调用方要降级到参考内参),而 `resolve_target()` 是 `sys.exit()`。
 
-| Script                           | What it does                                                                                                                                                                                                                                                                                                                                                                                |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `calibrate.py`                   | Per-gripper encoder calibration CLI, selected by `left` / `right` (or an explicit SN) — latches the zero **and stores the measured travel span** (`Cmd::EncoderMaxCal`), which is what unlocks normalized position. Shows raw + cooked side-by-side, then a live `raw \| cooked \| position 0..1` readout. Checks firmware support before writing anything. See [Calibration](#calibration).                                                          |
-| `impedance_control.py`           | `ImpedanceController` 的用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列,并检查「到位」与「被挡住」可分。同时是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope --peak --cont --temp-wall`)。**真实运动。** |
-| `force_position_control.py`      | `ForcePositionController` 的用法:同样两个调用。**全程一条有界力矩控制律,不检测接触** —— 钳位饱和就是接触;闭合端点另有有界前馈预压把爪子坐死在机械止点。输出里 `cmd` 与实测力矩的差就是固件的热降额。**真实运动 + 夹持力。** |
-| `gripper_console.py`             | 单夹爪键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个 UI,并内置**运动安全包络**的配置入口。表头常驻 `ENFORCED` / `*** INACTIVE ***`。**真实运动 + 夹持力。** 见 [力位混合控制器](#力位混合控制器)。 |
-| `read_intrinsics.py`             | **只读**腕相机内参,输出 JSON。走 `resolve_fisheye()` 而不是 `read_fisheye()` —— 没标定过的机器对读请求回的是**全零记录而不是 NACK**,直接拿去矫正会把每一帧变全黑。输出的 `source` 字段标明内参来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败退出。JSON 走 stdout、诊断走日志,可以直接 `> cal.json` 或管道给 `jq`。记录里**不存图像尺寸**,所以 `assumed_image_size` 把 640x480 这个假设显式写出来。**只读,不写 flash、不动电机。** |
-| `fisheye_cal.py`                 | Read/write the flash-persisted calibration records (V2.0/V2.1): `show`, `set-fisheye` (flags or an OpenCV `.npz` holding `K`/`D`), `set-encoder-max`, and `measure-encoder-max` — the guided close-zero → open-sample → store flow that unlocks normalized leader position.                                                                                                                     |
-| `wrist_camera.py`                | Stand-alone wrist-camera viewer, selected by `left` / `right` (or an XC serial) like every other example. **XC wrist cameras only** — a GSPS visuotactile serial or a raw `/dev/videoN` path is refused, since those sensors belong to `xensesdk`. Fisheye undistortion on a switch, **off by default like the SDK itself**: `--undistort` / `--compare` (raw \| rectified side by side), `--balance`, and `u` / `[` `]` to cycle live. Intrinsics come from the same-side gripper via `resolve_fisheye()`, from a `.npz`, or from the SDK reference values with `--no-mcu`. Headless with `--no-display` (+ `--save-dir` for one PNG/s). |
-| `leader_normalized_position.py`  | Streams a leader gripper's opening as `0..1` via `normalize_position=True`, with a live bar. Needs the encoder-max record (or `--encoder-max-rad` to bypass the firmware read).                                                                                                                                                                                                              |
-| `ota_update.py`                  | Firmware OTA flashing CLI with progress + post-flash status probe. **Risky — wrong artefact bricks the MCU.**                                                                                                                                                                                                                                                                               |
-| `follower_status.py`             | **只读**从爪状态:一次性读(位置/速度/力矩/温度/状态位/故障)、归一化开度、开流读速率,以及**新鲜度判据** —— 用固件的 `status_timestamp_ms` 而不是「帧还在到」,后者在状态冻结时照样推进。**不动电机。** |
-| `control_and_read.py`            | **边控制边读**:控制器跑着的时候状态从哪里拿。`snapshot()` 非阻塞、一把锁一致视图,读侧不发任何命令 —— 控制期间调 `read_status()` 会让 ACK 和控制帧在串口上撞车。读侧频率与控制无关,示例里控制 100 Hz、读 10 Hz。**真实运动。** |
-| `control_ripple.py`              | 量**控制质量**而不是功能:行进段的相对速度纹波、峰峰、均速/命令、逆向帧。指标与 `docs/CONTROL_REFACTOR.md` §1.2 的基线表一致,可直接对比重构前后。两个控制器都能测。**真实运动。** |
-| `leader_demo` (C++)              | Reports streaming rates for a single leader gripper over 5 seconds.                                                                                                                                                                                                                                                                                                                         |
-| `follower_status` (C++)          | `follower_status.py` 的 C++ 对应物,同样的字段与新鲜度判据。                                                                                                                                                                                                                                                                                                                                 |
-| `follower_impedance` (C++)       | 阻抗控制 **+ 边控边读**:C++ 侧把这两件事放在一个示例里,因为 `snapshot()` 就是答案,拆成两个文件只会重复。                                                                                                                                                                                                                                                                                    |
-| `follower_force_position` (C++)  | 力位混合控制,带那条不变式检查:报告 holding 时爪子必须明显没到命令位置。                                                                                                                                                                                                                                                                                                                     |
+C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper::open()` 走
+`find_one()` —— 多于一台直接抛 `IoError`,不猜。
 
+## 脚本一览
+
+按任务分组。**「对设备做什么」这一列先看** —— 上真机之前它决定这条命令值不值得
+现在跑。
+
+### 控制
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `impedance_control.py` | 动电机 | `ImpedanceController` 的用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列,并检查「到位」与「被挡住」可分。同时是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope --peak --cont --temp-wall`)。|
+| `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 的用法:同样两个调用。**全程一条有界力矩控制律,不检测接触** —— 钳位饱和就是接触;闭合端点另有有界前馈预压把爪子坐死在机械止点。输出里 `cmd` 与实测力矩的差就是固件的热降额。|
+| `gripper_console.py` | 动电机 + 夹持力 | 单夹爪键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个 UI,并内置**运动安全包络**的配置入口。表头常驻 `ENFORCED` / `*** INACTIVE ***`。见 [力位混合控制器](#力位混合控制器)。|
+| `control_and_read.py` | 动电机 | **边控制边读**:控制器跑着的时候状态从哪里拿。`snapshot()` 非阻塞、一把锁一致视图,读侧不发任何命令 —— 控制期间调 `read_status()` 会让 ACK 和控制帧在串口上撞车。读侧频率与控制无关,示例里控制 100 Hz、读 10 Hz。|
+| `control_ripple.py` | 动电机 | 量**控制质量**而不是功能:行进段的相对速度纹波、峰峰、均速/命令、逆向帧。指标与 `docs/CONTROL_REFACTOR.md` §1.2 的基线表一致,可直接对比重构前后。两个控制器都能测。|
+
+### 状态与诊断
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `follower_status.py` | 只读 | 从爪状态:一次性读(位置/速度/力矩/温度/状态位/故障)、归一化开度、开流读速率,以及**新鲜度判据** —— 用固件的 `status_timestamp_ms` 而不是「帧还在到」,后者在状态冻结时照样推进。|
+
+### 标定
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `calibrate.py` | 写 flash | Per-gripper encoder calibration CLI, selected by `left` / `right` (or an explicit SN) — latches the zero **and stores the measured travel span** (`Cmd::EncoderMaxCal`), which is what unlocks normalized position. Shows raw + cooked side-by-side, then a live `raw \| cooked \| position 0..1` readout. Checks firmware support before writing anything. See [Calibration](#calibration). |
+| `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | Read/write the flash-persisted calibration records (V2.0/V2.1): `show`, `set-fisheye` (flags or an OpenCV `.npz` holding `K`/`D`), `set-encoder-max`, and `measure-encoder-max` — the guided close-zero → open-sample → store flow that unlocks normalized leader position. |
+| `read_intrinsics.py` | 只读 | 腕相机内参,输出 JSON。走 `resolve_fisheye()` 而不是 `read_fisheye()` —— 没标定过的机器对读请求回的是**全零记录而不是 NACK**,直接拿去矫正会把每一帧变全黑。输出的 `source` 字段标明内参来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败退出。JSON 走 stdout、诊断走日志,可以直接 `> cal.json` 或管道给 `jq`。记录里**不存图像尺寸**,所以 `assumed_image_size` 把 640x480 这个假设显式写出来。|
+
+### 相机与主爪
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `wrist_camera.py` | 只读 | Stand-alone wrist-camera viewer, selected by `left` / `right` (or an XC serial) like every other example. **XC wrist cameras only** — a GSPS visuotactile serial or a raw `/dev/videoN` path is refused, since those sensors belong to `xensesdk`. Fisheye undistortion on a switch, **off by default like the SDK itself**: `--undistort` / `--compare` (raw \| rectified side by side), `--balance`, and `u` / `[` `]` to cycle live. Intrinsics come from the same-side gripper via `resolve_fisheye()`, from a `.npz`, or from the SDK reference values with `--no-mcu`. Headless with `--no-display` (+ `--save-dir` for one PNG/s). |
+| `leader_normalized_position.py` | 只读 | Streams a leader gripper's opening as `0..1` via `normalize_position=True`, with a live bar. Needs the encoder-max record (or `--encoder-max-rad` to bypass the firmware read). |
+
+### 固件
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `ota_update.py` | **刷固件** — 刷完断 24V | 固件 OTA:带进度条,刷完探一次状态。**错镜像会让 MCU 起不来。** |
+
+### C++ 示例
+
+构建进 `build/cpp/examples/`。
+
+| 示例 | 说明 |
+|---|---|
+| `leader_demo` | Reports streaming rates for a single leader gripper over 5 seconds. |
+| `follower_status` | `follower_status.py` 的 C++ 对应物,同样的字段与新鲜度判据。|
+| `follower_impedance` | 阻抗控制 **+ 边控边读**:C++ 侧把这两件事放在一个示例里,因为 `snapshot()` 就是答案,拆成两个文件只会重复。|
+| `follower_force_position` | 力位混合控制,带那条不变式检查:报告 holding 时爪子必须明显没到命令位置。|
 
 ## 力位混合控制器
 
@@ -99,16 +133,16 @@ python python/examples/ota_update.py --get-status right
 
 ```bash
 # 写入并启用后退出(set 在 show 之前执行),默认 peak=2.0 cont=1.6、温度走固件 90/100
-python python/examples/gripper_console.py --set-envelope --show-envelope
+python python/examples/gripper_console.py right --set-envelope --show-envelope
 
 # 写完直接进控制台
-python python/examples/gripper_console.py --set-envelope --mode force-position
+python python/examples/gripper_console.py right --set-envelope --mode force-position
 
 # 只看不写
-python python/examples/gripper_console.py --show-envelope
+python python/examples/gripper_console.py right --show-envelope
 
 # 等价入口,参数名一致
-python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
+python python/examples/impedance_control.py right --set-envelope --peak 2.0 --cont 1.6
 ```
 
 读回 `flags=0x2003` 即生效(高 4 位 layout 2 | `VALID` | `ENFORCE`)。
@@ -131,13 +165,13 @@ python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 ### 1. 启动
 
 ```bash
-python python/examples/gripper_console.py --mode force-position
-python python/examples/gripper_console.py --mode force-position --grasp-torque 1.2
-python python/examples/gripper_console.py --mode force-position \
+python python/examples/gripper_console.py right --mode force-position
+python python/examples/gripper_console.py right --mode force-position --grasp-torque 1.2
+python python/examples/gripper_console.py right --mode force-position \
        --grasp-torque 1.2 --close-speed 0.5
 
 # 非交互版本:同一个控制器,跑一遍固定 target 序列
-python python/examples/force_position_control.py --grasp-torque 1.4
+python python/examples/force_position_control.py right --grasp-torque 1.4
 ```
 
 ### 2. 命令行参数
