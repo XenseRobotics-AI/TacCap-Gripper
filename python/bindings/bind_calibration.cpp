@@ -12,19 +12,29 @@ namespace xense::taccap::python {
 void bind_calibration(py::module_& m) {
     using namespace xense::taccap;
     // ---- CameraFisheyeCal (V2.0 — Cmd::CameraFisheyeCal 0x2B) -------------
-    py::class_<protocol::CameraFisheyeCal>(m, "CameraFisheyeCal")
-        .def(py::init([]() { return protocol::CameraFisheyeCal{}; }))
+    py::class_<protocol::CameraFisheyeCal>(m, "CameraFisheyeCal",
+        "Wrist-camera intrinsics and fisheye distortion, as the firmware persists\n"
+        "them (Cmd 0x2B, command set >= V2.0). k1..k4 are the OpenCV fisheye\n"
+        "(equidistant) coefficients, in D order.\n\n"
+        "Eight floats in an order fixed by the firmware. The record carries no image\n"
+        "size: the wrist lens is calibrated at 640x480, and FisheyeUndistorter\n"
+        "rejects any other frame size rather than guessing a scale factor.")
+        .def(py::init([]() { return protocol::CameraFisheyeCal{}; }),
+             "All-zero record. Not usable for rectification -- fx = fy = 0 maps every\n"
+             "pixel outside the source image, so the frame comes back black.")
         .def(py::init([](float fx, float fy, float cx, float cy,
                          float k1, float k2, float k3, float k4) {
                  return protocol::CameraFisheyeCal{fx, fy, cx, cy, k1, k2, k3, k4};
              }),
              py::arg("fx"), py::arg("fy"), py::arg("cx"), py::arg("cy"),
              py::arg("k1") = 0.0f, py::arg("k2") = 0.0f,
-             py::arg("k3") = 0.0f, py::arg("k4") = 0.0f)
-        .def_readwrite("fx", &protocol::CameraFisheyeCal::fx)
-        .def_readwrite("fy", &protocol::CameraFisheyeCal::fy)
-        .def_readwrite("cx", &protocol::CameraFisheyeCal::cx)
-        .def_readwrite("cy", &protocol::CameraFisheyeCal::cy)
+             py::arg("k3") = 0.0f, py::arg("k4") = 0.0f,
+             "Build from focal length and principal point in px, plus the four\n"
+             "distortion coefficients (default 0, i.e. no distortion model).")
+        .def_readwrite("fx", &protocol::CameraFisheyeCal::fx, "Focal length x, px.")
+        .def_readwrite("fy", &protocol::CameraFisheyeCal::fy, "Focal length y, px.")
+        .def_readwrite("cx", &protocol::CameraFisheyeCal::cx, "Principal point x, px.")
+        .def_readwrite("cy", &protocol::CameraFisheyeCal::cy, "Principal point y, px.")
         .def_readwrite("k1", &protocol::CameraFisheyeCal::k1)
         .def_readwrite("k2", &protocol::CameraFisheyeCal::k2)
         .def_readwrite("k3", &protocol::CameraFisheyeCal::k3)
@@ -56,7 +66,16 @@ void bind_calibration(py::module_& m) {
         });
 
     // ---- Calibration (V2.0/V2.1 firmware-persisted calibration records) ----
-    py::class_<Calibration>(m, "Calibration")
+    py::class_<Calibration>(m, "Calibration",
+        "The calibration records the firmware keeps in MCU flash; reach it as\n"
+        "gripper.calibration.\n\n"
+        "The firmware is a dumb store for both records: it persists the bytes, does\n"
+        "no unit conversion and no range clamping, and rejects only NaN/Inf (plus\n"
+        "max_rad <= 0). Every call here is a command round trip that blocks for the\n"
+        "ACK, so none of them belong in a control loop.\n\n"
+        "A record that was never written NACKs ErrorCode.CalNotSet, which the read\n"
+        "methods surface as None -- an expected state, not an error. Every other\n"
+        "NACK raises ProtocolError.")
         .def("read_fisheye",
              [](Calibration& self, unsigned timeout_ms) -> py::object {
                  std::optional<protocol::CameraFisheyeCal> v;
@@ -126,21 +145,41 @@ void bind_calibration(py::module_& m) {
              "flash. Firmware rejects NaN/Inf and max_rad <= 0.");
 
     // ---- GripperPosition: pure raw-rad <-> normalized [0,1] converter ------
-    py::class_<GripperPosition>(m, "GripperPosition")
-        .def(py::init<>())
-        .def(py::init<const protocol::GripperConfig&>(), py::arg("config"))
+    py::class_<GripperPosition>(m, "GripperPosition",
+        "Converter between a normalized position in [0, 1] (0 = fully closed,\n"
+        "1 = fully open) and the follower motor's raw shaft angle in rad.\n\n"
+        "Pure and hardware-free: usable without opening a gripper. The motor zero\n"
+        "is the closed pose and travel runs to max_open_rad, in the motor's negative\n"
+        "direction when the config carries the reverse flag. Both conversions clamp,\n"
+        "so a caller cannot command past the calibrated travel -- the firmware clamps\n"
+        "to the same range anyway.")
+        .def(py::init<>(),
+             "Unconfigured converter: valid is False and both conversions return 0.0.")
+        .def(py::init<const protocol::GripperConfig&>(), py::arg("config"),
+             "Build from a firmware GripperConfig, e.g.\n"
+             "FollowerGripper.get_gripper_config().")
         .def_static("from_travel", &GripperPosition::from_travel,
                     py::arg("max_rad"), py::arg("min_rad") = 0.0f,
                     py::arg("reverse") = false,
                     "Build from an explicit travel span instead of a "
                     "GripperConfig — this is how the leader gripper's map is "
                     "built from its EncoderMaxCal value.")
-        .def_property_readonly("valid",        &GripperPosition::valid)
+        .def_property_readonly("valid",        &GripperPosition::valid,
+                               "True when the travel span is positive and, for a converter built\n"
+                               "from a GripperConfig, the config's valid bit is set. False means the\n"
+                               "gripper is not calibrated and a normalized position is meaningless.")
         .def_property_readonly("max_open_rad", &GripperPosition::max_open_rad)
-        .def_property_readonly("min_open_rad", &GripperPosition::min_open_rad)
-        .def_property_readonly("reverse",      &GripperPosition::reverse)
-        .def("to_position", &GripperPosition::to_position, py::arg("raw_rad"))
-        .def("to_rad",      &GripperPosition::to_rad,      py::arg("position"))
+        .def_property_readonly("min_open_rad", &GripperPosition::min_open_rad,
+                               "Raw shaft angle normalized 0.0 maps to -- not always zero; see\n"
+                               "GripperConfig.min_open_rad.")
+        .def_property_readonly("reverse",      &GripperPosition::reverse,
+                               "True when open travel advances in the motor's negative direction.")
+        .def("to_position", &GripperPosition::to_position, py::arg("raw_rad"),
+             "Raw shaft angle (rad) -> normalized position, clamped to [0, 1].\n"
+             "Returns 0.0 when the travel span is not positive.")
+        .def("to_rad",      &GripperPosition::to_rad,      py::arg("position"),
+             "Normalized position -> raw shaft angle (rad). The input is clamped to\n"
+             "[0, 1] first, so the result never leaves the calibrated travel.")
         .def("__repr__", [](const GripperPosition& gp) {
             char buf[96];
             std::snprintf(buf, sizeof(buf),

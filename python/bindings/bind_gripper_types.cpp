@@ -12,14 +12,26 @@ namespace xense::taccap::python {
 void bind_gripper_types(py::module_& m) {
     using namespace xense::taccap;
     // ---- V1.7 follower (slave) types ------------------------------------
-    py::enum_<protocol::MotorProtocol>(m, "MotorProtocol")
+    py::enum_<protocol::MotorProtocol>(m, "MotorProtocol",
+        "CAN protocol the follower's motor speaks (Cmd 0x36 switches, 0x37 reads).\n\n"
+        "Mit is what this SDK controls with. Private is the vendor's own protocol\n"
+        "and the only one that answers the single-parameter accesses (Cmd 0x38/0x39)\n"
+        "-- under Mit those NACK. The choice is persisted in the motor and switching\n"
+        "it costs a power cycle each way.")
         .value("Private", protocol::MotorProtocol::Private)
         .value("Mit",     protocol::MotorProtocol::Mit);
 
     // V2.2 — MotorStatusExt.stop_reason / MotorFaultReport.stop_reason. The
     // fault/monitor *bit masks* stay C++-only, matching MotorStatusBit: Python
     // gets the raw integers and masks them itself.
-    py::enum_<protocol::MotorStopReason>(m, "MotorStopReason")
+    py::enum_<protocol::MotorStopReason>(m, "MotorStopReason",
+        "Why the follower's motor last stopped; carried as a raw integer in\n"
+        "MotorStatusExt.stop_reason and MotorFaultReport.stop_reason.\n\n"
+        "HostTimeout means the slave control task found its cached target stale --\n"
+        "the host stopped sending. It is NOT the motor's own 0x7028 CAN timeout,\n"
+        "which cannot fire on host loss: the MCU keeps re-sending the cached target\n"
+        "at 500 Hz, so CAN frames never stop arriving.\n\n"
+        "None_ carries the trailing underscore only because None is a keyword.")
         .value("None_",        protocol::MotorStopReason::None)
         .value("Disable",      protocol::MotorStopReason::Disable)
         .value("Emergency",    protocol::MotorStopReason::Emergency)
@@ -28,19 +40,34 @@ void bind_gripper_types(py::module_& m) {
         .value("ControlError", protocol::MotorStopReason::ControlError)
         .value("HostTimeout",  protocol::MotorStopReason::HostTimeout);
 
-    py::class_<protocol::GripperConfig>(m, "GripperConfig")
+    py::class_<protocol::GripperConfig>(m, "GripperConfig",
+        "Follower travel calibration as the firmware persists it (Cmd 0x66/0x67),\n"
+        "and the record GripperPosition builds its normalized [0,1] map from.\n\n"
+        "The 32-byte record also carries the GripperEnvelope in a trailing block\n"
+        "this class does not expose. A config read back from the device still holds\n"
+        "those bytes and can be written straight back; one constructed here has them\n"
+        "zeroed, so writing that drops a stored envelope -- read, modify, write.")
         .def(py::init([]() {
             protocol::GripperConfig c{};
             c.magic   = protocol::GRIPPER_CONFIG_MAGIC;
             c.version = protocol::GRIPPER_CONFIG_VERSION;
             c.flags   = protocol::GripperConfigFlag::Valid;
             return c;
-        }))
-        .def_readwrite("magic",        &protocol::GripperConfig::magic)
-        .def_readwrite("version",      &protocol::GripperConfig::version)
-        .def_readwrite("flags",        &protocol::GripperConfig::flags)
+        }), "Zero record with the magic, the version and the Valid flag filled in.")
+        .def_readwrite("magic",        &protocol::GripperConfig::magic,
+                       "Record tag, 0x47525052 ('GRPR'); the constructor fills it in.")
+        .def_readwrite("version",      &protocol::GripperConfig::version,
+                       "Record layout version; the constructor fills in the one this SDK writes.")
+        .def_readwrite("flags",        &protocol::GripperConfig::flags,
+                       "Bit 0 (0x0001) the record is valid, bit 1 (0x0002) reverse -- 'open'\n"
+                       "is the motor's NEGATIVE direction. GripperPosition treats the gripper\n"
+                       "as calibrated only when bit 0 is set and the travel span is positive.")
         .def_readwrite("max_open_rad", &protocol::GripperConfig::max_open_rad)
-        .def_readwrite("min_open_rad", &protocol::GripperConfig::min_open_rad)
+        .def_readwrite("min_open_rad", &protocol::GripperConfig::min_open_rad,
+                       "Raw shaft angle normalized 0.0 maps to. NOT always zero: the power-on\n"
+                       "auto-calibration zeroes the motor while the jaw is held loaded, so the\n"
+                       "firmware stores a small inset here to keep normalized 0.0 a point\n"
+                       "control can actually reach.")
         .def("__repr__", [](const protocol::GripperConfig& c) {
             char buf[128];
             std::snprintf(buf, sizeof(buf),
@@ -63,12 +90,29 @@ void bind_gripper_types(py::module_& m) {
         "zero, so such a clamp would never fire; the motor's own limit_spd "
         "(0x7017) is the right layer but is unreachable while the motor speaks "
         "MIT. Approach speed comes from peak_torque_nm/kd instead.")
-        .def(py::init<>())
-        .def_readwrite("cont_torque_nm",     &protocol::GripperEnvelope::cont_torque_nm)
-        .def_readwrite("peak_torque_nm",     &protocol::GripperEnvelope::peak_torque_nm)
-        .def_readwrite("temp_derate_start_c", &protocol::GripperEnvelope::temp_derate_start_c)
-        .def_readwrite("temp_wall_c",        &protocol::GripperEnvelope::temp_wall_c)
-        .def_readwrite("flags",              &protocol::GripperEnvelope::flags)
+        .def(py::init<>(), "All-zero envelope: flags 0, i.e. neither valid nor enforced.")
+        .def_readwrite("cont_torque_nm",     &protocol::GripperEnvelope::cont_torque_nm,
+                       "Indefinitely holdable torque, N*m; the ceiling for the feed-forward\n"
+                       "term. 0 = unlimited.")
+        .def_readwrite("peak_torque_nm",     &protocol::GripperEnvelope::peak_torque_nm,
+                       "Motion transient ceiling, N*m, applied by holding the commanded\n"
+                       "position within peak_torque_nm/kp of the measured one. 0 = unlimited.\n"
+                       "It also sets the approach speed, about peak_torque_nm/kd: measured on\n"
+                       "firmware 1.1.5 with peak = 1.5 N*m and kd = 1.0, 1.70 rad/s.")
+        .def_readwrite("temp_derate_start_c", &protocol::GripperEnvelope::temp_derate_start_c,
+                       "Board/case temperature (C) where the linear torque derate begins.\n"
+                       "0 = firmware default, 90 C.")
+        .def_readwrite("temp_wall_c",        &protocol::GripperEnvelope::temp_wall_c,
+                       "Board/case temperature (C) above which only the minimum hold torque is\n"
+                       "allowed. 0 = firmware default, 100 C. This is case temperature, not the\n"
+                       "winding, which runs hotter by an unmeasured margin.")
+        .def_readwrite("flags",              &protocol::GripperEnvelope::flags,
+                       "GRIPPER_ENVELOPE_VALID (0x0001) marks the record written,\n"
+                       "GRIPPER_ENVELOPE_ENFORCE (0x0002) makes the firmware apply it every\n"
+                       "cycle -- without it the record is stored and ignored. The top nibble is\n"
+                       "the layout version, stamped by FollowerGripper.set_envelope() so\n"
+                       "firmware built against another field order refuses the record instead\n"
+                       "of misreading it.")
         .def("__repr__", [](const protocol::GripperEnvelope& e) {
             char buf[192];
             std::snprintf(buf, sizeof(buf),
@@ -82,26 +126,48 @@ void bind_gripper_types(py::module_& m) {
     envmod.attr("GRIPPER_ENVELOPE_LAYOUT_VERSION") = protocol::GripperEnvelopeFlag::LayoutVersion;
     envmod.attr("GRIPPER_ENVELOPE_ENFORCE") = (uint16_t)0x0002;
 
-    py::class_<protocol::GripperAutoCalConfig>(m, "GripperAutoCalConfig")
+    py::class_<protocol::GripperAutoCalConfig>(m, "GripperAutoCalConfig",
+        "Power-on auto-calibration config, persisted in the follower (Cmd 0x68/0x69).\n\n"
+        "With the Enable flag set, the firmware calibrates itself on every power-up:\n"
+        "it closes until the motor stalls at close_stall_torque_nm -- that pose\n"
+        "becomes zero -- then opens until it stalls at open_stall_torque_nm, and\n"
+        "that span becomes max_open.\n\n"
+        "V2.2 changed the procedure without changing the wire layout: a stall is\n"
+        "confirmed from one sample held for stall_hold_ms rather than averaged, the\n"
+        "open stall records the frame before the trigger, and 0.013 rad is subtracted\n"
+        "from the saved max_open as margin. Expect a slightly smaller max_open than\n"
+        "the same hardware reported on 1.1.1.")
         .def(py::init([]() {
             protocol::GripperAutoCalConfig c{};
             c.magic   = protocol::GRIPPER_AUTO_CAL_MAGIC;
             c.version = protocol::GRIPPER_AUTO_CAL_VERSION;
             c.flags   = protocol::GripperAutoCalFlag::Valid;
             return c;
-        }))
-        .def_readwrite("magic",                &protocol::GripperAutoCalConfig::magic)
-        .def_readwrite("version",              &protocol::GripperAutoCalConfig::version)
-        .def_readwrite("flags",                &protocol::GripperAutoCalConfig::flags)
-        .def_readwrite("close_stall_torque_nm", &protocol::GripperAutoCalConfig::close_stall_torque_nm)
-        .def_readwrite("open_stall_torque_nm",  &protocol::GripperAutoCalConfig::open_stall_torque_nm)
+        }), "Zero record with the magic, the version and the Valid flag filled in.\n"
+            "Auto-cal still needs the Enable bit set in flags.")
+        .def_readwrite("magic",                &protocol::GripperAutoCalConfig::magic,
+                       "Record tag, 0x4743414C ('GCAL'); the constructor fills it in.")
+        .def_readwrite("version",              &protocol::GripperAutoCalConfig::version,
+                       "Record layout version; the constructor fills in the one this SDK writes.")
+        .def_readwrite("flags",                &protocol::GripperAutoCalConfig::flags,
+                       "Bit 0 (0x0001) the record is valid, bit 1 (0x0002) run auto-cal on\n"
+                       "power-up. Clearing bit 1 keeps the tuning without arming it.")
+        .def_readwrite("close_stall_torque_nm", &protocol::GripperAutoCalConfig::close_stall_torque_nm,
+                       "Torque, N*m, the closing stroke stalls at; that pose becomes zero.")
+        .def_readwrite("open_stall_torque_nm",  &protocol::GripperAutoCalConfig::open_stall_torque_nm,
+                       "Torque, N*m, the opening stroke stalls at; that span becomes max_open.")
         .def_readwrite("close_speed_rad_s",    &protocol::GripperAutoCalConfig::close_speed_rad_s)
         .def_readwrite("open_speed_rad_s",     &protocol::GripperAutoCalConfig::open_speed_rad_s)
-        .def_readwrite("stall_hold_ms",        &protocol::GripperAutoCalConfig::stall_hold_ms)
-        .def_readwrite("startup_delay_ms",     &protocol::GripperAutoCalConfig::startup_delay_ms)
-        .def_readwrite("post_zero_delay_ms",   &protocol::GripperAutoCalConfig::post_zero_delay_ms)
-        .def_readwrite("close_confirm_count",  &protocol::GripperAutoCalConfig::close_confirm_count)
-        .def_readwrite("open_confirm_count",   &protocol::GripperAutoCalConfig::open_confirm_count)
+        .def_readwrite("stall_hold_ms",        &protocol::GripperAutoCalConfig::stall_hold_ms,
+                       "How long a stall must hold before it counts, ms.")
+        .def_readwrite("startup_delay_ms",     &protocol::GripperAutoCalConfig::startup_delay_ms,
+                       "Delay after power-on before auto-cal starts, ms.")
+        .def_readwrite("post_zero_delay_ms",   &protocol::GripperAutoCalConfig::post_zero_delay_ms,
+                       "Delay between setting the zero and starting the open stroke, ms.")
+        .def_readwrite("close_confirm_count",  &protocol::GripperAutoCalConfig::close_confirm_count,
+                       "Compat only -- V2.2 firmware confirms a stall once and ignores this.")
+        .def_readwrite("open_confirm_count",   &protocol::GripperAutoCalConfig::open_confirm_count,
+                       "Compat only -- V2.2 firmware confirms a stall once and ignores this.")
         .def("__repr__", [](const protocol::GripperAutoCalConfig& c) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),
@@ -114,14 +180,23 @@ void bind_gripper_types(py::module_& m) {
     // Patch just the stall-detection fields; speeds, flags and the magic/version
     // header keep their stored values. No magic/version to fill in — the
     // firmware supplies them.
-    py::class_<protocol::GripperAutoCalStallParam>(m, "GripperAutoCalStallParam")
-        .def(py::init([]() { return protocol::GripperAutoCalStallParam{}; }))
+    py::class_<protocol::GripperAutoCalStallParam>(m, "GripperAutoCalStallParam",
+        "Short 0x68 write that patches only the stall-detection fields, leaving the\n"
+        "speeds, the flags and the magic/version header at their stored values.\n\n"
+        "Saves a read-modify-write when tuning stall torque, and cannot clobber the\n"
+        "rest of the config from a stale read. Firmware older than follower 1.1.2\n"
+        "NACKs LengthMismatch -- write a full GripperAutoCalConfig there.")
+        .def(py::init([]() { return protocol::GripperAutoCalStallParam{}; }),
+             "All-zero patch; fill in the fields to write.")
         .def_readwrite("close_stall_torque_nm",
-                       &protocol::GripperAutoCalStallParam::close_stall_torque_nm)
+                       &protocol::GripperAutoCalStallParam::close_stall_torque_nm,
+                       "Torque, N*m, the closing stroke stalls at; that pose becomes zero.")
         .def_readwrite("open_stall_torque_nm",
-                       &protocol::GripperAutoCalStallParam::open_stall_torque_nm)
+                       &protocol::GripperAutoCalStallParam::open_stall_torque_nm,
+                       "Torque, N*m, the opening stroke stalls at; that span becomes max_open.")
         .def_readwrite("stall_hold_ms",
-                       &protocol::GripperAutoCalStallParam::stall_hold_ms)
+                       &protocol::GripperAutoCalStallParam::stall_hold_ms,
+                       "How long a stall must hold before it counts, ms.")
         .def("__repr__", [](const protocol::GripperAutoCalStallParam& p) {
             char buf[128];
             std::snprintf(buf, sizeof(buf),
@@ -130,22 +205,34 @@ void bind_gripper_types(py::module_& m) {
             return std::string(buf);
         });
 
-    py::class_<protocol::GripperAutoCalStallParamEx>(m, "GripperAutoCalStallParamEx")
-        .def(py::init([]() { return protocol::GripperAutoCalStallParamEx{}; }))
+    py::class_<protocol::GripperAutoCalStallParamEx>(m, "GripperAutoCalStallParamEx",
+        "GripperAutoCalStallParam plus the two delays and the compat-only confirm\n"
+        "counts -- the 16-byte form of the partial 0x68 write. Same rules: speeds,\n"
+        "flags and header keep their stored values, and follower firmware older than\n"
+        "1.1.2 NACKs LengthMismatch.")
+        .def(py::init([]() { return protocol::GripperAutoCalStallParamEx{}; }),
+             "All-zero patch; fill in the fields to write.")
         .def_readwrite("close_stall_torque_nm",
-                       &protocol::GripperAutoCalStallParamEx::close_stall_torque_nm)
+                       &protocol::GripperAutoCalStallParamEx::close_stall_torque_nm,
+                       "Torque, N*m, the closing stroke stalls at; that pose becomes zero.")
         .def_readwrite("open_stall_torque_nm",
-                       &protocol::GripperAutoCalStallParamEx::open_stall_torque_nm)
+                       &protocol::GripperAutoCalStallParamEx::open_stall_torque_nm,
+                       "Torque, N*m, the opening stroke stalls at; that span becomes max_open.")
         .def_readwrite("stall_hold_ms",
-                       &protocol::GripperAutoCalStallParamEx::stall_hold_ms)
+                       &protocol::GripperAutoCalStallParamEx::stall_hold_ms,
+                       "How long a stall must hold before it counts, ms.")
         .def_readwrite("startup_delay_ms",
-                       &protocol::GripperAutoCalStallParamEx::startup_delay_ms)
+                       &protocol::GripperAutoCalStallParamEx::startup_delay_ms,
+                       "Delay after power-on before auto-cal starts, ms.")
         .def_readwrite("post_zero_delay_ms",
-                       &protocol::GripperAutoCalStallParamEx::post_zero_delay_ms)
+                       &protocol::GripperAutoCalStallParamEx::post_zero_delay_ms,
+                       "Delay between setting the zero and starting the open stroke, ms.")
         .def_readwrite("close_confirm_count",
-                       &protocol::GripperAutoCalStallParamEx::close_confirm_count)
+                       &protocol::GripperAutoCalStallParamEx::close_confirm_count,
+                       "Compat only -- V2.2 firmware confirms a stall once and ignores this.")
         .def_readwrite("open_confirm_count",
-                       &protocol::GripperAutoCalStallParamEx::open_confirm_count)
+                       &protocol::GripperAutoCalStallParamEx::open_confirm_count,
+                       "Compat only -- V2.2 firmware confirms a stall once and ignores this.")
         .def("__repr__", [](const protocol::GripperAutoCalStallParamEx& p) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),

@@ -12,16 +12,27 @@ namespace xense::taccap::python {
 void bind_control(py::module_& m) {
     using namespace xense::taccap;
     // ---- GripperObservation ---------------------------------------------
-    py::class_<GripperObservation>(m, "GripperObservation")
-        .def_readonly("valid",    &GripperObservation::valid)
-        .def_readonly("position", &GripperObservation::position)   // [0,1]
-        .def_readonly("velocity", &GripperObservation::velocity)
-        .def_readonly("torque",   &GripperObservation::torque)
-        .def_readonly("raw_pos",  &GripperObservation::raw_pos)
-        .def_readonly("status",   &GripperObservation::status)
-        .def_readonly("motor_temp_c", &GripperObservation::motor_temp_c)
-        .def_readonly("seq",      &GripperObservation::seq)
-        .def_readonly("age_ms",   &GripperObservation::age_ms)
+    py::class_<GripperObservation>(m, "GripperObservation",
+        "One motor-status frame, as the active controller last saw it.\n\n"
+        "Read it from a controller snapshot rather than polling the motor: it is\n"
+        "refreshed from the status stream the controller already owns, so reading\n"
+        "costs no bus traffic. `valid` is False before the first frame and after\n"
+        "the stream goes stale, in which case every other field is meaningless.")
+        .def_readonly("valid",    &GripperObservation::valid,
+                      "False until the first frame arrives, and again once the stream goes stale.")
+        .def_readonly("position", &GripperObservation::position,
+                      "Normalized opening, 0 = closed, 1 = open. Needs a calibrated gripper.")
+        .def_readonly("velocity", &GripperObservation::velocity, "rad/s at the motor.")
+        .def_readonly("torque",   &GripperObservation::torque, "Measured torque, N*m.")
+        .def_readonly("raw_pos",  &GripperObservation::raw_pos,
+                      "Motor angle in radians, before the normalized position map.")
+        .def_readonly("status",   &GripperObservation::status,
+                      "Motor status word; see protocol.MotorStatusBit.")
+        .def_readonly("motor_temp_c", &GripperObservation::motor_temp_c, "Motor temperature, C.")
+        .def_readonly("seq",      &GripperObservation::seq,
+                      "Frame counter; compare two reads to tell a fresh frame from a repeat.")
+        .def_readonly("age_ms",   &GripperObservation::age_ms,
+                      "Milliseconds since the frame arrived. Rising age means the stream stalled.")
         .def("__repr__", [](const GripperObservation& o) {
             char buf[128];
             std::snprintf(buf, sizeof(buf),
@@ -48,28 +59,63 @@ void bind_control(py::module_& m) {
         .value("FAULT",         ImpedanceState::Fault)
         .def("__str__", [](ImpedanceState s) { return to_string(s); });
 
-    py::class_<ImpedanceConfig>(m, "ImpedanceConfig")
+    py::class_<ImpedanceConfig>(m, "ImpedanceConfig",
+        "Tuning for ImpedanceController. Validated by the constructor, which\n"
+        "raises ValueError rather than clamping.")
         .def(py::init<>())
-        .def_readwrite("kp",                &ImpedanceConfig::kp)
-        .def_readwrite("kd",                &ImpedanceConfig::kd)
-        .def_readwrite("feedforward_torque", &ImpedanceConfig::feedforward_torque)
+        .def_readwrite("kp",                &ImpedanceConfig::kp,
+                       "Position stiffness, N*m/rad. Must be > 0.")
+        .def_readwrite("kd",                &ImpedanceConfig::kd,
+                       "Velocity damping, N*m*s/rad.")
+        .def_readwrite("feedforward_torque", &ImpedanceConfig::feedforward_torque,
+                       "Constant torque bias added to every frame, N*m. It counts\n"
+                       "toward the backstop: max_position_torque_nm + |this| must\n"
+                       "stay below rated_torque_nm.")
         .def_readwrite("max_position_torque_nm",
-                       &ImpedanceConfig::max_position_torque_nm)
-        .def_readwrite("rated_torque_nm",   &ImpedanceConfig::rated_torque_nm)
-        .def_readwrite("status_timeout_ms", &ImpedanceConfig::status_timeout_ms)
-        .def_readwrite("motor_stream_hz",   &ImpedanceConfig::motor_stream_hz);
+                       &ImpedanceConfig::max_position_torque_nm,
+                       "Torque budget, N*m, applied as an error clamp on the commanded\n"
+                       "position. This IS the protection and the grip: a blocked jaw\n"
+                       "saturates here and holds indefinitely, so it must be a torque the\n"
+                       "motor can sustain forever. It also sets the approach speed, about\n"
+                       "this value / kd rad/s. 0 disables the clamp (not recommended).")
+        .def_readwrite("rated_torque_nm",   &ImpedanceConfig::rated_torque_nm,
+                       "Backstop on MEASURED torque, N*m -- not the grip. Above it the\n"
+                       "controller commands kp=kd=0 and holds the budget. Must exceed\n"
+                       "max_position_torque_nm; capped at MOTOR_RATED_TORQUE_NM because the\n"
+                       "hold is indefinite. 0 disables it.")
+        .def_readwrite("status_timeout_ms", &ImpedanceConfig::status_timeout_ms,
+                       "A status stream older than this faults the controller and commands\n"
+                       "zero torque.")
+        .def_readwrite("motor_stream_hz",   &ImpedanceConfig::motor_stream_hz,
+                       "Motor-status rate the controller requests, 1..100 Hz. One command\n"
+                       "is submitted per status frame, so this is also the control rate.");
 
-    py::class_<ImpedanceSnapshot>(m, "ImpedanceSnapshot")
-        .def_readonly("running",             &ImpedanceSnapshot::running)
+    py::class_<ImpedanceSnapshot>(m, "ImpedanceSnapshot",
+        "A consistent view of ImpedanceController, taken under one lock.\n\n"
+        "Every field below describes the same instant. Reading guards one property\n"
+        "at a time can return a combination that never existed.")
+        .def_readonly("running",             &ImpedanceSnapshot::running,
+                      "True between start() and stop().")
         .def_readonly("state",               &ImpedanceSnapshot::state)
-        .def_readonly("observation",         &ImpedanceSnapshot::observation)
-        .def_readonly("target_position",     &ImpedanceSnapshot::target_position)
-        .def_readonly("effective_position",  &ImpedanceSnapshot::effective_position)
-        .def_readonly("commanded_torque_nm", &ImpedanceSnapshot::commanded_torque_nm)
-        .def_readonly("torque_capped",       &ImpedanceSnapshot::torque_capped)
-        .def_readonly("torque_caps",         &ImpedanceSnapshot::torque_caps)
-        .def_readonly("device_limit_nm",     &ImpedanceSnapshot::device_limit_nm)
-        .def_readonly("fault_reason",        &ImpedanceSnapshot::fault_reason)
+        .def_readonly("observation",         &ImpedanceSnapshot::observation,
+                      "The motor-status frame this snapshot was computed from.")
+        .def_readonly("target_position",     &ImpedanceSnapshot::target_position,
+                      "Normalized target as commanded by set_target().")
+        .def_readonly("effective_position",  &ImpedanceSnapshot::effective_position,
+                      "Normalized target actually sent, after the error clamp. It trailing\n"
+                      "target_position means the clamp is binding -- travel or contact.")
+        .def_readonly("commanded_torque_nm", &ImpedanceSnapshot::commanded_torque_nm,
+                      "Magnitude of the torque the frame asks for, N*m. Requested, not measured;\n"
+                      "for the measured value read observation.torque.")
+        .def_readonly("torque_capped",       &ImpedanceSnapshot::torque_capped,
+                      "True while the rated_torque_nm backstop is holding the output down.")
+        .def_readonly("torque_caps",         &ImpedanceSnapshot::torque_caps,
+                      "How many times the backstop has engaged since start().")
+        .def_readonly("device_limit_nm",     &ImpedanceSnapshot::device_limit_nm,
+                      "The motor's own persisted torque limit (0x700B) read at start().")
+        .def_readonly("fault_reason",        &ImpedanceSnapshot::fault_reason,
+                      "Why the controller faulted; empty when it has not. The first cause is\n"
+                      "kept, not the most recent.")
         .def("__repr__", [](const ImpedanceSnapshot& s) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),
@@ -82,41 +128,73 @@ void bind_control(py::module_& m) {
             return std::string(buf);
         });
 
-    py::class_<ImpedanceController>(m, "ImpedanceController")
+    py::class_<ImpedanceController>(m, "ImpedanceController",
+        "Position tracking with a bounded torque budget, run on a background thread.\n\n"
+        "Use it to follow a position -- teleop, a trajectory, a leader gripper. To\n"
+        "grasp something, ForcePositionController is the better fit.\n\n"
+        "It owns the motor-status stream and submits one command per status frame.\n"
+        "While it runs, do not call Motor.set_position / set_velocity / set_torque /\n"
+        "set_impedance or start a second controller on the same gripper: they write\n"
+        "to the same bus and the last frame wins.\n\n"
+        "Enabling the motor is the caller's job and is separate from start().\n\n"
+        "    cfg = ImpedanceConfig()\n"
+        "    with ImpedanceController(g, cfg) as c:   # start() / stop()\n"
+        "        g.motor.enable()\n"
+        "        c.set_target(0.0)\n"
+        "        print(c.snapshot())")
         .def(py::init([](FollowerGripper& g, const ImpedanceConfig& cfg) {
                 return std::make_unique<ImpedanceController>(g, cfg);
             }), py::arg("gripper"), py::arg("config") = ImpedanceConfig{},
-            py::keep_alive<1, 2>())
+            py::keep_alive<1, 2>(),
+            "Bind a controller to a gripper. The config is validated here, so a bad\n"
+            "combination raises ValueError before anything moves. The gripper is kept\n"
+            "alive for as long as the controller is.")
         .def("start", [](ImpedanceController& c) {
             py::gil_scoped_release g; c.start();
-        })
+        }, "Start the status stream and the submit thread.\n\n"
+           "The target is seeded at the jaw's current position, so starting against an\n"
+           "already-enabled motor cannot step it.")
         .def("stop", [](ImpedanceController& c) {
             py::gil_scoped_release g; c.stop();
-        })
-        .def_property_readonly("running", &ImpedanceController::running)
+        }, "Stop the thread, command zero torque, and DISABLE the motor.\n\n"
+           "Disabling is deliberate: a zero-stiffness frame de-energizes nothing, and\n"
+           "the firmware's host watchdog would then fire and switch the run mode out\n"
+           "from under the next session. The observation goes invalid, since nothing\n"
+           "maintains it any more. Returns even if the device vanished mid-run.")
+        .def_property_readonly("running", &ImpedanceController::running,
+                               "True between start() and stop().")
         .def("set_target", [](ImpedanceController& c, float p) {
             py::gil_scoped_release g; c.set_target(p);
-        }, py::arg("position"))
+        }, py::arg("position"),
+           "Set the normalized target, 0 = closed, 1 = open.\n\n"
+           "Non-blocking: it moves a setpoint the submit thread reads. Safe to stream\n"
+           "every frame. Only valid while running.")
         .def("set_gains", [](ImpedanceController& c, float kp, float kd, float ff) {
             py::gil_scoped_release g; c.set_gains(kp, kd, ff);
-        }, py::arg("kp"), py::arg("kd"), py::arg("feedforward_torque") = 0.0f)
+        }, py::arg("kp"), py::arg("kd"), py::arg("feedforward_torque") = 0.0f,
+           "Change kp (N*m/rad), kd (N*m*s/rad) and the feed-forward bias (N*m) while\n"
+           "running. Rejected by the same rule the config is validated against.")
         .def("reset", [](ImpedanceController& c) {
             py::gil_scoped_release g; c.reset();
-        })
+        }, "Leave FAULT and reseed the target at the current position.\n\n"
+           "Clear the motor fault first (Motor.clear_fault); this only clears the\n"
+           "controller's own state.")
         .def_property_readonly("state", [](const ImpedanceController& c) {
             py::gil_scoped_release g; return c.state();
-        })
+        }, "Current ImpedanceState. Prefer snapshot() when reading more than one field.")
         .def("snapshot", [](const ImpedanceController& c) {
             py::gil_scoped_release g; return c.snapshot();
-        })
-        .def_property_readonly("config", &ImpedanceController::config)
+        }, "One consistent view of state, observation and command, taken under one lock.")
+        .def_property_readonly("config", &ImpedanceController::config,
+                               "The validated config in force. Gain changes made through\n"
+                               "set_gains() are reflected here.")
         .def("__enter__", [](ImpedanceController& c) -> ImpedanceController& {
             py::gil_scoped_release g; c.start(); return c;
-        })
+        }, "Calls start().")
         .def("__exit__", [](ImpedanceController& c, py::object, py::object,
                             py::object) {
             py::gil_scoped_release g; c.stop();
-        });
+        }, "Calls stop(), including on an exception.");
 
     // ---- ForcePositionController: contact -> bounded pure-torque hold ----
     m.attr("FORCE_POSITION_MAX_HOLD_TORQUE_NM") =
@@ -124,7 +202,9 @@ void bind_control(py::module_& m) {
     m.attr("FORCE_POSITION_MAX_MOTION_TORQUE_NM") =
         FORCE_POSITION_MAX_MOTION_TORQUE_NM;
 
-    py::enum_<ForcePositionState>(m, "ForcePositionState")
+    py::enum_<ForcePositionState>(m, "ForcePositionState",
+        "Observed phase of the move. CLOSING/OPENING are travel, HOLDING_FORCE is a\n"
+        "grip sitting at the budget, HOLDING_POSITION is a parked jaw.")
         .value("IDLE",             ForcePositionState::Idle)
         .value("HOLDING_POSITION", ForcePositionState::HoldingPosition)
         .value("CLOSING",          ForcePositionState::Closing)
@@ -137,31 +217,62 @@ void bind_control(py::module_& m) {
     // position gains are firmware mirrors / measured values with one right
     // answer for this gripper, and live in detail::ForcePositionTuning on the
     // C++ side where a caller cannot reach them.
-    py::class_<ForcePositionConfig>(m, "ForcePositionConfig")
+    py::class_<ForcePositionConfig>(m, "ForcePositionConfig",
+        "Tuning for ForcePositionController. Validated by the constructor and again\n"
+        "at start(), against the motor's own persisted limit.")
         .def(py::init<>())
-        .def_readwrite("grasp_torque_nm",      &ForcePositionConfig::grasp_torque_nm)
-        .def_readwrite("close_speed_radps",    &ForcePositionConfig::close_speed_radps)
-        .def_readwrite("hold_torque_limit_nm", &ForcePositionConfig::hold_torque_limit_nm)
-        .def_readwrite("motion_torque_limit_nm", &ForcePositionConfig::motion_torque_limit_nm)
-        .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms)
-        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz)
-        .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm);
+        .def_readwrite("grasp_torque_nm",      &ForcePositionConfig::grasp_torque_nm,
+                       "Torque budget for the grip, N*m. The default is the EL05's continuous\n"
+                       "rating. Configuring more than the firmware's envelope allows does not\n"
+                       "produce more: the firmware clamps it back and only the heating is real.")
+        .def_readwrite("close_speed_radps",    &ForcePositionConfig::close_speed_radps,
+                       "Advance rate of the SETPOINT RAMP during travel, rad/s at the motor --\n"
+                       "not a velocity command. Not independent of grasp_torque_nm: the damping\n"
+                       "gain is grasp/close_speed and saturates, so too low a speed stalls the\n"
+                       "jaw below the torque you asked for. Rejected rather than softened.")
+        .def_readwrite("hold_torque_limit_nm", &ForcePositionConfig::hold_torque_limit_nm,
+                       "Upper bound accepted for grasp_torque_nm, N*m. Clamps nothing at runtime.")
+        .def_readwrite("motion_torque_limit_nm", &ForcePositionConfig::motion_torque_limit_nm,
+                       "Ceiling outside the grip budget, N*m; measured torque past it faults the\n"
+                       "controller. Cross-checked against the motor's 0x700B at start(), device wins.")
+        .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms,
+                       "A status stream older than this faults the controller and commands\n"
+                       "zero torque.")
+        .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz,
+                       "Motor-status rate the controller requests, 1..100 Hz. One command is\n"
+                       "submitted per status frame.")
+        .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm,
+                       "Feed-forward applied only while holding the CLOSED endpoint, N*m, to seat\n"
+                       "the jaw against its mechanical stop and take up backlash. Measured: 0.15\n"
+                       "seats it fully and 0.50 moves it no further, so raising this buys nothing.");
 
-    py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot")
-        .def_readonly("running",               &ForcePositionSnapshot::running)
+    py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot",
+        "A consistent view of ForcePositionController, taken under one lock.")
+        .def_readonly("running",               &ForcePositionSnapshot::running,
+                      "True between start() and stop().")
         .def_readonly("state",                 &ForcePositionSnapshot::state)
-        .def_readonly("observation",           &ForcePositionSnapshot::observation)
-        .def_readonly("target_position",       &ForcePositionSnapshot::target_position)
-        .def_readonly("hold_position",         &ForcePositionSnapshot::hold_position)
-        .def_readonly("grasp_torque_nm",       &ForcePositionSnapshot::grasp_torque_nm)
-        .def_readonly("commanded_torque_nm",   &ForcePositionSnapshot::commanded_torque_nm)
+        .def_readonly("observation",           &ForcePositionSnapshot::observation,
+                      "The motor-status frame this snapshot was computed from.")
+        .def_readonly("target_position",       &ForcePositionSnapshot::target_position,
+                      "Normalized target as commanded by set_target().")
+        .def_readonly("hold_position",         &ForcePositionSnapshot::hold_position,
+                      "Normalized position being held; set by hold_position().")
+        .def_readonly("grasp_torque_nm",       &ForcePositionSnapshot::grasp_torque_nm,
+                      "Torque budget in force, N*m -- the per-target override when one was given.")
+        .def_readonly("commanded_torque_nm",   &ForcePositionSnapshot::commanded_torque_nm,
+                      "Torque this frame asks for, N*m. Requested, not measured.")
         .def_readonly("hold_torque_limit_nm",  &ForcePositionSnapshot::hold_torque_limit_nm)
         .def_readonly("motion_torque_limit_nm", &ForcePositionSnapshot::motion_torque_limit_nm)
-        .def_readonly("device_limit_nm",       &ForcePositionSnapshot::device_limit_nm)
+        .def_readonly("device_limit_nm",       &ForcePositionSnapshot::device_limit_nm,
+                      "The motor's own persisted torque limit (0x700B) read at start().")
         // 观测量，非控制状态 —— 每帧从命令与误差导出
-        .def_readonly("holding",               &ForcePositionSnapshot::holding)
-        .def_readonly("arrived",               &ForcePositionSnapshot::arrived)
-        .def_readonly("fault_reason",          &ForcePositionSnapshot::fault_reason)
+        .def_readonly("holding",               &ForcePositionSnapshot::holding,
+                      "Derived each frame from the command and the error, not a state: the jaw\n"
+                      "is pressing rather than travelling.")
+        .def_readonly("arrived",               &ForcePositionSnapshot::arrived,
+                      "Derived each frame: the jaw has reached the commanded position.")
+        .def_readonly("fault_reason",          &ForcePositionSnapshot::fault_reason,
+                      "Why the controller faulted; empty when it has not.")
         .def("__repr__", [](const ForcePositionSnapshot& s) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),
@@ -175,47 +286,76 @@ void bind_control(py::module_& m) {
             return std::string(buf);
         });
 
-    py::class_<ForcePositionController>(m, "ForcePositionController")
+    py::class_<ForcePositionController>(m, "ForcePositionController",
+        "Bounded-torque position control for grasping, run on a background thread.\n\n"
+        "One control law for the whole move: a setpoint ramp carries the jaw, and the\n"
+        "PD request is error-clamped against the grasp budget, so closing onto an\n"
+        "object saturates at that budget and holds. It does NOT detect contact --\n"
+        "saturation is contact, and the MCU already runs the same stall test at 500 Hz.\n\n"
+        "Same interface and the same bus rules as ImpedanceController: it owns the\n"
+        "status stream, submits one command per frame, and must not share a gripper\n"
+        "with another controller or with the Motor.set_* primitives.\n\n"
+        "    with ForcePositionController(g) as c:   # start() / stop()\n"
+        "        g.motor.enable()                    # start BEFORE enable, see start()\n"
+        "        c.set_target(0.0)                   # close onto the object\n"
+        "        c.release()                         # open with bounded damping")
         .def(py::init([](FollowerGripper& g, const ForcePositionConfig& cfg) {
                 return std::make_unique<ForcePositionController>(g, cfg);
             }), py::arg("gripper"), py::arg("config") = ForcePositionConfig{},
-            py::keep_alive<1, 2>())
+            py::keep_alive<1, 2>(),
+            "Bind a controller to a gripper. The config is validated here, so a bad\n"
+            "combination raises ValueError before anything moves. The gripper is kept\n"
+            "alive for as long as the controller is.")
         .def("start", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.start();
-        })
+        }, "Start the status stream and the submit thread.\n\n"
+           "Call this BEFORE Motor.enable(): start() reads the motor's persisted torque\n"
+           "limit (0x700B) and checks the config against it, which is a check worth\n"
+           "making before the motor can move.")
         .def("stop", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.stop();
-        })
+        }, "Stop the thread, command zero torque, and DISABLE the motor.\n\n"
+           "Disabling is deliberate -- see ImpedanceController.stop for the measurement.\n"
+           "Returns even if the device vanished mid-run.")
         .def("release", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.release();
-        })
+        }, "Open toward 1.0 under bounded velocity damping.\n\n"
+           "Preferred over set_target(1.0) for letting go: a position step would open\n"
+           "as fast as the budget allows, this bounds the speed instead.")
         .def("set_target", [](ForcePositionController& c, float position,
                                const std::optional<float>& grasp_torque_nm) {
             py::gil_scoped_release g;
             if (grasp_torque_nm) c.set_target(position, *grasp_torque_nm);
             else                 c.set_target(position);
-        }, py::arg("position"), py::arg("grasp_torque_nm") = std::nullopt)
+        }, py::arg("position"), py::arg("grasp_torque_nm") = std::nullopt,
+           "Set the normalized target, 0 = closed, 1 = open, optionally overriding the\n"
+           "grasp budget (N*m) for this move.\n\n"
+           "Non-blocking, and it only moves the setpoint: there is no motion state to\n"
+           "disturb, so streaming a target every frame is fine. Only valid while running.")
         .def("hold_position", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.hold_position();
-        })
+        }, "Cancel travel and hold the latest measured position.")
         .def("reset", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.reset();
-        })
-        .def_property_readonly("running", &ForcePositionController::running)
-        .def_property_readonly("state", &ForcePositionController::state)
+        }, "Leave FAULT. Clear the motor fault first (Motor.clear_fault); this only\n"
+           "clears the controller's own state.")
+        .def_property_readonly("running", &ForcePositionController::running,
+                               "True between start() and stop().")
+        .def_property_readonly("state", &ForcePositionController::state,
+                               "Current ForcePositionState. Prefer snapshot() for more than one field.")
         .def_property_readonly("config", [](const ForcePositionController& c) {
             return c.config();
-        })
+        }, "The validated config in force.")
         .def("snapshot", [](const ForcePositionController& c) {
             py::gil_scoped_release g; return c.snapshot();
-        })
+        }, "One consistent view of state, observation and command, taken under one lock.")
         .def("__enter__", [](ForcePositionController& c) -> ForcePositionController& {
             py::gil_scoped_release g; c.start(); return c;
-        })
+        }, "Calls start().")
         .def("__exit__", [](ForcePositionController& c, py::object, py::object,
                             py::object) {
             py::gil_scoped_release g; c.stop();
-        });
+        }, "Calls stop(), including on an exception.");
 }
 
 }  // namespace xense::taccap::python

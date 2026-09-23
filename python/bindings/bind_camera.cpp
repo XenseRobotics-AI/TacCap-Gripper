@@ -26,7 +26,15 @@ void bind_camera(py::module_& m) {
     // Usable standalone on frames this SDK never captured — the common case,
     // since the wrist UVC device is normally owned by an external service.
     py::class_<FisheyeUndistorter, std::shared_ptr<FisheyeUndistorter>>(
-            m, "FisheyeUndistorter")
+            m, "FisheyeUndistorter",
+        "Rectifies wrist-camera frames using the fisheye intrinsics the firmware\n"
+        "persists in flash (read them with Calibration.read_fisheye or, preferring\n"
+        "a usable answer over the literal one, Calibration.resolve_fisheye).\n\n"
+        "Protocol-free: it takes a plain CameraFisheyeCal and never touches a\n"
+        "transport, so it works on frames this SDK never captured -- the common\n"
+        "case, since the wrist UVC device is usually owned by another service. The\n"
+        "remap tables are built once in the constructor, so build one and reuse it;\n"
+        "rebuilding per frame would dominate the cost.")
         .def(py::init([](const protocol::CameraFisheyeCal& cal,
                          int width, int height, float balance) {
                  return std::make_shared<FisheyeUndistorter>(
@@ -39,7 +47,14 @@ void bind_camera(py::module_& m) {
              py::arg("height")  = FISHEYE_CALIB_HEIGHT,
              // 0 = calibrated focal length (natural view, matches the PC tool);
              // 1 = 0.70x for the widest field of view. Clamped to [0,1].
-             py::arg("balance") = 0.0f)
+             py::arg("balance") = 0.0f,
+             "Build the remap tables for one calibration.\n\n"
+             "width/height must be the calibrated 640x480 -- the firmware record\n"
+             "carries no image size, so any other size raises RuntimeError rather\n"
+             "than guessing a rescale. balance picks the output focal length: 0\n"
+             "keeps the calibrated one, 1 shortens it to 0.70x for the widest field\n"
+             "of view at the cost of more black border. It is clamped to [0, 1]\n"
+             "rather than rejected.")
         .def("apply", [](const FisheyeUndistorter& self, const py::array& img) {
                  cv::Mat src = numpy_to_mat_bgr(img);
                  cv::Mat dst;
@@ -56,10 +71,18 @@ void bind_camera(py::module_& m) {
              "Resampled with INTER_CUBIC: the periphery is magnified about "
              "3.3x by the fisheye-to-pinhole mapping, and bilinear visibly "
              "softens an image being enlarged that much.")
-        .def_property_readonly("width",  [](const FisheyeUndistorter& s) { return s.size().width; })
-        .def_property_readonly("height", [](const FisheyeUndistorter& s) { return s.size().height; })
-        .def_property_readonly("balance", &FisheyeUndistorter::balance)
-        .def_property_readonly("focal_scale", &FisheyeUndistorter::focal_scale)
+        .def_property_readonly("width",  [](const FisheyeUndistorter& s) { return s.size().width; },
+                               "Frame width in pixels these tables were built for; apply() accepts no "
+                               "other size, and returns that same size.")
+        .def_property_readonly("height", [](const FisheyeUndistorter& s) { return s.size().height; },
+                               "Frame height in pixels these tables were built for; apply() accepts no "
+                               "other size, and returns that same size.")
+        .def_property_readonly("balance", &FisheyeUndistorter::balance,
+                               "The balance in force, after the constructor clamped it to [0, 1].")
+        .def_property_readonly("focal_scale", &FisheyeUndistorter::focal_scale,
+                               "Output focal length as a multiple of the calibrated one: 1.00 at "
+                               "balance 0, 0.70 at balance 1, interpolated in between. Only fx/fy "
+                               "scale; the principal point stays put.")
         .def_property_readonly("new_camera_matrix",
             [](const FisheyeUndistorter& s) {
                 // The K rectified pixels live in — NOT the raw firmware K.
@@ -88,14 +111,25 @@ void bind_camera(py::module_& m) {
         .value("BGR", ColorMode::Bgr)
         .value("RGB", ColorMode::Rgb);
 
-    py::class_<Camera>(m, "Camera")
+    py::class_<Camera>(m, "Camera",
+        "The wrist UVC camera, captured through OpenCV's V4L2 backend.\n\n"
+        "Poll it with read() or stream it with start(); the two are exclusive,\n"
+        "because a running capture thread owns the device and read() then returns\n"
+        "None. Install an undistorter to have every frame rectified on the way out.\n\n"
+        "The visuotactile (OG) sensors are not handled here -- they are read at the\n"
+        "Python level through the xensesdk wheel.")
         .def(py::init([](const std::string& dev, int w, int h, double fps, bool mjpg,
                          ColorMode color_mode) {
             return std::make_unique<Camera>(Camera::Config{dev, w, h, fps, mjpg, color_mode});
         }),
             py::arg("device"), py::arg("width") = 640, py::arg("height") = 480,
             py::arg("fps") = 30.0, py::arg("use_mjpg") = true,
-            py::arg("color_mode") = ColorMode::Bgr)
+            py::arg("color_mode") = ColorMode::Bgr,
+            "Open a V4L2 device and ask it for this format.\n\n"
+            "device is a /dev/video* path. Size, rate and MJPEG are requests, not\n"
+            "guarantees -- V4L2 may settle on something else, so read actual_fps and\n"
+            "the shape of the first frame instead of assuming. Raises IoError when\n"
+            "the path is empty or the device will not open.")
         .def("read", [](Camera& self, unsigned timeout_ms) -> py::object {
             CameraFrame f;
             bool ok;
@@ -105,28 +139,59 @@ void bind_camera(py::module_& m) {
             }
             if (!ok) return py::none();
             return py::cast(std::move(f));
-        }, py::arg("timeout_ms") = 500)
+        }, py::arg("timeout_ms") = 500,
+           "Grab one frame; returns a CameraFrame, or None when there is nothing to\n"
+           "hand back.\n\n"
+           "Blocks with the GIL released. None means either the capture failed, which\n"
+           "also bumps dropped_frames, or a stream is running and owns the device.\n"
+           "timeout_ms is informational today: the underlying VideoCapture.read\n"
+           "blocks on its own V4L2 timeout and this value does not shorten it.")
         .def("start", [](Camera& self, py::function pycb) {
             auto cb = make_gil_safe_callback(std::move(pycb));
             self.start([cb](const CameraFrame& f) {
                 call_into_python("xense.taccap.Camera callback",
                                  [&] { (*cb)(f); });
             });
-        }, py::arg("callback"))
+        }, py::arg("callback"),
+           "Spawn a capture thread that calls callback(frame) for every frame.\n\n"
+           "The callback runs on that capture thread, not the caller's, serialised\n"
+           "with itself; an exception raised inside it is reported as unraisable and\n"
+           "swallowed. While it runs the thread owns the device and read() returns\n"
+           "None. Idempotent, and that cuts the other way: calling start() on a\n"
+           "camera that is already streaming does nothing and drops the new callback\n"
+           "on the floor.")
         .def("stop", [](Camera& self) {
             py::gil_scoped_release gil;
             self.stop();
-        })
+        }, "Stop the capture thread and join it. Idempotent, and a no-op when not\n"
+           "streaming.\n\n"
+           "Blocks with the GIL released until the in-flight callback returns, so it\n"
+           "must not be called from inside that callback -- joining the capture\n"
+           "thread from itself fails.")
         // Pass None to go back to raw frames. Safe to call while streaming.
         .def("set_undistorter", [](Camera& self,
                                    std::shared_ptr<FisheyeUndistorter> u) {
             py::gil_scoped_release gil;
             self.set_undistorter(std::move(u));
-        }, py::arg("undistorter").none(true))
-        .def_property_readonly("is_streaming",   &Camera::is_streaming)
-        .def_property_readonly("total_frames",   &Camera::total_frames)
-        .def_property_readonly("dropped_frames", &Camera::dropped_frames)
-        .def_property_readonly("actual_fps",     &Camera::actual_fps);
+        }, py::arg("undistorter").none(true),
+           "Install a FisheyeUndistorter, or None to go back to raw frames. Every\n"
+           "frame from read() and from the streaming callback is rectified before it\n"
+           "is handed over.\n\n"
+           "Safe to call while streaming. If rectification throws -- a frame whose\n"
+           "size does not match the remap tables -- the raw frame is passed through\n"
+           "and the error is logged; a geometry mistake must not kill the capture\n"
+           "loop.")
+        .def_property_readonly("is_streaming",   &Camera::is_streaming,
+                               "True between start() and stop().")
+        .def_property_readonly("total_frames",   &Camera::total_frames,
+                               "Frames handed out since construction; also the frame_index of the "
+                               "most recent one.")
+        .def_property_readonly("dropped_frames", &Camera::dropped_frames,
+                               "Captures that came back failed or empty since construction -- frames "
+                               "V4L2 never delivered, not frames a slow callback missed.")
+        .def_property_readonly("actual_fps",     &Camera::actual_fps,
+                               "Rate measured over the last completed one-second window. Updated only "
+                               "by the streaming path, and 0.0 until the first window closes.");
 }
 
 }  // namespace xense::taccap::python
