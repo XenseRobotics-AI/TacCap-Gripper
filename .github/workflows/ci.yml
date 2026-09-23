@@ -73,12 +73,19 @@ jobs:
       # The enforced rule set is pinned in pyproject.toml, not taken from
       # ruff's defaults — those broaden between releases, which would turn an
       # unrelated ruff upgrade into a red build.
+      # Pinned, not "latest". The action reported "Could not parse version from
+      # pyproject.toml. Using latest version" and picked up a ruff that formats
+      # Python inside Markdown fences, which the developer's build did not —
+      # so the gate failed on files that were clean locally. Keep this in step
+      # with the `ruff==` pin in environment.yml.
       - uses: astral-sh/ruff-action@v3
         with:
+          version: 0.16.8
           args: check --output-format=github
 
       - uses: astral-sh/ruff-action@v3
         with:
+          version: 0.16.8
           args: format --check
 
   protocol-drift:
