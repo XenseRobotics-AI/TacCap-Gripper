@@ -19,6 +19,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 namespace tx = xense::taccap;
 
@@ -276,4 +278,127 @@ TEST(ControlLoopPty, LinkFailureLeavesNoLiveLookingObservation) {
     EXPECT_FALSE(loop.observation().valid)
         << "observation still reads valid after the link died";
     loop.stop();
+}
+
+// ---- Config validation ---------------------------------------------------
+//
+// ControlLoop used to validate nothing at all. That is how `rated_torque_nm`
+// came to sit at 2.0 in lerobot-xense's gripper config for ten days: the same
+// value threw on ImpedanceController -- which is what finally surfaced it, via
+// a crashing example -- while this path accepted it and parked an INDEFINITE
+// hold 11% above the motor's nameplate rating. One guarded door and one open
+// one is worse than neither, because the open one is silent.
+//
+// Every bound below is derived from the motor constants rather than written as
+// a literal. Writing 1.8f here would reproduce the exact defect these tests
+// exist to prevent -- the original 2.0 was a literal that stopped tracking the
+// constant when the bound moved.
+
+namespace {
+
+// The smallest float strictly above / below a bound, so "at the limit" and
+// "just over it" stay correct if the motor constants ever change.
+constexpr float just_over(float v) {
+    return std::nextafter(v, std::numeric_limits<float>::infinity());
+}
+
+}  // namespace
+
+TEST(ControlLoopConfig, RejectsAnIndefiniteCeilingAboveRatedTorque) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    auto cfg = base_config();
+    cfg.rated_torque_nm = just_over(tx::MOTOR_RATED_TORQUE_NM);
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+
+    // The peak rating is NOT an acceptable ceiling here even though the motor
+    // can produce it: nothing in this class times the hold out.
+    cfg.rated_torque_nm = tx::MOTOR_PEAK_TORQUE_NM;
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+}
+
+TEST(ControlLoopConfig, AcceptsExactlyRatedAndTheDocumentedDisable) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    auto cfg = base_config();
+    cfg.rated_torque_nm = tx::MOTOR_RATED_TORQUE_NM;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+
+    // 0 disables the ceiling -- documented behaviour, must stay legal. With it
+    // off, rated_release_rad/rated_hold_ms are unused and unconstrained.
+    cfg.rated_torque_nm   = 0.0f;
+    cfg.rated_release_rad = 0.0f;
+    cfg.rated_hold_ms     = 0;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+}
+
+TEST(ControlLoopConfig, BoundsEachFieldByHowLongItsTorqueLasts) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    // The commanded-torque clamp is transient, so it takes the PEAK rating --
+    // a different bound from rated_torque_nm, and the point of this case is
+    // that the two are not accidentally the same number.
+    auto cfg = base_config();
+    cfg.max_position_torque_nm = tx::MOTOR_PEAK_TORQUE_NM;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+    cfg.max_position_torque_nm = just_over(tx::MOTOR_PEAK_TORQUE_NM);
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+
+    // Feed-forward is bounded by the PEAK rating here, NOT by rated as it is
+    // on ImpedanceController. Two shipped lerobot-xense recipes run -3.0 under
+    // that project's own documented 3.5 Nm rail; tightening this to rated
+    // would break them at construction. Pinned so the looser bound reads as
+    // intentional rather than as an oversight someone should "fix".
+    cfg = base_config();
+    cfg.feedforward_torque = -3.0f;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+    cfg.feedforward_torque = -tx::MOTOR_PEAK_TORQUE_NM;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+    cfg.feedforward_torque = -just_over(tx::MOTOR_PEAK_TORQUE_NM);
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+
+    cfg = base_config();
+    cfg.kp = -1.0f;
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+
+    // ...but kp == 0 is legal here and not on ImpedanceController: the torque
+    // ceiling itself submits kp=kd=0 frames, so a pure feed-forward caller is
+    // a supported use of this primitive.
+    cfg = base_config();
+    cfg.kp = 0.0f;
+    cfg.kd = 0.0f;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
+
+    cfg = base_config();
+    cfg.motor_stream_hz = 0;
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+}
+
+TEST(ControlLoopConfig, StallBoundsApplyOnlyWhileTheGuardIsArmed) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+
+    auto cfg = base_config();
+    cfg.stall_torque_nm = just_over(tx::MOTOR_RATED_TORQUE_NM);
+    EXPECT_THROW(tx::ControlLoop(*g, cfg), std::invalid_argument);
+
+    // StallAction::None is how the guard is switched off -- not
+    // stall_torque_nm == 0 -- so with it disarmed those fields are unused and
+    // must not be policed.
+    cfg.stall_action    = tx::ControlLoop::StallAction::None;
+    cfg.stall_torque_nm = 0.0f;
+    cfg.stall_vel_radps = 0.0f;
+    cfg.stall_hold_ms   = 0;
+    EXPECT_NO_THROW(tx::ControlLoop(*g, cfg));
 }

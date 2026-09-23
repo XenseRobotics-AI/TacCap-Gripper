@@ -8,14 +8,122 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace xense::taccap {
+
+namespace {
+
+// ControlLoop is the low-level primitive and stays permissive about CONTROL
+// choices -- kp may be 0 for a pure feed-forward caller, and every documented
+// "0 disables it" remains legal. What it does not accept is a value the
+// hardware cannot honour.
+//
+// Leaving only one door guarded is not a smaller version of this check, it is
+// a silent one -- rated_torque_nm sat at 2.0 in lerobot-xense's config for ten
+// days, throwing loudly on ImpedanceController while ControlLoop accepted it
+// and parked an INDEFINITE hold 11% above the motor's nameplate rating. The
+// crash was the harmless half.
+//
+// Where a field means the same thing on both paths the bound is the same one
+// ImpedanceController uses. feedforward_torque is the deliberate exception --
+// see its case below. Do not "finish the job" by aligning it.
+void validate_config(const ControlLoop::Config& cfg) {
+    auto finite = [](float v) { return std::isfinite(v); };
+
+    // Gains: >= 0 rather than > 0. The ceiling itself submits kp=kd=0 frames,
+    // so zero gains are a supported mode here, unlike in ImpedanceController.
+    if (!finite(cfg.kp) || cfg.kp < 0.0f) {
+        throw std::invalid_argument("ControlLoop::Config.kp must be >= 0");
+    }
+    if (!finite(cfg.kd) || cfg.kd < 0.0f) {
+        throw std::invalid_argument("ControlLoop::Config.kd must be >= 0");
+    }
+    // Bounded by the PEAK rating, deliberately looser than
+    // ImpedanceController's +/-rated on the same field. This is the low-level
+    // primitive: a caller driving it directly may want a hard clamp that the
+    // opinionated controller would refuse, and at least one does -- lerobot-
+    // xense sets its own 3.5 Nm rail here, with the reasoning written down
+    // (the MIT feed-forward path gets no firmware max_torque clamp, so 3.5 is
+    // the top of the usable envelope), and ships recipes at -3.0. Tightening
+    // this to rated would silently break those at construction time while
+    // overriding a downstream decision that was made on purpose. All this
+    // check owes them is rejecting what the motor cannot produce at all.
+    if (!finite(cfg.feedforward_torque) ||
+        std::abs(cfg.feedforward_torque) > MOTOR_PEAK_TORQUE_NM) {
+        throw std::invalid_argument(
+            "ControlLoop::Config.feedforward_torque must be within +/-6.0 Nm");
+    }
+    // Bounds a COMMANDED torque that the jaw only sees transiently while the
+    // clamp binds, so the peak rating is the right ceiling. 0 disables it.
+    if (!finite(cfg.max_position_torque_nm) ||
+        cfg.max_position_torque_nm < 0.0f ||
+        cfg.max_position_torque_nm > MOTOR_PEAK_TORQUE_NM) {
+        throw std::invalid_argument(
+            "ControlLoop::Config.max_position_torque_nm must be in [0, 6.0]");
+    }
+    // The ceiling holds indefinitely and nothing in this class times it out,
+    // so it is bounded by the RATED torque, not the peak. 0 disables it.
+    if (!finite(cfg.rated_torque_nm) || cfg.rated_torque_nm < 0.0f ||
+        cfg.rated_torque_nm > MOTOR_RATED_TORQUE_NM) {
+        throw std::invalid_argument(
+            "ControlLoop::Config.rated_torque_nm must be in [0, 1.8] -- the "
+            "hold it produces is indefinite, so it is capped at the motor's "
+            "rated torque rather than its peak");
+    }
+    // Only consulted while the ceiling is engaged, so it is required only when
+    // the ceiling can engage at all. A ceiling that can never release is the
+    // failure this guards.
+    if (cfg.rated_torque_nm > 0.0f) {
+        if (!finite(cfg.rated_release_rad) || cfg.rated_release_rad <= 0.0f) {
+            throw std::invalid_argument(
+                "ControlLoop::Config.rated_release_rad must be > 0 when "
+                "rated_torque_nm is enabled");
+        }
+        if (cfg.rated_hold_ms == 0) {
+            throw std::invalid_argument(
+                "ControlLoop::Config.rated_hold_ms must be > 0 when "
+                "rated_torque_nm is enabled");
+        }
+    }
+    // Same gating: StallAction::None is how the stall guard is switched off,
+    // not stall_torque_nm == 0, so these only have to hold when it is armed.
+    if (cfg.stall_action != ControlLoop::StallAction::None) {
+        if (!finite(cfg.stall_torque_nm) || cfg.stall_torque_nm <= 0.0f ||
+            cfg.stall_torque_nm > MOTOR_RATED_TORQUE_NM) {
+            throw std::invalid_argument(
+                "ControlLoop::Config.stall_torque_nm must be in (0, 1.8] -- "
+                "a trip above the rated torque would never fire before the "
+                "motor's own 6 Nm ceiling does");
+        }
+        if (!finite(cfg.stall_vel_radps) || cfg.stall_vel_radps <= 0.0f) {
+            throw std::invalid_argument(
+                "ControlLoop::Config.stall_vel_radps must be > 0");
+        }
+        if (cfg.stall_hold_ms == 0) {
+            throw std::invalid_argument(
+                "ControlLoop::Config.stall_hold_ms must be > 0");
+        }
+    }
+    // The firmware's stream scheduler tops out at 100 Hz; 0 would mean no
+    // motor frames at all, which freezes every guard in this class.
+    // status_timeout_ms is NOT checked -- 0 disables the liveness test by
+    // design, and hz == 0 is coerced to 1 below rather than rejected, which is
+    // pre-existing behaviour this does not change.
+    if (cfg.motor_stream_hz == 0 || cfg.motor_stream_hz > 100) {
+        throw std::invalid_argument(
+            "ControlLoop::Config.motor_stream_hz must be in [1, 100]");
+    }
+}
+
+}  // namespace
 
 ControlLoop::ControlLoop(FollowerGripper& gripper)
     : ControlLoop(gripper, Config{}) {}
 
 ControlLoop::ControlLoop(FollowerGripper& gripper, Config cfg)
     : g_(gripper), cfg_(cfg) {
+    validate_config(cfg_);
     if (cfg_.hz == 0) cfg_.hz = 1;
     kp_ = cfg_.kp;
     kd_ = cfg_.kd;
