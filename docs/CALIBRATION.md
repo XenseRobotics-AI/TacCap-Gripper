@@ -168,4 +168,3 @@ something other than the calibrated 640x480: the firmware record holds only the
 8 intrinsic/distortion floats and no image size, so serving another resolution
 would mean guessing a scale factor and rectifying wrongly without a trace. That
 is a caller bug to fix, not something to paper over.
-

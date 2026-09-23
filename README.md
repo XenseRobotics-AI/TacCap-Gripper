@@ -38,7 +38,7 @@ window the MCU is known to be idle, rather than on a free-running clock.
 The MCU runs the motion-safety envelope and the stall test at 500 Hz, and it is
 the only layer on the MIT command path that nothing can bypass. So this SDK has
 no host-side contact detection and no second stall guard — saturating the
-controller's torque budget *is* contact. Where the two could disagree, the  
+controller's torque budget *is* contact. Where the two could disagree, the
 device wins. See [docs/CONTROL_LAYERING.md](docs/CONTROL_LAYERING.md).
 
 **Drive the motor through a controller.** `ImpedanceController` follows a

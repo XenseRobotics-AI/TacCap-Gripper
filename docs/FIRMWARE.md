@@ -133,4 +133,3 @@ Notes:
 - `Cmd::GetVersion` returns the **compiled-in** constant, not the OTA bank
   metadata, so `--target-version` is bookkeeping only — the version you read
   back afterwards is proof of what actually got flashed.
-

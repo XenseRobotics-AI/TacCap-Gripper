@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Nothing in this workflow writes to the repository. The drift job additionally
+# handles a token for a PRIVATE repo, so a compromised step having only read
+# access to this one is the difference that matters.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # OpenCV (Camera component) and spdlog (shared logger) are hard
       # dependencies of taccap_core; GTest backs the unit tests. Everything
@@ -69,6 +77,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Runs the same hooks a developer gets from `pre-commit install`: the
+      # ruff pair below plus gitleaks, zizmor, typos and the whitespace/format
+      # checks. Keeping both here is deliberate — the ruff steps give a precise
+      # annotation on the diff, which pre-commit's aggregate output does not.
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
       # The enforced rule set is pinned in pyproject.toml, not taken from
       # ruff's defaults — those broaden between releases, which would turn an
@@ -78,12 +98,12 @@ jobs:
       # Python inside Markdown fences, which the developer's build did not —
       # so the gate failed on files that were clean locally. Keep this in step
       # with the `ruff==` pin in environment.yml.
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.16.8
           args: check --output-format=github
 
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.16.8
           args: format --check
@@ -93,6 +113,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # tc-gu-01 is PRIVATE and this repo is public, so the clone needs a
       # credential. Configure a read-only deploy key or a fine-grained PAT

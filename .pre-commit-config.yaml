@@ -1,0 +1,67 @@
+# Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
+#
+# Install once per clone so these run at commit time, not only in CI:
+#
+#     pre-commit install
+#
+# Without that, the repo has rules but does not enforce them locally, and the
+# first thing that tells you is a red build.
+
+default_language_version:
+  python: python3.12
+
+repos:
+  ##### Meta #####
+  - repo: meta
+    hooks:
+      - id: check-useless-excludes
+      - id: check-hooks-apply
+
+  ##### General #####
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # The firmware images in firmware/ are 116-163 KB, well under this; the
+      # limit is here to catch a stray build artefact or a captured video.
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: debug-statements
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  ##### Python #####
+  # Pinned to the same ruff the CI gate and environment.yml use. Three places
+  # now name a version; they must move together, and the comments in the other
+  # two say so.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  ##### Spelling #####
+  - repo: https://github.com/adhtruong/mirrors-typos
+    rev: v1.38.1
+    hooks:
+      - id: typos
+        args: [--force-exclude]
+
+  ##### Security #####
+  # This repository is public and ships firmware images; a leaked credential
+  # would be public the moment it is pushed.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  # Workflow hardening — the CI here clones a PRIVATE firmware repo with a
+  # token, which is exactly the shape of job worth linting.
+  - repo: https://github.com/woodruffw/zizmor-pre-commit
+    rev: v1.15.2
+    hooks:
+      - id: zizmor
