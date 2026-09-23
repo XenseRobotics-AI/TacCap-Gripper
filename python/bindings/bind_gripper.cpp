@@ -243,9 +243,13 @@ void bind_gripper(py::module_& m) {
              // pipelines, which all want RGB. Pass ColorMode.BGR for code that
              // hands frames straight to cv2.imshow/imwrite.
              py::arg("wrist_color_mode")    = ColorMode::Rgb,
-             // 固件版本门:低于 1.1.6 直接拒绝打开(那之前 MIT 路径上没有任何
-             // 堵转保护)。置 true 只为了在升级前读一台旧设备的配置;OTA 本身
-             // 走 LeaderGripper,不受影响。
+             // 固件版本门:低于 **1.2.5** 直接拒绝打开。两条理由叠加 —— 1.1.6
+             // 之前 MIT 路径上没有任何堵转保护(安全底线);1.2.5 之前标定写入的
+             // 闭合零位带内缩量,而本 SDK 的闭合端预压按「归一化 0.0 就是止点」
+             // 设计,在更旧固件上会压过位置映射所说的完全闭合点。
+             // 置 true 只为了在升级前读一台旧设备的配置;OTA 本身走
+             // LeaderGripper(不设门),升级通道始终可用。
+             // 门槛的唯一真值源是 FollowerGripper::kMinFirmware*,别在这里写死。
              py::arg("allow_outdated_firmware") = false)
         .def_property_readonly("firmware_version",
             [](const FollowerGripper& g) -> py::object {

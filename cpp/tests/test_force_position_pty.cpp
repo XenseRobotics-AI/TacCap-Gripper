@@ -154,10 +154,34 @@ TEST(ForcePositionControllerPty, StartRefusesADeviceLimitAboveTheMotionLimit) {
 //   stop; on 1.2.3 (20 mrad inset) or 1.2.4 (5 mrad) it presses past what the
 //   position map calls fully closed. Bounded, but the scale stops meaning what
 //   it says — which is worse to debug than a refusal.
+namespace {
+
+// 门槛 ±1 个 patch,**从常量算出来**而不是写死。写死过一次:把门槛从 1.1.6 抬到
+// 1.2.5 时,这些用例里的 1.2.5 / 1.1.6 都成了字面量,门一动测试就塌,而失败信息
+// 看起来像功能坏了。
+struct Ver { uint8_t major, minor, patch; };
+
+constexpr Ver kFloor{xense::taccap::FollowerGripper::kMinFirmwareMajor,
+                     xense::taccap::FollowerGripper::kMinFirmwareMinor,
+                     xense::taccap::FollowerGripper::kMinFirmwarePatch};
+
+constexpr Ver just_below(Ver v) {
+    // patch 为 0 时不能简单减一,退到上一个 minor 的高 patch。
+    return v.patch > 0 ? Ver{v.major, v.minor, uint8_t(v.patch - 1)}
+                       : Ver{v.major, uint8_t(v.minor - 1), 255};
+}
+
+constexpr Ver just_above(Ver v) {
+    return Ver{v.major, uint8_t(v.minor + 1), 0};
+}
+
+}  // namespace
+
 TEST(FollowerFirmwareGate, RefusesFirmwareOlderThanTheMinimum) {
+    constexpr Ver v = just_below(kFloor);
     Pty pty;
     ASSERT_GE(pty.master(), 0);
-    FakeFollower fw(pty, 1, 2, 4);          // one patch short
+    FakeFollower fw(pty, v.major, v.minor, v.patch);
     EXPECT_THROW(open_follower(pty), xense::taccap::ProtocolError);
 }
 
@@ -176,17 +200,13 @@ TEST(FollowerFirmwareGate, RefusesWhatTheOldFloorUsedToAdmit) {
 }
 
 TEST(FollowerFirmwareGate, AcceptsTheMinimumAndNewer) {
-    {
+    for (Ver v : {kFloor, just_above(kFloor)}) {
         Pty pty;
         ASSERT_GE(pty.master(), 0);
-        FakeFollower fw(pty, 1, 2, 5);
-        EXPECT_NO_THROW({ auto g = open_follower(pty); });
-    }
-    {
-        Pty pty;
-        ASSERT_GE(pty.master(), 0);
-        FakeFollower fw(pty, 1, 3, 0);
-        EXPECT_NO_THROW({ auto g = open_follower(pty); });
+        FakeFollower fw(pty, v.major, v.minor, v.patch);
+        EXPECT_NO_THROW({ auto g = open_follower(pty); })
+            << int(v.major) << "." << int(v.minor) << "." << int(v.patch)
+            << " should be admitted";
     }
 }
 
