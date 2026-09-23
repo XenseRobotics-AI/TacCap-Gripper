@@ -113,6 +113,7 @@ enum class Cmd : uint8_t {
     GetMotorStatusExt   = 0x53,    // V2.2 — MotorStatusExt (72B), superset of 0x50
     GetMotorSpec             = 0x56,  // 电机型号规格(40B)
     GetHomeDiag              = 0x57,  // 自动标定诊断(64B)
+    GetMotorVersion          = 0x58,  // 电机自身固件版本(8B,仅私有协议)
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

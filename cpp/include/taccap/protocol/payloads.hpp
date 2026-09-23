@@ -283,6 +283,30 @@ namespace HomeDiagFlag {
     constexpr std::uint8_t HasMoved  = 0x08;  // stall monitor saw real motion
 }
 
+// ---- 电机自身固件版本 (Cmd::GetMotorVersion 0x58, firmware >= 1.2.6) ------
+//
+// NOT the gripper firmware version — that is Cmd::GetVersion (0x01). This is
+// the version of the program running inside the motor module.
+//
+// The firmware always answers OK and reports success through `valid`, because
+// "could not read" is itself the diagnostic: MIT mode cannot read it at all
+// (the motor ignores extended frames there), and a motor that does not know
+// the magic cannot either. Collapsing those into one NACK would lose the
+// distinction.
+//
+// `motor_stopped` matters: the request reuses RobStride communication type 4,
+// which is also "motor stop". A motor that does not recognise the 00 C4 magic
+// executes it as a stop, so a timeout leaves the motor disabled and the caller
+// has to re-enable. A timeout WITHOUT this flag is a plain read failure.
+constexpr size_t MOTOR_VERSION_SIZE = 8;
+struct __attribute__((packed)) MotorVersion {
+    uint8_t version[4];     // high byte first: version[0].version[1].[2].[3]
+    uint8_t valid;          // 1 = read succeeded
+    uint8_t motor_stopped;  // 1 = the request probably stopped the motor
+    uint8_t protocol_mode;  // 0 = private, 2 = MIT (can_motor_get_protocol)
+    uint8_t reserved;
+};
+
 struct __attribute__((packed)) HomeDiagReport {
     std::uint8_t  version;            // == HOME_DIAG_REPORT_VERSION
     std::uint8_t  state;              // HomeState
@@ -1040,6 +1064,7 @@ static_assert(sizeof(MotorTorqueCtrl)    == 12);
 static_assert(sizeof(MotorImpedanceCtrl) == 20);  // V1.7 (+ feed-forward vel)
 static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
 static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
+static_assert(sizeof(MotorVersion)       == MOTOR_VERSION_SIZE);
 static_assert(sizeof(MotorStatus)        == 31);  // V1.9 motor_status_t (was 40)
 static_assert(sizeof(MotorStatus)        == MOTOR_STATUS_LEGACY_SIZE);
 // V2.2 — 0x53 payload. Its first 31 bytes must stay layout-identical to

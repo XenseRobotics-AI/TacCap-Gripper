@@ -181,6 +181,27 @@ void bind_motor(py::module_& m) {
             return std::string(buf);
         });
 
+    // ---- MotorVersion (Cmd 0x58, 8 bytes, follower firmware >= 1.2.6) ----
+    py::class_<protocol::MotorVersion>(m, "MotorVersion")
+        .def_property_readonly("version", [](const protocol::MotorVersion& v) {
+            return py::make_tuple(v.version[0], v.version[1],
+                                  v.version[2], v.version[3]);
+        }, "版本号四段,**高位在前**(手册 p.31 应答 Byte3~6)")
+        .def_readonly("valid",         &protocol::MotorVersion::valid)
+        .def_readonly("motor_stopped", &protocol::MotorVersion::motor_stopped)
+        .def_readonly("protocol_mode", &protocol::MotorVersion::protocol_mode)
+        .def("__str__", [](const protocol::MotorVersion& v) {
+            if (!v.valid) {
+                return std::string("MotorVersion(invalid, protocol=") +
+                       (v.protocol_mode == 2 ? "MIT — 电机在 MIT 下不理扩展帧"
+                                             : "private") + ")";
+            }
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "MotorVersion(%u.%u.%u.%u)",
+                          v.version[0], v.version[1], v.version[2], v.version[3]);
+            return std::string(buf);
+        });
+
     // ---- MotorFaultReport (V2.2 — Cmd 0x52, 64 bytes) --------------------
     py::class_<protocol::MotorFaultReport>(m, "MotorFaultReport")
         .def_readonly("version",           &protocol::MotorFaultReport::version)
@@ -419,6 +440,17 @@ void bind_motor(py::module_& m) {
             py::gil_scoped_release g;
             return self.fault_report(force, std::chrono::milliseconds(timeout_ms));
         }, py::arg("force") = false, py::arg("timeout_ms") = 200)
+        .def("motor_version", [](Motor& self, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            return self.motor_version(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500,
+           "**电机自身**的固件版本(不是夹爪固件,那是 gripper.firmware_version)。\n\n"
+           "只在私有协议下可读 —— MIT 模式电机不理扩展帧,切协议必须断 24V。\n"
+           "MIT 下返回 valid=0 而不是抛异常:读不到本身就是诊断结果,而『MIT 模式』\n"
+           "和『电机没应答』是两种不同的情况,一个 NACK 说不清是哪种。\n\n"
+           "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"
+           "的电机会把它当停止执行。motor_stopped=1 就是这种情况,再发运动命令前\n"
+           "要重新 enable()。")
         .def("set_startup_limit_torque", [](Motor& self, float torque_nm) {
             py::gil_scoped_release g; self.set_startup_limit_torque(torque_nm);
         }, py::arg("torque_nm"))

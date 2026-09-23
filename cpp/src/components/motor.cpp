@@ -135,6 +135,23 @@ protocol::MotorFaultReport Motor::fault_report(bool force,
     return protocol::decode_motor_fault_report(ack.data.data(), ack.data.size());
 }
 
+protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::GetMotorVersion, {}, timeout);
+    if (ack.is_nack) {
+        // A NACK here means the firmware predates 1.2.6, not that the motor
+        // failed to answer — the handler itself always ACKs.
+        throw ProtocolError(std::string("Motor::motor_version NACK: ") +
+                            protocol::to_string(ack.error_code) +
+                            " (needs follower firmware >= 1.2.6)");
+    }
+    if (ack.data.size() < protocol::MOTOR_VERSION_SIZE) {
+        throw ProtocolError("Motor::motor_version: short payload");
+    }
+    protocol::MotorVersion out{};
+    std::memcpy(&out, ack.data.data(), protocol::MOTOR_VERSION_SIZE);
+    return out;
+}
+
 Motor::SubId Motor::on_status(Callback cb) {
     return t_.subscribe(
         protocol::Cmd::GetMotorStatus,

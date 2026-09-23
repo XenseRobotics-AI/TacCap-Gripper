@@ -138,6 +138,11 @@ PYBIND11_MODULE(_taccap_native, m) {
         .value("GetMotorControlStats", tp::Cmd::GetMotorControlStats)
         .value("GetMotorFault",      tp::Cmd::GetMotorFault)
         .value("GetMotorStatusExt",  tp::Cmd::GetMotorStatusExt)
+        // 这三项此前漏在枚举外(GetMotorSpec / GetHomeDiag 从来没补过)。枚举的
+        // 用处就是镜像命令集,缺项会让 transport.send_cmd() 的调用方只能写裸值。
+        .value("GetMotorSpec",       tp::Cmd::GetMotorSpec)
+        .value("GetHomeDiag",        tp::Cmd::GetHomeDiag)
+        .value("GetMotorVersion",    tp::Cmd::GetMotorVersion)
         .value("SetImuConfig",       tp::Cmd::SetImuConfig)
         .value("GetImuConfig",       tp::Cmd::GetImuConfig)
         .value("SetEncoderConfig",   tp::Cmd::SetEncoderConfig)

@@ -243,6 +243,23 @@ public:
         bool force = false,
         std::chrono::milliseconds timeout = std::chrono::milliseconds{200});
 
+    // The version of the program inside the MOTOR (firmware >= 1.2.6). Not the
+    // gripper's own firmware version — that is FollowerGripper::firmware_version().
+    //
+    // ONLY READABLE UNDER THE PRIVATE PROTOCOL. In MIT mode the motor ignores
+    // extended frames, and switching protocols needs a 24 V power cycle, so the
+    // reply comes back with valid=0 and protocol_mode=2 rather than throwing.
+    // Check `valid` — this call reports failure in the payload on purpose,
+    // because "MIT mode" and "motor did not answer" are different diagnoses and
+    // one NACK cannot say which.
+    //
+    // MAY STOP THE MOTOR. The request reuses RobStride communication type 4,
+    // which is also "motor stop"; a motor that does not recognise the 00 C4
+    // magic executes it as a stop. `motor_stopped` says so — re-enable before
+    // commanding motion again.
+    protocol::MotorVersion motor_version(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+
     // Subscribe to streamed MotorStatus DATA frames (StreamSrc::MotorStatus
     // must be enabled in start_streaming for these to arrive).
     SubId on_status(Callback cb);

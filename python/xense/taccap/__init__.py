@@ -110,6 +110,7 @@ MotorControlStats = _taccap_native.MotorControlStats  # V1.7
 MotorPrivateParam = _taccap_native.MotorPrivateParam  # V1.9+ private-protocol param
 MotorStatusExt = _taccap_native.MotorStatusExt        # V2.2 72-byte status (Cmd 0x53)
 MotorFaultReport = _taccap_native.MotorFaultReport    # V2.2 64-byte fault report (Cmd 0x52)
+MotorVersion = _taccap_native.MotorVersion            # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
 MotorStopReason = _taccap_native.MotorStopReason      # V2.2
 # V2.2 partial auto-cal writes — patch stall params without a read-modify-write
 GripperAutoCalStallParam = _taccap_native.GripperAutoCalStallParam
@@ -230,6 +231,7 @@ __all__ = [
     "MotorPrivateParam",
     "MotorStatusExt",
     "MotorFaultReport",
+    "MotorVersion",
     "MotorStopReason",
     "GripperAutoCalStallParam",
     "GripperAutoCalStallParamEx",
