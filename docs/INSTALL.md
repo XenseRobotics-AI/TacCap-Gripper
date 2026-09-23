@@ -68,17 +68,29 @@ sudo usermod -aG dialout,video "$USER"
 `pyproject.toml` uses **scikit-build-core** as the build backend, which
 drives CMake under the hood with `TACCAP_BUILD_PYTHON=ON` and an explicit
 `TACCAP_BUILD_EXAMPLES=OFF` — the option defaults to ON for source builds so CI
-compiles the examples, but example binaries have no place in a wheel. A single `pip` invocation builds the C++
-core and the pybind11 extension, then co-locates them inside the wheel
-under `xense/taccap/`:
+compiles the examples, but example binaries have no place in a wheel. A single
+install invocation builds the C++ core and the pybind11 extension, then
+co-locates them inside the wheel under `xense/taccap/`:
 
 ```bash
-# Editable / development install (re-runs CMake on every `pip install -e .`):
-pip install -e .
+# Editable / development install (re-runs CMake on every install):
+uv pip install -e . --no-build-isolation
 
 # Or a regular install (builds a wheel, installs it):
-pip install .
+uv pip install . --no-build-isolation
 ```
+
+`uv` ships in `environment.yml` and picks up the activated conda env by itself.
+`pip` accepts the same arguments if you prefer it.
+
+**`--no-build-isolation` is not optional here in spirit.** The env pins
+`pybind11` and `scikit-build-core` alongside `libopencv` and `spdlog`, and the
+flag says "build against those". Drop it and the installer builds in a
+throwaway environment against a `pybind11` downloaded from PyPI — measured,
+`pybind11_DIR` then points into `~/.cache/uv/builds-v0/…` rather than the env.
+pybind11 is header-only, so whatever copy is present at build time is compiled
+into the extension; this codebase is version-sensitive there, which is what
+`python/tests/test_numpy_views.py` guards.
 
 What ends up where (editable build):
 
@@ -93,7 +105,7 @@ so loading `xense.taccap` just works without `LD_LIBRARY_PATH`.
 
 Build artefacts for editable installs land under `build/{wheel_tag}/`
 (see `[tool.scikit-build] build-dir` in `pyproject.toml`). Delete that
-directory if you want a clean rebuild; `pip install -e .` will regenerate it.
+directory if you want a clean rebuild; the next install regenerates it.
 
 ### 5b. C++-only build (no Python)
 
@@ -154,7 +166,7 @@ ctest --test-dir build --output-on-failure
 
 ```bash
 # Python: blow away scikit-build-core's build dir
-rm -rf build/ && pip install -e .
+rm -rf build/ && uv pip install -e . --no-build-isolation
 
 # Pure C++: incremental rebuild is fine
 cmake --build build -j

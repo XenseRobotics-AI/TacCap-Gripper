@@ -46,6 +46,13 @@ dependencies:
   - pyserial         # used in step 2+ for TC-GU-01 serial; pre-installed
   - pytest
   - ruff
+  # Package installs go through uv rather than pip. It targets the active
+  # conda env on its own (prints the prefix it picked, which pip does not) and
+  # its resolve/install overhead is lower -- measured on a warm build dir,
+  # 0.5 s against pip's 1.0 s. Do not expect more than that: the CMake compile
+  # dominates either tool, and both drive the same scikit-build-core backend.
+  # pip stays available, and conda's own `pip:` section below still uses it.
+  - uv
   - pip
   - pip:
       - opencv-python==4.12.0.88   # pinned across XenseRobotics SDKs

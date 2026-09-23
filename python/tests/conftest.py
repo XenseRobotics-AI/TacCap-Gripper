@@ -43,5 +43,5 @@ assert _REPO_PYTHON in _t.__file__, (
 _native = sys.modules.get("xense.taccap._taccap_native")
 assert _native is not None and _REPO_PYTHON in _native.__file__, (
     f"_taccap_native came from {getattr(_native, '__file__', None)}, not this "
-    "checkout — rebuild with `pip install -e . --no-build-isolation`."
+    "checkout — rebuild with `uv pip install -e . --no-build-isolation`."
 )

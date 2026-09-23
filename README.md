@@ -123,15 +123,27 @@ the rest of the flashing detail.
 
 ```bash
 mamba env create -f environment.yml && mamba activate xense-taccap
-pip install -e . --no-build-isolation
+uv pip install -e . --no-build-isolation
 python -c "import xense.taccap as t; print(t.__version__)"
 ```
 
+`uv` ships in the env and targets the activated conda env on its own. `pip`
+works too — the flags are the same.
+
+**Why `--no-build-isolation`.** `environment.yml` pins the build dependencies
+(`pybind11`, `scikit-build-core`) next to the C++ ones (`libopencv`, `spdlog`),
+and this flag says "build against what the env pins". Without it the installer
+builds in a throwaway environment against a `pybind11` fetched from PyPI —
+verified: `pybind11_DIR` then points into `~/.cache/uv/builds-v0/...` instead of
+the env. pybind11 is header-only, so whichever copy is present at build time is
+the one compiled into the extension, and this codebase is version-sensitive
+there (see `python/tests/test_numpy_views.py`).
+
 Two gotchas that cost people an afternoon each:
 
-- Call `pip` from an **activated** env, not by absolute path. Otherwise cmake
-  finds a `ninja` on `PATH` that is actually GNU Make and fails with a
-  confusing version error.
+- Install from an **activated** env, not by absolute path. Otherwise cmake finds
+  a `ninja` on `PATH` that is actually GNU Make and fails with a confusing
+  version error.
 - A C++ or bindings change is **not live in a consumer env until you reinstall
   there** — the editable install redirects Python sources to the checkout but
   keeps serving the compiled extension from `site-packages`.
