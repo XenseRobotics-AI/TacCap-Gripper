@@ -68,7 +68,7 @@ public:
     // Install / remove the converter used to fill EncoderSample::position.
     // Takes effect for read_once() and for every on_data() subscriber, so a
     // running stream switches over without re-subscribing. Thread-safe: the
-    // transport's reader thread may be decoding samples concurrently.
+    // transport's dispatcher thread may be normalizing samples concurrently.
     //
     // A map that isn't valid() is rejected (throws ProtocolError) — installing
     // an uncalibrated converter would silently report 0 forever.

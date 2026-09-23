@@ -94,7 +94,8 @@ public:
         // behaviour back for code that feeds cv::imshow/imwrite directly.
         ColorMode   wrist_color_mode    = ColorMode::Rgb;
 
-        // Refuse to open a follower whose firmware predates 1.1.6.
+        // Refuse to open a follower whose firmware predates kMinFirmware*
+        // below -- 1.2.5. Two reasons stack up to it, and they differ in kind.
         //
         // 1.1.6 is where the motion safety envelope landed, and it is not
         // optional: before it, the MIT command path has NO stall protection at
@@ -106,6 +107,13 @@ public:
         // browned out the whole board -- the gripper dropped what it was
         // holding and the USB link disappeared. That is the failure this SDK
         // now assumes cannot happen.
+        //
+        // 1.2.5 is where auto-calibration stopped writing the closed zero with
+        // an inset (20 mrad through 1.2.3, 5 mrad in 1.2.4). This SDK's
+        // closed-endpoint preload assumes normalized 0.0 IS the mechanical
+        // stop, so on older firmware it presses past what the position map
+        // calls fully closed. Bounded, not dangerous -- but a scale that
+        // quietly means something else is worse to debug than a refusal.
         //
         // Set true only to talk to an old device deliberately (diagnostics,
         // reading its config before an upgrade). OTA itself is unaffected: it

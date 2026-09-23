@@ -284,19 +284,27 @@ public:
     void              set_can_id(uint8_t can_id);              // Cmd 0x35
     void              switch_protocol(protocol::MotorProtocol);// Cmd 0x36 (persists)
     protocol::MotorProtocol get_protocol();                    // Cmd 0x37
-    // Private-protocol single-parameter access (Cmd 0x38/0x39). ONLY valid when
-    // the motor runs the Private CAN protocol — under MIT these NACK
-    // InvalidParam (-> ProtocolError). The firmware whitelists index + R/W. The
-    // 4-byte raw_value is interpreted per MotorPrivateParam::type (u8 / f32).
-    // Refused while the motor speaks the MIT protocol, which is the normal
-    // case for a gripper. can_motor_read_private_param() rejects every index
-    // up front when the protocol mode is MIT, so these two always raise
-    // ProtocolError(InvalidParam) there whatever the index -- verified on
-    // firmware 1.1.5 against 0x7017. Reaching them means switching protocols,
-    // which needs a power cycle, so there is no runtime path. They stay because
-    // they remain correct on a private-protocol device; for the 0x700B limit
-    // use set_startup_limit_torque(), which is applied at boot and needs no
-    // private-parameter access.
+    // Single-parameter access to the motor (Cmd 0x38/0x39). The firmware
+    // whitelists index + R/W; the 4-byte raw_value is interpreted per
+    // MotorPrivateParam::type (u8 / f32).
+    //
+    // THE MIT GATE IS GONE AS OF THE 1.2.6 FIRMWARE, and this comment used to
+    // say the opposite. Measured on firmware 1.1.5 against 0x7017, the firmware
+    // rejected every index up front whenever the protocol mode was MIT, so both
+    // calls raised ProtocolError(InvalidParam) there no matter the index. That
+    // blanket gate was removed on purpose -- protocol_handler.c records that it
+    // was what made vBus / iqf / 0x7028 unreadable under MIT, while MIT's own
+    // instruction 17/18 parameter channel existed all along. What remains is
+    // narrower: protocol_check_motor_param_access_allowed() refuses during OTA,
+    // and returns SysBusy while the firmware's control task is running.
+    //
+    // NOT VERIFIED: that the motor actually answers under MIT once the firmware
+    // forwards the request. A silent motor comes back as ProtocolError(Timeout)
+    // rather than InvalidParam, which is the diagnostic to look for. Do not
+    // build a startup check on either outcome without measuring it first.
+    //
+    // For the 0x700B limit use set_startup_limit_torque(), which is applied at
+    // boot and needs no parameter access at all.
     protocol::MotorPrivateParam get_private_param(uint16_t index);
     void set_private_param(uint16_t index, uint32_t raw_value);
     protocol::MotorControlStats control_stats(                 // Cmd 0x51

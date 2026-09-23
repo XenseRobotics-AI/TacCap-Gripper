@@ -55,10 +55,14 @@ void bind_gripper_types(py::module_& m) {
         "Motion safety envelope, carried inside the GripperConfig record "
         "(Cmd 0x66/0x67 - no new command, no payload size change).\n\n"
         "The firmware clamps every MIT frame against it: commanded position to "
-        "within peak_torque_nm/kp of the measured position, feed-forward torque "
-        "to cont_torque_nm, velocity feed-forward to max_velocity_rad_s. It "
-        "lives in firmware because the host link is 100 Hz, phase-locked, and "
-        "cannot be polled while controlling.")
+        "within peak_torque_nm/kp of the measured position, and feed-forward "
+        "torque to cont_torque_nm. It lives in firmware because the host link is "
+        "100 Hz, phase-locked, and cannot be polled while controlling.\n\n"
+        "There is deliberately NO speed ceiling. The only speed an MIT frame can "
+        "clamp is the velocity FEED-FORWARD, which impedance control leaves at "
+        "zero, so such a clamp would never fire; the motor's own limit_spd "
+        "(0x7017) is the right layer but is unreachable while the motor speaks "
+        "MIT. Approach speed comes from peak_torque_nm/kd instead.")
         .def(py::init<>())
         .def_readwrite("cont_torque_nm",     &protocol::GripperEnvelope::cont_torque_nm)
         .def_readwrite("peak_torque_nm",     &protocol::GripperEnvelope::peak_torque_nm)

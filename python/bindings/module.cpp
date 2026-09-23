@@ -2,15 +2,11 @@
 //
 // pybind11 entry point for the xense.taccap Python package.
 //
-// Layered exports:
-//   - top-level: __version__, hello()
-//   - protocol enums:    Address, FrameType, Cmd, ErrorCode
-//   - bus framing:       Frame, FrameParser, pack_frame(), crc16_modbus(),
-//                        stuff_data(), unstuff_data()
-//   - serial transport:  SerialBus
-//
-// Future steps add component classes (Camera, IMU, Encoder, Motor,
-// LeaderGripper, FollowerGripper) here.
+// This file binds the wire layer -- version, error types, the protocol enums
+// and payload structs, framing, SerialBus and Transport. Everything above it
+// is bound elsewhere and pulled in at the bottom of PYBIND11_MODULE:
+// bind_log() and bind_components(), the latter fanning out to the bind_*.cpp
+// files (see bindings_common.hpp for why their call order matters).
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -63,7 +59,10 @@ void bind_log(py::module_& m);         // defined in log.cpp
 }
 
 PYBIND11_MODULE(_taccap_native, m) {
-    m.doc() = "TacCap-Gripper native module (lite scaffold + TC-GU-01 protocol)";
+    m.doc() = "xense.taccap native extension: TC-GU-01 wire protocol, gripper\n"
+              "components and the background controllers.\n\n"
+              "Import xense.taccap rather than this module directly -- the package\n"
+              "is the documented surface and this name is an implementation detail.";
 
     m.attr("__version__") = TACCAP_VERSION_STRING;
 

@@ -67,8 +67,10 @@ IMU::SubId IMU::on_data(Callback cb) {
     return t_.subscribe(
         protocol::Cmd::GetImu,
         [cb = std::move(cb)](const bus::Frame& f) {
-            // Reader thread context. decode() may throw on a malformed
-            // frame; swallow here (Transport already counts callback_exc).
+            // Dispatcher thread context, not the reader -- Transport keeps
+            // user code off the read path on purpose. decode() may throw on a
+            // malformed frame; swallow here (Transport already counts
+            // callback_exc).
             try {
                 cb(decode(f.payload.data(), f.payload.size()));
             } catch (...) {}

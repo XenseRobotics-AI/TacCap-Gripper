@@ -4,15 +4,30 @@ Imported via ``import xense.taccap``. ``xense`` is a PEP 420 namespace
 package (no ``__init__.py``), so this subpackage can coexist with any other
 ``xense.*`` packages installed alongside it.
 
-Top-level surface today:
+Everything is re-exported from the compiled extension; this module adds no
+behaviour of its own. ``__all__`` at the bottom is the authoritative list.
 
-  - Versioning:       ``__version__``, ``hello()``
-  - Protocol enums:   ``Address``, ``FrameType``, ``Cmd``, ``ErrorCode``
-  - Wire framing:     ``Frame``, ``FrameParser``, ``pack_frame``,
-                       ``crc16_modbus``, ``stuff_data``, ``unstuff_data``
-  - Serial transport: ``SerialBus``
+The surface, roughly bottom-up:
+
+  - Discovery:        ``scan_grippers``, ``find_left`` / ``find_right``,
+                       ``find_leader`` / ``find_follower``, ``parse_serial``.
+                       Sides come from the firmware-burned SN, not the USB chip.
+  - Grippers:         ``FollowerGripper``, ``LeaderGripper`` — the aggregates
+                       most callers start from.
+  - Controllers:      ``ImpedanceController`` to follow a position,
+                       ``ForcePositionController`` to grasp. Each owns a
+                       background thread and the motor-status stream.
+  - Components:       ``Motor``, ``Encoder``, ``IMU``, ``Camera``, ``Led``,
+                       ``Key``, ``Calibration``, ``Diagnostics``, ``OtaSession``.
+  - Wire layer:       ``Transport``, ``SerialBus``, ``Frame``, ``FrameParser``,
+                       ``pack_frame``, ``crc16_modbus``, the ``Cmd`` / ``Address``
+                       / ``ErrorCode`` enums and the payload structs.
   - Exceptions:       ``ProtocolError``, ``CrcError``, ``IoError``,
-                       ``TimeoutError``
+                       ``TimeoutError``.
+  - Logging:          ``log`` — the same spdlog instance the C++ core writes to.
+
+Do not drive a gripper through both a controller and the ``Motor.set_*``
+primitives at once: they write to the same bus and the last frame wins.
 """
 
 from . import _taccap_native
@@ -144,8 +159,6 @@ find_left = _taccap_native.find_left
 find_right = _taccap_native.find_right
 find_leader = _taccap_native.find_leader
 find_follower = _taccap_native.find_follower
-find_leader = _taccap_native.find_leader
-find_follower = _taccap_native.find_follower
 
 # ---- Exceptions -------------------------------------------------------------
 ProtocolError = _taccap_native.ProtocolError
@@ -229,6 +242,9 @@ __all__ = [
     "MotorStopReason",
     "GripperAutoCalStallParam",
     "GripperAutoCalStallParamEx",
+    "KeySample",
+    "SensorErrorSample",
+    "KeyState",
     "CameraFrame",
     "IMU",
     "Encoder",
@@ -236,7 +252,14 @@ __all__ = [
     "Led",
     "Ws2812Mode",
     "Ws2812EffectType",
+    "Key",
+    "SensorErrors",
     "Camera",
+    # OTA
+    "OtaSession",
+    "OtaTargetVersion",
+    "OtaStatus",
+    "crc32_iso_hdlc",
     # Aggregate + discovery
     "LeaderGripper",
     "FollowerGripper",
@@ -249,8 +272,6 @@ __all__ = [
     "find_one",
     "find_left",
     "find_right",
-    "find_leader",
-    "find_follower",
     "find_leader",
     "find_follower",
     # Exceptions
