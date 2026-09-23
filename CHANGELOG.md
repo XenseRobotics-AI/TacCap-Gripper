@@ -16,6 +16,10 @@ to 0.2.3 loses nothing by staying there.
 
 - **`README_CN.md`**, a full Chinese translation of the README. The English
   file remains authoritative; the Chinese one links back to it.
+- **A citation entry** at the end of both READMEs. Its `version` field is a
+  placeholder on purpose: cite the release you actually used, and state the
+  gripper firmware version alongside it — several documented behaviours are
+  specific to a firmware version, not just to an SDK version.
 - **`uv` in `environment.yml`.** Installs now read
   `uv pip install -e . --no-build-isolation`; `pip` still works with the same
   flags. uv targets the activated conda env on its own. Measured on a warm
