@@ -126,7 +126,7 @@ longer be left behind).
   A feed-forward term has no such clamp.
 
   **Why 0.25.** Pure feed-forward (`kp=kd=0`) swept against the closed stop on
-  `TCGU01A28Z0018s`:
+  a follower unit:
 
   | feed-forward | resulting raw |
   |---|---|
@@ -220,7 +220,7 @@ longer be left behind).
   load-bearing rather than descriptive. Its `images.<role>.file` entry is how
   role selectors and `--all` find an image, so a version bump must rename the
   `.bin` *and* update the manifest in the same change. Getting that wrong
-  breaks exactly the path customers are told to use while explicitly-named
+  breaks exactly the path the docs tell you to use while explicitly-named
   flashing still works — so it would survive casual testing.
   `test_ota_update_all.py` now fails if the manifest names a file that is not
   on disk, or if a filename disagrees with its declared version.
@@ -239,7 +239,7 @@ longer be left behind).
   binary differs from 1.2.3 by 2 bytes, the version byte) and is bumped only to
   keep the roles on one number.
 
-  Closed position on `TCGU01A28Z0018s`, six cycles each, `arrived` true and
+  Closed position on one follower, six cycles each, `arrived` true and
   `HOLDING_POSITION` throughout:
 
   | | closed raw | holding torque |
@@ -419,7 +419,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   Every one of them writes a control frame straight to the wire with no error
   clamp, no torque ceiling and no stall guard — those live in `ControlLoop` and
   `ForcePositionController`, and a caller reaching past them gets none of it.
-  This is not hypothetical: a customer console driving `submit_impedance()` at
+  This is not hypothetical: a console driving `submit_impedance()` at
   `kp=20` into a rigid object let `kp * error` grow to the motor's own `0x700B`
   ceiling; at 24 V the current draw browned out the whole board, the gripper
   dropped what it was holding and the USB link disappeared. See
@@ -484,7 +484,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   commands: the frame goes on the wire and returns, with none of the host-side
   error clamp, torque ceiling or stall handling that lives in the controllers.
 
-  They were withheld after a customer console drove `submit_impedance()` at
+  They were withheld after a console drove `submit_impedance()` at
   kp=20 into a rigid object, walked the torque up to the motor's own 0x700B
   ceiling, and browned out the whole board at 24 V -- the jaw dropped its
   workpiece and the USB link disappeared. **That was firmware 1.1.5, before the
@@ -614,8 +614,8 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
 
 - **`python/tests/test_control_config_surface.py`** — the Python-facing config
   surface of both controllers had no tests, and the surface *is* the contract:
-  the ROS2 sibling and every customer script address the controllers through
-  these attribute names and constructor kwargs. pybind11 restates every default
+  downstream consumers address the controllers through these attribute names
+  and constructor kwargs. pybind11 restates every default
   by hand on the far side of the boundary, so a C++ default can change and
   Python keep the old one with nothing failing — which is exactly what happened
   to `rated_torque_nm` (see below). Hardware-free.
@@ -660,8 +660,8 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
 ### Fixed
 
 - **Fixed in firmware: a dropped link mid-grasp left the motor pushing
-  forever.** Previously documented here as a hazard; now fixed on
-  `tc-gu-01` branch `feat/actuator-can-timeout` and verified on hardware.
+  forever.** Previously documented here as a hazard; now fixed in the gripper
+  firmware and verified on hardware.
 
   Two layers, and the distinction is the whole point. The actuator's own
   `0x7028` CAN timeout (manual §3.3.6: no CAN command within the window → the
@@ -684,8 +684,8 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   Not a code change — a hazard found while bench-testing and written down where
   the submit path is defined (`components/motor.hpp`). The firmware has no
   host-command watchdog (no last-command timestamp or staleness check anywhere
-  in tc-gu-01's tasks, and the hardware IWDG in `task_monitor.c` is commented
-  out), so it keeps applying the last submitted frame indefinitely.
+  anywhere in the firmware's task layer, and its hardware watchdog is
+  disabled), so it keeps applying the last submitted frame indefinitely.
 
   Measured on 1.1.6: a 1.2 Nm grasp, USB link dropped 4 s into the close, and
   the motor was still pushing **1.256 Nm two minutes later** with its
@@ -824,7 +824,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
 
 ## [0.1.9] - 2026-08-21
 
-追一个客户报的"夹爪状态流偶发降频"，最后拆出四个性质不同的问题，这一版是其中
+追查"夹爪状态流偶发降频"，最后拆出四个性质不同的问题，这一版是其中
 落在 SDK 侧的部分。
 
 核心结论：**状态帧丢失不是固件缺陷**——用新加的固件计数器证明了字节是在离开 MCU
@@ -842,7 +842,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
 ### Added
 
 - **`Diagnostics` component** — `gripper.diagnostics()` on both leader and
-  follower, wrapping the two firmware commands added in tc-gu-01 1.1.3/1.1.4.
+  follower, wrapping the two firmware commands added in 1.1.3/1.1.4.
 
   `uart_stats()` (Cmd 0x54) returns the firmware's free-running UART counters.
   It exists to answer a question nothing on the host can: when a status frame
@@ -850,7 +850,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   lost after leaving it? `tx_bytes_ok` / `tx_calls_ok` count only what the
   firmware's transmit call accepted, so comparing them against what the host
   decoded over the same window separates the two. That comparison is what
-  established the byte loss is downstream of the MCU (tc-gu-01#1): firmware
+  established the byte loss is downstream of the MCU: firmware
   reported 6013 frames and 246417 bytes out with zero failures while the host
   still lost 40 frames.
 
@@ -911,8 +911,8 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   - **`Motor::submit_*` no longer advertises a 500 Hz submission budget.** The
     firmware really does apply the latest target at 500 Hz, but that was being
     read as "submitting at 500 Hz is free", and it is not: every host->MCU frame
-    that lands while the MCU is transmitting costs a whole status frame
-    (tc-gu-01#1). Rate does not predict the loss — 250 Hz lost 154 frames on one
+    that lands while the MCU is transmitting costs a whole status frame.
+    Rate does not predict the loss — 250 Hz lost 154 frames on one
     60 s run and none on the next, 300 Hz was clean where 250 Hz was not, and
     1000 Hz has produced both 0 and 146 on the same firmware. It only sets how
     many chances to collide you take per second. The header now says that, and
@@ -943,7 +943,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   a free-running submitter collides rarely and at random -- which is why the
   resulting rate drop reads as sporadic and refuses to reproduce on demand.
 
-  Measured on hw_v1.1.0, 100 Hz motor-status stream, 60 s per run, submits at
+  Measured on follower firmware 1.1.x, 100 Hz motor-status stream, 60 s per run, submits at
   250/s:
 
   | phase | submits | frames | missing | resync_bytes |
@@ -1011,7 +1011,7 @@ against the firmware headers by `scripts/check_protocol_drift.py`.
   writers on one serial link corrupt frames; they do not (see above). The real
   reason to keep one owner on the link is the firmware: host->MCU traffic that
   overlaps the MCU's own transmission makes it drop bytes out of the middle of
-  the frame it is sending. Measured against hw_v1.1.0 with a 100Hz
+  the frame it is sending. Measured against follower firmware 1.1.x with a 100Hz
   motor-status stream, the damaged frame arrives a couple of bytes short, fails
   the LEN check before CRC is reached, and is discarded whole -- so
   `crc_errors` stays at 0 while `resync_bytes` climbs in one-frame steps and
@@ -1037,8 +1037,8 @@ tree by seven releases. Tagging resumes here.
   `queue_high_water` / `parser_overflow_bytes` fill in the margins. All six are
   exposed on `TransportStats` in Python, and `repr()` prints the useful subset.
   `FrameParser::stats()` carries the parser-side counters directly.
-- **Command set V2.2 — follower motor diagnostics** (firmware `hw_v1.1.0` @
-  `bf0a06e`, follower 1.1.2; the leader is unchanged at 1.2.1 because every
+- **Command set V2.2 — follower motor diagnostics** (follower firmware
+  1.1.2; the leader is unchanged at 1.2.1 because every
   V2.2 command is follower-only). The upgrade is **purely additive**:
   `Cmd::GetMotorStatus` (0x50) and the `MotorStatus` DATA stream still carry
   the same 31-byte payload, so existing code — `read_status()`, `on_status()`,
@@ -1138,7 +1138,7 @@ tree by seven releases. Tagging resumes here.
   this SDK and the PC calibration tool. It points at `FisheyeUndistorter`, with
   `cal.K` / `cal.D` still exposed for code that must do its own.
 
-- **Shipped follower image bumped to 1.1.2** (`hw_v1.1.0` @ `bf0a06e`), the
+- **Shipped follower image bumped to 1.1.2**, the
   build that carries command set V2.2. The leader image is untouched at 1.2.1
   (`6b4605a`) — every V2.2 command is follower-only, so it had no reason to be
   rebuilt. `firmware/manifest.json` consequently moves `protocol` and `source`
@@ -1171,8 +1171,8 @@ tree by seven releases. Tagging resumes here.
   format cannot drift between surfaces again. `--target-version` accepts three
   parts and still accepts the legacy four so existing scripts keep working.
 - **Shipped firmware images bumped to leader 1.2.1 / follower 1.1.1**
-  (firmware `hw_v1.1.0` @ `6b4605a`, tags `master_v1.2.1.0` /
-  `slave_v1.1.1.0`). **No protocol change** — `protocol_cmd.h`,
+  (leader firmware 1.2.1, follower 1.1.1). **No protocol change** —
+  `protocol_cmd.h`,
   `protocol_data.h`, `protocol_frame.h` and `PROTOCOL.md` are byte-identical
   to 1.2.0, so the command set stays V2.1 and no SDK API moves. The release
   only retunes the status LED: normal state is solid **white** at brightness
@@ -1209,7 +1209,7 @@ tree by seven releases. Tagging resumes here.
   All rates zero now raises `IoError(EINVAL)` instead of starting a stream that
   carries nothing.
 - **`start_streaming()` warns when the firmware will not honour a rate.**
-  Verified against `third_party/firmware/tc-gu-01` @ `bf0a06e`
+  Verified against the firmware protocol headers
   (`App/tasks/task_data_stream.c`), none of which is NACKed on the wire:
   - Motor status is capped at `STREAM_MOTOR_MAX_RATE_HZ` = **100 Hz** ("leave
     bandwidth for the control channel"), so `motor_hz=200` is served at 100 Hz.
@@ -1269,8 +1269,7 @@ tree by seven releases. Tagging resumes here.
 
 ## [0.1.7] - 2026-08-03
 
-Sync to firmware protocol **V2.1** (`hw_v1.1.0` @ f5dd086; leader firmware
-1.2.0, follower 1.1.0).
+Sync to firmware protocol **V2.1** (leader firmware 1.2.0, follower 1.1.0).
 
 Validated on two leader grippers flashed from source to 1.2.0 over OTA.
 
@@ -1278,7 +1277,7 @@ Validated on two leader grippers flashed from source to 1.2.0 over OTA.
 > below changes the data affected consumers read — `accel_mps2` /
 > `gyro_radps` / `mag_uT` were returning the x component three times. It only
 > bites builds made against **pybind11 2.9**, which here means the system
-> py3.10 wheel used by ROS 2 Humble; conda py3.12 builds (pybind11 3.0.x)
+> system py3.10 wheel; conda py3.12 builds (pybind11 3.0.x)
 > resolved the overload correctly and were never affected. Check yours with
 > `python -c "from xense.taccap import ...; print(sample.accel_mps2.strides)"`
 > — `(0,)` means affected, `(4,)` means fine.
@@ -1322,7 +1321,7 @@ Validated on two leader grippers flashed from source to 1.2.0 over OTA.
   `p[2]` landed on the same address. No error, no crash, just silently wrong
   data on every Python IMU read.
   **Scope: builds made against pybind11 2.9 only.** Here that is the system
-  py3.10 wheel (ROS 2 Humble); the conda py3.12 builds use pybind11 3.0.x,
+  py3.10 wheel; the conda py3.12 builds use pybind11 3.0.x,
   which resolves the overload correctly — verified against a pre-fix 3.0.4
   build that reported correct per-axis strides. The C++ side was never
   affected either way. Spelling the shape as a container makes it correct on
@@ -1427,7 +1426,7 @@ Validated on two leader grippers flashed from source to 1.2.0 over OTA.
 
 ## [0.1.6] - 2026-07-06
 
-Sync to firmware `hw_v1.1.0` @ ab3f98c.
+Sync to the firmware protocol headers.
 
 ### Added
 - **Private-protocol single-parameter access** (`Cmd 0x38/0x39`). New
@@ -1443,7 +1442,7 @@ Sync to firmware `hw_v1.1.0` @ ab3f98c.
 
 ## [0.1.5] - 2026-07-03
 
-Sync to firmware protocol **V1.9** (`hw_v1.1.0` @ 94273b4).
+Sync to firmware protocol **V1.9**.
 
 ### Changed
 - **BREAKING (wire): `motor_status_t` shrank 40 → 31 bytes.** Firmware V1.9
@@ -1538,7 +1537,7 @@ Sync to firmware protocol **V1.9** (`hw_v1.1.0` @ 94273b4).
 
 ### Changed
 - Promoted the V1.7 follower / motor command surface from "reserved, pending
-  hardware" to first-class, validated against firmware `hw_v1.1.0`. The leader
+  hardware" to first-class, validated against real firmware. The leader
   mismatch behavior is unchanged: these NACK `SensorOffline` → `ProtocolError`
   on leader hardware.
 
@@ -1645,7 +1644,7 @@ visualiser.
 - `xense.taccap.log` submodule — `set_level` / `set_pattern` /
   `info` / `debug` / `warn` / `error` etc., shares the underlying
   C++ spdlog instance (one logger program-wide).
-- Python 3.10 + 3.12 build paths (system py3.10 for ROS 2 Humble,
+- Python 3.10 + 3.12 build paths (system py3.10,
   conda py3.12 for primary dev).
 - GIL-safe shared-ptr deleter for callbacks held across worker threads.
 
@@ -1722,8 +1721,8 @@ visualiser.
   example index, calibration walkthrough, logging behaviour.
 - `docs/ARCHITECTURE.md` — layered stack, module map, data-flow
   diagrams, threading model, USB-topology discovery, boundary
-  between this SDK and downstream consumers (dataset recording /
-  ROS 2 / lerobot adapters).
+  between this SDK and downstream consumers (dataset recording,
+  lerobot adapters).
 - `CLAUDE.md` — house-rules file for AI-assisted maintenance.
 
 ## [0.0.1] - 2026-04-29
