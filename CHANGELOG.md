@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-23
+
+Paired with firmware **1.2.6**.
+
 ### Removed
 
 - **`ControlLoop`, `SubmitPhase` and `StallAction` are gone** (C++ and Python).
@@ -43,6 +47,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ImpedanceConfig` is rejected unless
   `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`, so the
   ceiling stays a backstop that normal operation never reaches.
+
+## [0.2.2] - 2026-09-23
+
+Released as a tag and a version bump only; this section was written after the
+fact, from the tag message, so that the file does not skip the version. The
+range is the nine commits between v0.2.1 and v0.2.2.
+
+- `Motor::motor_version()` — read the motor's own firmware version over `0x58`
+  (needs follower firmware >= 1.2.6, and so far confirmed only under the
+  private protocol).
+- **Follower firmware floor raised to 1.2.5** (breaking: `FollowerGripper`
+  refuses to open an older unit).
+- `ControlLoop` gained config validation, banding its torque fields by how long
+  the motor can hold them. Removed again in 0.2.3 along with the class.
+- `gripper_console --rated-torque` now derives its default from the library
+  instead of a stale literal (it had drifted to 2.0 against a 1.8 ceiling).
+- OTA resolves the manifest entry by CRC32 instead of trusting the filename.
+- C++ examples build by default, so CI compiles them.
 
 ## [0.2.1] - 2026-09-22
 

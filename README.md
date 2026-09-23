@@ -24,7 +24,7 @@ access, and neither is required to use this SDK.
 
 ## Status
 
-**v0.2.1.** Command set **V2.3**, wire framing **V1.8**. Hardware-validated on
+**v0.2.3.** Command set **V2.3**, wire framing **V1.8**. Hardware-validated on
 bilateral leader setups and on real follower grippers — including the V2.2
 follower diagnostics, the MIT force-position control path, and stream-locked
 submission under a full production load (all cameras streaming, motor cycling).
