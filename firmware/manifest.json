@@ -7,13 +7,9 @@
       "crc32": "0xbd8e47df",
       "sn_suffix": "m",
       "protocol": "V2.4",
-      "source": {
-        "branch": "feat/motor-version-0x58",
-        "commit": "32657e9f3deeb7a9d8f9f0a67d16342f87bb9e5e"
-      },
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "GET_MOTOR_VERSION(0x58) is follower-only; the leader is rebuilt solely to keep both roles on one version number, which is policy since 1.2.5 collapsed the two #ifdef-guarded version definitions into one. No leader-visible behaviour changes in 1.2.6. Built locally, NOT by the firmware team's release toolchain. Verified byte-identical to the images actually flashed onto hardware during validation: both roles were rebuilt from this exact commit and compared by CRC32, so what ships here is what was tested. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
+      "note": "GET_MOTOR_VERSION(0x58) is follower-only; the leader is rebuilt solely to keep both roles on one version number, which is policy since 1.2.5 collapsed the two #ifdef-guarded version definitions into one. No leader-visible behaviour changes in 1.2.6. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
     },
     "slave": {
       "file": "tc-gu-01-slave-1.2.6.bin",
@@ -22,13 +18,9 @@
       "crc32": "0xbffbadc8",
       "sn_suffix": "s",
       "protocol": "V2.4 + 运动安全包络",
-      "source": {
-        "branch": "feat/motor-version-0x58",
-        "commit": "32657e9f3deeb7a9d8f9f0a67d16342f87bb9e5e"
-      },
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Adds GET_MOTOR_VERSION(0x58): reads the MOTOR's own program version over the RobStride private-protocol version frame (manual p.31), because MIT Commands 12/13/14/15 go unanswered on this motor firmware and no motor parameter is readable in MIT. The command always ACKs OK -- check `valid`. IT MAY STOP THE MOTOR (the request reuses communication type 4), so it is not pollable. Measured: 0018s = 1.0.5.0.4, 0074s = 1.0.5.0.2 before its motor firmware was upgraded and 1.0.5.0.4 after -- the same unit before and after, which is how the upgrade was confirmed by reading rather than by assumption. Whether MIT can also answer the version read is NOT established. Built locally, NOT by the firmware team's release toolchain. Verified byte-identical to the images actually flashed onto hardware during validation: both roles were rebuilt from this exact commit and compared by CRC32, so what ships here is what was tested. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
+      "note": "Adds GET_MOTOR_VERSION(0x58): reads the MOTOR's own program version over the RobStride private-protocol version frame (manual p.31), because MIT Commands 12/13/14/15 go unanswered on this motor firmware and no motor parameter is readable in MIT. The command always ACKs OK -- check `valid`. IT MAY STOP THE MOTOR (the request reuses communication type 4), so it is not pollable. Measured: 0018s = 1.0.5.0.4, 0074s = 1.0.5.0.2 before its motor firmware was upgraded and 1.0.5.0.4 after -- the same unit before and after, which is how the upgrade was confirmed by reading rather than by assumption. Whether MIT can also answer the version read is NOT established. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
     }
   }
 }
