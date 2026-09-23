@@ -120,7 +120,7 @@ TEST(ImpedanceControllerPty, StaleStreamInvalidatesObservationEvenWhenAlreadyFau
     c.stop();
 }
 
-TEST(ImpedanceControllerPty, SnapshotReportsGuardsTogether) {
+TEST(ImpedanceControllerPty, CeilingPinsTheOutputAtTheBudget) {
     // The reason this class exists rather than ControlLoop's independent
     // booleans: one lock, one consistent view.
     Pty pty;
@@ -134,23 +134,22 @@ TEST(ImpedanceControllerPty, SnapshotReportsGuardsTogether) {
 
     c.set_target(0.0f);
     fw.set_status(0.50f, 0.0f, 1.9f);        // blocked and over the ceiling
-    // Both guards trip on this sample -- the ceiling on measured torque, the
-    // stall clamp on torque-plus-arrested after stall_hold_ms. One snapshot has
-    // to show both, and the state has to report the one that wins.
+    // The ceiling is the only guard left that can act on this sample, and it
+    // acts on MEASURED torque -- 1.9 Nm is over the rating, which the error
+    // clamp alone cannot bound because it bounds the COMMAND.
     ASSERT_TRUE(wait_for([&] {
-        const auto x = c.snapshot();
-        return x.torque_capped && x.stalled;
+        return c.snapshot().torque_capped;
     }, Ms(2000)));
 
     const auto s = c.snapshot();
     EXPECT_EQ(s.state, tx::ImpedanceState::TorqueCapped)
-        << "the ceiling outranks the clamp and is what pins the output";
+        << "the ceiling is what pins the output once feedback passes the rating";
     EXPECT_TRUE(s.torque_capped);
-    EXPECT_TRUE(s.stalled) << "the clamp underneath was lost from the report";
     EXPECT_GE(s.torque_caps, 1u);
-    EXPECT_GE(s.stall_trips, 1u);
     EXPECT_TRUE(s.observation.valid);
-    EXPECT_NEAR(s.commanded_torque_nm, 1.8f, 1e-3f);
+    // The hold collapses to the budget, not the 1.8 trip level.
+    EXPECT_NEAR(s.commanded_torque_nm,
+                tx::ImpedanceConfig{}.max_position_torque_nm, 1e-3f);
     c.stop();
 }
 

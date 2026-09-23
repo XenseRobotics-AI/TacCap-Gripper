@@ -41,6 +41,28 @@ void validate_config(const ImpedanceConfig& cfg) {
             "produces is indefinite, so it is capped at the motor's rated "
             "torque rather than its peak");
     }
+    // The ceiling is a BACKSTOP for torque the control law did not ask for, so
+    // it has to sit above the band the law works in. max_position_torque_nm
+    // bounds the position term and the ceiling watches the measurement; if what
+    // the law can sustain reaches the ceiling, a perfectly normal grasp trips
+    // it, the output goes to kp=kd=0 and POSITION CONTROL IS LOST while holding
+    // the object. A backstop that fires in the operating band is mis-set, not
+    // protective.
+    //
+    // FEED-FORWARD COUNTS TOWARD IT. It is added to the command on every frame,
+    // so the sustained ask is budget + |ff|, not the budget alone -- checking
+    // the budget by itself leaves a hole this exact class of bug walks through:
+    // at the 1.1 default, an ff of 0.8 puts the steady command at 1.9 and every
+    // grasp lands on the 1.8 backstop.
+    const float sustained =
+        cfg.max_position_torque_nm + std::abs(cfg.feedforward_torque);
+    if (cfg.rated_torque_nm > 0.0f && sustained >= cfg.rated_torque_nm) {
+        throw std::invalid_argument(
+            "ImpedanceConfig: max_position_torque_nm + |feedforward_torque| "
+            "must stay below rated_torque_nm -- that sum is what a normal grasp "
+            "sustains and the ceiling is the backstop above it; at or past it "
+            "every grasp trips the ceiling and drops to kp=kd=0");
+    }
     if (cfg.status_timeout_ms == 0 ||
         cfg.motor_stream_hz == 0 || cfg.motor_stream_hz > 100) {
         throw std::invalid_argument(
@@ -55,25 +77,17 @@ void validate_tuning(const detail::ImpedanceTuning& t) {
         throw std::invalid_argument(
             "ImpedanceTuning.rated_release_rad must be > 0");
     }
-    if (!finite(t.stall_torque_floor_nm) || t.stall_torque_floor_nm <= 0.0f ||
-        t.stall_torque_floor_nm > MOTOR_RATED_TORQUE_NM) {
+    if (t.rated_hold_ms == 0) {
         throw std::invalid_argument(
-            "ImpedanceTuning.stall_torque_floor_nm must be in (0, 1.8]");
-    }
-    if (!finite(t.stall_vel_radps) || t.stall_vel_radps <= 0.0f) {
-        throw std::invalid_argument(
-            "ImpedanceTuning.stall_vel_radps must be > 0");
-    }
-    if (t.rated_hold_ms == 0 || t.stall_hold_ms == 0) {
-        throw std::invalid_argument(
-            "ImpedanceTuning hold windows must be > 0");
+            "ImpedanceTuning.rated_hold_ms must be > 0");
     }
 }
 
 // MotorStatusBit::Stalled (0x0004) is deliberately NOT in this mask. Holding a
-// blocked position is a stall by the motor's own definition, and the stall
-// guard below is what interprets it; treating it as a fault would abort every
-// legitimate hold. Same rule as ForcePositionController -- do not "complete"
+// blocked position is a stall by the motor's own definition, and holding is what
+// this controller is FOR -- an obstruction saturating the error clamp is the
+// intended steady state, not a fault. Treating the bit as one would abort every
+// legitimate grasp. Same rule as ForcePositionController -- do not "complete"
 // this list.
 bool has_serious_fault(uint16_t status) noexcept {
     constexpr uint16_t mask =
@@ -96,7 +110,6 @@ const char* to_string(ImpedanceState state) noexcept {
     switch (state) {
         case ImpedanceState::Idle:         return "idle";
         case ImpedanceState::Tracking:     return "tracking";
-        case ImpedanceState::Stalled:      return "stalled";
         case ImpedanceState::TorqueCapped: return "torque_capped";
         case ImpedanceState::Fault:        return "fault";
     }
@@ -129,8 +142,6 @@ void ImpedancePolicy::reset(const MotorStatusSample& sample) {
     state_ = ImpedanceState::Tracking;
     target_ = effective_ = map_.to_position(sample.actual_pos);
     commanded_torque_nm_ = 0.0f;
-    stall_since_ = {};
-    stall_clamped_ = false;
     cap_since_ = {};
     torque_capped_ = false;
     fault_reason_.clear();
@@ -160,6 +171,19 @@ void ImpedancePolicy::fail(std::string reason) {
     state_ = ImpedanceState::Fault;
     commanded_torque_nm_ = 0.0f;
     fault_reason_ = std::move(reason);
+}
+
+// What the ceiling holds once it engages. NOT rated_torque_nm: it fires
+// because the motor is ALREADY producing at or above that, and answering by
+// commanding it right back -- indefinitely, with nothing timing it out -- would
+// pin a sustained torque above the budget that was chosen precisely because it
+// can be held forever. Collapse to the budget instead: the response to "you are
+// producing more than rated" is to ask for what you are allowed to keep asking
+// for. With the clamp disabled there is no budget, so the rating stands.
+float ImpedancePolicy::cap_hold_torque_() const noexcept {
+    return (cfg_.max_position_torque_nm > 0.0f)
+        ? std::min(cfg_.rated_torque_nm, cfg_.max_position_torque_nm)
+        : cfg_.rated_torque_nm;
 }
 
 void ImpedancePolicy::guard_torque_(const MotorStatusSample& s,
@@ -201,70 +225,10 @@ void ImpedancePolicy::guard_torque_(const MotorStatusSample& s,
     cap_closing_   = target_ < map_.to_position(s.actual_pos);
     ++torque_caps_;
     logger()->warn(
-        "ImpedanceController: torque ceiling engaged at {:.3f} Nm feedback; "
-        "holding {:.3f} Nm pure feed-forward with kp=kd=0, so position error "
-        "can no longer add to the output",
-        s.actual_torque, cfg_.rated_torque_nm);
-}
-
-void ImpedancePolicy::guard_stall_(const MotorStatusSample& s,
-                                   std::chrono::steady_clock::time_point now) {
-    // The clamp binding is the real signal: it means the controller is asking
-    // for every bit of torque it is allowed to ask for. Reachable by
-    // construction, unlike an absolute trip near the cap -- see the note on
-    // ImpedanceTuning::stall_torque_floor_nm.
-    bool clamp_binding = false;
-    if (cfg_.max_position_torque_nm > 0.0f && kp_ > 0.0f) {
-        const float limit = cfg_.max_position_torque_nm / kp_;
-        clamp_binding = std::abs(map_.to_rad(target_) - s.actual_pos) >= limit;
-    }
-    const bool candidate = clamp_binding &&
-                           std::abs(s.actual_vel)    <= tune_.stall_vel_radps &&
-                           std::abs(s.actual_torque) >= tune_.stall_torque_floor_nm;
-    if (!candidate) {
-        // The clamp is released by clamped_target_() and nowhere else. Clearing
-        // the flag here would make it blink once and read false for the whole
-        // time the gripper is still clamped: clamping the target to where the
-        // jaw is drops the error to ~0, so the torque falls back under the trip
-        // on the very next frame -- that is the clamp WORKING.
-        stall_since_ = {};
-        return;
-    }
-    if (stall_since_.time_since_epoch().count() == 0) {
-        stall_since_ = now;
-        return;
-    }
-    if (now - stall_since_ < std::chrono::milliseconds(tune_.stall_hold_ms)) return;
-
-    if (!stall_clamped_) {
-        const float here = map_.to_position(s.actual_pos);
-        stall_clamped_ = true;
-        stall_clamp_   = here;
-        stall_closing_ = target_ < here;
-        ++stall_trips_;
-        logger()->warn(
-            "ImpedanceController: stall guard engaged, jaw blocked at {:.4f} "
-            "while the target was {:.4f} (error clamp binding, torque {:.3f} Nm, "
-            "|vel| {:.3f} rad/s). "
-            "Clamping the effective target here so position error stops growing; "
-            "command a target the other way to release.",
-            here, target_, s.actual_torque, std::abs(s.actual_vel));
-    }
-}
-
-float ImpedancePolicy::clamped_target_() {
-    if (!stall_clamped_) return target_;
-    const bool released = stall_closing_ ? (target_ > stall_clamp_)
-                                         : (target_ < stall_clamp_);
-    if (released) {
-        stall_clamped_ = false;
-        stall_since_ = {};
-        logger()->info("ImpedanceController: stall guard released at target {:.4f}",
-                       target_);
-        return target_;
-    }
-    return stall_closing_ ? std::max(target_, stall_clamp_)
-                          : std::min(target_, stall_clamp_);
+        "ImpedanceController: torque ceiling engaged at {:.3f} Nm feedback "
+        "(trip {:.3f} Nm); holding {:.3f} Nm pure feed-forward with kp=kd=0, so "
+        "position error can no longer add to the output",
+        s.actual_torque, cfg_.rated_torque_nm, cap_hold_torque_());
 }
 
 protocol::MotorImpedanceCtrl ImpedancePolicy::zero_(const MotorStatusSample& s) {
@@ -290,20 +254,21 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::step(
     }
 
     guard_torque_(sample, now);
-    guard_stall_(sample, now);
 
     if (torque_capped_) {
         state_ = ImpedanceState::TorqueCapped;
         // The position field rides the measurement so the frame carries no
         // error at all, and with both gains zero it could not act on one anyway.
-        commanded_torque_nm_ = cfg_.rated_torque_nm;
+        commanded_torque_nm_ = cap_hold_torque_();
         effective_ = map_.to_position(sample.actual_pos);
         return {sample.actual_pos, 0.0f, 0.0f,
-                cap_sign_ * cfg_.rated_torque_nm, 0.0f};
+                cap_sign_ * cap_hold_torque_(), 0.0f};
     }
 
-    const float effective = clamped_target_();
-    state_ = stall_clamped_ ? ImpedanceState::Stalled : ImpedanceState::Tracking;
+    // No stall state and no target clamping: the error clamp below bounds the
+    // output on its own, and an obstruction simply saturates it. See the header.
+    const float effective = target_;
+    state_ = ImpedanceState::Tracking;
 
     float raw = map_.to_rad(effective);
     // The error clamp. Applied on every frame, under every state, which is why
@@ -559,9 +524,7 @@ ImpedanceSnapshot ImpedanceController::snapshot() const {
         out.target_position = policy_->target_position();
         out.effective_position = policy_->effective_position();
         out.commanded_torque_nm = policy_->commanded_torque_nm();
-        out.stalled = policy_->stalled();
         out.torque_capped = policy_->torque_capped();
-        out.stall_trips = policy_->stall_trips();
         out.torque_caps = policy_->torque_caps();
         out.fault_reason = policy_->fault_reason();
     }

@@ -60,6 +60,11 @@ from xense.taccap import (
 )
 
 
+# argparse 的默认值一律从库默认派生,不写字面量 —— 这里的 --rated-torque 曾经
+# 硬编码 2.0,而 SDK 侧把上界从峰值收到额定后没人改它,阻抗模式默认参数崩了十天。
+_IMP = ImpedanceConfig()
+
+
 # ── 状态位(protocol::MotorStatusBit) ────────────────────────────────────────
 
 _STATUS_BITS = [
@@ -138,6 +143,9 @@ class ImpedanceBackend:
         # 力矩天花板:作用在实测力矩上(不是命令值)。顶住后改发 kp=kd=0 的纯前馈
         # 帧,位置误差再也加不进输出。上限是额定 1.8 而非峰值 6.0 —— 这个保持无限期。
         cfg.rated_torque_nm = args.rated_torque
+        # 前馈保持 0。它一度被加进来是为了在失速跳闸后还剩点力,而那个守卫已经
+        # 删了 —— 现在误差钳位自己就保持在预算上。再给前馈只会叠加在总命令上,
+        # 把持续夹持力抬到预算之上,正好绕过"预算必须能无限期保持"这个选择。
         # status_timeout_ms / motor_stream_hz 用默认值(350 ms / 100 Hz)。
         self.ctl = ImpedanceController(g, cfg)
         self._snap = None
@@ -174,12 +182,10 @@ class ImpedanceBackend:
         if s is None:
             return ""
         name = str(s.state).split(".")[-1]
-        stall = "HOLD" if s.stalled else "-"
         cap = "ON" if s.torque_capped else "-"
         out = (
             f"state={name:16s} cmd={s.commanded_torque_nm:5.3f}Nm  "
             f"eff={s.effective_position:.3f}  "
-            f"stall={stall:>4s}({s.stall_trips})  "
             f"cap={cap:>3s}({s.torque_caps})"
         )
         if s.fault_reason:
@@ -321,9 +327,11 @@ def main() -> int:
     ap.add_argument(
         "--max-position-torque",
         type=float,
-        default=1.5,
+        default=_IMP.max_position_torque_nm,
         dest="max_position_torque",
-        help="误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内",
+        help=f"力矩预算/误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。"
+             f"被挡住时命令饱和在这里并一直保持,那就是夹持力 "
+             f"(默认 {_IMP.max_position_torque_nm:.2f},须低于 --rated-torque)",
     )
     # 默认值从 MOTOR_RATED_TORQUE_NM 派生,不要再写字面量:这里原本硬编码 2.0,
     # 而 aa3d0a9 把 ImpedanceConfig 的上界从峰值 6.0 收到额定 1.8(那个保持是
@@ -331,7 +339,7 @@ def main() -> int:
     ap.add_argument(
         "--rated-torque",
         type=float,
-        default=MOTOR_RATED_TORQUE_NM,
+        default=_IMP.rated_torque_nm,
         dest="rated_torque",
         help=f"力矩天花板:实测力矩到顶后转纯前馈保持(上限=额定 {MOTOR_RATED_TORQUE_NM:.2f} Nm)",
     )

@@ -7,7 +7,8 @@
 // callback, so the only way to reach it is through a pty and a thread. Pulling
 // it into a pure state machine is most of the point of ImpedanceController:
 // these cases step the guards frame by frame, which is how you pin behaviour
-// like "the stall flag must not go false the moment the clamp starts working".
+// like "a blocked jaw must still be commanding the full budget 200 frames
+// later" -- a contract a pty test can only sample, not step.
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,7 @@ namespace {
 using xense::taccap::GripperPosition;
 using xense::taccap::ImpedanceConfig;
 using xense::taccap::ImpedanceState;
+using xense::taccap::MOTOR_RATED_TORQUE_NM;
 using xense::taccap::MotorStatusSample;
 using xense::taccap::detail::ImpedancePolicy;
 using xense::taccap::detail::ImpedanceTuning;
@@ -85,155 +87,49 @@ TEST(ImpedancePolicy, ErrorClampNeverBindsWhileTheJawKeepsUp) {
     EXPECT_NEAR(c.target_pos, 0.62f, 1e-4f) << "the clamp bound on a small error";
 }
 
-// ---- Stall guard ---------------------------------------------------------
+// ---- The clamp IS the protection ----------------------------------------
+//
+// The contract that replaced the stall guard. A blocked jaw must saturate the
+// error clamp and STAY there: no trip, no state change, and above all no
+// collapse. The guard used to clamp the effective target onto the jaw's own
+// position, which drops the error to ~0 and takes the output with it -- measured
+// on hardware as letting go of the object 60 ms after contact at 0.35 Nm.
 
-TEST(ImpedancePolicy, StallNeedsTheClampBindingAndArrestedMotion) {
-    ImpedanceConfig cfg;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);                      // clamp limit = 1.5/20 = 0.075 rad
+TEST(ImpedancePolicy, ObstructionSaturatesTheClampAndHoldsThereIndefinitely) {
+    ImpedanceConfig cfg;              // budget 1.1 Nm, kp 20 -> 0.055 rad limit
+    ImpedancePolicy p(map(), cfg);
+    p.reset(sample(0.6f));
+    p.set_target(0.0f);               // command hard closed; the jaw is blocked
 
-    // Loaded and the clamp binding, but still moving: the impact transient,
-    // measured at 1.33 Nm while still running at 1.94 rad/s. Must not trip.
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(sample(0.55f, 1.94f, 1.33f), t);
+    const float limit = cfg.max_position_torque_nm / cfg.kp;
+    auto now = std::chrono::steady_clock::now();
+
+    // Far longer than the old 60 ms trip window, and the blocked jaw reports
+    // exactly the conditions the guard used to fire on: clamp binding, no
+    // motion, torque above the old floor.
+    float last_cmd_err = 0.0f;
+    for (int i = 0; i < 200; ++i) {   // 200 frames @ 5 ms = 1 s
+        now += std::chrono::milliseconds(5);
+        const auto c = p.step(sample(0.6f, 0.0f, 0.35f), now);
+        last_cmd_err = c.target_pos - 0.6f;
+        ASSERT_EQ(p.state(), ImpedanceState::Tracking) << "frame " << i;
+        ASSERT_FLOAT_EQ(c.kp, cfg.kp) << "frame " << i;   // never goes soft
     }
-    EXPECT_FALSE(p.stalled());
-    EXPECT_EQ(p.state(), ImpedanceState::Tracking);
 
-    // Arrested and loaded, but the clamp is NOT binding because the jaw is at
-    // the target. That is a jaw holding station, not a stall -- and it is the
-    // case an absolute torque trip cannot distinguish.
-    p.set_target(map().to_position(0.55f));
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(sample(0.55f, 0.0f, 1.30f), t);
-    }
-    EXPECT_FALSE(p.stalled()) << "tripped while sitting at its own target";
-
-    // Arrested with the clamp binding: a real stall.
-    p.set_target(0.0f);
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(sample(0.55f, 0.0f, 0.30f), t);
-    }
-    EXPECT_TRUE(p.stalled());
+    // The commanded position still sits a full error-limit away from the jaw, so
+    // kp * error is the whole budget -- that is the grip, and it is steady.
+    EXPECT_NEAR(std::abs(last_cmd_err), limit, 1e-5f);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.max_position_torque_nm, 1e-3f);
 }
 
-TEST(ImpedancePolicy, StallTripIsReachableUnderTheErrorClamp) {
-    // The regression this replaced. ControlLoop trips the stall guard on an
-    // absolute 1.2 Nm of feedback, which the error clamp makes unreachable:
-    // measured on 1.1.6 with a genuine 5-second stall at
-    // max_position_torque_nm = 0.35, the command saturated at 0.362 Nm and the
-    // feedback peaked at 0.271 Nm -- 4.4x below the trip. The loop reported
-    // TRACKING the whole time with the jaw hard against the mechanism, leaving
-    // it pushing the full clamp torque indefinitely.
-    ImpedanceConfig cfg;
-    cfg.max_position_torque_nm = 0.35f;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);
-    // The real numbers off the bench: stalled at 0.0807 normalized (0.097 rad)
-    // carrying 0.271 Nm.
-    const auto stalled = sample(0.097f, 0.0f, 0.271f);
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(stalled, t);
-    }
-    EXPECT_TRUE(p.stalled())
-        << "a genuine stall at the measured feedback torque did not register";
-    EXPECT_EQ(p.state(), ImpedanceState::Stalled);
+TEST(ImpedancePolicy, BudgetDefaultIsATorqueTheMotorCanHoldForever) {
+    // A blocked jaw now sits at the budget with nothing timing it out, so the
+    // default has to be holdable indefinitely. Pinned against the rating rather
+    // than written as a literal: 1.5 was the old value, chosen while a stall
+    // guard was expected to end the hold.
+    EXPECT_LE(ImpedanceConfig{}.max_position_torque_nm, MOTOR_RATED_TORQUE_NM);
+    EXPECT_FLOAT_EQ(ImpedanceConfig{}.max_position_torque_nm, 1.1f);
 }
-
-TEST(ImpedancePolicy, ArrestedButUnloadedIsNotAStall) {
-    // The floor's only job: reject "commanded, but the motor is not actually
-    // pushing" (disabled, unpowered).
-    ImpedanceConfig cfg;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);
-
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(sample(0.55f, 0.0f, 0.01f), t);   // under the 0.080 Nm floor
-    }
-    EXPECT_FALSE(p.stalled());
-}
-
-TEST(ImpedancePolicy, StallClampsTheTargetAndStaysReportedWhileItHolds) {
-    ImpedanceConfig cfg;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);
-
-    const auto blocked = sample(0.50f, 0.01f, 1.30f);
-    for (int i = 0; i < 6; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(blocked, t);
-    }
-    ASSERT_TRUE(p.stalled());
-    EXPECT_EQ(p.state(), ImpedanceState::Stalled);
-    EXPECT_EQ(p.stall_trips(), 1u);
-
-    // THE REGRESSION ControlLoop shipped with. The clamp works by killing the
-    // position error, so the torque falls back under the trip on the very next
-    // frame -- that IS the clamp working. Reporting the instantaneous test
-    // instead of the clamp made the flag blink once and then read false for the
-    // whole time the gripper was still clamped.
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(sample(0.50f, 0.0f, 0.05f), t);
-    }
-    EXPECT_TRUE(p.stalled())
-        << "stalled() went false while the clamp was still holding the target";
-    EXPECT_EQ(p.stall_trips(), 1u) << "re-tripped instead of holding";
-    EXPECT_EQ(p.state(), ImpedanceState::Stalled);
-
-    // The clamped target must be where the jaw stopped, not where the caller
-    // asked for, so kp * error cannot grow.
-    t += std::chrono::milliseconds(10);
-    const auto c = p.step(sample(0.50f, 0.0f, 0.05f), t);
-    EXPECT_NEAR(c.target_pos, 0.50f, 1e-3f);
-}
-
-TEST(ImpedancePolicy, StallReleasesWhenTheCallerBacksOff) {
-    ImpedanceConfig cfg;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);
-
-    const auto blocked = sample(0.50f, 0.0f, 1.30f);
-    for (int i = 0; i < 6; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(blocked, t);
-    }
-    ASSERT_TRUE(p.stalled());
-
-    p.set_target(1.0f);                      // command back the other way
-    t += std::chrono::milliseconds(10);
-    p.step(sample(0.50f, 0.0f, 0.05f), t);
-    EXPECT_FALSE(p.stalled());
-    EXPECT_EQ(p.state(), ImpedanceState::Tracking);
-}
-
-// ---- Output torque ceiling ----------------------------------------------
 
 TEST(ImpedancePolicy, TorqueCeilingPinsTheOutputWithBothGainsZero) {
     ImpedanceConfig cfg;
@@ -260,8 +156,37 @@ TEST(ImpedancePolicy, TorqueCeilingPinsTheOutputWithBothGainsZero) {
     // all: the torque is PINNED at the ceiling, not bounded by an estimate.
     EXPECT_FLOAT_EQ(c.kp, 0.0f);
     EXPECT_FLOAT_EQ(c.kd, 0.0f);
-    EXPECT_NEAR(std::abs(c.target_torque), cfg.rated_torque_nm, 1e-4f);
+    // It holds the BUDGET, not the trip level. The ceiling fired because the
+    // motor is already producing at or above rated; answering with rated right
+    // back -- forever, nothing times it out -- would pin a sustained torque
+    // above the value that was chosen because it can be held forever.
+    EXPECT_NEAR(std::abs(c.target_torque), cfg.max_position_torque_nm, 1e-4f);
+    EXPECT_LT(cfg.max_position_torque_nm, cfg.rated_torque_nm)
+        << "the budget has to sit below the backstop for this to mean anything";
     EXPECT_NEAR(c.target_pos, 0.50f, 1e-4f) << "the frame should carry no error";
+}
+
+TEST(ImpedancePolicy, CeilingHoldsTheRatingOnlyWhenThereIsNoBudget) {
+    // With the error clamp disabled there is no budget to collapse to, so the
+    // rating stands as the hold. Pins the fallback so it cannot silently become
+    // "hold 0 Nm", which min() over a disabled clamp would give.
+    ImpedanceConfig cfg;
+    cfg.max_position_torque_nm = 0.0f;       // clamp off
+    ImpedanceTuning tune;
+    ImpedancePolicy p(map(), cfg, tune);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.60f));
+    p.set_target(0.0f);
+
+    const auto loaded = sample(0.50f, 0.0f, 1.9f);
+    for (int i = 0; i < 5; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(loaded, t);
+    }
+    ASSERT_TRUE(p.torque_capped());
+    t += std::chrono::milliseconds(10);
+    const auto c = p.step(loaded, t);
+    EXPECT_NEAR(std::abs(c.target_torque), cfg.rated_torque_nm, 1e-4f);
 }
 
 TEST(ImpedancePolicy, TorqueCeilingReleasesWhenTheJawComesFree) {
@@ -283,32 +208,6 @@ TEST(ImpedancePolicy, TorqueCeilingReleasesWhenTheJawComesFree) {
     EXPECT_FALSE(p.torque_capped());
     EXPECT_EQ(p.state(), ImpedanceState::Tracking);
 }
-
-TEST(ImpedancePolicy, TorqueCeilingOutranksTheStallClamp) {
-    // Both guards can be engaged at once. The ceiling acts on MEASURED torque
-    // and pins the output, so it is what the state must report -- but the clamp
-    // is still holding underneath and a caller diagnosing a blocked jaw wants
-    // to see that too.
-    ImpedanceConfig cfg;
-    ImpedanceTuning tune;
-    tune.stall_hold_ms = 30;
-    tune.rated_hold_ms = 20;
-    ImpedancePolicy p(map(), cfg, tune);
-    auto t = std::chrono::steady_clock::now();
-    p.reset(sample(0.60f));
-    p.set_target(0.0f);
-
-    const auto jammed = sample(0.50f, 0.0f, 1.9f);
-    for (int i = 0; i < 10; ++i) {
-        t += std::chrono::milliseconds(10);
-        p.step(jammed, t);
-    }
-    EXPECT_EQ(p.state(), ImpedanceState::TorqueCapped);
-    EXPECT_TRUE(p.torque_capped());
-    EXPECT_TRUE(p.stalled()) << "the clamp underneath was lost from the report";
-}
-
-// ---- Fault ---------------------------------------------------------------
 
 TEST(ImpedancePolicy, MotorFaultBitsCommandZeroTorque) {
     ImpedancePolicy p(map(), ImpedanceConfig{});
@@ -353,6 +252,48 @@ TEST(ImpedancePolicy, ResetLeavesFaultAndReseedsTheTarget) {
 }
 
 // ---- Config validation ---------------------------------------------------
+
+TEST(ImpedanceConfigValidation, BudgetMustSitBelowTheBackstop) {
+    // A backstop that fires inside the operating band is mis-set, not
+    // protective: at or past the ceiling every normal grasp trips it, the
+    // output drops to kp=kd=0 and position control is lost while holding.
+    ImpedanceConfig cfg;
+    cfg.rated_torque_nm        = 1.1f;
+    cfg.max_position_torque_nm = 1.1f;       // equal is already too far
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+    cfg.max_position_torque_nm = 1.2f;
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+    cfg.max_position_torque_nm = 1.0f;
+    EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+    // A disabled ceiling has no pairing to enforce.
+    cfg.max_position_torque_nm = 2.0f;
+    cfg.rated_torque_nm        = 0.0f;
+    EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+}
+
+TEST(ImpedanceConfigValidation, FeedForwardCountsTowardTheBackstop) {
+    // ff is added to the command on every frame, so the sustained ask is
+    // budget + |ff|. Checking the budget alone left a hole: at the defaults an
+    // ff of 0.8 puts the steady command at 1.9, past the 1.8 backstop, and
+    // every normal grasp would trip it -- the same failure the budget check
+    // exists to prevent, reached through a different field.
+    ImpedanceConfig cfg;                      // budget 1.1, ceiling 1.8
+    ASSERT_LT(cfg.max_position_torque_nm, cfg.rated_torque_nm);
+
+    cfg.feedforward_torque = 0.6f;            // 1.7 -- still under
+    EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+    cfg.feedforward_torque = 0.8f;            // 1.9 -- over
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+    cfg.feedforward_torque = -0.8f;           // sign must not launder it
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+
+    // With the clamp disabled the budget is 0, so ff alone has to clear it.
+    cfg.max_position_torque_nm = 0.0f;
+    cfg.feedforward_torque     = 1.7f;
+    EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+    cfg.feedforward_torque     = cfg.rated_torque_nm;
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+}
 
 TEST(ImpedanceConfigValidation, CeilingIsCappedAtRatedNotPeakTorque) {
     // The hold it produces is indefinite, so the peak rating is the wrong bound.

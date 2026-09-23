@@ -124,13 +124,16 @@ def test_force_position_states_cover_the_machine():
 
 # The supervised sibling of ForcePositionController. Same split: the gains and
 # the error clamp are what a task tunes, rated_torque_nm is the motor's own
-# rating, two describe the transport. The measured stall/ceiling constants live
+# rating, two describe the transport. The measured ceiling constants live
 # in detail::ImpedanceTuning and are deliberately unreachable from Python.
 IMPEDANCE_FIELDS = {
     "kp": 20.0,
     "kd": 1.0,
     "feedforward_torque": 0.0,
-    "max_position_torque_nm": 1.5,
+    # 1.1 = EL05 连续堵转额定,和 ForcePositionConfig.grasp_torque_nm 同一个数。
+    # 被挡住的爪子会稳定坐在这个预算上、没有任何东西给它计时,所以它必须是能
+    # 无限期保持的力矩。曾是 1.5 —— 那是还指望失速守卫来终止保持的时候。
+    "max_position_torque_nm": 1.1,
     "rated_torque_nm": 1.8,
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
@@ -139,9 +142,12 @@ IMPEDANCE_FIELDS = {
 IMPEDANCE_INTERNAL = [
     "rated_hold_ms",
     "rated_release_rad",
+    # 失速守卫已删除,这几个字段连内部都不存在了 —— 列在这里是为了钉住"它们不该
+    # 再出现":误差钳位就是保护,再加一层跳闸会把它撤销掉。
     "stall_torque_nm",
     "stall_vel_radps",
     "stall_hold_ms",
+    "stall_torque_floor_nm",
     # No submit phase and no `hz`: the controller is always stream-locked,
     # which is the measured-correct choice. ControlLoop keeps free-running.
     "phase",
@@ -177,7 +183,9 @@ def test_impedance_ceiling_is_the_rated_torque_not_the_peak():
 
 def test_impedance_states_are_ordered_by_precedence():
     names = [v.name for v in t.ImpedanceState.__members__.values()]
-    assert names == ["IDLE", "TRACKING", "STALLED", "TORQUE_CAPPED", "FAULT"]
+    # 没有 STALLED:失速守卫已删除,被挡住的爪子让误差钳位饱和在预算上并保持,
+    # 那是 TRACKING 的稳态而不是另一个状态。
+    assert names == ["IDLE", "TRACKING", "TORQUE_CAPPED", "FAULT"]
 
 
 def test_impedance_controller_exposes_a_snapshot():
@@ -185,8 +193,8 @@ def test_impedance_controller_exposes_a_snapshot():
     # properties: one call, one consistent view.
     assert hasattr(t.ImpedanceController, "snapshot")
     for field in ("state", "observation", "target_position", "effective_position",
-                  "commanded_torque_nm", "stalled", "torque_capped",
-                  "stall_trips", "torque_caps", "fault_reason"):
+                  "commanded_torque_nm", "torque_capped",
+                  "torque_caps", "fault_reason"):
         assert hasattr(t.ImpedanceSnapshot, field), field
 
 

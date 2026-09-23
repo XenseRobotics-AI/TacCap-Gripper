@@ -10,7 +10,9 @@
 这个脚本同时是**上机验收**:跑一遍目标序列,并检查那条把「到位」和「被挡住」
 分开的不变式 ——
 
-    保护(STALLED / TORQUE_CAPPED)只有在爪子明显没到命令位置时才成立。
+    被挡在目标外时,正确行为是误差钳位饱和在 max_position_torque_nm 上并
+    保持 —— 那就是夹持力,不是故障。没有失速状态可查:接触不需要检测,
+    饱和本身就是接触。
 
 在命令位置上还报保护,说明保护把正常的跟随稳态误判成了堵转。任何一步失败 →
 退出码非零。
@@ -143,20 +145,23 @@ def main() -> int:
                 failures += 1
                 break
 
-            guarded = s.stalled or s.torque_capped
-            if guarded and abs(err) <= ARRIVED:
-                # 到位了还报保护,说明保护把正常的跟随稳态当成了堵转。
-                print(f"    FAIL  到位却报保护(stalled={s.stalled} "
-                      f"capped={s.torque_capped})")
-                failures += 1
-            elif guarded:
-                print(f"    ok    被挡在目标外 {abs(err):.4f},保护正确介入 "
-                      f"(stalled={s.stalled} capped={s.torque_capped})")
-            elif abs(err) <= ARRIVED:
-                print("    ok    到位")
+            budget = cfg.max_position_torque_nm
+            if abs(err) <= ARRIVED:
+                if s.torque_capped:
+                    # 到位了还顶到天花板,说明天花板把正常跟随稳态当成了堵转。
+                    print("    FAIL  到位却顶到力矩天花板")
+                    failures += 1
+                else:
+                    print("    ok    到位")
+            elif s.commanded_torque_nm >= budget - 0.05:
+                # 停在目标外而命令力矩饱和在预算上 —— 这正是被挡住该有的样子,
+                # 而且它会一直保持,这就是夹持力。
+                print(f"    ok    被挡在目标外 {abs(err):.4f},命令饱和在预算 "
+                      f"{s.commanded_torque_nm:.3f}/{budget:.3f} Nm 并保持")
             else:
-                # 没被挡住也没到位:要么预算不够,要么增益太软推不动。
-                print(f"    FAIL  停在目标外 {abs(err):.4f},但没有保护介入")
+                # 没到位、也没饱和:要么增益太软推不动,要么预算根本没用上。
+                print(f"    FAIL  停在目标外 {abs(err):.4f},但命令只有 "
+                      f"{s.commanded_torque_nm:.3f} Nm,没有饱和在预算 {budget:.3f}")
                 failures += 1
 
             if o.torque > cfg.rated_torque_nm + 0.15:
@@ -165,8 +170,8 @@ def main() -> int:
                 failures += 1
 
         final = c.snapshot()
-        print(f"\n[guards] 堵转钳位触发 {final.stall_trips} 次,"
-              f"力矩天花板触发 {final.torque_caps} 次")
+        print(f"\n[guards] 力矩天花板触发 {final.torque_caps} 次"
+              f"(误差钳位不是状态,它每帧都在生效,没有计数)")
     finally:
         try:
             c.stop()          # stop() 先下发零力矩

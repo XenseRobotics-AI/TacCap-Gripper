@@ -135,13 +135,13 @@ void bind_control(py::module_& m) {
     m.attr("MOTOR_PEAK_TORQUE_NM")  = MOTOR_PEAK_TORQUE_NM;
 
     py::enum_<ImpedanceState>(m, "ImpedanceState",
-        "Ordered by precedence: FAULT beats TORQUE_CAPPED beats STALLED beats "
-        "TRACKING. The stall clamp can still be engaged while TORQUE_CAPPED is "
-        "what `state` reports -- snapshot() carries both flags so a caller "
-        "diagnosing a blocked jaw sees the whole picture.")
+        "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING。\n\n"
+        "没有 STALLED —— 失速守卫已删除。被挡住的爪子会让误差钳位饱和在 "
+        "max_position_torque_nm 并一直保持在那里,那是预期的稳态而不是一个状态:"
+        "接触不需要检测,饱和本身就是接触。原来那个守卫会把有效目标压到爪子当前"
+        "位置,误差归零、力矩随之塌掉 —— 实测是接触后 60 ms 在 0.35 Nm 松手。")
         .value("IDLE",          ImpedanceState::Idle)
         .value("TRACKING",      ImpedanceState::Tracking)
-        .value("STALLED",       ImpedanceState::Stalled)
         .value("TORQUE_CAPPED", ImpedanceState::TorqueCapped)
         .value("FAULT",         ImpedanceState::Fault)
         .def("__str__", [](ImpedanceState s) { return to_string(s); });
@@ -164,9 +164,7 @@ void bind_control(py::module_& m) {
         .def_readonly("target_position",     &ImpedanceSnapshot::target_position)
         .def_readonly("effective_position",  &ImpedanceSnapshot::effective_position)
         .def_readonly("commanded_torque_nm", &ImpedanceSnapshot::commanded_torque_nm)
-        .def_readonly("stalled",             &ImpedanceSnapshot::stalled)
         .def_readonly("torque_capped",       &ImpedanceSnapshot::torque_capped)
-        .def_readonly("stall_trips",         &ImpedanceSnapshot::stall_trips)
         .def_readonly("torque_caps",         &ImpedanceSnapshot::torque_caps)
         .def_readonly("device_limit_nm",     &ImpedanceSnapshot::device_limit_nm)
         .def_readonly("fault_reason",        &ImpedanceSnapshot::fault_reason)
@@ -174,11 +172,11 @@ void bind_control(py::module_& m) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),
                 "ImpedanceSnapshot(state=%s, pos=%.4f, target=%.4f, "
-                "effective=%.4f, torque=%.3fNm, command=%.3fNm, stalled=%d, "
+                "effective=%.4f, torque=%.3fNm, command=%.3fNm, "
                 "capped=%d, age=%.1fms)",
                 to_string(s.state), s.observation.position, s.target_position,
                 s.effective_position, s.observation.torque, s.commanded_torque_nm,
-                s.stalled, s.torque_capped, s.observation.age_ms);
+                s.torque_capped, s.observation.age_ms);
             return std::string(buf);
         });
 

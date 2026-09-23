@@ -24,27 +24,62 @@
 // `running` goes false with nothing saying why. Here the guards are ordered
 // states and every field comes from one snapshot() under one lock.
 //
-// THE THREE PROTECTIONS, in the order they take precedence:
+// THE PROTECTIONS, in the order they take precedence:
 //
 //   Fault        - stale status stream, motor fault bits, or feedback over the
 //                  peak rating. Commands zero torque and stays there until
 //                  reset().
 //   TorqueCapped - |feedback| held at or above rated_torque_nm. Sends a pure
 //                  feed-forward hold with kp=kd=0, so position error cannot
-//                  contribute to the output at all: the torque is PINNED at the
-//                  ceiling rather than bounded by an estimate of it. This is the
-//                  only layer that acts on what the motor is ACTUALLY producing.
-//   Stalled      - torque above the stall floor AND the jaw slower than the
-//                  stall velocity, held for stall_hold_ms. Clamps the effective
-//                  target where the jaw stopped so kp * error stops growing.
-//                  Both halves are required: torque alone trips on the impact
-//                  transient, slowness alone is just a jaw at rest.
+//                  contribute to the output at all: the torque is PINNED rather
+//                  than bounded by an estimate of it. This is the only layer
+//                  that acts on what the motor is ACTUALLY producing, and the
+//                  only reason it is not redundant with the clamp below -- the
+//                  clamp bounds what we ASK for. It is a BACKSTOP for torque
+//                  the control law did not ask for, so it sits above the band
+//                  the law works in and normal operation never reaches it.
+//                  What it holds is the BUDGET, not the trip level: it fires
+//                  because the motor is already producing at or above rated,
+//                  and nothing times the hold out.
 //
-// and underneath all of them, on every frame, the error clamp: the commanded
-// target is held within max_position_torque_nm / kp radians of where the jaw
-// actually is. That one is not a state because it never stops applying.
+// and underneath both, on every frame, the error clamp: the commanded target is
+// held within max_position_torque_nm / kp radians of where the jaw actually is.
+// That one is not a state because it never stops applying -- and it is the
+// protection, not a supporting measure. See below.
 //
-// WHY THE ERROR CLAMP IS THE PRIMARY PROTECTION, not the stall guard. Measured
+// THERE IS NO STALL GUARD, AND REMOVING IT WAS THE FIX. This class used to trip
+// a third state that clamped the effective target to wherever the jaw had
+// stopped. Three things were wrong with it, and they are the same three that
+// got the contact state machine deleted from ForcePositionController:
+//
+//  1. It duplicated the MCU. task_canmotor_is_stalled() runs an equivalent test
+//     at 500 Hz and docs/CONTROL_LAYERING.md section 3 assigns contact
+//     detection to the firmware. Two copies of one physical event drift apart.
+//  2. Its central judgement was unmeasurable. "Blocked" and "grasping" are the
+//     same observation -- a jaw that stopped moving with the clamp binding --
+//     and nothing in position or velocity separates them. The guard resolved
+//     that ambiguity by always assuming "blocked", which on a GRIPPER is the
+//     less common case.
+//  3. IT CANCELLED THE PROTECTION IT CLAIMED TO BE. Clamping the target to the
+//     jaw's own position drops the position error to ~0, so kp*error and
+//     kd*vel both vanish and the output collapses to feedforward_torque --
+//     zero by default. Measured: closing onto an object tripped it 60 ms after
+//     contact at 0.35 Nm of feedback and then let go entirely.
+//
+// The error clamp already does what the guard was reaching for, and does it
+// without a trip: an obstruction saturates it at exactly
+// max_position_torque_nm and the jaw holds there indefinitely. Contact needs no
+// detecting; it is what saturation IS -- the same sentence, and the same
+// mechanism (budget / kp as an error limit), as ForcePositionController.
+//
+// So the budget has to be a torque this motor can hold FOREVER. The default is
+// the EL05's continuous stall rating, matching ForcePositionConfig's grasp
+// budget. Thermal protection is not in this class either way: the firmware's
+// motion envelope (I2t derating plus a temperature wall) is the only one in the
+// system, and the motor's own over-temperature protection did not act at 100 C
+// case temperature.
+//
+// WHY THE ERROR CLAMP HAS TO BOUND THE APPROACH AND NOT JUST THE HOLD. Measured
 // on firmware 1.1.5 with a loose rigid object in the jaws, an unclamped step to
 // a far target crossed the object's position at 5.5 rad/s and knocked it clean
 // out WITHOUT the torque rising at all -- feedback stayed under 0.03 Nm through
@@ -81,27 +116,46 @@ namespace xense::taccap {
 enum class ImpedanceState : uint8_t {
     Idle,
     Tracking,
-    Stalled,
     TorqueCapped,
     Fault,
 };
 
 // Seven fields. The gains and the error clamp are what a task actually tunes;
 // rated_torque_nm is the motor's own rating; two describe the transport. The
-// measured stall/ceiling constants live in detail::ImpedanceTuning, which only
+// measured ceiling constants live in detail::ImpedanceTuning, which only
 // the tests construct -- the same split ForcePositionConfig uses, and for the
 // same reason: there is one right answer for this hardware.
 struct ImpedanceConfig {
     float kp = 20.0f;                      // Nm/rad
     float kd = 1.0f;                       // Nm*s/rad
     float feedforward_torque = 0.0f;       // Nm
-    // The error clamp, expressed as the torque it may produce. Also sets the
-    // approach speed: the jaw accelerates until damping balances the clamped
-    // error torque, roughly max_position_torque_nm / kd rad/s -- 1.5 rad/s at
-    // these defaults. 0 disables it, which is not recommended.
-    float max_position_torque_nm = 1.5f;
-    // Output ceiling, on MEASURED torque. Capped at the motor's rated torque
-    // because the resulting hold is indefinite. 0 disables it.
+    // THE CONTROL LAW'S TORQUE BUDGET, and the protection -- not a threshold
+    // consulted after some contact event. The commanded target is error-clamped
+    // against it, so free travel costs only what friction costs and an
+    // obstruction saturates the clamp at exactly this value and holds there.
+    //
+    // A BLOCKED JAW SITS HERE INDEFINITELY, so it must be a torque the motor can
+    // hold forever. The default is the EL05's continuous stall rating, the same
+    // budget ForcePositionConfig::grasp_torque_nm defaults to, for the same
+    // reason. It was 1.5 while a stall guard was expected to time the hold out;
+    // that guard is gone (see the header note) so the value now has to stand on
+    // its own.
+    //
+    // It also sets the approach speed: the jaw accelerates until damping
+    // balances the clamped error torque, roughly max_position_torque_nm / kd
+    // rad/s -- 1.1 rad/s at these defaults. 0 disables it, which is not
+    // recommended: an unclamped step crosses a loose object at 5.5 rad/s and
+    // knocks it out without the torque ever rising enough to notice.
+    float max_position_torque_nm = 1.1f;
+    // Output ceiling, on MEASURED torque -- a backstop, not the grasp. The
+    // error clamp above bounds the COMMAND; this watches what the motor
+    // actually produces, which is a different quantity and the only reason both
+    // exist. It must stay ABOVE max_position_torque_nm and the constructor
+    // enforces that: at or below the budget, every normal grasp would trip it
+    // and drop to kp=kd=0, losing position control while holding the object.
+    //
+    // Capped at the motor's rated torque because the resulting hold is
+    // indefinite. 0 disables it.
     float rated_torque_nm = MOTOR_RATED_TORQUE_NM;
     unsigned status_timeout_ms = 350;      // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
@@ -114,12 +168,7 @@ struct ImpedanceSnapshot {
     float              target_position    = 0.0f;  // normalized, as commanded
     float              effective_position = 0.0f;  // normalized, after clamping
     float              commanded_torque_nm = 0.0f; // magnitude predicted/requested
-    // Kept alongside `state` rather than folded into it: the stall clamp can
-    // still be engaged while the ceiling is what the state reports, and a
-    // caller diagnosing a blocked jaw wants both.
-    bool               stalled        = false;
     bool               torque_capped  = false;
-    uint64_t           stall_trips    = 0;
     uint64_t           torque_caps    = 0;
     float              device_limit_nm = 0.0f;     // persisted 0x700B boot value
     std::string        fault_reason;
@@ -136,38 +185,6 @@ struct ImpedanceTuning {
     // means the obstruction gave way, so impedance control resumes. Without it
     // a constant tau_ff would keep accelerating a jaw that came free.
     float    rated_release_rad = 0.05f;
-    // STALL = THE ERROR CLAMP IS BINDING AND THE JAW IS NOT MOVING.
-    //
-    // Not "feedback torque above an absolute number", which is what ControlLoop
-    // uses (1.2 Nm) and what this class inherited before it was measured. Under
-    // an active error clamp that threshold is unreachable, so the guard is
-    // decorative: measured on 1.1.6 hardware with a genuine 5-second stall at
-    // max_position_torque_nm = 0.35, the command saturated at 0.362 Nm and the
-    // feedback peaked at 0.271 Nm -- a factor of 4.4 below the 1.2 Nm trip. The
-    // loop reported TRACKING throughout while the jaw was hard against the
-    // mechanism. At the 1.5 Nm default clamp the best observed ratio still puts
-    // feedback around 1.1 Nm, i.e. on the wrong side of 1.2.
-    //
-    // That is not a tuning miss, it is the same structural error the
-    // force/position controller documents at length: the command is bounded by
-    // max_position_torque_nm and the feedback runs under the command, so any
-    // trip placed near the cap can never fire. The clamp binding IS the signal
-    // -- it means the controller is asking for everything it is allowed to ask
-    // for -- and it is reachable by construction.
-    //
-    // Why it matters rather than being cosmetic: with the guard silent, a
-    // blocked jaw sits at the full clamp torque indefinitely. Sustained torque
-    // is what browns out the 24 V rail and drops the USB link, and the default
-    // clamp of 1.5 Nm is the same order as the 1.5 Nm grasp that did exactly
-    // that in the field.
-    //
-    // A FLOOR, not a threshold. It only has to reject "commanded but the motor
-    // is not actually pushing" (disabled, unpowered); the clamp-binding and
-    // velocity tests do the separating. Same role and same value as the
-    // force/position contact floor.
-    float    stall_torque_floor_nm = 0.080f;
-    float    stall_vel_radps  = 0.15f;
-    unsigned stall_hold_ms    = 60;
 };
 
 // Pure state machine. Hardware-free and side-effect-free: feed it status
@@ -189,18 +206,14 @@ public:
     float target_position() const noexcept { return target_; }
     float effective_position() const noexcept { return effective_; }
     float commanded_torque_nm() const noexcept { return commanded_torque_nm_; }
-    bool stalled() const noexcept { return stall_clamped_; }
     bool torque_capped() const noexcept { return torque_capped_; }
-    uint64_t stall_trips() const noexcept { return stall_trips_; }
     uint64_t torque_caps() const noexcept { return torque_caps_; }
     const std::string& fault_reason() const noexcept { return fault_reason_; }
 
 private:
     void guard_torque_(const MotorStatusSample& s,
                        std::chrono::steady_clock::time_point now);
-    void guard_stall_(const MotorStatusSample& s,
-                      std::chrono::steady_clock::time_point now);
-    float clamped_target_();
+    float cap_hold_torque_() const noexcept;
     protocol::MotorImpedanceCtrl zero_(const MotorStatusSample& s);
 
     GripperPosition map_;
@@ -211,12 +224,6 @@ private:
     float effective_ = 0.0f;
     float kp_ = 0.0f, kd_ = 0.0f, ff_ = 0.0f;
     float commanded_torque_nm_ = 0.0f;
-
-    std::chrono::steady_clock::time_point stall_since_{};
-    bool  stall_clamped_ = false;
-    float stall_clamp_   = 0.0f;
-    bool  stall_closing_ = false;
-    uint64_t stall_trips_ = 0;
 
     std::chrono::steady_clock::time_point cap_since_{};
     bool  torque_capped_ = false;
