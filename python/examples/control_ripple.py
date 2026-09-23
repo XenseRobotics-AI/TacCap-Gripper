@@ -30,7 +30,7 @@ import argparse
 import statistics as st
 import time
 
-import _calib_flow
+import _target
 
 from xense.taccap import (
     ForcePositionConfig, ForcePositionController,
@@ -135,7 +135,7 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument("--rounds", type=int, default=10, help="每个方向测多少轮")
     ap.add_argument("--controller", choices=("force-position", "impedance", "both"),
                     default="both")
@@ -143,7 +143,7 @@ def main() -> int:
     args = ap.parse_args()
 
     log.set_level("warn")
-    g, _ep = _calib_flow.open_follower(args.target)
+    g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
     env = g.get_envelope()
     print(f"[envelope] {env}")

@@ -58,6 +58,7 @@ from xense.taccap import (
     ProtocolError,
 )
 
+import _target
 import _calib_flow
 
 _TTY = sys.stdout.isatty()
@@ -86,7 +87,7 @@ def open_gripper(args):
     classes share the same discovery path, so this is purely about which
     command surface the caller wants.
     """
-    eps, _by_side, _all = _calib_flow.resolve_target(args.target)
+    eps, _by_side, _all = _target.resolve_target(args.target)
     device = eps.mcu_device
     cls = FollowerGripper if getattr(args, "follower", False) else LeaderGripper
     return cls(mcu_device=device)
@@ -98,7 +99,7 @@ def open_gripper(args):
 def cmd_show(args) -> int:
     with open_gripper(args) as g:
         cal = g.calibration
-        fw = _calib_flow.firmware_version(g)
+        fw = _target.firmware_version(g)
         print(_bold(f"\nFirmware {fw}") +
               "  (fisheye needs cmd set >= V2.0, encoder-max >= V2.1: "
               "leader >= 1.2.0; followers are gated at >= 1.2.5 on open)")
@@ -226,7 +227,7 @@ def main() -> int:
     # same positional selector (`show right`, `set-fisheye left ...`) — the one
     # form used across all the examples.
     common = argparse.ArgumentParser(add_help=False)
-    _calib_flow.add_target_argument(common)
+    _target.add_target_argument(common)
     common.add_argument("--follower", action="store_true",
                         help="open as a FollowerGripper (fisheye only; the "
                              "encoder-max commands are leader-only)")

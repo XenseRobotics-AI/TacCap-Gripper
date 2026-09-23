@@ -81,12 +81,12 @@ from xense.taccap import (
     log,
 )
 
-import _calib_flow
+import _target
 
 
 def _open_gripper(target: str | None) -> tuple[LeaderGripper, object]:
     """Resolve the repo-wide selector (`left` / `right` / SN / None) → gripper."""
-    eps, _by_side, _all = _calib_flow.resolve_target(target)
+    eps, _by_side, _all = _target.resolve_target(target)
     # OTA only needs the MCU control link; cameras stay off (the default).
     g = LeaderGripper(mcu_device=eps.mcu_device)
     return g, eps
@@ -265,7 +265,7 @@ def _build_upgrade_jobs(
             raise SystemExit(f"firmware image not found for role {role_target!r}")
         return [{"eps": eps, "role": role_target, "firmware": resolved}]
 
-    eps, _by_side, _all = _calib_flow.resolve_target(target)
+    eps, _by_side, _all = _target.resolve_target(target)
     if firmware is None:
         role = _gripper_role(eps)
         if role == "unknown":
@@ -481,7 +481,7 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     else:
         print(f"  image ver    : {_dim('未知 —— CRC32 不在 manifest 里,不是发布镜像')}")
     print(
-        f"  target ver   : {_calib_flow.format_version(target.major, target.minor, target.patch)}"
+        f"  target ver   : {_target.format_version(target.major, target.minor, target.patch)}"
         + ("" if args.target_version or image_ver else
            _dim("  (没有版本可报,固件会记下 0.0.0)"))
     )
@@ -624,7 +624,7 @@ def main(argv=None) -> int:
     log.set_level("info")
 
     if args.all:
-        jobs = _build_upgrade_jobs(None, None, True, _calib_flow.scan_grippers)
+        jobs = _build_upgrade_jobs(None, None, True, _target.scan_grippers)
         rc = 0
         for job in jobs:
             eps = job["eps"]
@@ -657,7 +657,7 @@ def main(argv=None) -> int:
             del g
 
     jobs = _build_upgrade_jobs(
-        args.target, args.firmware, False, _calib_flow.scan_grippers
+        args.target, args.firmware, False, _target.scan_grippers
     )
     if len(jobs) != 1:
         raise SystemExit(f"error: expected exactly one target gripper, got {len(jobs)}")

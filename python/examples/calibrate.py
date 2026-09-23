@@ -46,6 +46,7 @@ import time
 
 from xense.taccap import LeaderGripper, Side, scan_grippers
 
+import _target
 import _calib_flow
 
 # No expected full-open angle is defined on purpose. The measured span IS
@@ -103,7 +104,7 @@ def _prompt(msg: str) -> None:
 
 
 def calibrate(target: str, *, skip_open_probe: bool) -> int:
-    eps, by_side, all_eps = _calib_flow.resolve_target(target)
+    eps, by_side, all_eps = _target.resolve_target(target)
 
     print()
     print(_cyan("=" * 64))
@@ -112,13 +113,13 @@ def calibrate(target: str, *, skip_open_probe: bool) -> int:
     print(f"  requested    : {_bold(target)}"
           f"{'  (resolved by side)' if by_side else ''}")
     print(f"  firmware SN  : {_bold(eps.firmware_sn)}")
-    print(f"  side         : {_bold(_calib_flow.side_str(eps.side))}")
+    print(f"  side         : {_bold(_target.side_str(eps.side))}")
     print(f"  mcu serial   : {eps.mcu_serial}")
     print(f"  mcu device   : {eps.mcu_device}")
     if by_side:
         # Show the whole scan when the SN was chosen for the user — it is
         # the only way they can tell the pick was the one they meant.
-        print(f"  visible      : {_calib_flow.listing(all_eps)}")
+        print(f"  visible      : {_target.listing(all_eps)}")
     print()
 
     g = _open_gripper(eps)
@@ -236,7 +237,7 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _calib_flow.add_target_argument(p, required=True)
+    _target.add_target_argument(p, required=True)
     p.add_argument(
         "--skip-open-probe",
         action="store_true",

@@ -33,6 +33,7 @@ import time
 
 from xense.taccap import LeaderGripper, ProtocolError
 
+import _target
 import _calib_flow
 
 
@@ -41,7 +42,7 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _calib_flow.add_target_argument(p)
+    _target.add_target_argument(p)
     p.add_argument("--hz", type=int, default=100, help="encoder stream rate")
     p.add_argument("--seconds", type=float, default=0.0,
                    help="stop after N seconds (0 = run until Ctrl-C)")
@@ -50,7 +51,7 @@ def main() -> int:
                         "firmware (rad)")
     args = p.parse_args()
 
-    eps, _by_side, _all = _calib_flow.resolve_target(args.target)
+    eps, _by_side, _all = _target.resolve_target(args.target)
     device = eps.mcu_device
     try:
         gripper = LeaderGripper(

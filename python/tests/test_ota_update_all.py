@@ -39,15 +39,19 @@ taccap.crc32_iso_hdlc = lambda data: zlib.crc32(data) & 0xFFFFFFFF
 
 taccap.log = types.SimpleNamespace(set_level=lambda *args, **kwargs: None)
 
-_calib_flow = types.ModuleType("_calib_flow")
-_calib_flow.format_version = _format_version
+# ota_update.py takes both of these from _target (the examples' shared device
+# selector). They lived in _calib_flow until that module was split; the stub has
+# to name whichever module the script actually imports, or the import in
+# ota_update.py reaches the real one and walks the USB bus during collection.
+_target = types.ModuleType("_target")
+_target.format_version = _format_version
 
 
 def _resolve_target(target):
     return None, False, []
 
 
-_calib_flow.resolve_target = _resolve_target
+_target.resolve_target = _resolve_target
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -63,7 +67,7 @@ SPEC = importlib.util.spec_from_file_location(
 # test_numpy_views.py into "TypeError: object() takes no arguments" -- an
 # error that points at a constructor signature and has nothing to do with the
 # actual bug. Anything left installed here would mask future failures too.
-_STUBS = {"xense": xense, "xense.taccap": taccap, "_calib_flow": _calib_flow}
+_STUBS = {"xense": xense, "xense.taccap": taccap, "_target": _target}
 _SAVED = {name: sys.modules.get(name) for name in _STUBS}
 sys.modules.update(_STUBS)
 try:

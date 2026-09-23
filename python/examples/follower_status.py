@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import time
 
-import _calib_flow
+import _target
 
 from xense.taccap import MotorStopReason, log
 
@@ -46,13 +46,13 @@ def describe_status(s) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument("--seconds", type=float, default=3.0, help="开流读多久")
     ap.add_argument("--hz", type=int, default=100, help="电机状态流频率(固件上限 100)")
     args = ap.parse_args()
 
     log.set_level("warn")
-    g, _ep = _calib_flow.open_follower(args.target)
+    g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
     # ── 一次性读 ──────────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ import time
 import tty
 from typing import Optional
 
-import _calib_flow
+import _target
 
 from xense.taccap import (
     FollowerGripper,
@@ -302,7 +302,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument(
         "--mode",
         default="impedance",
@@ -378,7 +378,7 @@ def main() -> int:
     args = ap.parse_args()
 
     log.set_level("warn")
-    g, ep = _calib_flow.open_follower(args.target)
+    g, ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
     # ---- 运动安全包络:固件侧、MIT 路径上唯一绕不过的一层 ----

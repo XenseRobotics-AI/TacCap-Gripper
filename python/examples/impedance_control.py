@@ -35,7 +35,7 @@ from __future__ import annotations
 import argparse
 import time
 
-import _calib_flow
+import _target
 
 from xense.taccap import (
     FollowerGripper, ImpedanceConfig, ImpedanceController, ImpedanceState,
@@ -72,7 +72,7 @@ def settle(c: ImpedanceController, budget: float = 3.0):
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument("--kp", type=float, default=20.0, help="阻抗刚度 Nm/rad")
     ap.add_argument("--kd", type=float, default=1.0, help="阻抗阻尼 Nm·s/rad")
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
@@ -96,7 +96,7 @@ def main() -> int:
         ap.error("--targets 必须是 [0,1] 内的归一化位置")
 
     log.set_level("warn")
-    g, _ep = _calib_flow.open_follower(args.target)
+    g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
     if args.set_envelope:

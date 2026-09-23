@@ -281,6 +281,15 @@ def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str]:
     The wrist camera's own serial already says which side (and which role) it
     belongs to, so there is nothing extra to select here — that is the point of
     keeping one `left` / `right` selector for the whole rig.
+
+    This deliberately does NOT use `_target.resolve_target()`, even though both
+    end up scanning for a gripper by side. Two differences make the shared
+    helper the wrong tool: it has no role preference, and it reports failure
+    with `sys.exit()`. Here the side is already known (it came from the camera,
+    not from the user), the role is a preference worth expressing, and failure
+    must stay a catchable exception — the caller degrades to the reference
+    intrinsics rather than aborting, because the viewer is useful without the
+    MCU link. Do not "unify" these two without changing that.
     """
     grippers = scan_grippers()
     if not grippers:

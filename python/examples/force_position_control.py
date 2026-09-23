@@ -52,7 +52,7 @@ from __future__ import annotations
 import argparse
 import time
 
-import _calib_flow
+import _target
 
 from xense.taccap import (
     FollowerGripper,
@@ -104,7 +104,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument(
         "--grasp-torque", type=float, default=1.1,
         help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值"
@@ -126,7 +126,7 @@ def main() -> int:
         ap.error("--targets 必须是 [0,1] 内的归一化位置")
 
     log.set_level("warn")
-    g, _ep = _calib_flow.open_follower(args.target)
+    g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
     env = g.get_envelope()
     print(f"[envelope] {env}")

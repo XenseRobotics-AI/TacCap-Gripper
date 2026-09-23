@@ -32,7 +32,7 @@ import argparse
 import json
 import sys
 
-import _calib_flow
+import _target
 from xense.taccap import LeaderGripper, FollowerGripper, log
 
 # 标定记录里**不存图像尺寸**。SDK 一律按标定时的 640x480 使用这组内参,按别的
@@ -47,7 +47,7 @@ def _enum_name(v) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    _calib_flow.add_target_argument(ap)
+    _target.add_target_argument(ap)
     ap.add_argument("--follower", action="store_true",
                     help="以 FollowerGripper 打开(默认 LeaderGripper)。"
                          "内参两个类都能读,默认走 leader 是为了绕开从爪的固件版本门")
@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--indent", type=int, default=2, help="JSON 缩进,0 = 单行")
     args = ap.parse_args()
 
-    ep, _by_side, _all = _calib_flow.resolve_target(args.target)
+    ep, _by_side, _all = _target.resolve_target(args.target)
     cls = FollowerGripper if args.follower else LeaderGripper
     g = cls(mcu_device=ep.mcu_device)
 
@@ -77,7 +77,7 @@ def main() -> int:
             "side": _enum_name(ep.side),
             "role": _enum_name(ep.role),
             "mcu_device": ep.mcu_device,
-            "firmware": _calib_flow.firmware_version(g),
+            "firmware": _target.firmware_version(g),
             "source": "reference" if is_reference else "device",
             "reason": reason,
             "model": "fisheye_equidistant",
