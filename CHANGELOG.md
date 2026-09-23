@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-24
+
+Documentation and tooling only — no library code changed, so a consumer pinned
+to 0.2.3 loses nothing by staying there.
+
+### Added
+
+- **`README_CN.md`**, a full Chinese translation of the README. The English
+  file remains authoritative; the Chinese one links back to it.
+- **`uv` in `environment.yml`.** Installs now read
+  `uv pip install -e . --no-build-isolation`; `pip` still works with the same
+  flags. uv targets the activated conda env on its own. Measured on a warm
+  build dir, 0.5 s against pip's 1.0 s — the CMake compile dominates either way.
+
+### Changed
+
+- **The README is English-only and reorganised.** It opens with how the SDK is
+  built rather than a feature list, folds the four places that separately taught
+  usage into `## Usage` (example-led) plus `## Writing your own` (the API), and
+  states firmware requirements without the protocol internals behind them.
+- **`--no-build-isolation` is now explained** where it is used. Without it the
+  build resolves `pybind11` from PyPI into a throwaway environment instead of
+  the version `environment.yml` pins next to `libopencv` and `spdlog`; pybind11
+  is header-only, so whichever copy is present at build time is the one compiled
+  into the extension.
+
+### Fixed
+
+- **The README never said what flashing the wrong role's image costs** — a
+  bricked MCU needing an SWD probe. The rule to pick by SN suffix was there
+  without the reason behind it.
+
 ## [0.2.3] - 2026-09-23
 
 Paired with firmware **1.2.6**.
