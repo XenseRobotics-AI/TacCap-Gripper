@@ -55,6 +55,7 @@ from xense.taccap import (
     ForcePositionController,
     GRIPPER_ENVELOPE_VALID,
     GRIPPER_ENVELOPE_ENFORCE,
+    MOTOR_RATED_TORQUE_NM,
     log,
 )
 
@@ -324,12 +325,15 @@ def main() -> int:
         dest="max_position_torque",
         help="误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内",
     )
+    # 默认值从 MOTOR_RATED_TORQUE_NM 派生,不要再写字面量:这里原本硬编码 2.0,
+    # 而 aa3d0a9 把 ImpedanceConfig 的上界从峰值 6.0 收到额定 1.8(那个保持是
+    # 无限期的,所以按额定封顶),两边就此错开,阻抗模式默认参数直接抛 ValueError。
     ap.add_argument(
         "--rated-torque",
         type=float,
-        default=2.0,
+        default=MOTOR_RATED_TORQUE_NM,
         dest="rated_torque",
-        help="力矩天花板:实测力矩到顶后转纯前馈保持",
+        help=f"力矩天花板:实测力矩到顶后转纯前馈保持(上限=额定 {MOTOR_RATED_TORQUE_NM:.2f} Nm)",
     )
     # ---- ForcePositionController ----
     ap.add_argument(
