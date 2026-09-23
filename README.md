@@ -44,6 +44,14 @@ auto-calibration wrote the closed zero with an inset (20 mrad through 1.2.3,
 position map calls fully closed. That one is bounded, not dangerous, but a
 scale that quietly means something else is worse to debug than a refusal.
 
+**The motor has a firmware floor of its own: >= 1.0.5.0.4.** That is the
+RobStride EL05 inside the follower, not the gripper MCU, and the SDK does
+**not** enforce it — reading the motor's version needs follower >= 1.2.6 and has
+so far only been confirmed under the private protocol, so there is nothing a
+startup check could rely on. It is a documented requirement, with the measured
+before/after and the upgrade path, under *固件版本要求:电机 ≥ 1.0.5.0.4* in
+Follower gripper control below.
+
 **The leader is deliberately not gated.** `ota_update.py` opens every gripper
 — followers included — through `LeaderGripper`, so a floor there would block
 the upgrade path for exactly the devices that need it. Leader >= 1.2.0 is what
@@ -487,6 +495,43 @@ python python/examples/ota_update.py --all      # 所有在插的夹爪各刷各
 
 OTA 本身走 `LeaderGripper`(角色无关),**不受这个检查影响**,升级通道始终可用。
 确实要在升级前读一台旧设备的配置,用 `allow_outdated_firmware=True` 显式绕过。
+
+### 固件版本要求:电机 ≥ 1.0.5.0.4
+
+指的是从爪里那颗 RobStride EL05 **电机自己的固件**,不是夹爪 MCU 固件。
+**SDK 不强制这条**,它是一条文档要求:
+
+- 读版本要 `motor.motor_version()`(命令 `0x58`),需**从爪固件 ≥ 1.2.6**;
+- 而且**目前只在私有协议下证实读得到**(`0018s` / `0074s`),MIT 模式下能否
+  读到**没有验证过** —— 请求是扩展帧,理论上 MIT 会忽略,但没在跑 1.2.6 的
+  MIT 机器上试过。
+
+两条加起来,开机检查没有可靠的依据可用,所以这里只写要求、不写门。切协议
+(私有 ↔ MIT)**每个方向都要断一次 24V**,MCU 重启不生效。
+
+**实测对照:**
+
+| 机器 | 电机固件 | 状态 |
+|---|---|---|
+| `0018s` | 1.0.5.0.4 | 正常 |
+| `0074s` | 1.0.5.0.2 → 升级后 1.0.5.0.4 | 升级前:速度反馈恒为常值(不随运动变)、运动纹波 117%、逆向帧 80;升级后同一台恢复正常 |
+| `0073s` | 未读 | 同类故障 |
+
+`0074s` 是**同一台设备升级前后的对照**,所以这不是机器之间的个体差异。但相关性
+只到这里:因果未证实,`0073s` 的电机固件也还没读。速度反馈失真这一项值得单独
+记住 —— `snapshot().observation.velocity` 和任何基于它的上层判断都会跟着错,而
+它看起来只是"读数有点怪",不像故障。
+
+**升级只能走官方上位机**(手册 §3.3.3):需要灵足时代官方 USB-CAN,电机要从夹爪
+上拆下来单独接,协议未公开。也就是说这件事没法在现场脚本化,拿到新夹爪时确认一
+次比事后排查便宜得多。
+
+> **别把"读不到电机参数"当成版本偏低的证据。** MIT Command 12/13/14/15
+> (保存/主动上报/读参数/写参数)一律不应答,后果是 **MIT 模式下读不到任何电机
+> 参数**,`vBus`、`boardTemp` 都要切私有协议才能读。这个现象和本节的版本门槛
+> **无关**:`0018s` 跑着 1.0.5.0.4,那四条照样不应答,原因仍未知。手册恰好只给
+> 这四条标了"需固件更新至 1.0.5.0.4",一度被倒推成"本机版本偏低",2026-09-23
+> 用 `0x58` 直接读出版本号之后已被否证。
 
 ### 两个控制器的示例
 
