@@ -14,6 +14,13 @@ to 0.2.3 loses nothing by staying there.
 
 ### Added
 
+- **CI covers Python and lint, not only C++.** The 96 `python/tests` cases now
+  run on every push — they guard what a C++ test structurally cannot: the bound
+  config surface, single-sourced versions, non-zero-stride numpy views,
+  docstrings. Added alongside them: `pre-commit` (gitleaks, typos, zizmor,
+  whitespace/format) and two ruff gates. Ruff is pinned to one exact version in
+  three places — the workflow, `environment.yml` and `.pre-commit-config.yaml` —
+  because its defaults move between minor releases.
 - **`README_CN.md`**, a full Chinese translation of the README. The English
   file remains authoritative; the Chinese one links back to it.
 - **A citation entry** at the end of both READMEs. Its `version` field is a
