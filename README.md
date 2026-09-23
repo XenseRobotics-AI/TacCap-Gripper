@@ -37,7 +37,7 @@ window the MCU is known to be idle, rather than on a free-running clock.
 The MCU runs the motion-safety envelope and the stall test at 500 Hz, and it is
 the only layer on the MIT command path that nothing can bypass. So this SDK has
 no host-side contact detection and no second stall guard — saturating the
-controller's torque budget *is* contact. Where the two could disagree, the
+controller's torque budget *is* contact. Where the two could disagree, the  
 device wins. See [docs/CONTROL_LAYERING.md](docs/CONTROL_LAYERING.md).
 
 **Drive the motor through a controller.** `ImpedanceController` follows a
@@ -65,34 +65,23 @@ not required to use this SDK.
 
 ## What's in
 
-- **TC-GU-01 protocol** — async transport with ACK matching, per-command DATA
+- **TC-GU-01 protocol** — async transport, ACK matching, per-command DATA
   subscribers, byte-stuffed framing.
-- **Follower motor control (MIT force-position).** `Motor` enable / disable /
-  clear-fault + four control modes. Blocking-ACK `set_*` and no-ACK `submit_*`.
-- **`ImpedanceController`** — position tracking for a follower (teleoperation,
-  a leader-follower relay). Submits the latest normalized target **in phase
-  with the motor-status stream**, clamps the position error so the command
-  never exceeds `max_position_torque_nm`, and reports state, observation and
-  command through one `snapshot()`. Your policy only touches `set_target(0..1)`
-  and `snapshot()`, both non-blocking. See
-  [Follower gripper control](#follower-gripper-control-mit-force-position) for
-  why the phase matters.
-- **`ForcePositionController`** — grasping for a follower. One bounded-torque
-  law the whole way: the jaw tracks a ramp toward the target and the command is
-  clamped at `grasp_torque_nm`, so free travel costs only friction and an
-  obstruction settles at exactly the grasp force. No contact detection to tune —
-  saturation *is* contact. Two knobs in practice: the force and the speed.
-- **Normalized position** on both roles — `[0, 1]`, 0 = closed, 1 = open, on
+- **`Motor`** — enable / disable / clear-fault, four control modes, blocking
+  `set_*` and no-ACK `submit_*`.
+- **`ImpedanceController`** — follow a position (teleoperation, leader-follower).
+- **`ForcePositionController`** — grasp, with the force and the speed as the
+  two knobs.
+- **Normalized position** on both roles: `[0, 1]`, 0 = closed, 1 = open, on
   one-shot reads and on every streamed sample.
-- **`Diagnostics`** (`g.diagnostics`) — the firmware's own UART counters and a
-  runtime log switch. Answers a question the host cannot answer alone: when a
-  frame arrives short, did the MCU fail to send it, or was it lost afterwards?
-- **Wrist fisheye undistortion** — firmware-stored intrinsics turned into
-  cached remap tables, standalone or wired in via `undistort_wrist=True`.
-- **Calibration** (`g.calibration`) — the flash-persisted fisheye and
-  encoder-max records. See [docs/CALIBRATION.md](docs/CALIBRATION.md).
-- **LEDs, power-on auto-calibration, OTA, zero-config discovery** by
-  firmware-burned SN (never the CH343 chip SN).
+- **IMU, encoder, LEDs, button**, and power-on auto-calibration.
+- **Wrist camera** with fisheye undistortion from the unit's own stored
+  intrinsics.
+- **`Calibration`** — the flash-persisted fisheye and encoder-max records.
+  See [docs/CALIBRATION.md](docs/CALIBRATION.md).
+- **`Diagnostics`** — the firmware's own UART counters, which tell a frame the
+  MCU never sent from one lost on the way.
+- **OTA** and zero-config discovery by firmware-burned SN.
 
 Visuotactile (OG) capture lives at the Python level via the `xensesdk` wheel —
 `xense.taccap` is the gripper-protocol + wrist-camera surface only.
@@ -103,81 +92,30 @@ Full per-commit history in [CHANGELOG.md](CHANGELOG.md).
 
 ## Firmware
 
-The SDK talks **command set V2.3** over **wire framing V1.8**, and it requires
-matching firmware.
+A gripper runs its own firmware, and this SDK requires a recent one.
 
-**Follower: 1.2.5 or newer, enforced.** `FollowerGripper` throws rather than
-warns when it opens an older unit; `Config::allow_outdated_firmware=True` is the
-escape hatch for inspecting a device before upgrading it. Two independent
-reasons stack up to that floor. Below **1.1.6** there is no stall protection at
-all on the MIT command path, so a blocked jaw is bounded only by the motor's own
-0x700B ceiling and browns out the board on 24 V. Below **1.2.5**
-auto-calibration wrote the closed zero with an inset (20 mrad through 1.2.3,
-5 mrad in 1.2.4), while this SDK's closed-endpoint preload assumes normalized
-0.0 *is* the mechanical stop — so on older firmware it presses past what the
-position map calls fully closed. The second is bounded rather than dangerous,
-but a scale that quietly means something else is worse to debug than a refusal.
+**`FollowerGripper` refuses to open a follower below 1.2.5** — it throws rather
+than warns, because older firmware lacks stall protection on the control path
+and puts normalized 0.0 somewhere other than the closed stop.
+`Config::allow_outdated_firmware=True` inspects such a device without driving
+it. Leaders are not gated. The motor inside has a floor of its own; see
+[固件版本要求:电机 ≥ 1.0.5.0.4](#固件版本要求电机--10504).
 
-**Leader: not gated, deliberately.** `ota_update.py` opens every gripper —
-followers included — through `LeaderGripper`, so a floor there would block the
-upgrade path for exactly the devices that need it. Leader **1.2.0** is what the
-V2.1 command set needs (`EncoderMaxCal` 0x2C, i.e. normalized leader position);
-that is a capability floor, not an enforced one.
-
-**Per-command floors are advisory the same way.** V2.2 follower diagnostics need
-follower >= 1.1.2; the V2.3 additions (`GetMotorSpec` 0x56, `GetHomeDiag` 0x57)
-need >= 1.2.3. A command the firmware does not implement fails loudly with
-`ProtocolError(InvalidCmd)` rather than misbehaving, and payload length is never
-a version probe. Ask a device what it answers with
-`python python/examples/fisheye_cal.py show left`.
-
-**The motor has a floor of its own, 1.0.5.0.4**, which the SDK does not enforce
-— see [固件版本要求:电机 ≥ 1.0.5.0.4](#固件版本要求电机--10504).
-
-**V2.3 changed how a failed command answers.** A failure comes back as a pure
-ACK with `cmd == 0` and a one-byte error code; success keeps the original command
-code. Before, a failure also carried the command code with a one-byte error
-payload — indistinguishable on the wire from a success returning one byte of
-data, so every no-data command's failure was invisible. Talking to firmware older
-than 1.2.3 gets the old, ambiguous form.
-
-### `firmware/` — the images this SDK ships
-
-Flashable images live in [`firmware/`](firmware/), so you can upgrade a gripper
-without access to the firmware source, which is **not** part of this repository.
-
-```
-firmware/
-  tc-gu-01-master-<ver>.bin    leader  — SN ends 'm'
-  tc-gu-01-slave-<ver>.bin     follower — SN ends 's'
-  manifest.json                what ota_update.py actually reads
-  README.md                    per-release notes and provenance
-```
-
-Only the current release is kept; older images come from git history rather than
-from extra files. Pick the image by the gripper's **role** — the last character
-of its firmware SN, `m` for master/leader and `s` for slave/follower — not by
-which hand it is on.
-
-`manifest.json` is load-bearing, not descriptive: it carries each image's
-version, size and CRC32, and `ota_update.py` resolves which file to send by
-**CRC32** rather than trusting the filename. So bumping a version means updating
-the `.bin` and the manifest together; `python/tests/test_ota_update_all.py`
-fails if they disagree.
+**Flashable images ship in [`firmware/`](firmware/)** — the firmware source
+does not. Pick the image by the gripper's role, which is the last character of
+its firmware SN (`m` master, `s` slave), not by which hand it is on:
 
 ```bash
-python python/examples/ota_update.py slave left    # role selector, picks the image
-python python/examples/ota_update.py --all         # every attached gripper, its own image
+python python/examples/ota_update.py slave left    # role selector picks the image
+python python/examples/ota_update.py --all         # every attached gripper
 ```
 
-**Power-cycle after any flash.** On a follower that means cutting the **24 V**
-supply, not just unplugging USB — 24 V is a separate rail, and the bank-swap
-reboot is a soft reset that leaves the device looking healthy while quietly
-dropping status frames.
+**Power-cycle after any flash** — on a follower that means cutting the **24 V**
+supply, not just unplugging USB. The bank-swap reboot is a soft reset that
+leaves the device looking healthy while dropping status frames.
 
-Per-release notes live in [`firmware/README.md`](firmware/README.md); how the
-images are produced and what the reference clones are for is in
-[docs/FIRMWARE.md](docs/FIRMWARE.md).
+[`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
+the rest of the flashing detail.
 
 ## Install
 
