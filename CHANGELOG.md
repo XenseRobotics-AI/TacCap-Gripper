@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`Camera::read()`'s timeout parameter**, in C++ and Python. It was never
+  used: the C++ signature commented the parameter out and the call blocks for
+  however long `cv::VideoCapture::read` blocks, which is its own V4L2 timeout.
+  A caller passing `timeout_ms=50` waited the V4L2 timeout anyway with no way to
+  tell. `cam.read(timeout_ms=...)` is now a `TypeError`; drop the argument.
+  Add one back only together with poll/select wrapping that honours it.
+
+### Added
+
+- **Docstrings across the Python bindings.** pybind11 fills `__doc__` with a
+  signature whether or not anyone wrote a docstring, so ~426 of 457 `.def` sites
+  looked documented and were not. Classes and methods are now documented
+  throughout; fields only where the name does not already carry the unit.
+  `python/tests/test_binding_docstrings.py` guards it.
+
+### Fixed
+
+- **Five pieces of documentation that contradicted the code**: a `GripperEnvelope`
+  docstring describing a `max_velocity_rad_s` field that does not exist,
+  `follower_gripper.hpp` naming a 1.1.6 firmware floor against its own 1.2.5
+  constants, `imu.cpp` / `encoder.hpp` naming the reader thread as the callback
+  context where `Transport` guarantees the dispatcher thread, scaffold-era text
+  in `module.cpp` and the package docstring, and `motor.hpp` asserting a
+  private-parameter MIT gate that firmware 1.2.6 deliberately removed. Also
+  `find_leader` / `find_follower` were each exported twice, and nine exported
+  names were missing from `__all__`.
+
 ## [0.2.3] - 2026-09-23
 
 Paired with firmware **1.2.6**.

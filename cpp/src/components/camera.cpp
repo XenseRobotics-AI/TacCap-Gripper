@@ -87,10 +87,7 @@ void Camera::maybe_convert_colour_(cv::Mat& image) const {
     cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
 }
 
-bool Camera::read(CameraFrame& out, std::chrono::milliseconds /*timeout*/) {
-    // VideoCapture::read is blocking up to its internal V4L2 timeout; the
-    // `timeout` arg is currently informational. (Add poll/select wrapping
-    // later if the underlying timeout proves insufficient.)
+bool Camera::read(CameraFrame& out) {
     if (!impl_) return false;
     if (running_.load()) {
         // While streaming, the worker thread owns the device — disallow

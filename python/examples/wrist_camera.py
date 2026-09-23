@@ -541,7 +541,7 @@ def main(argv=None) -> int:
             if args.duration and now - t0 >= args.duration:
                 break
 
-            frame = cam.read(timeout_ms=1000)
+            frame = cam.read()
             if frame is None:
                 read_failures += 1
                 if read_failures in (1, 10, 100):

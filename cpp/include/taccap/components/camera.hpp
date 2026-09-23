@@ -66,9 +66,16 @@ public:
     Camera(const Camera&)            = delete;
     Camera& operator=(const Camera&) = delete;
 
-    // Synchronous one-shot read. Returns false on read failure.
-    bool read(CameraFrame& out, std::chrono::milliseconds timeout =
-              std::chrono::milliseconds{500});
+    // Synchronous one-shot read. Returns false on read failure, and also while
+    // a stream is running, which owns the device.
+    //
+    // No timeout parameter: it took one until 0.2.3 and never used it. The call
+    // blocks for however long cv::VideoCapture::read blocks, which is its own
+    // V4L2 timeout. A parameter the implementation ignores is worse than no
+    // parameter, because a caller passing 50 still waits the V4L2 timeout and
+    // has no way to tell. Add one back only together with poll/select wrapping
+    // that actually honours it.
+    bool read(CameraFrame& out);
 
     // Async streaming: spawn a background thread that calls `cb` on each
     // frame. Stop with stop() or destructor. Re-entrant safe (callback

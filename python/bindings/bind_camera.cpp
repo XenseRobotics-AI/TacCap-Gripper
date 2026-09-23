@@ -130,22 +130,23 @@ void bind_camera(py::module_& m) {
             "guarantees -- V4L2 may settle on something else, so read actual_fps and\n"
             "the shape of the first frame instead of assuming. Raises IoError when\n"
             "the path is empty or the device will not open.")
-        .def("read", [](Camera& self, unsigned timeout_ms) -> py::object {
+        .def("read", [](Camera& self) -> py::object {
             CameraFrame f;
             bool ok;
             {
                 py::gil_scoped_release gil;
-                ok = self.read(f, std::chrono::milliseconds(timeout_ms));
+                ok = self.read(f);
             }
             if (!ok) return py::none();
             return py::cast(std::move(f));
-        }, py::arg("timeout_ms") = 500,
-           "Grab one frame; returns a CameraFrame, or None when there is nothing to\n"
+        }, "Grab one frame; returns a CameraFrame, or None when there is nothing to\n"
            "hand back.\n\n"
-           "Blocks with the GIL released. None means either the capture failed, which\n"
-           "also bumps dropped_frames, or a stream is running and owns the device.\n"
-           "timeout_ms is informational today: the underlying VideoCapture.read\n"
-           "blocks on its own V4L2 timeout and this value does not shorten it.")
+           "Blocks with the GIL released, for as long as the underlying\n"
+           "VideoCapture.read blocks -- its own V4L2 timeout, which the caller cannot\n"
+           "shorten. There is no timeout argument for that reason; one existed until\n"
+           "0.2.3 and was ignored.\n\n"
+           "None means either the capture failed, which also bumps dropped_frames, or\n"
+           "a stream is running and owns the device.")
         .def("start", [](Camera& self, py::function pycb) {
             auto cb = make_gil_safe_callback(std::move(pycb));
             self.start([cb](const CameraFrame& f) {
