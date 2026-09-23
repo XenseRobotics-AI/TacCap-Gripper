@@ -45,6 +45,9 @@ dependencies:
   - numpy
   - pyserial         # used in step 2+ for TC-GU-01 serial; pre-installed
   - pytest
+  # Needed for `pre-commit install`, which .pre-commit-config.yaml asks every
+  # clone to run once. Without it the repo has rules that only CI enforces.
+  - pre-commit
   # Package installs go through uv rather than pip. It targets the active
   # conda env on its own (prints the prefix it picked, which pip does not) and
   # its resolve/install overhead is lower -- measured on a warm build dir,

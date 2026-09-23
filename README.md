@@ -155,6 +155,13 @@ python -c "import xense.taccap as t; print(t.__version__)"
 `uv` ships in the env and targets the activated conda env on its own. `pip`
 works too — the flags are the same.
 
+Then wire up the checks once, so they run at commit time rather than only in
+CI:
+
+```bash
+pre-commit install
+```
+
 **Why `--no-build-isolation`.** `environment.yml` pins the build dependencies
 (`pybind11`, `scikit-build-core`) next to the C++ ones (`libopencv`, `spdlog`),
 and this flag says "build against what the env pins". Without it the installer
