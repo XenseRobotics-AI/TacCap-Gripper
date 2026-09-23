@@ -155,59 +155,98 @@ Prerequisites, device permissions, C++-only builds, rebuild/clean and the
 
 ## Quick start
 
-### Single gripper
+**Which half you have decides the API.** A *leader* is the hand-held master you
+**read** — encoder, IMU, opening angle. A *follower* is the actuated gripper you
+**drive** — a motor behind a controller. The role is the last character of the
+firmware SN (`m` master, `s` slave), not which hand it is on.
+
+### Leader — read it
 
 ```python
 import xense.taccap as t
 
-# Auto-discover the one connected gripper (left or right) by its MCU serial.
-# Throws IoError if 0 or >1 grippers are plugged in — use the explicit
-# constructor (below) for bilateral setups.
-gripper = t.LeaderGripper.open()      # MCU-only; cameras stay off
-gripper.start_streaming(imu_hz=100, encoder_hz=100)
+g = t.LeaderGripper.open()          # the one attached gripper; MCU only, camera off
+g.start_streaming(imu_hz=100, encoder_hz=100)
 
-enc_sub = gripper.encoder.on_data(lambda s: print("enc", s.position_rad))
-imu_sub = gripper.imu.on_data(lambda s: print(s))
-
+enc = g.encoder.on_data(lambda s: print("enc", s.position_rad, s.position))
+imu = g.imu.on_data(lambda s: print(s))
 # ... do work ...
-gripper.stop_streaming()
+g.stop_streaming()
 ```
 
-The wrist camera is owned by an external camera service, so `open()` does
-not touch it. To have a gripper drive the wrist UVC camera, construct it
-explicitly with `open_cameras=True` and the device path:
+`LeaderGripper.open()` throws `IoError` unless exactly one gripper is attached —
+name the device explicitly for a bilateral rig (below). For `s.position` to mean
+anything the unit needs its travel span calibrated; see
+[Normalized leader position](#normalized-leader-position-0--closed-1--open).
+
+### Follower — drive it
+
+Never drive the motor with the raw `submit_*` primitives: they are bare MIT
+frames with none of the host-side protection on their path. Use a controller.
+
+```python
+import xense.taccap as t
+
+eps = t.find_follower()                       # or t.find_left() / t.find_right()
+g = t.FollowerGripper(eps.mcu_device)
+
+c = t.ForcePositionController(g)              # grasping: bounded torque
+g.motor.clear_fault()
+c.start()                                     # START BEFORE ENABLE — start()
+g.motor.enable()                              # validates the motor's stored limit
+try:
+    c.set_target(0.0)                         # 0 = closed, 1 = open; non-blocking
+    while True:
+        s = c.snapshot()                      # one consistent view, no bus traffic
+        print(s.state, s.observation.position, s.commanded_torque_nm)
+        if s.holding or s.arrived:
+            break
+finally:
+    c.stop()                                   # zero torque, then DISABLES the motor
+```
+
+Two calls are the whole interface: `set_target(0..1)` and `snapshot()`, both
+non-blocking, safe to stream every frame. Swap in `t.ImpedanceController(g)` —
+same two calls — when you want to *follow a position* rather than grasp.
+`with t.ForcePositionController(g) as c:` does the `start()` / `stop()` pair for
+you.
+
+Before driving a follower for the first time, write the firmware motion-safety
+envelope once; it is off out of the box. See
+[两个控制器的示例](#两个控制器的示例) and
+[Follower gripper control](#follower-gripper-control-mit-force-position).
+
+### Both sides in one process
+
+```python
+from xense.taccap import FollowerGripper, scan_grippers, Side
+
+eps = scan_grippers()                          # one USB sweep, no re-probe race
+left  = next(e for e in eps if e.side == Side.Left)
+right = next(e for e in eps if e.side == Side.Right)
+
+g_left  = FollowerGripper(left.mcu_device)     # or LeaderGripper, per role
+g_right = FollowerGripper(right.mcu_device)
+```
+
+Each gripper owns its own serial link and background threads, so the two are
+independent — but give each its own controller; never point two controllers at
+one gripper.
+
+### Wrist camera
+
+`open()` does not touch the camera: an external camera service usually owns the
+V4L2 devices. Ask for it explicitly, or open it standalone with `t.Camera`.
 
 ```python
 g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True)
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
 
-Or open it on its own with the standalone `t.Camera` class — independent of
-any gripper. The visuotactile (OG) sensors are read separately via the
-`xensesdk` wheel, not through this SDK.
+Visuotactile (OG) sensors are read through the `xensesdk` wheel, not this SDK.
 
-### Bilateral (left + right in one process)
-
-```python
-from xense.taccap import LeaderGripper, scan_grippers, Side
-
-# scan_grippers() returns all endpoints in one USB sweep — no re-probe
-# race when you ask for both sides.
-endpoints = scan_grippers()
-left  = next(e for e in endpoints if e.side == Side.Left)
-right = next(e for e in endpoints if e.side == Side.Right)
-
-# Alternatively: t.find_left() / t.find_right() are typed wrappers
-# that throw if the requested side isn't visible.
-
-def _open(eps):
-    return LeaderGripper(eps.mcu_device)   # MCU-only; cameras off by default
-
-g_left, g_right = _open(left), _open(right)
-g_left.start_streaming(imu_hz=100, encoder_hz=100)
-g_right.start_streaming(imu_hz=100, encoder_hz=100)
-# ... attach callbacks, stop_streaming() on exit ...
-```
+Runnable versions of all of the above are in `python/examples/` — see
+[Examples](#examples).
 
 ### Serial numbers (TacCap SN scheme)
 
