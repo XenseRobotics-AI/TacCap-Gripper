@@ -1,34 +1,34 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.5.bin",
-      "version": "1.2.5",
+      "file": "tc-gu-01-master-1.2.6.bin",
+      "version": "1.2.6",
       "size_bytes": 118236,
-      "crc32": "0x42c83731",
+      "crc32": "0xbd8e47df",
       "sn_suffix": "m",
-      "protocol": "V2.3",
+      "protocol": "V2.4",
       "source": {
-        "branch": "feat/actuator-can-timeout",
-        "commit": "5e4ea6268db3c8237a9afebd751b807467432188"
+        "branch": "feat/motor-version-0x58",
+        "commit": "32657e9f3deeb7a9d8f9f0a67d16342f87bb9e5e"
       },
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Built locally, NOT by the firmware team's release toolchain. BYTE-IDENTICAL to 1.2.3 except the version byte (two bytes differ): this release changes follower-only code, and the leader is rebuilt solely to keep both roles on one version number. 1.2.5 makes that policy structural -- 1.2.3 aligned the two numbers but left two #ifdef-guarded version definitions in the source, so the drift cause survived; 1.2.5 collapses them into one, and a role can no longer be left behind. The 1.2.3 leader validation therefore still stands (TCGU01A28Z0023m / 0024m: version reports, encoder and IMU both read at 9.72 / 9.64 m/s^2 at rest, ~100 Hz data stream over 2 s, and an unassigned command code answers ProtocolError(NACK: InvalidCmd), which is what proves the V2.3 error semantics reached this role). POWER-CYCLE THE GRIPPER AFTER FLASHING."
+      "note": "GET_MOTOR_VERSION(0x58) is follower-only; the leader is rebuilt solely to keep both roles on one version number, which is policy since 1.2.5 collapsed the two #ifdef-guarded version definitions into one. No leader-visible behaviour changes in 1.2.6. Built locally, NOT by the firmware team's release toolchain. Verified byte-identical to the images actually flashed onto hardware during validation: both roles were rebuilt from this exact commit and compared by CRC32, so what ships here is what was tested. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.5.bin",
-      "version": "1.2.5",
-      "size_bytes": 162468,
-      "crc32": "0xd0ef491a",
+      "file": "tc-gu-01-slave-1.2.6.bin",
+      "version": "1.2.6",
+      "size_bytes": 163000,
+      "crc32": "0xbffbadc8",
       "sn_suffix": "s",
-      "protocol": "V2.3 + 运动安全包络",
+      "protocol": "V2.4 + 运动安全包络",
       "source": {
-        "branch": "feat/actuator-can-timeout",
-        "commit": "5e4ea6268db3c8237a9afebd751b807467432188"
+        "branch": "feat/motor-version-0x58",
+        "commit": "32657e9f3deeb7a9d8f9f0a67d16342f87bb9e5e"
       },
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Built locally, NOT by the firmware team's release toolchain. Hardware-validated on TCGU01A28Z0018s. The closed zero written by auto-calibration (min_open_rad) goes to 0, so normalized 0.0 is the closed hard stop itself instead of an inset short of it: six open/close cycles land at raw -0.00049 with 0.383 mrad of spread, arrived true and HOLDING_POSITION throughout, against -0.02014 on 1.2.3 -- 19.65 mrad tighter. A five-minute continuous hold does not drift, decays 1.2% in torque and warms +1.0 C, flat within the sensor's 1 C resolution after 90 s. The two earlier insets (20 mrad, then 5 mrad) were measured against premises that no longer held; a pure feed-forward sweep (kp=kd=0) settled it -- 0.15 Nm seats the jaw at raw +0.00000 and 0.20/0.30/0.40/0.50 Nm move it no further, so raw 0 is a hard stop, no inset is needed, and more torque buys no closure. Seating is the SDK's job now (ForcePositionConfig::close_preload_nm, 0.25 Nm default). Earlier 1.2.3 follower validation still applies: auto-calibration 11 s -> 1.3 s, idle status stream stays fresh, instruction-5 fault reads keep advancing. POWER-CYCLE THE GRIPPER AFTER FLASHING (24 V, not just USB)."
+      "note": "Adds GET_MOTOR_VERSION(0x58): reads the MOTOR's own program version over the RobStride private-protocol version frame (manual p.31), because MIT Commands 12/13/14/15 go unanswered on this motor firmware and no motor parameter is readable in MIT. The command always ACKs OK -- check `valid`. IT MAY STOP THE MOTOR (the request reuses communication type 4), so it is not pollable. Measured: 0018s = 1.0.5.0.4, 0074s = 1.0.5.0.2 before its motor firmware was upgraded and 1.0.5.0.4 after -- the same unit before and after, which is how the upgrade was confirmed by reading rather than by assumption. Whether MIT can also answer the version read is NOT established. Built locally, NOT by the firmware team's release toolchain. Verified byte-identical to the images actually flashed onto hardware during validation: both roles were rebuilt from this exact commit and compared by CRC32, so what ships here is what was tested. POWER-CYCLE THE GRIPPER (CUT 24 V, not just USB) AFTER FLASHING."
     }
   }
 }
