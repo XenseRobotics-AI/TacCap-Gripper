@@ -5,6 +5,7 @@
 #include <taccap/protocol/codec.hpp>
 
 #include <cstring>
+#include <string>
 
 namespace xense::taccap {
 
@@ -135,14 +136,44 @@ protocol::MotorFaultReport Motor::fault_report(bool force,
     return protocol::decode_motor_fault_report(ack.data.data(), ack.data.size());
 }
 
+// A firmware that does not have 0x58 answers InvalidCmd, which is the single
+// most likely reason this call fails — say so instead of leaving the caller
+// with a bare "NACK: InvalidCmd" that names no remedy.
+static std::string motor_version_hint(protocol::ErrorCode err) {
+    if (err != protocol::ErrorCode::InvalidCmd) return {};
+    return " — GetMotorVersion (0x58) needs follower firmware >= 1.2.6; an "
+           "older follower does not have the command at all";
+}
+
 protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {
-    auto ack = t_.send_cmd(protocol::Cmd::GetMotorVersion, {}, timeout);
-    if (ack.is_nack) {
-        // A NACK here means the firmware predates 1.2.6, not that the motor
-        // failed to answer — the handler itself always ACKs.
+    // A NACK reaches us two different ways and the obvious one is the path
+    // this code does NOT take: the transport turns the pure-ACK error shape
+    // into an exception inside send_cmd, so an `if (ack.is_nack)` check after
+    // it is dead code. That is exactly how the firmware-version hint below
+    // came to never fire despite being written down — measured on a 1.2.5
+    // follower, the caller got a bare "NACK: InvalidCmd".
+    bus::AckResponse ack;
+    try {
+        ack = t_.send_cmd(protocol::Cmd::GetMotorVersion, {}, timeout);
+    } catch (const ProtocolError& e) {
+        const std::string invalid =
+            protocol::to_string(protocol::ErrorCode::InvalidCmd);
+        const std::string what = e.what();
+        if (what.find(invalid) != std::string::npos) {
+            throw ProtocolError(
+                what + motor_version_hint(protocol::ErrorCode::InvalidCmd));
+        }
+        throw;
+    }
+    // The second shape: the firmware echoed the command and packed the error
+    // into a single payload byte. That one does NOT throw, and without this it
+    // would fall through to the size check below and be misreported as a short
+    // payload. bus::ack_error_code resolves both shapes.
+    if (const auto err = bus::ack_error_code(ack);
+        err != protocol::ErrorCode::Ok) {
         throw ProtocolError(std::string("Motor::motor_version NACK: ") +
-                            protocol::to_string(ack.error_code) +
-                            " (needs follower firmware >= 1.2.6)");
+                            protocol::to_string(err) +
+                            motor_version_hint(err));
     }
     if (ack.data.size() < protocol::MOTOR_VERSION_SIZE) {
         throw ProtocolError("Motor::motor_version: short payload");

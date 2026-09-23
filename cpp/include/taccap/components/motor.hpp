@@ -246,19 +246,28 @@ public:
     // The version of the program inside the MOTOR (firmware >= 1.2.6). Not the
     // gripper's own firmware version — that is FollowerGripper::firmware_version().
     //
-    // ONLY READABLE UNDER THE PRIVATE PROTOCOL. In MIT mode the motor ignores
-    // extended frames, and switching protocols needs a 24 V power cycle, so the
-    // reply comes back with valid=0 and protocol_mode=2 rather than throwing.
-    // Check `valid` — this call reports failure in the payload on purpose,
-    // because "MIT mode" and "motor did not answer" are different diagnoses and
-    // one NACK cannot say which.
+    // Check `valid` before reading `version` — this call reports failure in the
+    // payload rather than throwing, because "the motor did not answer" and "the
+    // command is not supported here" are different diagnoses and one NACK
+    // cannot say which.
+    //
+    // MEASURED: readable under the PRIVATE protocol (0074s and 0018s, both
+    // answered 1.0.5.0.x). Whether MIT mode also answers is NOT established —
+    // the request is an extended frame and MIT is expected to ignore those, but
+    // that expectation has never been tested against a unit running 1.2.6 in
+    // MIT. Do not build a startup check on the assumption either way until it
+    // is; switching protocols to find out costs a 24 V power cycle each way.
     //
     // MAY STOP THE MOTOR. The request reuses RobStride communication type 4,
     // which is also "motor stop"; a motor that does not recognise the 00 C4
     // magic executes it as a stop. `motor_stopped` says so — re-enable before
     // commanding motion again.
+    //
+    // The default timeout covers the firmware's own wait: measured round trips
+    // run to ~1371 ms, so the old 500 ms default timed out before the reply
+    // could possibly arrive and made a working read look like a dead motor.
     protocol::MotorVersion motor_version(
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{3000});
 
     // Subscribe to streamed MotorStatus DATA frames (StreamSrc::MotorStatus
     // must be enabled in start_streaming for these to arrive).

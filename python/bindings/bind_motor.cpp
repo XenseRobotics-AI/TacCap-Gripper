@@ -443,11 +443,17 @@ void bind_motor(py::module_& m) {
         .def("motor_version", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release g;
             return self.motor_version(std::chrono::milliseconds(timeout_ms));
-        }, py::arg("timeout_ms") = 500,
-           "**电机自身**的固件版本(不是夹爪固件,那是 gripper.firmware_version)。\n\n"
-           "只在私有协议下可读 —— MIT 模式电机不理扩展帧,切协议必须断 24V。\n"
-           "MIT 下返回 valid=0 而不是抛异常:读不到本身就是诊断结果,而『MIT 模式』\n"
-           "和『电机没应答』是两种不同的情况,一个 NACK 说不清是哪种。\n\n"
+        }, py::arg("timeout_ms") = 3000,
+           "**电机自身**的固件版本(不是夹爪固件,那是 gripper.firmware_version)。\n"
+           "需要从爪固件 >= 1.2.6;更旧的固件没有 0x58 这条命令,会抛 InvalidCmd。\n\n"
+           "先看 valid 再读 version:读不到时在 payload 里如实上报而不是抛异常,\n"
+           "因为『电机没应答』和『这里不支持这条命令』是两种不同的诊断,一个 NACK\n"
+           "说不清是哪种。\n\n"
+           "**已实测**:私有协议下可读(0074s / 0018s 都答了 1.0.5.0.x)。MIT 下能否\n"
+           "读到**尚未验证** —— 请求是扩展帧,理论上 MIT 会忽略,但从没在跑 1.2.6 的\n"
+           "MIT 机器上试过。别基于任一假设去写开机检查,切协议来回要断两次 24V。\n\n"
+           "默认超时 3000 ms:实测往返可达约 1371 ms,原来的 500 ms 会在应答可能到达\n"
+           "之前就超时,把一次正常读取显示成电机没反应。\n\n"
            "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"
            "的电机会把它当停止执行。motor_stopped=1 就是这种情况,再发运动命令前\n"
            "要重新 enable()。")
