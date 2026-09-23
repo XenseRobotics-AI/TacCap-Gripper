@@ -21,6 +21,14 @@ Paired with firmware **1.2.6**.
 
 ### Changed
 
+- **The examples' shared helper `_calib_flow.py` is split into `_target.py` and
+  `_calib_flow.py`.** Eleven of the twelve scripts imported it, but 26 of its 37
+  call sites were device selection, not calibration — so `impedance_control.py`
+  imported a module named "calib flow" purely to get a `left|right|SN` argument.
+  `_target.py` is now the selector plus version/colour helpers; `_calib_flow.py`
+  is the guided encoder-max walkthrough used by three scripts. Anyone who
+  vendored these scripts needs both files.
+
 - **`ImpedanceController` has no stall guard, and the budget defaults to
   1.1 N·m.** The guard clamped the effective target to wherever the jaw had
   stopped, which drove the position error — and with it the torque — to zero:
