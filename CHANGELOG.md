@@ -7,14 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+## [0.2.3] - 2026-09-23
 
-- **`Camera::read()`'s timeout parameter**, in C++ and Python. It was never
-  used: the C++ signature commented the parameter out and the call blocks for
-  however long `cv::VideoCapture::read` blocks, which is its own V4L2 timeout.
-  A caller passing `timeout_ms=50` waited the V4L2 timeout anyway with no way to
-  tell. `cam.read(timeout_ms=...)` is now a `TypeError`; drop the argument.
-  Add one back only together with poll/select wrapping that honours it.
+Paired with firmware **1.2.6**.
 
 ### Added
 
@@ -24,21 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   throughout; fields only where the name does not already carry the unit.
   `python/tests/test_binding_docstrings.py` guards it.
 
-### Fixed
+### Changed
 
-- **Five pieces of documentation that contradicted the code**: a `GripperEnvelope`
-  docstring describing a `max_velocity_rad_s` field that does not exist,
-  `follower_gripper.hpp` naming a 1.1.6 firmware floor against its own 1.2.5
-  constants, `imu.cpp` / `encoder.hpp` naming the reader thread as the callback
-  context where `Transport` guarantees the dispatcher thread, scaffold-era text
-  in `module.cpp` and the package docstring, and `motor.hpp` asserting a
-  private-parameter MIT gate that firmware 1.2.6 deliberately removed. Also
-  `find_leader` / `find_follower` were each exported twice, and nine exported
-  names were missing from `__all__`.
+- **`ImpedanceController` has no stall guard, and the budget defaults to
+  1.1 N·m.** The guard clamped the effective target to wherever the jaw had
+  stopped, which drove the position error — and with it the torque — to zero:
+  measured, a grip let go at 0.35 N·m 60 ms after contact. A blocked jaw now
+  saturates the error clamp at `max_position_torque_nm` and holds there, which
+  is the grip. `ImpedanceState.STALLED` and the snapshot's `stalled` /
+  `stall_trips` are removed. With nothing timing the hold out, the budget has to
+  be a torque the motor can sustain indefinitely, so it drops from 1.5 to the
+  EL05's 1.1 N·m continuous stall rating.
 
-## [0.2.3] - 2026-09-23
-
-Paired with firmware **1.2.6**.
+  `TORQUE_CAPPED` now holds the budget rather than `rated_torque_nm`, and
+  `ImpedanceConfig` is rejected unless
+  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`, so the
+  ceiling stays a backstop that normal operation never reaches.
 
 ### Removed
 
@@ -60,22 +56,24 @@ Paired with firmware **1.2.6**.
   `loop.observation()` becomes `c.snapshot().observation`; `stalled` /
   `stall_trips` have no replacement (see next entry).
 
-### Changed
+- **`Camera::read()`'s timeout parameter**, in C++ and Python. It was never
+  used: the C++ signature commented the parameter out and the call blocks for
+  however long `cv::VideoCapture::read` blocks, which is its own V4L2 timeout.
+  A caller passing `timeout_ms=50` waited the V4L2 timeout anyway with no way to
+  tell. `cam.read(timeout_ms=...)` is now a `TypeError`; drop the argument.
+  Add one back only together with poll/select wrapping that honours it.
 
-- **`ImpedanceController` has no stall guard, and the budget defaults to
-  1.1 N·m.** The guard clamped the effective target to wherever the jaw had
-  stopped, which drove the position error — and with it the torque — to zero:
-  measured, a grip let go at 0.35 N·m 60 ms after contact. A blocked jaw now
-  saturates the error clamp at `max_position_torque_nm` and holds there, which
-  is the grip. `ImpedanceState.STALLED` and the snapshot's `stalled` /
-  `stall_trips` are removed. With nothing timing the hold out, the budget has to
-  be a torque the motor can sustain indefinitely, so it drops from 1.5 to the
-  EL05's 1.1 N·m continuous stall rating.
+### Fixed
 
-  `TORQUE_CAPPED` now holds the budget rather than `rated_torque_nm`, and
-  `ImpedanceConfig` is rejected unless
-  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`, so the
-  ceiling stays a backstop that normal operation never reaches.
+- **Five pieces of documentation that contradicted the code**: a `GripperEnvelope`
+  docstring describing a `max_velocity_rad_s` field that does not exist,
+  `follower_gripper.hpp` naming a 1.1.6 firmware floor against its own 1.2.5
+  constants, `imu.cpp` / `encoder.hpp` naming the reader thread as the callback
+  context where `Transport` guarantees the dispatcher thread, scaffold-era text
+  in `module.cpp` and the package docstring, and `motor.hpp` asserting a
+  private-parameter MIT gate that firmware 1.2.6 deliberately removed. Also
+  `find_leader` / `find_follower` were each exported twice, and nine exported
+  names were missing from `__all__`.
 
 ## [0.2.2] - 2026-09-23
 
