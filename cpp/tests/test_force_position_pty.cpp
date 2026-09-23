@@ -143,29 +143,49 @@ TEST(ForcePositionControllerPty, StartRefusesADeviceLimitAboveTheMotionLimit) {
     EXPECT_FALSE(c.running());
 }
 
-// The firmware gate. 1.1.6 is where the motion safety envelope landed, and
-// everything older has no stall protection at all on the MIT command path --
-// a blocked jaw is bounded only by the motor's own 0x700B ceiling, which on
-// 24 V browns out the board. Opening such a device must fail loudly rather
-// than quietly running one blocked grasp away from that.
+// The firmware gate, now at 1.2.5. Two reasons stack:
+//
+//   1.1.6 is where the motion safety envelope landed; everything older has no
+//   stall protection at all on the MIT path, so a blocked jaw is bounded only
+//   by the motor's 0x700B ceiling and browns out the board on 24 V.
+//
+//   1.2.5 is where auto-calibration stopped insetting the closed zero. This
+//   SDK's closed-endpoint preload assumes normalized 0.0 IS the mechanical
+//   stop; on 1.2.3 (20 mrad inset) or 1.2.4 (5 mrad) it presses past what the
+//   position map calls fully closed. Bounded, but the scale stops meaning what
+//   it says — which is worse to debug than a refusal.
 TEST(FollowerFirmwareGate, RefusesFirmwareOlderThanTheMinimum) {
     Pty pty;
     ASSERT_GE(pty.master(), 0);
-    FakeFollower fw(pty, 1, 1, 5);          // one patch short
+    FakeFollower fw(pty, 1, 2, 4);          // one patch short
     EXPECT_THROW(open_follower(pty), xense::taccap::ProtocolError);
+}
+
+// The versions that used to pass must now be refused. Bumping a floor without
+// this is how a gate silently keeps admitting what it was raised to exclude.
+TEST(FollowerFirmwareGate, RefusesWhatTheOldFloorUsedToAdmit) {
+    for (auto [minor, patch] : {std::pair<int, int>{1, 6},
+                                std::pair<int, int>{2, 0},
+                                std::pair<int, int>{2, 3}}) {
+        Pty pty;
+        ASSERT_GE(pty.master(), 0);
+        FakeFollower fw(pty, 1, minor, patch);
+        EXPECT_THROW(open_follower(pty), xense::taccap::ProtocolError)
+            << "1." << minor << "." << patch << " should no longer be admitted";
+    }
 }
 
 TEST(FollowerFirmwareGate, AcceptsTheMinimumAndNewer) {
     {
         Pty pty;
         ASSERT_GE(pty.master(), 0);
-        FakeFollower fw(pty, 1, 1, 6);
+        FakeFollower fw(pty, 1, 2, 5);
         EXPECT_NO_THROW({ auto g = open_follower(pty); });
     }
     {
         Pty pty;
         ASSERT_GE(pty.master(), 0);
-        FakeFollower fw(pty, 1, 2, 0);
+        FakeFollower fw(pty, 1, 3, 0);
         EXPECT_NO_THROW({ auto g = open_follower(pty); });
     }
 }

@@ -90,11 +90,33 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         cfg_.mcu_device, fw_version_str, fw_sn_str, cfg_.open_cameras);
 
     // ---- Firmware gate -----------------------------------------------------
-    // 1.1.6 is a mandatory upgrade, not a recommendation: everything older has
-    // no stall protection whatsoever on the MIT command path, so a blocked jaw
-    // is bounded only by the motor's 0x700B ceiling. Refusing here is the point
-    // -- a caller that silently ran on 1.1.5 would be one blocked grasp away
-    // from browning out the board and dropping its payload.
+    // Two separate reasons stack up to 1.2.5, and both are about the host and
+    // the firmware disagreeing rather than about the firmware alone:
+    //
+    //   < 1.1.6  no stall protection at all on the MIT command path -- a
+    //            blocked jaw is bounded only by the motor's 0x700B ceiling,
+    //            which on 24 V browns out the board and drops the payload.
+    //            This one is a safety floor and always was.
+    //
+    //   < 1.2.5  auto-calibration wrote the closed zero with an INSET (20 mrad
+    //            up to 1.2.3, 5 mrad in 1.2.4), so normalized 0.0 sat short of
+    //            the mechanical stop. This SDK's closed-endpoint preload
+    //            (ForcePositionConfig::close_preload_nm) is built on 1.2.5's
+    //            semantics -- that normalized 0.0 IS the stop -- and on older
+    //            firmware it presses the jaw past where the position map says
+    //            fully closed is. The force stays bounded (the firmware clamps
+    //            the target to the calibrated range and the torque to the
+    //            envelope's cont), so this is not the brown-out class of
+    //            problem; what breaks is the normalized scale's meaning at the
+    //            closed end, and a position that reads 0.0 while the jaw is
+    //            20 mrad tighter than 0.0 is supposed to be.
+    //
+    // Refusing rather than warning is deliberate: a scale that silently means
+    // something different is worse to debug than a device that will not open.
+    //
+    // NOTE the leader has no such gate, ON PURPOSE. ota_update.py opens every
+    // gripper -- follower included -- through LeaderGripper, so gating there
+    // would block the upgrade path for exactly the devices that need it.
     if (!cfg_.allow_outdated_firmware) {
         constexpr uint32_t need = (uint32_t(kMinFirmwareMajor) << 16) |
                                   (uint32_t(kMinFirmwareMinor) << 8) |
@@ -112,16 +134,24 @@ FollowerGripper::FollowerGripper(const Config& cfg)
                 "  Follower firmware too old -- upgrade required\n"
                 "----------------------------------------------------------\n"
                 "  当前 / current : " + fw_version_str + "\n"
-                "  需要 / required: 1.1.6 或更高 / or newer\n"
+                "  需要 / required: 1.2.5 或更高 / or newer\n"
                 "  设备 / device  : " + cfg_.mcu_device + "\n"
                 "  SN             : " + fw_sn_str + "\n"
                 "----------------------------------------------------------\n"
-                "  1.1.6 引入运动安全包络。在此之前的固件,MIT 命令路径上\n"
-                "  没有任何堵转保护 —— 夹爪被挡住时力矩只受电机 0x700B 限制,\n"
-                "  24V 供电下实测会拉垮母线、松手掉件、整机掉电重启。\n"
+                "  1.1.6 引入运动安全包络:在此之前 MIT 命令路径上没有任何\n"
+                "  堵转保护,夹爪被挡住时力矩只受电机 0x700B 限制,24V 下实测\n"
+                "  会拉垮母线、松手掉件、整机掉电重启。\n"
                 "\n"
-                "  Versions before 1.1.6 have no stall protection at all on\n"
-                "  the MIT path. A blocked jaw browns out the board on 24 V.\n"
+                "  1.2.5 把标定写入的闭合零位移到机械止点本身(此前 1.2.3 及\n"
+                "  更早内缩 20mrad、1.2.4 内缩 5mrad)。本 SDK 的闭合端预压\n"
+                "  (close_preload_nm)是按「归一化 0.0 就是止点」设计的;在更旧\n"
+                "  的固件上它会把爪子压过位置映射所说的完全闭合点 —— 力是有界的,\n"
+                "  但归一化刻度在闭合端不再表示它字面的意思。\n"
+                "\n"
+                "  Before 1.1.6: no stall protection on the MIT path at all.\n"
+                "  Before 1.2.5: the calibrated closed zero sat short of the\n"
+                "  mechanical stop, so this SDK's closed-endpoint preload\n"
+                "  presses past what normalized 0.0 claims to mean.\n"
                 "----------------------------------------------------------\n"
                 "  升级 / upgrade:\n"
                 "    python python/examples/ota_update.py slave\n"
@@ -136,9 +166,10 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         }
         if (!known) {
             logger()->warn(
-                "FollowerGripper: 读不到固件版本,无法确认是否 >= 1.1.6。"
-                "若设备固件低于 1.1.6,MIT 路径上没有任何堵转保护。"
-                " (could not read firmware version; 1.1.6 or newer is required)");
+                "FollowerGripper: 读不到固件版本,无法确认是否 >= 1.2.5。"
+                "低于 1.1.6 时 MIT 路径上没有堵转保护;低于 1.2.5 时闭合端"
+                "预压会压过归一化 0.0 所表示的位置。"
+                " (could not read firmware version; 1.2.5 or newer is required)");
         }
     }
 

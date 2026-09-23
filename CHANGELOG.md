@@ -67,6 +67,29 @@ longer be left behind).
 
 ### Changed
 
+- **BREAKING — `FollowerGripper` now refuses firmware below 1.2.5** (was 1.1.6).
+  It throws on open; `Config::allow_outdated_firmware` still opens the device
+  so it can be inspected before upgrading, and OTA is unaffected because
+  `ota_update.py` goes through `LeaderGripper`, which is not gated.
+
+  Raising it is about the host and the firmware disagreeing, not about the
+  firmware alone. Auto-calibration used to write the closed zero with an inset
+  — 20 mrad through 1.2.3, 5 mrad in 1.2.4 — so normalized 0.0 sat short of the
+  mechanical stop. This release's closed-endpoint preload is built on 1.2.5's
+  semantics, that normalized 0.0 *is* the stop, and on older firmware it
+  presses the jaw past what the position map calls fully closed. The force
+  stays bounded (the firmware clamps the target to the calibrated range and the
+  torque to the envelope's `cont`), so this is not the brown-out class of
+  problem the 1.1.6 floor guards against. What breaks is the meaning of the
+  scale at the closed end: a position that reads 0.0 while the jaw is 20 mrad
+  tighter than 0.0 is supposed to be. Refusing beats warning there — a scale
+  that quietly means something else is worse to debug than a device that will
+  not open.
+
+  **The leader is deliberately still not gated.** `ota_update.py` opens every
+  gripper, followers included, through `LeaderGripper`; a floor there would
+  block the upgrade path for exactly the devices that need it.
+
 - **BREAKING — the shipped firmware images are now named with their version.**
 
   ```

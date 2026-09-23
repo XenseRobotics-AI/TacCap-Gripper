@@ -35,9 +35,18 @@ inline std::vector<uint8_t> pod_bytes(const void* p, std::size_t n) {
 // FollowerGripper's constructor and ForcePositionController::start() issue,
 // pushes motor-status DATA frames while "streaming", and records the MIT
 // impedance frames the controller submits.
+using xense::taccap::FollowerGripper;
+
 class FakeFollower {
 public:
-    FakeFollower(Pty& pty, uint8_t major = 1, uint8_t minor = 1, uint8_t patch = 6)
+    // 默认版本**从 SDK 的门槛常量派生**,不要写死。写死过一次:门槛从 1.1.6 抬到
+    // 1.2.5 时,这里还停在 1.1.6,于是 47 个用默认构造的测试全被自己的版本门拒掉,
+    // 失败信息指向控制器而不是指向版本。派生之后,抬门槛不会再打断这些测试 ——
+    // 而真正该检查门槛的用例本来就显式传版本。
+    FakeFollower(Pty& pty,
+                 uint8_t major = FollowerGripper::kMinFirmwareMajor,
+                 uint8_t minor = FollowerGripper::kMinFirmwareMinor,
+                 uint8_t patch = FollowerGripper::kMinFirmwarePatch)
         : pty_(pty), fw_major_(major), fw_minor_(minor), fw_patch_(patch) {
         status_.actual_pos = 0.60f;
         status_.control_mode = 0;

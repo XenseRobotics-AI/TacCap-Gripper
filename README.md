@@ -29,12 +29,33 @@ bilateral leader setups and on real follower grippers — including the V2.2
 follower diagnostics, the MIT force-position control path, and `ControlLoop`
 under a full production load (all cameras streaming, motor cycling).
 
-**Firmware minimums:** leader >= 1.2.0, follower >= 1.1.0. V2.2 follower
-diagnostics need follower >= 1.1.2; the V2.3 additions (`GetMotorSpec` 0x56,
-`GetHomeDiag` 0x57) need follower >= 1.2.3. These are floors, not exact
-matches — newer commands fail loudly with `ProtocolError(InvalidCmd)` rather
-than misbehaving, and payload length is never a version probe. Check what a
-device answers with `python python/examples/fisheye_cal.py show`.
+**Firmware minimums.** `FollowerGripper` **refuses to open a follower below
+1.2.5** — it throws rather than warns, and `Config::allow_outdated_firmware`
+is the escape hatch for inspecting a device before upgrading it. (An earlier
+version of this line said 1.1.0; the enforced floor has been 1.1.6 since the
+motion safety envelope landed, and 1.2.5 since the closed-endpoint preload.)
+
+Two reasons stack up to 1.2.5. Below **1.1.6** there is no stall protection at
+all on the MIT command path, so a blocked jaw is bounded only by the motor's
+0x700B ceiling and browns out the board on 24 V. Below **1.2.5**
+auto-calibration wrote the closed zero with an inset (20 mrad through 1.2.3,
+5 mrad in 1.2.4), while this SDK's closed-endpoint preload assumes normalized
+0.0 *is* the mechanical stop — on older firmware it presses past what the
+position map calls fully closed. That one is bounded, not dangerous, but a
+scale that quietly means something else is worse to debug than a refusal.
+
+**The leader is deliberately not gated.** `ota_update.py` opens every gripper
+— followers included — through `LeaderGripper`, so a floor there would block
+the upgrade path for exactly the devices that need it. Leader >= 1.2.0 is what
+the V2.1 command set needs (`EncoderMaxCal` 0x2C, i.e. normalized leader
+position); it is a capability floor, not an enforced one.
+
+Command-level floors are advisory in the same way: V2.2 follower diagnostics
+need follower >= 1.1.2, the V2.3 additions (`GetMotorSpec` 0x56, `GetHomeDiag`
+0x57) need >= 1.2.3. Newer commands fail loudly with
+`ProtocolError(InvalidCmd)` rather than misbehaving, and payload length is
+never a version probe. Check what a device answers with
+`python python/examples/fisheye_cal.py show`.
 
 **Firmware 1.2.3 aligned the two roles onto one version number; 1.2.5 made it
 structural.** They build from one tree and share `protocol_handler.c`, so a

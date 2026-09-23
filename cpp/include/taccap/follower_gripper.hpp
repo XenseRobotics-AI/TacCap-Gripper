@@ -117,8 +117,8 @@ public:
     // Minimum follower firmware this SDK will drive. See
     // Config::allow_outdated_firmware for why it is a hard requirement.
     static constexpr uint8_t kMinFirmwareMajor = 1;
-    static constexpr uint8_t kMinFirmwareMinor = 1;
-    static constexpr uint8_t kMinFirmwarePatch = 6;
+    static constexpr uint8_t kMinFirmwareMinor = 2;
+    static constexpr uint8_t kMinFirmwarePatch = 5;
 
     explicit FollowerGripper(const Config& cfg);
     ~FollowerGripper();
