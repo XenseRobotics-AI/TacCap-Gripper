@@ -156,8 +156,20 @@ void bind_gripper_types(py::module_& m) {
                        "Torque, N*m, the closing stroke stalls at; that pose becomes zero.")
         .def_readwrite("open_stall_torque_nm",  &protocol::GripperAutoCalConfig::open_stall_torque_nm,
                        "Torque, N*m, the opening stroke stalls at; that span becomes max_open.")
-        .def_readwrite("close_speed_rad_s",    &protocol::GripperAutoCalConfig::close_speed_rad_s)
-        .def_readwrite("open_speed_rad_s",     &protocol::GripperAutoCalConfig::open_speed_rad_s)
+        .def_readwrite("close_speed_rad_s",    &protocol::GripperAutoCalConfig::close_speed_rad_s,
+                       "Auto-cal close-to-stall sweep speed, rad/s. A REAL velocity command to\n"
+                       "the motor, paired with close_stall_torque_nm -- not a setpoint ramp like\n"
+                       "ForcePositionConfig.close_speed_radps, and not used by any runtime\n"
+                       "control path.\n\n"
+                       "It is the SLOW/final-approach speed: while the jaw is still more than\n"
+                       "0.32 rad out AND a previous calibration survives in flash, the firmware\n"
+                       "substitutes a fixed 2.0 rad/s instead. With no calibration history it\n"
+                       "applies for the whole sweep. Firmware clamps it to 0.02..3.0 rad/s on\n"
+                       "both write and load; default 0.25.")
+        .def_readwrite("open_speed_rad_s",     &protocol::GripperAutoCalConfig::open_speed_rad_s,
+                       "Auto-cal open-to-stall sweep speed, rad/s, paired with\n"
+                       "open_stall_torque_nm. Same nature and the same 0.02..3.0 clamp as\n"
+                       "close_speed_rad_s; default 0.35.")
         .def_readwrite("stall_hold_ms",        &protocol::GripperAutoCalConfig::stall_hold_ms,
                        "How long a stall must hold before it counts, ms.")
         .def_readwrite("startup_delay_ms",     &protocol::GripperAutoCalConfig::startup_delay_ms,

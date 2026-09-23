@@ -298,10 +298,20 @@ public:
     // narrower: protocol_check_motor_param_access_allowed() refuses during OTA,
     // and returns SysBusy while the firmware's control task is running.
     //
-    // NOT VERIFIED: that the motor actually answers under MIT once the firmware
-    // forwards the request. A silent motor comes back as ProtocolError(Timeout)
-    // rather than InvalidParam, which is the diagnostic to look for. Do not
-    // build a startup check on either outcome without measuring it first.
+    // MEASURED 2026-09-23, and the answer is no: the motor does not reply under
+    // MIT even though the firmware now forwards the request. On TCGU01A28Z0015s,
+    // firmware 1.2.6, get_protocol() == Mit, control loop stopped, indices
+    // 0x701C / 0x7017 / 0x7028 / 0x700B all came back
+    // ProtocolError(Timeout) -- not InvalidParam. Timeout is the proof the
+    // forward happened: the old blanket gate answered InvalidParam up front,
+    // before any CAN traffic.
+    //
+    // So the practical rule is unchanged from before the firmware change -- no
+    // motor parameters under MIT -- but the reason moved from the firmware to
+    // the motor, and so did the error code. Still untested: whether the same
+    // indices answer under the private protocol on this unit, which would pin
+    // the cause to MIT rather than to the motor's firmware; that costs a 24 V
+    // power cycle each way.
     //
     // For the 0x700B limit use set_startup_limit_torque(), which is applied at
     // boot and needs no parameter access at all.
