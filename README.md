@@ -111,6 +111,9 @@ python python/examples/ota_update.py slave left    # role selector picks the ima
 python python/examples/ota_update.py --all         # every attached gripper
 ```
 
+Flashing the wrong role's image bricks the MCU and needs an SWD probe to
+recover, so check the SN before you flash.
+
 **Power-cycle after any flash.** Unplug **both the USB cable and the power
 cable, at the same time**, then reconnect — they feed different domains, so
 pulling only one leaves the other half of the board energised and does not reset
