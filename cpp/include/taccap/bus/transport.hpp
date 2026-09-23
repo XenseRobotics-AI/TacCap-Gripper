@@ -167,7 +167,8 @@ public:
         //           when host->MCU traffic overlaps its own send. The short
         //           payload fails the LEN check before CRC is ever reached,
         //           which is why crc_errors stays at zero. Nothing on the host
-        //           is broken; stop overlapping the writes (see ControlLoop).
+        //           is broken; stop overlapping the writes (submit on the
+        //           status-frame doorbell, as both controllers do).
         //   queue_dropped > 0              -> bytes arrived fine, but the
         //       subscriber could not keep up and old frames were evicted.
         //   both zero, rate still low      -> the firmware really is sending

@@ -142,7 +142,7 @@ TEST(TransportConcurrentWrite, LargeFramesSurviveConcurrentWriters) {
     expect_intact(hammer(kWriters, kPerWriter, 1030), "large/1030B");
 }
 
-// The realtime case: ControlLoop-sized MIT frames (20 B payload) racing each
+// The realtime case: controller-sized MIT frames (20 B payload) racing each
 // other. Small writes are atomic while the buffer has room, so this only
 // splices once the link backs up -- exactly the condition a busy bus creates.
 TEST(TransportConcurrentWrite, SmallFramesSurviveConcurrentWriters) {

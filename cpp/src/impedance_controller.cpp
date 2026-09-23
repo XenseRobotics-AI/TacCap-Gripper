@@ -426,7 +426,8 @@ void ImpedanceController::stop() {
     // Leave the motor DISABLED, not merely commanded to zero -- a zero-stiffness
     // frame de-energizes nothing, and the firmware's host watchdog then fires
     // T1 within 300 ms and switches the run mode out from under the next
-    // session. Full rationale and the measurement in ControlLoop::stop().
+    // session. Full rationale and the measurement in
+    // ForcePositionController::stop().
     try { g_.motor().disable(); }
     catch (const std::exception& e) {
         logger()->warn("ImpedanceController: motor disable on stop failed: {}", e.what());

@@ -3,10 +3,9 @@
 // ImpedancePolicy — the impedance control law and its three guards, driven
 // without a gripper.
 //
-// ControlLoop implements the same law but keeps it inline in its status
-// callback, so the only way to reach it is through a pty and a thread. Pulling
-// it into a pure state machine is most of the point of ImpedanceController:
-// these cases step the guards frame by frame, which is how you pin behaviour
+// Keeping the law in a pure state machine, rather than inline in a status
+// callback reachable only through a pty and a thread, is most of the point of
+// ImpedanceController: these cases step the guards frame by frame, which is how you pin behaviour
 // like "a blocked jaw must still be commanding the full budget 200 frames
 // later" -- a contract a pty test can only sample, not step.
 

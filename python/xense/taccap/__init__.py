@@ -84,10 +84,7 @@ FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
 FirmwareVersion = _taccap_native.FirmwareVersion
 Calibration = _taccap_native.Calibration              # V2.0/V2.1 flash-persisted cal records
-GripperObservation = _taccap_native.GripperObservation  # ControlLoop latest obs
-ControlLoop = _taccap_native.ControlLoop              # fixed-rate send/recv loop
-SubmitPhase = _taccap_native.SubmitPhase              # ControlLoop send phasing
-StallAction = _taccap_native.StallAction              # ControlLoop blocked-jaw guard
+GripperObservation = _taccap_native.GripperObservation  # controller latest obs
 ImpedanceState = _taccap_native.ImpedanceState        # supervised impedance FSM
 ImpedanceConfig = _taccap_native.ImpedanceConfig
 ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
@@ -206,9 +203,6 @@ __all__ = [
     "FirmwareVersion",
     "Calibration",
     "GripperObservation",
-    "ControlLoop",
-    "SubmitPhase",
-    "StallAction",
     "ImpedanceState",
     "ImpedanceConfig",
     "ImpedanceSnapshot",

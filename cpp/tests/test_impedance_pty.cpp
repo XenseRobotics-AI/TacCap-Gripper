@@ -121,8 +121,8 @@ TEST(ImpedanceControllerPty, StaleStreamInvalidatesObservationEvenWhenAlreadyFau
 }
 
 TEST(ImpedanceControllerPty, CeilingPinsTheOutputAtTheBudget) {
-    // The reason this class exists rather than ControlLoop's independent
-    // booleans: one lock, one consistent view.
+    // One lock, one consistent view: state, commanded torque and the cap
+    // counter all come from the same snapshot().
     Pty pty;
     ASSERT_GE(pty.master(), 0);
     FakeFollower fw(pty);

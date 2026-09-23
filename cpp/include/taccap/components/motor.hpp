@@ -127,10 +127,10 @@ public:
     // you take per second. Submitting faster than the status stream also buys
     // nothing on the observation side, since motor status is capped at 100Hz.
     //
-    // Prefer ControlLoop with SubmitPhase::StreamLocked, which submits once per
-    // received status frame and therefore never overlaps a transmission —
-    // measured at zero lost frames across 8 runs while sending MORE frames than
-    // the free-running comparison. Reach for raw submit() at your own cadence
+    // Prefer ImpedanceController or ForcePositionController, which submit once
+    // per received status frame and therefore never overlap a transmission —
+    // stream-locked submission measured at zero lost frames across 8 runs while
+    // sending MORE frames than the free-running comparison. Reach for raw submit() at your own cadence
     // only when you cannot ride the status stream.
     //
     // Separately: sustained input above a few hundred Hz used to livelock the

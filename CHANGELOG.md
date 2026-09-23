@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`ControlLoop`, `SubmitPhase` and `StallAction` are gone** (C++ and Python).
+  Use `ImpedanceController` to follow a position and `ForcePositionController`
+  to grasp. `GripperObservation` stays; it moved to
+  `taccap/gripper_observation.hpp`.
+
+  `ControlLoop` carried a second copy of the impedance law, and that copy had
+  already drifted from `ImpedanceController`'s: a 1.5 N·m budget against 1.1,
+  and the stall guard below that collapses the grip. Nothing in the SDK
+  instantiated it and no shipped recipe selected it. What it offered that
+  `ImpedanceController` does not was `SubmitPhase::FreeRunning` — measured to
+  cost status frames — and runtime gain changes, which `ImpedanceController`
+  has as `set_gains()`.
+
+  Migration: `ControlLoop(g, kp=…, kd=…)` becomes
+  `ImpedanceController(g, cfg)` with the gains on an `ImpedanceConfig`;
+  `loop.observation()` becomes `c.snapshot().observation`; `stalled` /
+  `stall_trips` have no replacement (see next entry).
+
+### Changed
+
+- **`ImpedanceController` has no stall guard, and the budget defaults to
+  1.1 N·m.** The guard clamped the effective target to wherever the jaw had
+  stopped, which drove the position error — and with it the torque — to zero:
+  measured, a grip let go at 0.35 N·m 60 ms after contact. A blocked jaw now
+  saturates the error clamp at `max_position_torque_nm` and holds there, which
+  is the grip. `ImpedanceState.STALLED` and the snapshot's `stalled` /
+  `stall_trips` are removed. With nothing timing the hold out, the budget has to
+  be a torque the motor can sustain indefinitely, so it drops from 1.5 to the
+  EL05's 1.1 N·m continuous stall rating.
+
+  `TORQUE_CAPPED` now holds the budget rather than `rated_torque_nm`, and
+  `ImpedanceConfig` is rejected unless
+  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`, so the
+  ceiling stays a backstop that normal operation never reaches.
+
 ## [0.2.1] - 2026-09-22
 
 Paired with firmware **1.2.5** (one version for both roles — 1.2.5 collapses the

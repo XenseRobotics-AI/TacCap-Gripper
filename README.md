@@ -26,8 +26,8 @@ access, and neither is required to use this SDK.
 
 **v0.2.1.** Command set **V2.3**, wire framing **V1.8**. Hardware-validated on
 bilateral leader setups and on real follower grippers — including the V2.2
-follower diagnostics, the MIT force-position control path, and `ControlLoop`
-under a full production load (all cameras streaming, motor cycling).
+follower diagnostics, the MIT force-position control path, and stream-locked
+submission under a full production load (all cameras streaming, motor cycling).
 
 **Firmware minimums.** `FollowerGripper` **refuses to open a follower below
 1.2.5** — it throws rather than warns, and `Config::allow_outdated_firmware`
@@ -91,10 +91,12 @@ follower or leader older than 1.2.3 you get the old, ambiguous form.
   subscribers, byte-stuffed framing.
 - **Follower motor control (MIT force-position).** `Motor` enable / disable /
   clear-fault + four control modes. Blocking-ACK `set_*` and no-ACK `submit_*`.
-- **`ControlLoop`** — the recommended way to drive a follower. Submits the
-  latest normalized target **in phase with the motor-status stream** and keeps
-  a thread-safe observation fresh, so your policy only touches
-  `set_target(0..1)` and `observation()`, both non-blocking. See
+- **`ImpedanceController`** — position tracking for a follower (teleoperation,
+  a leader-follower relay). Submits the latest normalized target **in phase
+  with the motor-status stream**, clamps the position error so the command
+  never exceeds `max_position_torque_nm`, and reports state, observation and
+  command through one `snapshot()`. Your policy only touches `set_target(0..1)`
+  and `snapshot()`, both non-blocking. See
   [Follower gripper control](#follower-gripper-control-mit-force-position) for
   why the phase matters.
 - **`ForcePositionController`** — grasping for a follower. One bounded-torque
@@ -323,12 +325,12 @@ g.motor.enable()                 # required before anything moves
 
 # Motion goes through a controller. The raw `submit_*` primitives are exposed
 # too, but they write a control frame straight to the wire with no error clamp
-# and no stall guard — the firmware envelope is then your only protection.
-loop = t.ControlLoop(g, kp=20.0, kd=1.0)
-loop.start()                     # seeds the target with the current position
-loop.set_target(0.35)            # normalized [0,1], 0 = closed
-obs = loop.observation()         # position/velocity/torque/temp, non-blocking
-loop.stop()
+# and no torque ceiling — the firmware envelope is then your only protection.
+c = t.ImpedanceController(g)     # defaults are the tuned values
+c.start()                        # seeds the target with the current position
+c.set_target(0.35)               # normalized [0,1], 0 = closed
+s = c.snapshot()                 # state + observation + command, non-blocking
+c.stop()
 ```
 
 **Normalized position** — work in `[0, 1]` (0 = closed, 1 = open) instead of raw
@@ -342,23 +344,29 @@ g.set_position(0.5, kp_nm_per_rad=8, kd_nm_s_per_rad=1)   # 50% open (no-ACK, re
 g.pos_to_rad(0.5), g.rad_to_pos(-0.59)    # explicit conversions
 ```
 
-**`ControlLoop`** — the recommended way to drive a follower. A C++ background
-thread submits the latest normalized target **in phase with the motor-status
-stream** while that stream keeps a thread-safe observation fresh. Your policy
-only touches `set_target(0..1)` and `observation()`, both non-blocking (no GIL
-fights, no status polling).
+**`ImpedanceController`** — use this one to **follow a position**. A C++
+background thread submits the latest normalized target **in phase with the
+motor-status stream** while that stream keeps a thread-safe observation fresh.
+Your policy only touches `set_target(0..1)` and `snapshot()`, both non-blocking
+(no GIL fights, no status polling).
 
 ```python
-loop = t.ControlLoop(g, kp=20, kd=1)        # SubmitPhase.STREAM_LOCKED by default
-loop.start()                              # seeds target = current pos (no jump)
+c = t.ImpedanceController(g)              # t.ImpedanceConfig() to tune kp/kd/budget
+c.start()                                 # seeds target = current pos (no jump)
 try:
     while running:
-        obs = loop.observation()          # .position [0,1], .velocity, .torque, .age_ms
-        loop.set_target(policy(obs))      # your action, 0..1
+        s = c.snapshot()                  # one lock, one consistent view
+        if s.state == t.ImpedanceState.FAULT:
+            break                         # s.fault_reason says why; c.reset() resumes
+        obs = s.observation               # .position [0,1], .velocity, .torque, .age_ms
+        c.set_target(policy(obs))         # your action, 0..1
 finally:
-    loop.stop()
-g.motor.disable()
+    c.stop()                              # zero torque, then leaves the motor disabled
 ```
+
+A blocked jaw is not a fault here: the error clamp saturates at
+`max_position_torque_nm` (default 1.1 Nm, the EL05's continuous stall rating)
+and holds there. Contact needs no detecting; saturation is what it looks like.
 
 > **Why the phase matters, and why 500 Hz is not a budget.** The firmware
 > applies the latest target at 500 Hz, but that says nothing about what
@@ -369,13 +377,15 @@ g.motor.disable()
 > lands, not how many you send: 250 Hz lost 154 status frames on one 60 s run
 > and none on the next.
 >
-> `SubmitPhase.STREAM_LOCKED` removes the collision instead of making it rarer —
-> one submit per received status frame, landing in the ~9.86 ms the MCU is known
-> to be idle. Measured with every camera on both grippers streaming and the
-> motor cycling: **6000 submits : 6000 frames : 0 missing**, four runs, both
-> units. Free-running at 100 Hz on the same bench lost 156–308 frames per run.
+> Both controllers remove the collision instead of making it rarer — one submit
+> per received status frame, landing in the ~9.86 ms the MCU is known to be
+> idle. Measured with every camera on both grippers streaming and the motor
+> cycling: **6000 submits : 6000 frames : 0 missing**, four runs, both units
+> (taken on the since-removed `ControlLoop`, which used the same stream-locked
+> discipline). Free-running at 100 Hz on the same bench lost 156–308 frames per
+> run.
 >
-> It does not protect ACK responses — the loop knows when the MCU emits
+> It does not protect ACK responses — a controller knows when the MCU emits
 > telemetry, not when it is answering somebody's command. Those survive because
 > commands retry, at ~31 ms of latency each.
 >
@@ -383,10 +393,11 @@ g.motor.disable()
 > Read observations from the **stream**, not by polling `read_status()` —
 > polling `GetMotorStatus` above ~100 Hz can stall the firmware's refresh.
 
-**`ForcePositionController`** — use this one to **grasp something**. `ControlLoop`
-is position control: against a hard object it keeps adding `kp × error` and there
-is no grip force you set. This one clamps the command at a force you choose, so a
-blocked jaw settles at exactly that force and holds.
+**`ForcePositionController`** — use this one to **grasp something**.
+`ImpedanceController` also settles on a blocked jaw, but at its error budget, a
+config-time constant tuned for tracking. This one takes the grip force with each
+command (`set_target(p, grasp_torque_nm)`), ramps the travel speed, and reports
+`holding`, so a blocked jaw settles at exactly the force you asked for.
 
 ```python
 fp = t.ForcePositionController(g)         # defaults are the tuned values
@@ -480,7 +491,7 @@ OTA 本身走 `LeaderGripper`(角色无关),**不受这个检查影响**,升级�
 ### 两个控制器的示例
 
 ```bash
-# 阻抗控制 —— ControlLoop:set_target(0..1) + observation()
+# 阻抗控制 —— ImpedanceController:set_target(0..1) + snapshot()
 python python/examples/impedance_control.py --side right
 
 # 夹持 —— ForcePositionController:同样的两个调用,但命令被钳在 grasp_torque_nm

@@ -32,7 +32,6 @@
 #include <taccap/components/sensor_errors.hpp>
 #include <taccap/components/motor.hpp>
 #include <taccap/components/led.hpp>
-#include <taccap/control_loop.hpp>
 #include <taccap/force_position_controller.hpp>
 #include <taccap/impedance_controller.hpp>
 #include <taccap/follower_gripper.hpp>

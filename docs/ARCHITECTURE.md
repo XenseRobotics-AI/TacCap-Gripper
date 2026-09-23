@@ -75,7 +75,7 @@ for the single-threaded OTA flow, which is the only user.
 │                          Wrist camera is opt-in (open_cameras).        │
 │                                                                        │
 │   FollowerGripper        same + Motor + Led; normalized position       │
-│                          (0..1) and ControlLoop for realtime control.  │
+│                          (0..1); Impedance/ForcePositionController.    │
 └────────────────────────────┬───────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼───────────────────────────────────────────┐
@@ -195,7 +195,9 @@ taccap-gripper/
 │   │   │   ├── key.hpp / .cpp                    L3  on-gripper button
 │   │   │   └── sensor_errors.hpp / .cpp          L3  decoded fault words
 │   │   ├── gripper_position.hpp                  L4  normalized [0,1] map
-│   │   ├── control_loop.hpp                      L4  background resubmit
+│   │   ├── gripper_observation.hpp               L4  controller observation
+│   │   ├── impedance_controller.hpp              L4  position tracking
+│   │   ├── force_position_controller.hpp         L4  bounded-force grasp
 │   │   ├── ota.hpp                               L4  firmware update
 │   │   ├── discovery.hpp                         L4 (helper) zero-config
 │   │   ├── leader_gripper.hpp                    L4  aggregate object
@@ -367,18 +369,20 @@ does.
 ```
   set_impedance(pos,kp,kd,ff)  --ACK-->  Cmd::MotorImpedanceCtrl (blocking)
   submit_impedance(...)        --no ACK-> Cmd::MotorImpedanceCtrl (realtime)
-        (C++ only -- not exposed to Python; use ControlLoop /
+        (C++ only -- not exposed to Python; use ImpedanceController /
          ForcePositionController, which call these internally)
         │                                   firmware runs a 500 Hz control task
         │                                   consuming the latest submitted target
   FollowerGripper.set_position(0..1) --> GripperPosition -> raw rad -> submit
-  ControlLoop (bg thread @ hz) -------->  submit latest target; motor-status
-                                          STREAM -> thread-safe GripperObservation
-  ForcePositionController ------------>  velocity-damped close
-                                          -> contact (torque saturated AND
-                                             motion arrested, per firmware
-                                             task_canmotor_is_stalled)
-                                          -> kp=kd=0 torque hold
+  ImpedanceController (bg thread) ---->  submit latest target on the status-
+                                          frame doorbell; error clamped at
+                                          max_position_torque_nm; torque
+                                          ceiling on MEASURED torque;
+                                          snapshot() under one lock
+  ForcePositionController ------------>  same doorbell; ramped target, command
+                                          clamped at grasp_torque_nm -- a
+                                          blocked jaw settles at that force
+                                          (saturation is contact)
                          (motion <= 6 Nm peak; force hold <= 1.8 Nm rated)
 ```
 
@@ -442,12 +446,12 @@ g->stop_streaming();
 //   auto g = std::make_unique<LeaderGripper>(cfg);
 //   g->wrist_camera().start(...);
 
-// Follower control (see follower_gripper.hpp / control_loop.hpp):
+// Follower control (see follower_gripper.hpp / impedance_controller.hpp):
 //   auto f = xense::taccap::FollowerGripper::open();
 //   f->motor().enable();
 //   f->set_position(/*0..1*/ 0.5f, /*kp=*/8, /*kd=*/1);   // normalized, no-ACK
-//   xense::taccap::ControlLoop loop(*f, {.hz=200, .kp=8, .kd=1});
-//   loop.start(); loop.set_target(0.3f); auto obs = loop.observation();
+//   xense::taccap::ImpedanceController c(*f);
+//   c.start(); c.set_target(0.3f); auto s = c.snapshot();
 ```
 
 ### Python
@@ -481,7 +485,7 @@ with LeaderGripper.open() as g:          # MCU-only; cameras off by default
 | `Transport::reader_loop_`       | one per Transport          | open()→stop()                   |
 | `Transport::dispatch_loop_`     | one per Transport          | open()→stop()                   |
 | `Camera::capture_loop_`         | one per Camera::start()    | start()→stop()                  |
-| `ControlLoop` resubmit thread   | one per ControlLoop        | start()→stop()                  |
+| controller run thread           | one per Impedance/ForcePositionController | start()→stop()   |
 
 Transport subscriber callbacks fire on the **dispatcher**, never on the reader;
 they are serialised with each other and delivered in frame order, and
@@ -537,11 +541,11 @@ will be implemented later:
 | Dataset recording (hdf5 / mcap, time alignment, episode markers) | a separate tool / script repo         |
 | ROS 2 node + hardware_interface package | `taccap_gripper_ros2` (separate repo) |
 | lerobot integration       | `lerobot-xense`, where TacCap is a **gripper backend** (`type: taccap_follower`) that any arm can mount — not a Robot class of its own |
-| Master→slave follow / teleop loop, grasp state machine (contact/latch), episode orchestration | downstream apps / `taccap_gripper_ros2` — this SDK gives the realtime primitives (`ControlLoop`, `submit_*`, normalized position), not the policy |
+| Master→slave follow / teleop loop, grasp state machine (contact/latch), episode orchestration | downstream apps / `taccap_gripper_ros2` — this SDK gives the realtime primitives (`ImpedanceController`, `ForcePositionController`, `submit_*`, normalized position), not the policy |
 | Higher-level orchestration (episode controller, replay, visualisation) | downstream applications |
 
 The follower motor stack **is** in this repo now (`Motor`, `FollowerGripper`,
-`GripperPosition`, `ControlLoop`, `Led`) and hardware-validated — what stays
+`GripperPosition`, `ImpedanceController`, `ForcePositionController`, `Led`) and hardware-validated — what stays
 out is the *policy* layer above the primitives.
 
 Keeping this SDK narrow lets each downstream consumer pick exactly the

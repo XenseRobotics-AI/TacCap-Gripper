@@ -122,12 +122,10 @@ class RawKeyboard:
 
 
 class ImpedanceBackend:
-    """ImpedanceController:误差钳位 + 力矩天花板 + 堵转保持,带状态机。
+    """ImpedanceController:误差钳位 + 力矩天花板,带状态机。
 
-    走 ImpedanceController 而不是 ControlLoop:后者把 stalled / torque_capped
-    报成两个各自加锁的独立布尔,轮询两次可能读到从未同时存在过的组合,而且
-    submit 失败时循环直接退出、不留 fault 原因。这里所有字段来自同一个
-    snapshot(),同一把锁。ControlLoop 仍在,做底层用。
+    被挡住时误差钳位饱和在 max_position_torque_nm 上并保持,那就是夹持力;
+    天花板只兜底实测力矩。所有字段来自同一个 snapshot(),同一把锁。
     """
 
     label = "IMPEDANCE"

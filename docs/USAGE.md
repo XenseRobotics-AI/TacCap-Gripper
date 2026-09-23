@@ -169,12 +169,12 @@ cfg = t.ImpedanceConfig()
 cfg.kp = 20.0                      # 刚度 Nm/rad:位置误差换成力矩的比例,手感硬不硬
 cfg.kd = 1.0                       # 阻尼 Nm·s/rad:抑振,并决定接近速度(见下)
 cfg.feedforward_torque = 0.0       # 恒定前馈 Nm,叠在 PD 上。抵消重力/预载用,平时 0
-cfg.max_position_torque_nm = 1.5   # 误差钳位 Nm(主保护):命令目标限制在实测位置
-                                   #   ±(1.5/kp)=0.075 rad 内,并把接近速度定在
-                                   #   约 1.5/kd = 1.5 rad/s
-cfg.rated_torque_nm = 1.8          # 力矩天花板 Nm(硬底线),作用在“实测”力矩上,不是命令值。
-                                   #   顶住后改发 kp=kd=0 的纯前馈帧,力矩被钉死。
-                                   #   上限是额定 1.8 而非峰值 6.0:这个保持无限期
+cfg.max_position_torque_nm = 1.1   # 误差钳位 Nm(就是保护):命令目标限制在实测位置
+                                   #   ±(1.1/kp)=0.055 rad 内,并把接近速度定在
+                                   #   约 1.1/kd = 1.1 rad/s。被挡住时饱和在这里并保持
+cfg.rated_torque_nm = 1.8          # 力矩天花板 Nm(兜底),作用在“实测”力矩上,不是命令值。
+                                   #   顶住后改发 kp=kd=0 的纯前馈帧,钉在预算上。
+                                   #   须高于 max_position_torque_nm + |前馈|
 cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
 cfg.motor_stream_hz = 100          # 状态流速率 Hz;提交锁在这个相位,一帧一提交
 
@@ -202,8 +202,8 @@ finally:
 | `kp` | 20.0 Nm/rad | 刚度。位置误差换算成力矩的比例,"手感硬不硬" |
 | `kd` | 1.0 Nm·s/rad | 阻尼。抑制振荡,同时决定接近速度(见下) |
 | `feedforward_torque` | 0.0 Nm | 恒定前馈力矩,叠加在 PD 之上。抵消重力/预载用,平时留 0 |
-| `max_position_torque_nm` | 1.5 Nm | **误差钳位**,主保护。命令目标被限制在实测位置 ±(该值/`kp`) 内 |
-| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,硬底线。作用在**实测**力矩上,不是命令值 |
+| `max_position_torque_nm` | 1.1 Nm | **误差钳位**,就是保护。命令目标被限制在实测位置 ±(该值/`kp`) 内 |
+| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,兜底。作用在**实测**力矩上,不是命令值 |
 | `status_timeout_ms` | 350 ms | 状态流断这么久 → `FAULT` + 零力矩 + 观测置 invalid |
 | `motor_stream_hz` | 100 | 状态流速率。提交锁在这个相位上,一帧一提交 |
 
@@ -213,13 +213,17 @@ finally:
 **这两层保护是不同的东西,别混。**
 
 - `max_position_torque_nm` 钳的是**命令**:`kp × 误差` 不允许超过它。窗口是
-  `max_position_torque_nm / kp`,默认 1.5/20 = **0.075 rad**。它也顺带定死了
+  `max_position_torque_nm / kp`,默认 1.1/20 = **0.055 rad**。它也顺带定死了
   接近速度 —— 爪子一直加速到阻尼平衡住钳位后的力矩,约
-  `max_position_torque_nm / kd`,默认 **1.5 rad/s**。所以调 `kd` 会同时改手感
-  和接近速度。
+  `max_position_torque_nm / kd`,默认 **1.1 rad/s**。所以调 `kd` 会同时改手感
+  和接近速度。被挡住时命令饱和在这个值上**并一直保持**,那就是夹持力 —— 接触
+  不需要检测,饱和本身就是接触。默认 1.1 是 EL05 的持续堵转额定,因为这个保持
+  没有任何东西给它计时。
 - `rated_torque_nm` 看的是**电机实际发出来的**力矩(由电流推算)。压住这个值
   够久之后,控制器改发 `kp=kd=0` 的纯前馈帧:位置误差在结构上再也加不进输出,
-  力矩被**钉死**在天花板上,而不是"估计不超过"。
+  力矩被**钉死**在预算 `max_position_torque_nm` 上(预算为 0 时才钉在天花板上),
+  而不是"估计不超过"。它是兜底,正常工作到不了:配置校验要求
+  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`。
 - 为什么两层都要:钳位管的是命令值,而 1.1.5 实测堵转时反馈只有命令的约 0.59
   —— 那个比例是一台机、一个温度、一个负载测出来的。**天花板不关心这个比例。**
 
@@ -230,35 +234,25 @@ finally:
 
 #### 状态机
 
-`IDLE` → `TRACKING` → `STALLED` / `TORQUE_CAPPED` → `FAULT`,优先级
-**`FAULT` > `TORQUE_CAPPED` > `STALLED` > `TRACKING`**。
+`IDLE` → `TRACKING` → `TORQUE_CAPPED` → `FAULT`,优先级
+**`FAULT` > `TORQUE_CAPPED` > `TRACKING`**。
 
 | 状态 | 含义 |
 |---|---|
-| `TRACKING` | 正常跟随 |
-| `STALLED` | 堵转确认,有效目标被钳在爪子停住的位置,`kp × 误差` 不再增长。反向下发目标即释放 |
+| `TRACKING` | 正常跟随。被挡住、误差钳位饱和在预算上,也还是这个状态 |
 | `TORQUE_CAPPED` | 实测力矩顶到天花板,正在发纯前馈帧 |
 | `FAULT` | 状态流断 / 电机故障位 / 提交失败。零力矩,需 `reset()` |
 
-`STALLED` 和 `TORQUE_CAPPED` 可以同时成立(`state` 报优先级高的那个),所以
-`snapshot()` 另外给了 `stalled` / `torque_capped` 两个布尔和各自的计数
-`stall_trips` / `torque_caps` —— 诊断卡住的爪子时两个都要看。
+**没有 `STALLED`。** 失速守卫已删除:它把有效目标钳到爪子停住的位置,误差归零,
+力矩随之塌掉 —— 实测接触后 60 ms 在 0.35 Nm 松手。要判断是不是被挡住,看
+`snapshot().commanded_torque_nm` 有没有顶到 `max_position_torque_nm`
+(`impedance_control.py` 就是这么查的)。
 
-**底层路径 —— `ControlLoop`**:同一套控制律,但没有状态机、没有一致快照、
-提交失败不留原因。它保留下来是因为还有 `SubmitPhase.FREE_RUNNING` 和运行期改
-增益这两件 `ImpedanceController` 不做的事。新代码用上面那个。
+`snapshot()` 另外给了 `torque_capped` 布尔和计数 `torque_caps`;运行期改增益用
+`set_gains(kp, kd, feedforward_torque)`。
 
-```python
-loop = t.ControlLoop(f, hz=100, kp=20, kd=1)    # 默认 SubmitPhase.STREAM_LOCKED
-loop.start()
-try:
-    while running:
-        obs = loop.observation()
-        loop.set_target(policy(obs))
-finally:
-    loop.stop()
-    f.motor.disable()
-```
+原先与它并列的底层 `ControlLoop` 已删除:它是同一套控制律的第二份拷贝,已经和
+这里漂移开(预算不同,还留着那个会塌力矩的失速守卫)。
 
 **硬物夹持/限力保持 —— `ForcePositionController`**:普通位置阻抗在物体挡住夹爪后
 会继续积累 `kp × 位置误差`,不适合把目标长期放在完全闭合点。力位混合控制器改用
@@ -325,7 +319,7 @@ command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 同一次实测:命令 0.359 N·m,反馈只饱和到 0.213 N·m(≈0.59)。所以任何"拿反馈力矩
 去比命令上限"的判据都是够不到的。现在的 `holding` 判据比的是**命令**用没用满预算
 (`commanded_torque_nm >= 95% × grasp_torque_nm`),而命令按构造一定够得到 ——
-和 `ImpedanceController` 的 `stall_clamped_` 用的是同一个道理。
+和 `impedance_control.py` 用命令力矩判断"被挡住"是同一个道理。
 
 控制器把力矩限制拆成两个职责明确的上限:
 
@@ -402,14 +396,14 @@ python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 或直接发送其他运动命令。
 
 **相位为什么重要**:主机帧只要在 MCU 发送期间落地,就会让它丢掉正在发的那一帧,
-整帧作废。所以碰撞取决于**落在什么时刻**,不是发了多少 —— `STREAM_LOCKED`
+整帧作废。所以碰撞取决于**落在什么时刻**,不是发了多少 —— 两个控制器都
 是每收到一帧状态提交一次,落在 MCU 已知空闲的窗口里,实测 6000 提交 : 6000 帧 :
 0 丢失;同一条件下自由跑 100 Hz 每轮丢 156–308 帧。别把 500 Hz 当预算花。
 
 **没有低层写法了。** 裸电机原语(`motor.set_impedance` / `submit_impedance` /
 `set_position` / `set_velocity` / `set_torque`,以及归一化包装
 `FollowerGripper.set_position`)**不再暴露给 Python**。它们都是把控制帧直接丢上
-总线:没有误差钳位、没有力矩天花板、没有堵转保护。走 `ImpedanceController` 或
+总线:没有误差钳位、没有力矩天花板。走 `ImpedanceController` 或
 `ForcePositionController`。C++ 侧保留这些方法,两个控制器内部在用。
 
 **反馈频率**:电机 `actual_*` 遥测只有 ~50–100 Hz,读观测请走

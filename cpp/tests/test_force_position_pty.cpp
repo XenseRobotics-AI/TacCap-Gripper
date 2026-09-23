@@ -31,7 +31,7 @@ using taccap_test::open_follower;
 using taccap_test::wait_for;
 
 // The fake firmware and its helpers live in fake_follower.hpp so the
-// ControlLoop tests can drive the same device.
+// ImpedanceController tests can drive the same device.
 
 TEST(ForcePositionControllerPty, StartSeedsPositionHoldAndSubmitsPerStatusFrame) {
     Pty pty;

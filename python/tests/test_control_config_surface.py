@@ -18,8 +18,6 @@ Run with:  pytest python/tests
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 import xense.taccap as t
@@ -149,7 +147,7 @@ IMPEDANCE_INTERNAL = [
     "stall_hold_ms",
     "stall_torque_floor_nm",
     # No submit phase and no `hz`: the controller is always stream-locked,
-    # which is the measured-correct choice. ControlLoop keeps free-running.
+    # which is the measured-correct choice.
     "phase",
     "hz",
     "stall_action",
@@ -189,8 +187,8 @@ def test_impedance_states_are_ordered_by_precedence():
 
 
 def test_impedance_controller_exposes_a_snapshot():
-    # The reason this class exists rather than ControlLoop's six independent
-    # properties: one call, one consistent view.
+    # One call, one consistent view -- not a property per guard, each read
+    # under its own lock.
     assert hasattr(t.ImpedanceController, "snapshot")
     for field in ("state", "observation", "target_position", "effective_position",
                   "commanded_torque_nm", "torque_capped",
@@ -198,82 +196,19 @@ def test_impedance_controller_exposes_a_snapshot():
         assert hasattr(t.ImpedanceSnapshot, field), field
 
 
-def test_control_loop_is_untouched_by_the_new_controller():
-    # ControlLoop stays as the low-level primitive; nothing about it moved.
-    assert hasattr(t.ControlLoop, "observation")
-    assert hasattr(t.ControlLoop, "stalled")
-    assert hasattr(t.ControlLoop, "torque_capped")
-    assert hasattr(t, "SubmitPhase") and hasattr(t, "StallAction")
-
-
-# ---- ControlLoop ---------------------------------------------------------
-
-# ControlLoop takes its config as constructor kwargs rather than a struct, so
-# the defaults live in the binding and are what Python actually gets.
-CONTROL_LOOP_KWARGS = {
-    "hz": 100,
-    "kp": 20.0,
-    "kd": 1.0,
-    "feedforward_torque": 0.0,
-    "motor_stream_hz": 100,
-    "max_position_torque_nm": 1.5,
-    "rated_torque_nm": 1.8,
-    "rated_hold_ms": 20,
-    "rated_release_rad": 0.05,
-    "stall_torque_nm": 1.2,
-    "stall_vel_radps": 0.15,
-    "stall_hold_ms": 60,
-    "status_timeout_ms": 350,
-}
-
-
-def _control_loop_signature() -> str:
-    doc = t.ControlLoop.__init__.__doc__ or ""
-    assert doc, "pybind11 signature docstring missing"
-    return doc
-
-
-def _control_loop_defaults() -> dict:
-    """Pull `name = <default>` out of the pybind11 signature.
-
-    The defaults are only observable here without a gripper. Matched by name
-    and `= value` rather than by the rendered type, because pybind11 spells
-    those differently across versions (`int` vs
-    `typing.SupportsInt | typing.SupportsIndex`) and a test that pins the type
-    rendering fails on an upgrade while saying nothing about the defaults.
-    """
-    out = {}
-    for name, raw in re.findall(r"(\w+): [^,()]*? = ([^,)]+)", _control_loop_signature()):
-        try:
-            out[name] = float(raw)
-        except ValueError:
-            out[name] = raw.strip()
-    return out
-
-
-@pytest.mark.parametrize("name,expected", sorted(CONTROL_LOOP_KWARGS.items()))
-def test_control_loop_default_reaches_python(name, expected):
-    defaults = _control_loop_defaults()
-    assert name in defaults, (
-        f"{name} is not a ControlLoop kwarg:\n{_control_loop_signature()}"
-    )
-    assert defaults[name] == pytest.approx(expected)
-
-
-def test_control_loop_exposes_the_stream_liveness_timeout():
-    # Losing the status stream freezes every guard in the loop rather than
-    # degrading them, so a caller must be able to see and set the timeout.
-    assert "status_timeout_ms" in _control_loop_defaults()
-
-
-def test_control_loop_reports_both_guards():
-    for prop in ("stalled", "stall_trips", "torque_capped", "torque_caps"):
-        assert isinstance(getattr(t.ControlLoop, prop), property), prop
+@pytest.mark.parametrize("name", ["ControlLoop", "SubmitPhase", "StallAction"])
+def test_control_loop_is_gone(name):
+    # ControlLoop carried a second copy of the impedance law that had drifted
+    # from ImpedanceController's (a different budget, and the stall guard that
+    # collapsed the grip). It was removed rather than kept in sync; this pins
+    # that it does not come back through a stale binding.
+    assert not hasattr(t, name)
+    assert not hasattr(t._taccap_native, name)
 
 
 def test_rated_torque_default_matches_the_force_position_hold_ceiling():
     # Both controllers hold indefinitely in the same way, so they cap it in the
     # same place. Nothing bounds how LONG either holds.
-    assert _control_loop_defaults()["rated_torque_nm"] == pytest.approx(
+    assert t.ImpedanceConfig().rated_torque_nm == pytest.approx(
         t.FORCE_POSITION_MAX_HOLD_TORQUE_NM
     )

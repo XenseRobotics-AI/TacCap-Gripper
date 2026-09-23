@@ -336,8 +336,8 @@ void bind_motor(py::module_& m) {
         .def("clear_fault", [](Motor& self) { py::gil_scoped_release g; self.clear_fault(); })
         // ---- 裸电机控制 --------------------------------------------------
         // 这些是**无 ACK 的直投命令**:帧丢上总线就返回,没有主机侧的误差钳位、
-        // 力矩天花板或堵转保护 —— 那些长在 ControlLoop / ImpedanceController /
-        // ForcePositionController 里,越过控制器就一个都拿不到。
+        // 力矩天花板 —— 那些长在 ImpedanceController / ForcePositionController
+        // 里,越过控制器就一个都拿不到。
         //
         // 它们曾经刻意不暴露给 Python。原因是真实事故:客户控制台用
         // submit_impedance() 在 kp=20 下顶住刚性物体,kp*误差 一路涨到电机的

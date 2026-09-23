@@ -9,20 +9,18 @@
 // a leader-follower relay) and ForcePositionController when it is "close until
 // you feel something, then hold that force".
 //
-// RELATIONSHIP TO ControlLoop. ControlLoop is the low-level loop and is not
-// going away: it still offers SubmitPhase::FreeRunning, raw gain changes at
-// runtime, and the smallest possible wrapper around submit_impedance(). This
-// class is the supervised version of the same control law. It gives up the
-// free-running phase (measured to cost status frames -- see ControlLoop's own
-// notes) in exchange for a state machine, a single consistent snapshot, an
-// explicit Fault with a reason, and reset().
+// Every submit happens on that doorbell, inside the window the MCU is known to
+// be idle. Submitting free-running, off phase with the status stream, was
+// measured to cost status frames: the MCU drops bytes out of the middle of a
+// frame it is transmitting when host->MCU traffic overlaps it.
 //
-// WHY A STATE MACHINE RATHER THAN TWO BOOLEANS. ControlLoop reports `stalled`
-// and `torque_capped` as independent flags read through independent locks, so a
-// caller polling both can observe a combination that never existed. Worse, it
-// has no notion of being faulted at all: a failed submit breaks its loop and
-// `running` goes false with nothing saying why. Here the guards are ordered
-// states and every field comes from one snapshot() under one lock.
+// WHY A STATE MACHINE RATHER THAN INDEPENDENT FLAGS. The low-level ControlLoop
+// this class replaced (since removed) reported its guards as independent flags
+// read through independent locks, so a caller polling two of them could observe
+// a combination that never existed, and a failed submit ended its loop with
+// nothing saying why. Here the guards are ordered states, a failure is an
+// explicit Fault with a reason, and every field comes from one snapshot() under
+// one lock.
 //
 // THE PROTECTIONS, in the order they take precedence:
 //
@@ -99,8 +97,10 @@
 
 #pragma once
 
-#include <taccap/control_loop.hpp>       // GripperObservation
+#include <taccap/components/motor.hpp>
 #include <taccap/follower_gripper.hpp>
+#include <taccap/gripper_observation.hpp>
+#include <taccap/gripper_position.hpp>
 
 #include <atomic>
 #include <chrono>

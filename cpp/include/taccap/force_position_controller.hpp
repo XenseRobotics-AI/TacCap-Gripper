@@ -55,8 +55,10 @@
 
 #pragma once
 
-#include <taccap/control_loop.hpp>
+#include <taccap/components/motor.hpp>
 #include <taccap/follower_gripper.hpp>
+#include <taccap/gripper_observation.hpp>
+#include <taccap/gripper_position.hpp>
 
 #include <atomic>
 #include <chrono>

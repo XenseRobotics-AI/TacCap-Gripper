@@ -739,10 +739,22 @@ void ForcePositionController::stop() {
         try { g_.motor().submit_impedance(last.actual_pos, 0.0f, 0.0f, 0.0f); }
         catch (...) {}
     }
-    // Leave the motor DISABLED, not merely commanded to zero -- a zero-stiffness
-    // frame de-energizes nothing, and the firmware's host watchdog then fires
-    // T1 within 300 ms and switches the run mode out from under the next
-    // session. Full rationale and the measurement in ControlLoop::stop().
+    // LEAVE THE MOTOR DISABLED, not merely commanded to zero.
+    //
+    // A zero-stiffness frame de-energizes nothing: the motor stays enabled and
+    // the firmware's host watchdog starts counting. At 300 ms with no target
+    // update it fires T1, which holds zero speed via the firmware's VELOCITY
+    // path -- and that switches the motor's run mode out from under whatever
+    // comes next. Measured: every controller shutdown produced stop_reason=6
+    // (HOST_TIMEOUT) within 500 ms, and a later session then commanded a motor
+    // whose run mode no longer matched what the MCU believed, so its frames
+    // were silently ignored while target_seq/applied_seq advanced normally and
+    // last_error stayed 0. The jaw simply did not move, and nothing in the
+    // stack said why.
+    //
+    // Disabling is also the honest end state: once this controller is stopped
+    // nothing is regulating the jaw, so holding it energized only invites the
+    // watchdog to make that decision for us.
     try { g_.motor().disable(); }
     catch (const std::exception& e) {
         logger()->warn("ForcePositionController: motor disable on stop failed: {}", e.what());
@@ -790,8 +802,7 @@ void ForcePositionController::set_target(float position) {
 // of the middle of a status frame it is transmitting if host->MCU traffic
 // overlaps it, so an off-phase write costs a telemetry frame. Every submit now
 // happens in run_() on the status-frame doorbell, inside the ~9.8 ms the MCU
-// is known to be idle -- the same phase discipline ControlLoop's StreamLocked
-// uses. The cost is that a command takes effect on the next status frame
+// is known to be idle. The cost is that a command takes effect on the next status frame
 // instead of instantly: at motor_stream_hz = 100 that is under 10 ms.
 //
 // Validation stays eager. Deferring it would turn a caller's out-of-range

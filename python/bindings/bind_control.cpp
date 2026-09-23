@@ -1,6 +1,6 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// pybind11 bindings: GripperObservation, ControlLoop, ForcePositionController
+// pybind11 bindings: GripperObservation, ImpedanceController, ForcePositionController
 //
 // Split out of the former single-file components.cpp. Pure move — see
 // bindings_common.hpp for why the call order in bind_components() matters.
@@ -30,104 +30,6 @@ void bind_control(py::module_& m) {
                 o.valid, o.position, o.velocity, o.torque, o.motor_temp_c, o.age_ms,
                 (unsigned long long)o.seq);
             return std::string(buf);
-        });
-
-    // ---- ControlLoop: fixed-rate send/recv for embodied control ----------
-    py::enum_<ControlLoop::SubmitPhase>(m, "SubmitPhase",
-        "When ControlLoop puts its MIT frame on the wire.\n\n"
-        "STREAM_LOCKED (default) submits once per received motor-status frame, "
-        "so the write lands while the MCU is not transmitting; `hz` is then "
-        "ignored and the submit rate follows motor_stream_hz. FREE_RUNNING "
-        "submits on its own clock at `hz` and will occasionally write into the "
-        "MCU's transmission, which costs status frames.")
-        .value("FREE_RUNNING",  ControlLoop::SubmitPhase::FreeRunning)
-        .value("STREAM_LOCKED", ControlLoop::SubmitPhase::StreamLocked);
-
-    py::enum_<ControlLoop::StallAction>(m, "StallAction",
-        "What ControlLoop does when the jaw is blocked.\n\n"
-        "HOLD_POSITION (default) clamps the effective target at the position "
-        "the jaw actually reached, so kp*error -- and therefore torque -- stops "
-        "growing; commanding a target back the other way releases it. NONE is "
-        "the unguarded behaviour: on firmware 1.1.5 nothing below the host "
-        "bounds a blocked impedance target except the motor's 6 Nm 0x700B "
-        "ceiling.")
-        .value("NONE",          ControlLoop::StallAction::None)
-        .value("HOLD_POSITION", ControlLoop::StallAction::HoldPosition);
-
-    // Every kwarg default below is read from ControlLoop::Config{} rather than
-    // written out again. Hand-copied defaults drift silently: the C++ default
-    // for rated_torque_nm moved 2.0 -> 1.8 Nm (the motor's rated torque) and
-    // this binding went on handing Python the old 2.0.
-    static const ControlLoop::Config kLoopDefaults{};
-
-    py::class_<ControlLoop>(m, "ControlLoop")
-        .def(py::init([](FollowerGripper& g, unsigned hz, float kp, float kd,
-                         float feedforward_torque, unsigned motor_stream_hz,
-                         ControlLoop::SubmitPhase phase,
-                         float max_position_torque_nm,
-                         float rated_torque_nm, unsigned rated_hold_ms,
-                         float rated_release_rad,
-                         float stall_torque_nm, float stall_vel_radps,
-                         unsigned stall_hold_ms,
-                         ControlLoop::StallAction stall_action,
-                         unsigned status_timeout_ms) {
-                ControlLoop::Config c;
-                c.hz = hz; c.kp = kp; c.kd = kd;
-                c.feedforward_torque = feedforward_torque;
-                c.motor_stream_hz = motor_stream_hz;
-                c.phase = phase;
-                c.max_position_torque_nm = max_position_torque_nm;
-                c.rated_torque_nm   = rated_torque_nm;
-                c.rated_hold_ms     = rated_hold_ms;
-                c.rated_release_rad = rated_release_rad;
-                c.stall_torque_nm = stall_torque_nm;
-                c.stall_vel_radps = stall_vel_radps;
-                c.stall_hold_ms   = stall_hold_ms;
-                c.stall_action    = stall_action;
-                c.status_timeout_ms = status_timeout_ms;
-                return std::make_unique<ControlLoop>(g, c);
-            }),
-            py::arg("gripper"),
-            py::arg("hz") = kLoopDefaults.hz,
-            py::arg("kp") = kLoopDefaults.kp,
-            py::arg("kd") = kLoopDefaults.kd,
-            py::arg("feedforward_torque") = kLoopDefaults.feedforward_torque,
-            py::arg("motor_stream_hz") = kLoopDefaults.motor_stream_hz,
-            py::arg("phase") = kLoopDefaults.phase,
-            py::arg("max_position_torque_nm") = kLoopDefaults.max_position_torque_nm,
-            py::arg("rated_torque_nm") = kLoopDefaults.rated_torque_nm,
-            py::arg("rated_hold_ms") = kLoopDefaults.rated_hold_ms,
-            py::arg("rated_release_rad") = kLoopDefaults.rated_release_rad,
-            py::arg("stall_torque_nm") = kLoopDefaults.stall_torque_nm,
-            py::arg("stall_vel_radps") = kLoopDefaults.stall_vel_radps,
-            py::arg("stall_hold_ms") = kLoopDefaults.stall_hold_ms,
-            py::arg("stall_action") = kLoopDefaults.stall_action,
-            py::arg("status_timeout_ms") = kLoopDefaults.status_timeout_ms,
-            py::keep_alive<1, 2>())   // keep the gripper alive while the loop lives
-        .def("start", [](ControlLoop& l) { py::gil_scoped_release g; l.start(); })
-        .def("stop",  [](ControlLoop& l) { py::gil_scoped_release g; l.stop(); })
-        .def_property_readonly("running", &ControlLoop::running)
-        .def("set_target", [](ControlLoop& l, float p) {
-            py::gil_scoped_release g; l.set_target(p);
-        }, py::arg("position"))
-        .def("set_gains", [](ControlLoop& l, float kp, float kd, float ff) {
-            py::gil_scoped_release g; l.set_gains(kp, kd, ff);
-        }, py::arg("kp"), py::arg("kd"), py::arg("feedforward_torque") = 0.0f)
-        .def_property_readonly("target", &ControlLoop::target)
-        .def("observation", [](const ControlLoop& l) {
-            py::gil_scoped_release g; return l.observation();
-        })
-        .def_property_readonly("torque_capped", &ControlLoop::torque_capped)
-        .def_property_readonly("torque_caps",   &ControlLoop::torque_caps)
-        .def_property_readonly("stalled",      &ControlLoop::stalled)
-        .def_property_readonly("stall_trips",  &ControlLoop::stall_trips)
-        .def_property_readonly("submit_hz",    &ControlLoop::submit_hz)
-        .def_property_readonly("submit_count", &ControlLoop::submit_count)
-        .def("__enter__", [](ControlLoop& l) -> ControlLoop& {
-            py::gil_scoped_release g; l.start(); return l;
-        })
-        .def("__exit__", [](ControlLoop& l, py::object, py::object, py::object) {
-            py::gil_scoped_release g; l.stop();
         });
 
     // ---- ImpedanceController: supervised position tracking ---------------

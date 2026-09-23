@@ -5,7 +5,7 @@
 // This file used to hold all ~1,700 lines of them. It now holds only the
 // order, because the order is the one thing the split could break: pybind11
 // evaluates a def()'s default arguments immediately, so any type used as a
-// default (an enum in `py::arg("phase") = SubmitPhase::StreamLocked`, say)
+// default (an enum in `py::arg("color_mode") = ColorMode::Bgr`, say)
 // must already be registered when that def() runs. Keep these calls in this
 // sequence unless you have checked what moves.
 

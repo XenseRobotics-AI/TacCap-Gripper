@@ -345,7 +345,7 @@ void bind_gripper(py::module_& m) {
         }, py::arg("timeout_ms") = 100u)
         // set_position() 同样不暴露:follower_gripper.cpp 里它就是
         // motor_.submit_impedance() 外面包了一层归一化,绕开控制器的程度和裸
-        // 原语完全一样,只是名字看起来更像正经 API。用 ControlLoop 或
+        // 原语完全一样,只是名字看起来更像正经 API。用 ImpedanceController 或
         // ForcePositionController 的 set_target()。
         .def("pos_to_rad", [](FollowerGripper& g, float position) {
             py::gil_scoped_release gil;

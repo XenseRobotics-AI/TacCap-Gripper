@@ -23,7 +23,7 @@ HOLDING_POSITION,不会进 HoldingForce,除非真的被挡住。)
 齿隙留在那里 —— 实测闭合位保持力矩只有 0.001 Nm。预压是从预算里**预留**而非
 叠加,所以总请求不超过 grasp_torque_nm 这条不变量仍然成立。
 
-接口和 ControlLoop 一样只有两个非阻塞调用:
+接口和 ImpedanceController 一样只有两个非阻塞调用:
 
     c.set_target(p)      # p in [0,1],0=闭合 1=张开
     s = c.snapshot()     # 状态 + 观测 + 命令力矩,一把锁一致视图
