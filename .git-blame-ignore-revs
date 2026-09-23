@@ -1,0 +1,14 @@
+# Revisions that are pure reformatting. Skip them when reading blame:
+#
+#   git blame --ignore-revs-file .git-blame-ignore-revs <file>
+#
+# or configure it once per clone:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only add a revision here if it is provably behaviour-preserving — the
+# reformat below was verified by comparing the syntax tree of every touched
+# file before and after (ast.dump, 19 files, zero differences).
+
+# style: 全仓跑一遍 ruff format,并在 CI 加上格式门
+51853b9edc5aa8a0fcb8a4537e86b01a6aade49b
