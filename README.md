@@ -1,26 +1,67 @@
 # taccap-gripper
 
-C++17 / Python SDK for the **TacCap-Gripper** —— XenseRobotics' multimodal
-tactile data-collection gripper. Exposes a single namespace
-(`xense::taccap::` / `xense.taccap`) for:
+C++17 / Python SDK for the **TacCap-Gripper** — XenseRobotics' multimodal
+tactile data-collection gripper. One namespace, `xense::taccap::` in C++ and
+`xense.taccap` in Python.
 
-- IMU + encoder readout via the TC-GU-01 serial protocol
-- Motor control (follower side, FDCAN→灵足 transparently routed via MCU)
-- Leader / follower gripper objects that aggregate the MCU sensors and
-  expose zero-config discovery
-- Standalone `Camera` (wrist UVC, plain OpenCV V4L2) — **opt-in**: an
-  external camera service owns the V4L2 devices now, so the gripper
-  aggregates do **not** open it unless constructed with `open_cameras=True`.
-  The **visuotactile (OG) sensors are not handled in this SDK**; capture and
-  rectification live at the Python level via the `xensesdk` wheel.
+## How it is built
 
-Two adapter repos build on it and are released independently:
+**One implementation, two languages.** The whole SDK is C++17; the Python
+package is a pybind11 binding over that same code, not a second port. A fix
+lands once and both sides get it, and a behaviour you measure from Python is
+the behaviour C++ has.
 
-- `taccap_gripper_ros2` — ROS2 (Humble + Jazzy) hardware interface package
-- a fork of `lerobot-xense` with a `taccap_gripper` robot class
+The host never touches the motor directly: it speaks the TC-GU-01 serial
+protocol to the gripper's MCU, and the MCU relays to the 灵足 motor over FDCAN.
+Every `Motor` call in this SDK is therefore a command to the MCU, not a CAN
+write — which is why the MCU can enforce limits the host cannot bypass.
 
-Both only *import* the `xense.taccap` package; neither reimplements device
-access, and neither is required to use this SDK.
+**Four layers, each usable on its own.** L1 is the TC-GU-01 wire protocol —
+byte-stuffed framing, CRC, typed payload codecs. L2 is the async transport that
+owns the serial port, matches ACKs to commands by sequence number, and fans
+DATA frames out to per-command subscribers. L3 is the typed components
+(`Motor`, `Encoder`, `IMU`, `Camera`, `Led`, `Calibration`, `Diagnostics`). L4
+aggregates them into `LeaderGripper` / `FollowerGripper` and adds the
+background controllers. You can open a `Transport` and talk frames, or open a
+gripper and never see one. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Two threads, and user code runs on neither of the critical ones.** The
+transport's reader thread does nothing but read, parse and hand off; a separate
+dispatcher thread runs subscriber callbacks. That split is load-bearing: a
+Python callback takes the GIL, and a callback that stalls the reader stalls
+`read()` and overflows the kernel tty buffer. Controllers add one more thread,
+which submits exactly one command per motor-status frame — writing in the
+window the MCU is known to be idle, rather than on a free-running clock.
+
+**The firmware owns real-time safety; the host does not keep a second copy.**
+The MCU runs the motion-safety envelope and the stall test at 500 Hz, and it is
+the only layer on the MIT command path that nothing can bypass. So this SDK has
+no host-side contact detection and no second stall guard — saturating the
+controller's torque budget *is* contact. Where the two could disagree, the
+device wins. See [docs/CONTROL_LAYERING.md](docs/CONTROL_LAYERING.md).
+
+**Drive the motor through a controller.** `ImpedanceController` follows a
+position, `ForcePositionController` grasps; both expose the same two
+non-blocking calls, `set_target(0..1)` and `snapshot()`. The raw `submit_*`
+motor primitives are still there, but they are bare MIT frames with none of the
+host-side protection on their path.
+
+**Nothing is configured per unit.** Sides, roles and calibration come off the
+device: discovery reads the firmware-burned serial (never the CH343 USB-chip
+serial), and the fisheye intrinsics and travel span live in MCU flash, so a
+gripper carries its own identity and calibration between benches.
+
+**What is deliberately out of scope.** Visuotactile (OG) capture belongs to the
+`xensesdk` wheel, not here — `xense.taccap` is gripper protocol plus wrist
+camera. Teleoperation loops, grasp policy and episode recording live in the
+consuming application; this SDK provides the real-time primitives, not the
+policy. The wrist `Camera` is opt-in for the same reason: an external camera
+service usually owns the V4L2 devices, so the gripper aggregates do not open it
+unless you pass `open_cameras=True`.
+
+A fork of `lerobot-xense` consumes this SDK through a `taccap_gripper` robot
+class. It only *imports* `xense.taccap`, reimplements no device access, and is
+not required to use this SDK.
 
 ## Status
 

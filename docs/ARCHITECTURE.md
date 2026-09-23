@@ -7,8 +7,8 @@ and the follower motor stack and wrist rectification added since are in.
 
 The SDK in this repository is the **C++ / Python device-access layer
 only**. Higher-level products that build on top of it — dataset recording
-tools, ROS 2 hardware-interface packages, lerobot adapters — live in their own
-repositories and are out of scope here. The follower gripper's motor stack is
+tools and lerobot adapters — live in their own repositories and are out of
+scope here. The follower gripper's motor stack is
 *not* one of them: it lives here (see §8), because it is a device primitive
 rather than a policy.
 
@@ -539,9 +539,8 @@ will be implemented later:
 | Concern                  | Where it lives                          |
 |--------------------------|-----------------------------------------|
 | Dataset recording (hdf5 / mcap, time alignment, episode markers) | a separate tool / script repo         |
-| ROS 2 node + hardware_interface package | `taccap_gripper_ros2` (separate repo) |
 | lerobot integration       | `lerobot-xense`, where TacCap is a **gripper backend** (`type: taccap_follower`) that any arm can mount — not a Robot class of its own |
-| Master→slave follow / teleop loop, grasp state machine (contact/latch), episode orchestration | downstream apps / `taccap_gripper_ros2` — this SDK gives the realtime primitives (`ImpedanceController`, `ForcePositionController`, `submit_*`, normalized position), not the policy |
+| Master→slave follow / teleop loop, grasp state machine (contact/latch), episode orchestration | downstream apps — this SDK gives the realtime primitives (`ImpedanceController`, `ForcePositionController`, `submit_*`, normalized position), not the policy |
 | Higher-level orchestration (episode controller, replay, visualisation) | downstream applications |
 
 The follower motor stack **is** in this repo now (`Motor`, `FollowerGripper`,
@@ -549,8 +548,8 @@ The follower motor stack **is** in this repo now (`Motor`, `FollowerGripper`,
 out is the *policy* layer above the primitives.
 
 Keeping this SDK narrow lets each downstream consumer pick exactly the
-hardware it needs (e.g. a ROS 2 node may want only IMU + Encoder DATA
-streams, no cameras) and assemble its own data-flow on top.
+hardware it needs — a teleoperation loop may want only IMU + Encoder DATA
+streams and no cameras — and assemble its own data-flow on top.
 
 ---
 

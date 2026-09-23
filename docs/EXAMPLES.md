@@ -81,7 +81,7 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `calibrate.py` | 写 flash | Per-gripper encoder calibration CLI, selected by `left` / `right` (or an explicit SN) — latches the zero **and stores the measured travel span** (`Cmd::EncoderMaxCal`), which is what unlocks normalized position. Shows raw + cooked side-by-side, then a live `raw \| cooked \| position 0..1` readout. Checks firmware support before writing anything. See [Calibration](#calibration). |
+| `calibrate.py` | 写 flash | Per-gripper encoder calibration CLI, selected by `left` / `right` (or an explicit SN) — latches the zero **and stores the measured travel span** (`Cmd::EncoderMaxCal`), which is what unlocks normalized position. Shows raw + cooked side-by-side, then a live `raw \| cooked \| position 0..1` readout. Checks firmware support before writing anything. See [标定](CALIBRATION.md#calibration). |
 | `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | Read/write the flash-persisted calibration records (V2.0/V2.1): `show`, `set-fisheye` (flags or an OpenCV `.npz` holding `K`/`D`), `set-encoder-max`, and `measure-encoder-max` — the guided close-zero → open-sample → store flow that unlocks normalized leader position. |
 | `read_intrinsics.py` | 只读 | 腕相机内参,输出 JSON。走 `resolve_fisheye()` 而不是 `read_fisheye()` —— 没标定过的机器对读请求回的是**全零记录而不是 NACK**,直接拿去矫正会把每一帧变全黑。输出的 `source` 字段标明内参来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败退出。JSON 走 stdout、诊断走日志,可以直接 `> cal.json` 或管道给 `jq`。记录里**不存图像尺寸**,所以 `assumed_image_size` 把 640x480 这个假设显式写出来。|
 
