@@ -53,12 +53,17 @@ def fake_mcu():
 
 
 def _encoder_frame(seq: int) -> bytes:
-    return pack_frame(Address.MCU, seq, FrameType.DATA, Cmd.GetEncoder,
-                      bytes(16))
+    return pack_frame(Address.MCU, seq, FrameType.DATA, Cmd.GetEncoder, bytes(16))
 
 
-LOSS_FIELDS = ("crc_errors", "resync_bytes", "parser_overflow_bytes",
-               "queue_dropped", "queue_high_water", "callback_max_us")
+LOSS_FIELDS = (
+    "crc_errors",
+    "resync_bytes",
+    "parser_overflow_bytes",
+    "queue_dropped",
+    "queue_high_water",
+    "callback_max_us",
+)
 
 
 def test_stats_expose_loss_accounting(fake_mcu):
@@ -87,7 +92,7 @@ def test_stop_with_a_python_subscriber_does_not_crash(fake_mcu):
     transport.subscribe(Cmd.GetEncoder, lambda frame: None)
     os.write(master, _encoder_frame(1))
     assert _wait_until(lambda: transport.stats.frames_received >= 1)
-    transport.stop()          # must not segfault; fixture stops again
+    transport.stop()  # must not segfault; fixture stops again
 
 
 def test_slow_python_callback_does_not_stall_the_reader(fake_mcu):
@@ -106,7 +111,7 @@ def test_slow_python_callback_does_not_stall_the_reader(fake_mcu):
     def on_encoder(frame):
         if not entered.is_set():
             entered.set()
-            release.wait(5.0)      # parked *with the GIL held*
+            release.wait(5.0)  # parked *with the GIL held*
         seen.append(frame.seq)
 
     transport.subscribe(Cmd.GetEncoder, on_encoder)
@@ -141,11 +146,10 @@ def test_queue_depth_is_configurable_and_drops_oldest(fake_mcu):
     evicts from the front and says so via queue_dropped.
     """
     transport, _ = fake_mcu
-    transport.stop()   # replace with a shallow-queue instance
+    transport.stop()  # replace with a shallow-queue instance
 
     master, slave = pty.openpty()
-    t = Transport(device=os.ttyname(slave), baudrate=9600,
-                  dispatch_queue_frames=4)
+    t = Transport(device=os.ttyname(slave), baudrate=9600, dispatch_queue_frames=4)
     try:
         entered = threading.Event()
         release = threading.Event()

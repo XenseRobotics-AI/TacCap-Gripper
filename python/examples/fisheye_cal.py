@@ -99,9 +99,11 @@ def cmd_show(args) -> int:
     with open_gripper(args) as g:
         cal = g.calibration
         fw = _target.firmware_version(g)
-        print(_bold(f"\nFirmware {fw}") +
-              "  (fisheye needs cmd set >= V2.0, encoder-max >= V2.1: "
-              "leader >= 1.2.0; followers are gated at >= 1.2.5 on open)")
+        print(
+            _bold(f"\nFirmware {fw}")
+            + "  (fisheye needs cmd set >= V2.0, encoder-max >= V2.1: "
+            "leader >= 1.2.0; followers are gated at >= 1.2.5 on open)"
+        )
 
         print(_bold("\nFisheye camera calibration (Cmd 0x2B)"))
         try:
@@ -113,18 +115,20 @@ def cmd_show(args) -> int:
             fisheye = None
         else:
             if fisheye is None:
-                print("  " + _yellow("not calibrated") +
-                      " — firmware returned CalNotSet")
+                print(
+                    "  " + _yellow("not calibrated") + " — firmware returned CalNotSet"
+                )
         if fisheye is not None:
             print(f"  fx={fisheye.fx:.4f}  fy={fisheye.fy:.4f}")
             print(f"  cx={fisheye.cx:.4f}  cy={fisheye.cy:.4f}")
-            print(f"  k1={fisheye.k1:.6f}  k2={fisheye.k2:.6f}  "
-                  f"k3={fisheye.k3:.6f}  k4={fisheye.k4:.6f}")
+            print(
+                f"  k1={fisheye.k1:.6f}  k2={fisheye.k2:.6f}  "
+                f"k3={fisheye.k3:.6f}  k4={fisheye.k4:.6f}"
+            )
             print("  OpenCV K:")
             for row in fisheye.K:
                 print("    [" + "  ".join(f"{v:10.4f}" for v in row) + "]")
-            print("  OpenCV D: [" +
-                  "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
+            print("  OpenCV D: [" + "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
 
         print(_bold("\nEncoder max travel angle (Cmd 0x2C, leader only)"))
         try:
@@ -134,14 +138,16 @@ def cmd_show(args) -> int:
             print(f"  {_yellow('unavailable')} — {e}")
         else:
             if max_rad is None:
-                print("  " + _yellow("not calibrated") +
-                      " — firmware returned CalNotSet")
-                print("  Run: python python/examples/fisheye_cal.py "
-                      "measure-encoder-max")
+                print(
+                    "  " + _yellow("not calibrated") + " — firmware returned CalNotSet"
+                )
+                print(
+                    "  Run: python python/examples/fisheye_cal.py measure-encoder-max"
+                )
             else:
                 import math
-                print(f"  max_rad = {max_rad:.4f} rad "
-                      f"({math.degrees(max_rad):.1f}°)")
+
+                print(f"  max_rad = {max_rad:.4f} rad ({math.degrees(max_rad):.1f}°)")
         print()
     return 0
 
@@ -159,29 +165,38 @@ def cmd_set_fisheye(args) -> int:
             D = np.asarray(data["D"], dtype=float).reshape(-1)
         except KeyError as e:
             raise SystemExit(
-                f"{args.from_npz}: expected arrays named 'K' and 'D', "
-                f"missing {e}"
+                f"{args.from_npz}: expected arrays named 'K' and 'D', missing {e}"
             ) from None
         if D.size < 4:
             raise SystemExit(
                 f"{args.from_npz}: D has {D.size} coefficients, fisheye needs 4"
             )
         cal = CameraFisheyeCal(
-            fx=float(K[0, 0]), fy=float(K[1, 1]),
-            cx=float(K[0, 2]), cy=float(K[1, 2]),
-            k1=float(D[0]), k2=float(D[1]), k3=float(D[2]), k4=float(D[3]),
+            fx=float(K[0, 0]),
+            fy=float(K[1, 1]),
+            cx=float(K[0, 2]),
+            cy=float(K[1, 2]),
+            k1=float(D[0]),
+            k2=float(D[1]),
+            k3=float(D[2]),
+            k4=float(D[3]),
         )
     else:
-        missing = [n for n in ("fx", "fy", "cx", "cy")
-                   if getattr(args, n) is None]
+        missing = [n for n in ("fx", "fy", "cx", "cy") if getattr(args, n) is None]
         if missing:
             raise SystemExit(
                 "set-fisheye needs --fx/--fy/--cx/--cy (or --from-npz); "
                 f"missing: {', '.join('--' + m for m in missing)}"
             )
         cal = CameraFisheyeCal(
-            fx=args.fx, fy=args.fy, cx=args.cx, cy=args.cy,
-            k1=args.k1, k2=args.k2, k3=args.k3, k4=args.k4,
+            fx=args.fx,
+            fy=args.fy,
+            cx=args.cx,
+            cy=args.cy,
+            k1=args.k1,
+            k2=args.k2,
+            k3=args.k3,
+            k4=args.k4,
         )
 
     print(f"Writing {cal}")
@@ -209,8 +224,7 @@ def cmd_measure_encoder_max(args) -> int:
         raise SystemExit("measure-encoder-max is leader-only")
 
     with open_gripper(args) as g:
-        stored = _calib_flow.guided_calibration(
-            g, assume_yes=args.yes)
+        stored = _calib_flow.guided_calibration(g, assume_yes=args.yes)
         if stored is None:
             return 1
 
@@ -227,9 +241,12 @@ def main() -> int:
     # form used across all the examples.
     common = argparse.ArgumentParser(add_help=False)
     _target.add_target_argument(common)
-    common.add_argument("--follower", action="store_true",
-                        help="open as a FollowerGripper (fisheye only; the "
-                             "encoder-max commands are leader-only)")
+    common.add_argument(
+        "--follower",
+        action="store_true",
+        help="open as a FollowerGripper (fisheye only; the "
+        "encoder-max commands are leader-only)",
+    )
 
     # `common` goes on the SUBcommands only. It used to be on the top-level
     # parser too, so `--sn X show` and `show --sn X` both worked; a positional
@@ -242,30 +259,38 @@ def main() -> int:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("show", parents=[common],
-                   help="print both calibration records").set_defaults(
-        func=cmd_show)
+    sub.add_parser(
+        "show", parents=[common], help="print both calibration records"
+    ).set_defaults(func=cmd_show)
 
-    sf = sub.add_parser("set-fisheye", parents=[common],
-                        help="write fisheye parameters")
-    sf.add_argument("--from-npz", metavar="FILE",
-                    help="load K (3x3) and D (4,) from an OpenCV-style .npz")
+    sf = sub.add_parser(
+        "set-fisheye", parents=[common], help="write fisheye parameters"
+    )
+    sf.add_argument(
+        "--from-npz",
+        metavar="FILE",
+        help="load K (3x3) and D (4,) from an OpenCV-style .npz",
+    )
     for name in ("fx", "fy", "cx", "cy"):
         sf.add_argument(f"--{name}", type=float)
     for name in ("k1", "k2", "k3", "k4"):
         sf.add_argument(f"--{name}", type=float, default=0.0)
     sf.set_defaults(func=cmd_set_fisheye)
 
-    se = sub.add_parser("set-encoder-max", parents=[common],
-                        help="write a known full-open angle (rad)")
+    se = sub.add_parser(
+        "set-encoder-max", parents=[common], help="write a known full-open angle (rad)"
+    )
     se.add_argument("--max-rad", type=float, required=True)
     se.set_defaults(func=cmd_set_encoder_max)
 
-    me = sub.add_parser("measure-encoder-max", parents=[common],
-                        help="measure the full-open angle interactively, "
-                             "then store it")
-    me.add_argument("-y", "--yes", action="store_true",
-                    help="write without the confirmation prompt")
+    me = sub.add_parser(
+        "measure-encoder-max",
+        parents=[common],
+        help="measure the full-open angle interactively, then store it",
+    )
+    me.add_argument(
+        "-y", "--yes", action="store_true", help="write without the confirmation prompt"
+    )
     me.set_defaults(func=cmd_measure_encoder_max)
 
     args = p.parse_args()

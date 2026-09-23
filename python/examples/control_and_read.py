@@ -41,7 +41,8 @@ from xense.taccap import (
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     _target.add_target_argument(ap)
     ap.add_argument("--read-hz", type=float, default=10.0, help="读状态的频率")
     ap.add_argument("--seconds", type=float, default=8.0, help="总时长")
@@ -62,10 +63,14 @@ def main() -> int:
     period = args.seconds / len(targets)
     interval = 1.0 / args.read_hz
 
-    print(f"\n控制 {args.seconds:.0f}s,每 {period:.1f}s 换一次目标;"
-          f"读侧独立跑 {args.read_hz:g} Hz\n")
-    print(f"  {'t':>5} {'目标':>5} {'位置':>7} {'力矩':>8} {'命令':>7} "
-          f"{'年龄':>6} {'状态':>17} {'到位':>5}")
+    print(
+        f"\n控制 {args.seconds:.0f}s,每 {period:.1f}s 换一次目标;"
+        f"读侧独立跑 {args.read_hz:g} Hz\n"
+    )
+    print(
+        f"  {'t':>5} {'目标':>5} {'位置':>7} {'力矩':>8} {'命令':>7} "
+        f"{'年龄':>6} {'状态':>17} {'到位':>5}"
+    )
 
     stale = 0
     t0 = time.perf_counter()
@@ -74,7 +79,7 @@ def main() -> int:
             c.set_target(tgt)
             deadline = t0 + (i + 1) * period
             while time.perf_counter() < deadline:
-                s = c.snapshot()                     # 非阻塞,一致视图
+                s = c.snapshot()  # 非阻塞,一致视图
                 o = s.observation
                 if s.state == ForcePositionState.FAULT:
                     print(f"  FAULT: {s.fault_reason}")
@@ -82,10 +87,12 @@ def main() -> int:
                 # 观测太旧说明流断了,而不是爪子不动 —— 两者的处理完全不同。
                 if o.valid and o.age_ms > 100:
                     stale += 1
-                print(f"  {time.perf_counter()-t0:5.1f} {tgt:5.2f} {o.position:7.4f} "
-                      f"{o.torque:+8.4f} {s.commanded_torque_nm:7.4f} "
-                      f"{o.age_ms:5.0f}ms {str(s.state).split('.')[-1]:>17} "
-                      f"{str(s.arrived):>5}")
+                print(
+                    f"  {time.perf_counter() - t0:5.1f} {tgt:5.2f} {o.position:7.4f} "
+                    f"{o.torque:+8.4f} {s.commanded_torque_nm:7.4f} "
+                    f"{o.age_ms:5.0f}ms {str(s.state).split('.')[-1]:>17} "
+                    f"{str(s.arrived):>5}"
+                )
                 time.sleep(interval)
     finally:
         c.stop()

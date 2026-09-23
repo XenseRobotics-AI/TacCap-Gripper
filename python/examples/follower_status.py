@@ -44,7 +44,8 @@ def describe_status(s) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     _target.add_target_argument(ap)
     ap.add_argument("--seconds", type=float, default=3.0, help="开流读多久")
     ap.add_argument("--hz", type=int, default=100, help="电机状态流频率(固件上限 100)")
@@ -66,12 +67,16 @@ def main() -> int:
     # 归一化开度要标定过才有意义:0=闭合 1=张开,由 gripper_config 的行程定义。
     cfg = g.get_gripper_config()
     print(f"\n[归一化] g.position() = {g.position():.4f}")
-    print(f"  行程 min_open={cfg.min_open_rad:.5f}  max_open={cfg.max_open_rad:.5f} rad")
+    print(
+        f"  行程 min_open={cfg.min_open_rad:.5f}  max_open={cfg.max_open_rad:.5f} rad"
+    )
 
     # ── 故障 ──────────────────────────────────────────────────────────────────
     fr = g.motor.fault_report()
-    print(f"\n[故障] 电机 0x{fr.motor_fault_code:08X}  锁存 0x{fr.motor_latched_fault_code:08X}"
-          f"  固件 0x{fr.firmware_fault_code:08X}")
+    print(
+        f"\n[故障] 电机 0x{fr.motor_fault_code:08X}  锁存 0x{fr.motor_latched_fault_code:08X}"
+        f"  固件 0x{fr.firmware_fault_code:08X}"
+    )
     print("  锁存位要显式清除才会消失 —— 当前为 0 不代表从没出过故障。")
 
     # ── 开流读 ────────────────────────────────────────────────────────────────
@@ -94,15 +99,17 @@ def main() -> int:
     if not frames:
         print("  **一帧都没收到** —— 流没起来,或者回调注册晚于开流。")
         return 1
-    print(f"  {len(frames)} 帧 / {elapsed:.2f} s = {len(frames)/elapsed:.1f} Hz")
+    print(f"  {len(frames)} 帧 / {elapsed:.2f} s = {len(frames) / elapsed:.1f} Hz")
 
     # 新鲜度:固件的状态时间戳必须跟着墙钟推进。冻住 = 上面说的那个坑。
     fw_ms_after = g.motor.fault_report().status_timestamp_ms
     advance = fw_ms_after - fw_ms_before
     wall_ms = elapsed * 1000.0
     fresh = advance > wall_ms * 0.5
-    print(f"  固件状态时间戳推进 {advance} ms,墙钟 {wall_ms:.0f} ms"
-          f"  {'OK' if fresh else '**状态是旧的 —— 流在推,内容没更新**'}")
+    print(
+        f"  固件状态时间戳推进 {advance} ms,墙钟 {wall_ms:.0f} ms"
+        f"  {'OK' if fresh else '**状态是旧的 —— 流在推,内容没更新**'}"
+    )
 
     lo = min(f[1].actual_pos for f in frames)
     hi = max(f[1].actual_pos for f in frames)

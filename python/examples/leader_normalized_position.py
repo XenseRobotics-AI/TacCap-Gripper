@@ -43,11 +43,18 @@ def main() -> int:
     )
     _target.add_target_argument(p)
     p.add_argument("--hz", type=int, default=100, help="encoder stream rate")
-    p.add_argument("--seconds", type=float, default=0.0,
-                   help="stop after N seconds (0 = run until Ctrl-C)")
-    p.add_argument("--encoder-max-rad", type=float, default=0.0,
-                   help="use this travel span instead of reading it from the "
-                        "firmware (rad)")
+    p.add_argument(
+        "--seconds",
+        type=float,
+        default=0.0,
+        help="stop after N seconds (0 = run until Ctrl-C)",
+    )
+    p.add_argument(
+        "--encoder-max-rad",
+        type=float,
+        default=0.0,
+        help="use this travel span instead of reading it from the firmware (rad)",
+    )
     args = p.parse_args()
 
     eps, _by_side, _all = _target.resolve_target(args.target)
@@ -81,8 +88,10 @@ def main() -> int:
 
     with gripper as g:
         span = g.position_map.max_open_rad
-        print(f"normalization on: 0 = closed, 1 = open at {span:.4f} rad "
-              f"({math.degrees(span):.1f}°)")
+        print(
+            f"normalization on: 0 = closed, 1 = open at {span:.4f} rad "
+            f"({math.degrees(span):.1f}°)"
+        )
 
         # One-shot read, straight off the converter.
         print(f"position() now: {g.position():.3f}")
@@ -109,12 +118,11 @@ def _printer():
         now = time.monotonic()
         if now < state["next"]:
             return
-        state["next"] = now + 0.05          # ~20 Hz of console output
+        state["next"] = now + 0.05  # ~20 Hz of console output
         filled = int(round(s.position * 40))
         bar = "#" * filled + "-" * (40 - filled)
         sys.stdout.write(
-            f"\r[{bar}] position={s.position:5.3f}  "
-            f"({s.position_rad:6.3f} rad)"
+            f"\r[{bar}] position={s.position:5.3f}  ({s.position_rad:6.3f} rad)"
         )
         sys.stdout.flush()
 

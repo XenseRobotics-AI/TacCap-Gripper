@@ -69,8 +69,9 @@ ARRIVAL_BAND_RAD = 0.010
 ARRIVAL_SLACK = 2.5
 
 
-def await_command(c: ForcePositionController, target: float,
-                  budget: float = 1.0) -> bool:
+def await_command(
+    c: ForcePositionController, target: float, budget: float = 1.0
+) -> bool:
     """等控制器真正接下这个目标。
 
     set_target() 是**排队**的:命令在下一帧状态流的相位上才应用(这样每次写都落
@@ -105,15 +106,17 @@ def main() -> int:
     )
     _target.add_target_argument(ap)
     ap.add_argument(
-        "--grasp-torque", type=float, default=1.1,
-        help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值"
+        "--grasp-torque",
+        type=float,
+        default=1.1,
+        help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值",
     )
     ap.add_argument("--close-speed", type=float, default=0.5, help="闭合速度 rad/s")
     ap.add_argument(
         "--targets",
         default="1.0,0.5,0.0,0.5,1.0",
         help="逗号分隔的归一化目标序列。默认带中间位置 —— 只跑端点看不出"
-             "「到位/接触」判错",
+        "「到位/接触」判错",
     )
     args = ap.parse_args()
 
@@ -136,7 +139,7 @@ def main() -> int:
         )
 
     cfg = ForcePositionConfig()
-    cfg.grasp_torque_nm = args.grasp_torque    # 接触后的纯前馈保持力矩 = 夹持力
+    cfg.grasp_torque_nm = args.grasp_torque  # 接触后的纯前馈保持力矩 = 夹持力
     # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),低于
     # grasp/5 会被 validate_config() 拒掉,否则夹持力会悄悄低于设定值。
     cfg.close_speed_radps = args.close_speed
@@ -181,8 +184,10 @@ def main() -> int:
             # 力上推不动了,重新起步只会把好好的夹持抖掉。不算通过也不算失败 ——
             # 这一步根本没有发生运动,不该拿它去判「保护是否正确」。
             if before == "HOLDING_FORCE" and name == "HOLDING_FORCE" and dt < 0.05:
-                print("    skip  已在力保持中,更深的闭合目标被忽略(设计如此);"
-                      "要离开只能下发张开目标")
+                print(
+                    "    skip  已在力保持中,更深的闭合目标被忽略(设计如此);"
+                    "要离开只能下发张开目标"
+                )
                 continue
             if name not in ("HOLDING_POSITION", "HOLDING_FORCE"):
                 print("    FAIL  未在预算内收敛到终态")
@@ -193,8 +198,10 @@ def main() -> int:
             # 到位了还报 holding,说明一次本该到位的移动把力矩预算用满了 ——
             # 标定或归一化映射出了问题。
             if s.holding and err <= band:
-                print("    FAIL  在命令位置上报 holding —— 一次本该到位的移动"
-                      "用满了力矩预算")
+                print(
+                    "    FAIL  在命令位置上报 holding —— 一次本该到位的移动"
+                    "用满了力矩预算"
+                )
                 failures += 1
             elif s.holding:
                 print(f"    ok    被挡在目标外 {err:.4f}(归一化),holding 正确")
@@ -203,8 +210,10 @@ def main() -> int:
             else:
                 # 既没到位也没在 holding,却已经稳定下来 —— 没有任何东西解释
                 # 它为什么停在这里。
-                print(f"    FAIL  停在目标外 {err:.4f} 却既未到位也未 holding"
-                      f" —— 运动没有真正发生?")
+                print(
+                    f"    FAIL  停在目标外 {err:.4f} 却既未到位也未 holding"
+                    f" —— 运动没有真正发生?"
+                )
                 failures += 1
     finally:
         try:

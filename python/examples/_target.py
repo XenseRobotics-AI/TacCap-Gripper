@@ -39,8 +39,9 @@ def side_str(side) -> str:
 
 
 def listing(all_eps) -> str:
-    return (", ".join(f"{e.firmware_sn} ({side_str(e.side)})" for e in all_eps)
-            or "(none)")
+    return (
+        ", ".join(f"{e.firmware_sn} ({side_str(e.side)})" for e in all_eps) or "(none)"
+    )
 
 
 def resolve_target(target: str | None):
@@ -96,10 +97,12 @@ def resolve_target(target: str | None):
 def add_target_argument(parser, *, required: bool = False) -> None:
     """Attach the repo-wide positional selector to an argparse parser."""
     parser.add_argument(
-        "target", nargs=None if required else "?", metavar="left|right|SN",
+        "target",
+        nargs=None if required else "?",
+        metavar="left|right|SN",
         help="Which gripper: 'left' / 'right' (side comes from the firmware SN), "
-             "or an explicit SN such as TCGU01A28Z0116m."
-             + ("" if required else " Omit when exactly one is plugged in."),
+        "or an explicit SN such as TCGU01A28Z0116m."
+        + ("" if required else " Omit when exactly one is plugged in."),
     )
 
 

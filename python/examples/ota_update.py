@@ -349,13 +349,15 @@ def _resolve_firmware(path: str) -> Optional[str]:
 def _resolve_or_report(path: str) -> Optional[str]:
     resolved = _resolve_firmware(path)
     if resolved is None:
-        shipped = sorted(
-            n for n in os.listdir(_firmware_dir())
-            if n.endswith(".bin")
-        ) if os.path.isdir(_firmware_dir()) else []
+        shipped = (
+            sorted(n for n in os.listdir(_firmware_dir()) if n.endswith(".bin"))
+            if os.path.isdir(_firmware_dir())
+            else []
+        )
         hint = (
             "        shipped images: " + ", ".join(shipped)
-            if shipped else "        no .bin found there"
+            if shipped
+            else "        no .bin found there"
         )
         print(
             f"[ERROR] firmware file not found: {path}\n"
@@ -476,15 +478,21 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     print(f"  size         : {_format_size(fw_size)}")
     print(f"  CRC32        : 0x{crc:08X}")
     if image_ver:
-        src = "manifest, matched by CRC32" if not args.target_version else \
-              "manifest, matched by CRC32; --target-version overrides what is sent"
+        src = (
+            "manifest, matched by CRC32"
+            if not args.target_version
+            else "manifest, matched by CRC32; --target-version overrides what is sent"
+        )
         print(f"  image ver    : {image_ver} ({role})  [{src}]")
     else:
         print(f"  image ver    : {_dim('未知 —— CRC32 不在 manifest 里,不是发布镜像')}")
     print(
         f"  target ver   : {_target.format_version(target.major, target.minor, target.patch)}"
-        + ("" if args.target_version or image_ver else
-           _dim("  (没有版本可报,固件会记下 0.0.0)"))
+        + (
+            ""
+            if args.target_version or image_ver
+            else _dim("  (没有版本可报,固件会记下 0.0.0)")
+        )
     )
     if _check_role(fw_bytes, getattr(eps, "firmware_sn", "") or "", args.force):
         return 1
@@ -660,9 +668,7 @@ def main(argv=None) -> int:
         finally:
             del g
 
-    jobs = _build_upgrade_jobs(
-        args.target, args.firmware, False, _target.scan_grippers
-    )
+    jobs = _build_upgrade_jobs(args.target, args.firmware, False, _target.scan_grippers)
     if len(jobs) != 1:
         raise SystemExit(f"error: expected exactly one target gripper, got {len(jobs)}")
     job = jobs[0]

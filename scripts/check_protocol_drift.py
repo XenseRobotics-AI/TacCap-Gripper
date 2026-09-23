@@ -142,9 +142,7 @@ def parse_sdk_enum(path: Path, enum_name: str) -> dict[str, int]:
     body = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
     return {
         name: int(value, 0)
-        for name, value in re.findall(
-            r"(\w+)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*,", body
-        )
+        for name, value in re.findall(r"(\w+)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*,", body)
     }
 
 
@@ -193,7 +191,8 @@ def _emit_sizes(
     src.write_text(source, encoding="utf-8")
     build = subprocess.run(
         [compiler, *flags, "-o", str(exe), str(src)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if build.returncode != 0:
         return {}, (
@@ -219,29 +218,44 @@ def check_sizes(firmware: Path, cc: str, cxx: str) -> list[str]:
         return f"(size_t)({macro})" if macro else f"sizeof({name})"
 
     c_src = "\n".join(
-        ['#include <stdio.h>', '#include "protocol_data.h"', "int main(void) {"]
+        ["#include <stdio.h>", '#include "protocol_data.h"', "int main(void) {"]
         + [f'  printf("{n}=%zu\\n", {fw_expr(n)});' for n in c_names]
         + ["  return 0;", "}", ""]
     )
     cxx_src = "\n".join(
-        ["#include <cstdio>", "#include <taccap/protocol/payloads.hpp>",
-         "namespace tp = xense::taccap::protocol;", "int main() {"]
-        + [f'  std::printf("{STRUCT_MAP[n]}=%zu\\n", sizeof(tp::{STRUCT_MAP[n]}));'
-           for n in c_names]
+        [
+            "#include <cstdio>",
+            "#include <taccap/protocol/payloads.hpp>",
+            "namespace tp = xense::taccap::protocol;",
+            "int main() {",
+        ]
+        + [
+            f'  std::printf("{STRUCT_MAP[n]}=%zu\\n", sizeof(tp::{STRUCT_MAP[n]}));'
+            for n in c_names
+        ]
         + ["  return 0;", "}", ""]
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         fw_sizes, err = _emit_sizes(
-            tmp, "firmware", c_src, cc,
-            ["-std=c11", f"-I{firmware / 'App' / 'protocol'}",
-             f"-I{firmware / 'App' / 'drivers'}"],
+            tmp,
+            "firmware",
+            c_src,
+            cc,
+            [
+                "-std=c11",
+                f"-I{firmware / 'App' / 'protocol'}",
+                f"-I{firmware / 'App' / 'drivers'}",
+            ],
         )
         if err:
             return [err]
         sdk_sizes, err = _emit_sizes(
-            tmp, "sdk", cxx_src, cxx,
+            tmp,
+            "sdk",
+            cxx_src,
+            cxx,
             ["-std=c++17", f"-I{REPO / 'cpp' / 'include'}"],
         )
         if err:
@@ -272,7 +286,9 @@ def firmware_revision(firmware: Path) -> str:
     try:
         out = subprocess.run(
             ["git", "-C", str(firmware), "log", "-1", "--format=%h %s"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return out.stdout.strip() or "(not a git clone)"
     except (OSError, subprocess.SubprocessError):
@@ -282,19 +298,27 @@ def firmware_revision(firmware: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        "--firmware", type=Path,
+        "--firmware",
+        type=Path,
         default=Path(os.environ.get("TACCAP_FIRMWARE_DIR", DEFAULT_FIRMWARE)),
         help="firmware clone (default: third_party/firmware/tc-gu-01, "
-             "or $TACCAP_FIRMWARE_DIR)",
+        "or $TACCAP_FIRMWARE_DIR)",
     )
     ap.add_argument(
-        "--require", action="store_true",
+        "--require",
+        action="store_true",
         help="treat a missing firmware clone as an error instead of skipping",
     )
-    ap.add_argument("--cc", default=os.environ.get("CC", "gcc"),
-                    help="C compiler for the firmware-side size probe")
-    ap.add_argument("--cxx", default=os.environ.get("CXX", "g++"),
-                    help="C++ compiler for the SDK-side size probe")
+    ap.add_argument(
+        "--cc",
+        default=os.environ.get("CC", "gcc"),
+        help="C compiler for the firmware-side size probe",
+    )
+    ap.add_argument(
+        "--cxx",
+        default=os.environ.get("CXX", "g++"),
+        help="C++ compiler for the SDK-side size probe",
+    )
     args = ap.parse_args()
 
     fw_dir = args.firmware
@@ -302,8 +326,10 @@ def main() -> int:
     data_h = fw_dir / "App" / "protocol" / "protocol_data.h"
 
     if not cmd_h.is_file() or not data_h.is_file():
-        msg = (f"no firmware headers under {fw_dir} — clone tc-gu-01 there "
-               f"(see README 'Firmware / PC GUI reference repos')")
+        msg = (
+            f"no firmware headers under {fw_dir} — clone tc-gu-01 there "
+            f"(see README 'Firmware / PC GUI reference repos')"
+        )
         if args.require:
             die(msg)
         print(f"SKIP: {msg}")
@@ -340,8 +366,9 @@ def main() -> int:
     print(f"stop reasons: firmware {len(fw_stops):>2}   SDK {len(sdk_stops):>3}")
     errors += compare_tables("stop reason", fw_stops, sdk_stops)
 
-    print(f"payloads:    {len(STRUCT_MAP)} structs size-checked "
-          f"({args.cc} / {args.cxx})")
+    print(
+        f"payloads:    {len(STRUCT_MAP)} structs size-checked ({args.cc} / {args.cxx})"
+    )
     errors += check_sizes(fw_dir, args.cc, args.cxx)
 
     print()

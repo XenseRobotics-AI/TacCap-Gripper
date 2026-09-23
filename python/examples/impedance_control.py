@@ -30,6 +30,7 @@
 
 安全:真实运动,退出路径必定下发零力矩并 disable。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -74,7 +75,8 @@ def settle(c: ImpedanceController, budget: float = 3.0):
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     _target.add_target_argument(ap)
     ap.add_argument("--kp", type=float, default=20.0, help="阻抗刚度 Nm/rad")
     ap.add_argument("--kd", type=float, default=1.0, help="阻抗阻尼 Nm·s/rad")
@@ -82,7 +84,9 @@ def main() -> int:
     ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
     ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
     ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
-    ap.add_argument("--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认")
+    ap.add_argument(
+        "--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认"
+    )
     ap.add_argument("--temp-wall", type=int, default=0, help="温度墙 °C,0=固件默认")
     ap.add_argument(
         "--targets",
@@ -111,13 +115,15 @@ def main() -> int:
     env = g.get_envelope()
     print(f"[envelope] {env}")
     if not (env.flags & GRIPPER_ENVELOPE_ENFORCE):
-        print("[warn] 包络未启用 —— 被挡住时 kp*误差 没有上界。用 --set-envelope 开启。")
+        print(
+            "[warn] 包络未启用 —— 被挡住时 kp*误差 没有上界。用 --set-envelope 开启。"
+        )
     if args.show_envelope:
         return 0
 
     cfg = ImpedanceConfig()
-    cfg.kp = args.kp                   # 刚度 Nm/rad
-    cfg.kd = args.kd                   # 阻尼 Nm·s/rad,同时定接近速度
+    cfg.kp = args.kp  # 刚度 Nm/rad
+    cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
     # 其余走默认:误差钳位 1.5 Nm(命令目标限在实测位置 ±1.5/kp rad),力矩天花板
     # 1.8 Nm(作用在实测力矩上),流超时 350 ms,状态流 100 Hz。
 
@@ -125,7 +131,7 @@ def main() -> int:
     failures = 0
     try:
         g.motor.clear_fault()
-        c.start()            # 以当前位置为初始目标,不会跳变
+        c.start()  # 以当前位置为初始目标,不会跳变
         g.motor.enable()
 
         for target in targets:
@@ -135,9 +141,11 @@ def main() -> int:
             err = target - o.position
             # 全部来自状态流,控制期间不碰总线 —— read_status() 那类需要 ACK 的
             # 调用会和控制帧对撞,而 snapshot() 不会。
-            print(f"  target={target:.2f} -> {name:14s} pos={o.position:.4f} "
-                  f"err={err:+.4f} tq={o.torque:+.3f} Nm cmd={s.commanded_torque_nm:.3f} "
-                  f"temp={o.motor_temp_c:.0f}°C 用时 {dt:.2f}s")
+            print(
+                f"  target={target:.2f} -> {name:14s} pos={o.position:.4f} "
+                f"err={err:+.4f} tq={o.torque:+.3f} Nm cmd={s.commanded_torque_nm:.3f} "
+                f"temp={o.motor_temp_c:.0f}°C 用时 {dt:.2f}s"
+            )
 
             if name == "FAULT":
                 print(f"    FAIL  fault: {s.fault_reason}")
@@ -155,25 +163,33 @@ def main() -> int:
             elif s.commanded_torque_nm >= budget - 0.05:
                 # 停在目标外而命令力矩饱和在预算上 —— 这正是被挡住该有的样子,
                 # 而且它会一直保持,这就是夹持力。
-                print(f"    ok    被挡在目标外 {abs(err):.4f},命令饱和在预算 "
-                      f"{s.commanded_torque_nm:.3f}/{budget:.3f} Nm 并保持")
+                print(
+                    f"    ok    被挡在目标外 {abs(err):.4f},命令饱和在预算 "
+                    f"{s.commanded_torque_nm:.3f}/{budget:.3f} Nm 并保持"
+                )
             else:
                 # 没到位、也没饱和:要么增益太软推不动,要么预算根本没用上。
-                print(f"    FAIL  停在目标外 {abs(err):.4f},但命令只有 "
-                      f"{s.commanded_torque_nm:.3f} Nm,没有饱和在预算 {budget:.3f}")
+                print(
+                    f"    FAIL  停在目标外 {abs(err):.4f},但命令只有 "
+                    f"{s.commanded_torque_nm:.3f} Nm,没有饱和在预算 {budget:.3f}"
+                )
                 failures += 1
 
             if o.torque > cfg.rated_torque_nm + 0.15:
-                print(f"    FAIL  实测力矩 {o.torque:.3f} Nm 越过了天花板 "
-                      f"{cfg.rated_torque_nm:.3f} Nm")
+                print(
+                    f"    FAIL  实测力矩 {o.torque:.3f} Nm 越过了天花板 "
+                    f"{cfg.rated_torque_nm:.3f} Nm"
+                )
                 failures += 1
 
         final = c.snapshot()
-        print(f"\n[guards] 力矩天花板触发 {final.torque_caps} 次"
-              f"(误差钳位不是状态,它每帧都在生效,没有计数)")
+        print(
+            f"\n[guards] 力矩天花板触发 {final.torque_caps} 次"
+            f"(误差钳位不是状态,它每帧都在生效,没有计数)"
+        )
     finally:
         try:
-            c.stop()          # stop() 先下发零力矩
+            c.stop()  # stop() 先下发零力矩
         except Exception as exc:
             print("stop:", exc)
         try:

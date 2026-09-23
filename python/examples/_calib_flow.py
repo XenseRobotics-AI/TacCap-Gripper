@@ -43,8 +43,7 @@ def _ota_script_path() -> str:
     standing in. Falls back to the absolute path when relpath would climb out
     of the tree (different drive, or a cwd above nothing in common).
     """
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "ota_update.py")
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ota_update.py")
     try:
         rel = os.path.relpath(p)
     except ValueError:
@@ -102,9 +101,13 @@ def latch_zero(gripper) -> float:
     after = gripper.encoder.read_once().position_rad
     print(f"  post-zero reading: {after:+.4f} rad")
     if abs(after) > POST_ZERO_TOLERANCE_RAD:
-        print("  " + yellow(
-            f"warning: {abs(after):.4f} rad off zero — the pose moved between "
-            f"the read and the latch. Re-run if this looks wrong."))
+        print(
+            "  "
+            + yellow(
+                f"warning: {abs(after):.4f} rad off zero — the pose moved between "
+                f"the read and the latch. Re-run if this looks wrong."
+            )
+        )
     return after
 
 
@@ -132,12 +135,14 @@ def store_max(gripper, max_rad: float) -> float:
     if readback is None:
         raise SystemExit(
             f"{red('✗')} wrote {max_rad:.4f} rad but read back "
-            f"'not calibrated' — the flash write did not stick.")
+            f"'not calibrated' — the flash write did not stick."
+        )
     return readback
 
 
-def guided_calibration(gripper, *, fw_version: str | None = None,
-                       assume_yes: bool = False) -> float | None:
+def guided_calibration(
+    gripper, *, fw_version: str | None = None, assume_yes: bool = False
+) -> float | None:
     """Full two-step flow: support check → zero → measure → confirm → store.
 
     Returns the stored span, or None if the user declined at the confirmation
@@ -148,11 +153,14 @@ def guided_calibration(gripper, *, fw_version: str | None = None,
     max_rad = measure_max(gripper)
 
     if not assume_yes:
-        reply = input(f"\nWrite {max_rad:.4f} rad ({deg(max_rad)}) "
-                      f"to MCU flash? [y/N] ")
+        reply = input(
+            f"\nWrite {max_rad:.4f} rad ({deg(max_rad)}) to MCU flash? [y/N] "
+        )
         if reply.strip().lower() not in ("y", "yes"):
-            print("Aborted; nothing written. The new encoder zero from step 1 "
-                  "does remain in effect.")
+            print(
+                "Aborted; nothing written. The new encoder zero from step 1 "
+                "does remain in effect."
+            )
             return None
 
     readback = store_max(gripper, max_rad)
@@ -167,14 +175,13 @@ def restart_notice() -> None:
     span via Cmd 0x2C, and both take effect on the firmware immediately — no
     power cycle. The restart is only so this process re-reads them at startup.
     """
-    print(bold("\nPlease restart this program") +
-          " to pick up the new calibration.")
-    print("  (No power cycle needed — both values are already live in MCU "
-          "flash.)")
+    print(bold("\nPlease restart this program") + " to pick up the new calibration.")
+    print("  (No power cycle needed — both values are already live in MCU flash.)")
 
 
-def offer_calibration(gripper, *, fw_version: str | None = None,
-                      assume_yes: bool = False) -> bool:
+def offer_calibration(
+    gripper, *, fw_version: str | None = None, assume_yes: bool = False
+) -> bool:
     """Entry point for apps that find the calibration missing at startup.
 
     Returns True if a span was stored (caller should tell the user to
@@ -184,13 +191,19 @@ def offer_calibration(gripper, *, fw_version: str | None = None,
     # cannot store would be a question we can't honour.
     require_support(gripper, fw_version)
 
-    print(yellow("✗ this gripper has no encoder-max calibration") +
-          " — normalized position is unavailable until it is measured.")
+    print(
+        yellow("✗ this gripper has no encoder-max calibration")
+        + " — normalized position is unavailable until it is measured."
+    )
     if not assume_yes:
         reply = input("  Calibrate now? [Y/n] ")
         if reply.strip().lower() in ("n", "no"):
-            print("  Skipped. Run this later:\n"
-                  "      python python/examples/calibrate.py <left|right|SN>")
+            print(
+                "  Skipped. Run this later:\n"
+                "      python python/examples/calibrate.py <left|right|SN>"
+            )
             return False
-    return guided_calibration(gripper, fw_version=fw_version,
-                              assume_yes=assume_yes) is not None
+    return (
+        guided_calibration(gripper, fw_version=fw_version, assume_yes=assume_yes)
+        is not None
+    )

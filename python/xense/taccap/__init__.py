@@ -81,15 +81,19 @@ TransportStats = _taccap_native.TransportStats
 ImuSample = _taccap_native.ImuSample
 EncoderSample = _taccap_native.EncoderSample
 MotorStatusSample = _taccap_native.MotorStatusSample
-MotorProtocol = _taccap_native.MotorProtocol          # V1.7
-GripperConfig = _taccap_native.GripperConfig          # V1.7
+MotorProtocol = _taccap_native.MotorProtocol  # V1.7
+GripperConfig = _taccap_native.GripperConfig  # V1.7
 GripperAutoCalConfig = _taccap_native.GripperAutoCalConfig  # V1.9 power-on auto-cal
-GripperEnvelope = _taccap_native.GripperEnvelope       # motion safety envelope (in GripperConfig)
+GripperEnvelope = (
+    _taccap_native.GripperEnvelope
+)  # motion safety envelope (in GripperConfig)
 GRIPPER_ENVELOPE_VALID = _taccap_native.GRIPPER_ENVELOPE_VALID
 GRIPPER_ENVELOPE_ENFORCE = _taccap_native.GRIPPER_ENVELOPE_ENFORCE
 GRIPPER_ENVELOPE_LAYOUT_VERSION = _taccap_native.GRIPPER_ENVELOPE_LAYOUT_VERSION
-GripperPosition = _taccap_native.GripperPosition      # raw rad <-> normalized [0,1]
-CameraFisheyeCal = _taccap_native.CameraFisheyeCal    # V2.0 fisheye intrinsics + distortion
+GripperPosition = _taccap_native.GripperPosition  # raw rad <-> normalized [0,1]
+CameraFisheyeCal = (
+    _taccap_native.CameraFisheyeCal
+)  # V2.0 fisheye intrinsics + distortion
 FisheyeUndistorter = _taccap_native.FisheyeUndistorter  # applies them to frames
 # Reference intrinsics for the TC-GU-01 wrist lens, for units whose firmware was
 # never calibrated. Approximate by construction — see the C++ header — so every
@@ -98,32 +102,36 @@ ColorMode = _taccap_native.ColorMode
 FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
 FirmwareVersion = _taccap_native.FirmwareVersion
-Calibration = _taccap_native.Calibration              # V2.0/V2.1 flash-persisted cal records
+Calibration = _taccap_native.Calibration  # V2.0/V2.1 flash-persisted cal records
 GripperObservation = _taccap_native.GripperObservation  # controller latest obs
-ImpedanceState = _taccap_native.ImpedanceState        # supervised impedance FSM
+ImpedanceState = _taccap_native.ImpedanceState  # supervised impedance FSM
 ImpedanceConfig = _taccap_native.ImpedanceConfig
 ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
 ImpedanceController = _taccap_native.ImpedanceController
-MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM   # 1.8 Nm, indefinite
-MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM     # 6.0 Nm, transient
+MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM  # 1.8 Nm, indefinite
+MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM  # 6.0 Nm, transient
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
 ForcePositionSnapshot = _taccap_native.ForcePositionSnapshot
 ForcePositionController = _taccap_native.ForcePositionController
 FORCE_POSITION_MAX_HOLD_TORQUE_NM = _taccap_native.FORCE_POSITION_MAX_HOLD_TORQUE_NM
 FORCE_POSITION_MAX_MOTION_TORQUE_NM = _taccap_native.FORCE_POSITION_MAX_MOTION_TORQUE_NM
-Diagnostics = _taccap_native.Diagnostics              # firmware UART counters + log control
-UartStats   = _taccap_native.UartStats                # Cmd 0x54 payload
-LogConfig   = _taccap_native.LogConfig                # Cmd 0x55 payload
-LogLevel    = _taccap_native.LogLevel                 # firmware log verbosity
-LOG_OUTPUT_NONE = _taccap_native.LOG_OUTPUT_NONE      # firmware default: logging off
-LOG_OUTPUT_UART = _taccap_native.LOG_OUTPUT_UART      # MCU DEBUG UART (not on USB)
+Diagnostics = _taccap_native.Diagnostics  # firmware UART counters + log control
+UartStats = _taccap_native.UartStats  # Cmd 0x54 payload
+LogConfig = _taccap_native.LogConfig  # Cmd 0x55 payload
+LogLevel = _taccap_native.LogLevel  # firmware log verbosity
+LOG_OUTPUT_NONE = _taccap_native.LOG_OUTPUT_NONE  # firmware default: logging off
+LOG_OUTPUT_UART = _taccap_native.LOG_OUTPUT_UART  # MCU DEBUG UART (not on USB)
 MotorControlStats = _taccap_native.MotorControlStats  # V1.7
 MotorPrivateParam = _taccap_native.MotorPrivateParam  # V1.9+ private-protocol param
-MotorStatusExt = _taccap_native.MotorStatusExt        # V2.2 72-byte status (Cmd 0x53)
-MotorFaultReport = _taccap_native.MotorFaultReport    # V2.2 64-byte fault report (Cmd 0x52)
-MotorVersion = _taccap_native.MotorVersion            # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
-MotorStopReason = _taccap_native.MotorStopReason      # V2.2
+MotorStatusExt = _taccap_native.MotorStatusExt  # V2.2 72-byte status (Cmd 0x53)
+MotorFaultReport = (
+    _taccap_native.MotorFaultReport
+)  # V2.2 64-byte fault report (Cmd 0x52)
+MotorVersion = (
+    _taccap_native.MotorVersion
+)  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
+MotorStopReason = _taccap_native.MotorStopReason  # V2.2
 # V2.2 partial auto-cal writes — patch stall params without a read-modify-write
 GripperAutoCalStallParam = _taccap_native.GripperAutoCalStallParam
 GripperAutoCalStallParamEx = _taccap_native.GripperAutoCalStallParamEx
@@ -134,9 +142,9 @@ IMU = _taccap_native.IMU
 Encoder = _taccap_native.Encoder
 Motor = _taccap_native.Motor
 Key = _taccap_native.Key
-Led = _taccap_native.Led                              # V1.9 WS2812 LED control
-Ws2812Mode = _taccap_native.Ws2812Mode                # V1.9
-Ws2812EffectType = _taccap_native.Ws2812EffectType    # V1.9
+Led = _taccap_native.Led  # V1.9 WS2812 LED control
+Ws2812Mode = _taccap_native.Ws2812Mode  # V1.9
+Ws2812EffectType = _taccap_native.Ws2812EffectType  # V1.9
 SensorErrors = _taccap_native.SensorErrors
 Camera = _taccap_native.Camera
 OtaSession = _taccap_native.OtaSession

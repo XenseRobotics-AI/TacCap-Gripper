@@ -105,14 +105,23 @@ def test_torque_ceilings_are_the_motor_ratings():
     assert t.FORCE_POSITION_MAX_HOLD_TORQUE_NM == pytest.approx(1.8)
     assert t.FORCE_POSITION_MAX_MOTION_TORQUE_NM == pytest.approx(6.0)
     cfg = t.ForcePositionConfig()
-    assert cfg.hold_torque_limit_nm == pytest.approx(t.FORCE_POSITION_MAX_HOLD_TORQUE_NM)
-    assert cfg.motion_torque_limit_nm == pytest.approx(t.FORCE_POSITION_MAX_MOTION_TORQUE_NM)
+    assert cfg.hold_torque_limit_nm == pytest.approx(
+        t.FORCE_POSITION_MAX_HOLD_TORQUE_NM
+    )
+    assert cfg.motion_torque_limit_nm == pytest.approx(
+        t.FORCE_POSITION_MAX_MOTION_TORQUE_NM
+    )
 
 
 def test_force_position_states_cover_the_machine():
     names = {v.name for v in t.ForcePositionState.__members__.values()}
     assert names == {
-        "IDLE", "HOLDING_POSITION", "CLOSING", "HOLDING_FORCE", "OPENING", "FAULT",
+        "IDLE",
+        "HOLDING_POSITION",
+        "CLOSING",
+        "HOLDING_FORCE",
+        "OPENING",
+        "FAULT",
     }
 
 
@@ -188,9 +197,16 @@ def test_impedance_controller_exposes_a_snapshot():
     # One call, one consistent view -- not a property per guard, each read
     # under its own lock.
     assert hasattr(t.ImpedanceController, "snapshot")
-    for field in ("state", "observation", "target_position", "effective_position",
-                  "commanded_torque_nm", "torque_capped",
-                  "torque_caps", "fault_reason"):
+    for field in (
+        "state",
+        "observation",
+        "target_position",
+        "effective_position",
+        "commanded_torque_nm",
+        "torque_capped",
+        "torque_caps",
+        "fault_reason",
+    ):
         assert hasattr(t.ImpedanceSnapshot, field), field
 
 

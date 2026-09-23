@@ -76,7 +76,9 @@ def test_class_has_a_docstring(name):
 @pytest.mark.parametrize("name", DOCUMENTED_CLASSES)
 def test_every_public_method_has_a_docstring(name):
     cls = getattr(t, name)
-    undocumented = [m for m in _public_members(cls) if not _prose(getattr(cls, m).__doc__)]
+    undocumented = [
+        m for m in _public_members(cls) if not _prose(getattr(cls, m).__doc__)
+    ]
     assert not undocumented, (
         f"{name}: {sorted(undocumented)} have only a pybind-generated signature. "
         "Pass a docstring as the last argument to .def(...) in python/bindings/."
@@ -88,7 +90,11 @@ def test_the_package_documents_its_own_surface():
     # had gone stale once already: it listed the framing layer as the whole API
     # long after the controllers and components landed.
     doc = t.__doc__ or ""
-    for expected in ("ImpedanceController", "ForcePositionController", "FollowerGripper"):
+    for expected in (
+        "ImpedanceController",
+        "ForcePositionController",
+        "FollowerGripper",
+    ):
         assert expected in doc, f"the package docstring does not mention {expected}"
 
 

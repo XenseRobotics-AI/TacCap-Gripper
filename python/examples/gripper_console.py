@@ -129,8 +129,8 @@ class ImpedanceBackend:
 
     def __init__(self, g: FollowerGripper, args):
         cfg = ImpedanceConfig()
-        cfg.kp = args.kp                     # 刚度 Nm/rad
-        cfg.kd = args.kd                     # 阻尼 Nm·s/rad,同时定接近速度
+        cfg.kp = args.kp  # 刚度 Nm/rad
+        cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
         # 误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。主保护 —— 它同时
         # 限住了「接近」和「堵转」,而只防堵转是不够的:实测不钳位的大步进会以
         # 5.5 rad/s 掠过物体把它撞飞,全程力矩不到 0.03 Nm,没有持续接触可检测。
@@ -195,7 +195,7 @@ class ForcePositionBackend:
 
     def __init__(self, g: FollowerGripper, args):
         cfg = ForcePositionConfig()
-        cfg.grasp_torque_nm = args.grasp_torque    # 接触后的保持力矩 = 夹持力
+        cfg.grasp_torque_nm = args.grasp_torque  # 接触后的保持力矩 = 夹持力
         # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),
         # 所以 close_speed < grasp/5 时增益饱和,爪子会堵转在低于设定的力上 ——
         # validate_config() 直接拒掉,而不是给一个悄悄变软的夹持。
@@ -325,8 +325,8 @@ def main() -> int:
         default=_IMP.max_position_torque_nm,
         dest="max_position_torque",
         help=f"力矩预算/误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。"
-             f"被挡住时命令饱和在这里并一直保持,那就是夹持力 "
-             f"(默认 {_IMP.max_position_torque_nm:.2f},须低于 --rated-torque)",
+        f"被挡住时命令饱和在这里并一直保持,那就是夹持力 "
+        f"(默认 {_IMP.max_position_torque_nm:.2f},须低于 --rated-torque)",
     )
     # 默认值从 MOTOR_RATED_TORQUE_NM 派生,不要再写字面量:这里原本硬编码 2.0,
     # 而 aa3d0a9 把 ImpedanceConfig 的上界从峰值 6.0 收到额定 1.8(那个保持是
@@ -417,9 +417,11 @@ def main() -> int:
     # 只在阻抗模式显示增益:力位模式的位置增益已经不是可配项(在
     # detail::ForcePositionTuning 里),再把 --kp/--kd 印在标题上会让人以为
     # 它们生效了。
-    gains = (f"  kp={args.kp:.2f} kd={args.kd:.2f}"
-             if args.mode == "impedance"
-             else f"  grasp={args.grasp_torque:.2f}Nm")
+    gains = (
+        f"  kp={args.kp:.2f} kd={args.kd:.2f}"
+        if args.mode == "impedance"
+        else f"  grasp={args.grasp_torque:.2f}Nm"
+    )
     head = (
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "
         f"fw {g.firmware_version}{gains} ==="

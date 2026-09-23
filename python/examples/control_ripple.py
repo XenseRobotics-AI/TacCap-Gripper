@@ -45,7 +45,7 @@ def summarize(seg, commanded: float) -> dict:
     n = len(seg)
     # 掐掉两头各 20%:加速段和减速段不是稳态,算进去等于把控制器的正常行为
     # 记成纹波。
-    core = seg[int(n * 0.2):int(n * 0.8)]
+    core = seg[int(n * 0.2) : int(n * 0.8)]
     v = [abs(r[2]) for r in core]
     mu, sd = st.mean(v), st.pstdev(v)
     dur = core[-1][0] - core[0][0]
@@ -61,9 +61,12 @@ def summarize(seg, commanded: float) -> dict:
     reversals = sum(1 for r in core if r[2] * direction < -0.02)
 
     return {
-        "n": len(core), "mean": mu, "sd": sd,
+        "n": len(core),
+        "mean": mu,
+        "sd": sd,
         "ripple": sd / mu * 100 if mu else float("nan"),
-        "pp": max(v) - min(v), "freq": freq,
+        "pp": max(v) - min(v),
+        "freq": freq,
         "ratio": mu / commanded * 100 if commanded else float("nan"),
         "reversals": reversals,
     }
@@ -72,8 +75,10 @@ def summarize(seg, commanded: float) -> dict:
 def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
     rows: list = []
     sub = gripper.motor.on_status(
-        lambda s: rows.append((time.perf_counter(), s.actual_pos,
-                               s.actual_vel, s.actual_torque)))
+        lambda s: rows.append(
+            (time.perf_counter(), s.actual_pos, s.actual_vel, s.actual_torque)
+        )
+    )
     c = make_ctrl()
     c.start()
 
@@ -115,8 +120,10 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
         gripper.motor.off(sub)
 
     print(f"\n=== {name} ===  命令速度 {commanded:.2f} rad/s,{rounds} 轮")
-    print(f"  {'方向':>4} {'轮':>3} {'相对纹波':>18} {'峰峰':>16} "
-          f"{'极限环':>8} {'均速/命令':>10} {'逆向帧':>8}")
+    print(
+        f"  {'方向':>4} {'轮':>3} {'相对纹波':>18} {'峰峰':>16} "
+        f"{'极限环':>8} {'均速/命令':>10} {'逆向帧':>8}"
+    )
     bad = 0
     for label, xs in per_dir.items():
         if not xs:
@@ -127,22 +134,26 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
         pp = [x["pp"] for x in xs]
         rev = sum(x["reversals"] for x in xs)
         tot = sum(x["n"] for x in xs)
-        print(f"  {label:>4} {len(xs):>3} "
-              f"{st.median(rip):>6.1f}% [{min(rip):.1f}-{max(rip):.1f}] "
-              f"{st.median(pp):>8.3f} [{min(pp):.3f}-{max(pp):.3f}] "
-              f"{st.median([x['freq'] for x in xs]):>6.1f}Hz "
-              f"{st.median([x['ratio'] for x in xs]):>8.0f}% "
-              f"{rev:>4}/{tot}")
+        print(
+            f"  {label:>4} {len(xs):>3} "
+            f"{st.median(rip):>6.1f}% [{min(rip):.1f}-{max(rip):.1f}] "
+            f"{st.median(pp):>8.3f} [{min(pp):.3f}-{max(pp):.3f}] "
+            f"{st.median([x['freq'] for x in xs]):>6.1f}Hz "
+            f"{st.median([x['ratio'] for x in xs]):>8.0f}% "
+            f"{rev:>4}/{tot}"
+        )
     return bad
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     _target.add_target_argument(ap)
     ap.add_argument("--rounds", type=int, default=10, help="每个方向测多少轮")
-    ap.add_argument("--controller", choices=("force-position", "impedance", "both"),
-                    default="both")
+    ap.add_argument(
+        "--controller", choices=("force-position", "impedance", "both"), default="both"
+    )
     ap.add_argument("--close-speed", type=float, default=0.5, help="行进速度 rad/s")
     args = ap.parse_args()
 
@@ -154,16 +165,20 @@ def main() -> int:
 
     bad = 0
     if args.controller in ("force-position", "both"):
+
         def mk_fp():
             cfg = ForcePositionConfig()
             cfg.close_speed_radps = args.close_speed
             return ForcePositionController(g, cfg)
+
         bad += run("ForcePositionController", mk_fp, args.close_speed, g, args.rounds)
 
     if args.controller in ("impedance", "both"):
+
         def mk_imp():
             cfg = ImpedanceConfig()
             return ImpedanceController(g, cfg)
+
         # 阻抗没有「命令速度」这个量:接近速度由 peak/kd 决定。用实测均速自比,
         # 所以 ratio 一列对它没有意义。
         bad += run("ImpedanceController", mk_imp, args.close_speed, g, args.rounds)
