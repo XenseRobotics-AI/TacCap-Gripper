@@ -63,78 +63,7 @@ A fork of `lerobot-xense` consumes this SDK through a `taccap_gripper` robot
 class. It only *imports* `xense.taccap`, reimplements no device access, and is
 not required to use this SDK.
 
-## Status
-
-**v0.2.3.** Command set **V2.3**, wire framing **V1.8**. Hardware-validated on
-bilateral leader setups and on real follower grippers — including the V2.2
-follower diagnostics, the MIT force-position control path, and stream-locked
-submission under a full production load (all cameras streaming, motor cycling).
-
-**Firmware minimums.** `FollowerGripper` **refuses to open a follower below
-1.2.5** — it throws rather than warns, and `Config::allow_outdated_firmware`
-is the escape hatch for inspecting a device before upgrading it. (An earlier
-version of this line said 1.1.0; the enforced floor has been 1.1.6 since the
-motion safety envelope landed, and 1.2.5 since the closed-endpoint preload.)
-
-Two reasons stack up to 1.2.5. Below **1.1.6** there is no stall protection at
-all on the MIT command path, so a blocked jaw is bounded only by the motor's
-0x700B ceiling and browns out the board on 24 V. Below **1.2.5**
-auto-calibration wrote the closed zero with an inset (20 mrad through 1.2.3,
-5 mrad in 1.2.4), while this SDK's closed-endpoint preload assumes normalized
-0.0 *is* the mechanical stop — on older firmware it presses past what the
-position map calls fully closed. That one is bounded, not dangerous, but a
-scale that quietly means something else is worse to debug than a refusal.
-
-**The motor has a firmware floor of its own: >= 1.0.5.0.4.** That is the
-RobStride EL05 inside the follower, not the gripper MCU, and the SDK does
-**not** enforce it — reading the motor's version needs follower >= 1.2.6 and has
-so far only been confirmed under the private protocol, so there is nothing a
-startup check could rely on. It is a documented requirement, with the measured
-before/after and the upgrade path, under *固件版本要求:电机 ≥ 1.0.5.0.4* in
-Follower gripper control below.
-
-**The leader is deliberately not gated.** `ota_update.py` opens every gripper
-— followers included — through `LeaderGripper`, so a floor there would block
-the upgrade path for exactly the devices that need it. Leader >= 1.2.0 is what
-the V2.1 command set needs (`EncoderMaxCal` 0x2C, i.e. normalized leader
-position); it is a capability floor, not an enforced one.
-
-Command-level floors are advisory in the same way: V2.2 follower diagnostics
-need follower >= 1.1.2, the V2.3 additions (`GetMotorSpec` 0x56, `GetHomeDiag`
-0x57) need >= 1.2.3. Newer commands fail loudly with
-`ProtocolError(InvalidCmd)` rather than misbehaving, and payload length is
-never a version probe. Check what a device answers with
-`python python/examples/fisheye_cal.py show`.
-
-**Firmware 1.2.3 aligned the two roles onto one version number; 1.2.5 made it
-structural.** They build from one tree and share `protocol_handler.c`, so a
-change to the shared layer obliges both — and with separate lines (leader 1.2.x,
-follower 1.1.x) it was easy to bump one and forget the other, which is exactly
-what happened before 1.2.3: two leaders reported 1.2.1 while running a binary
-17,809 bytes different from the official 1.2.1. 1.2.3 aligned the *numbers* but
-left two `#ifdef`-guarded version definitions in place, so the cause survived;
-1.2.5 collapses them into one definition, and a role can no longer be left
-behind. The cost is that a change touching only one role still bumps the other.
-
-**V2.3 changed how a failed command answers.** A failure now comes back as a
-pure ACK with `cmd == 0` and a one-byte error code; success keeps the original
-command code. Before, a failure also carried the command code with a one-byte
-error payload — indistinguishable on the wire from a success returning one byte
-of data, so every no-data command's failure was invisible. If you talk to a
-follower or leader older than 1.2.3 you get the old, ambiguous form.
-
-> **[`firmware/`](firmware/) ships 1.2.5 for both roles**, both local
-> builds from one commit, both hardware-validated on two units each — four
-> grippers in total, all power-cycled at 24 V before measuring. Beyond the V2.3
-> protocol work they carry three fixes in code the two roles share (a
-> command-channel livelock under sustained high-rate input, a blocking-log path
-> that stalled realtime tasks, an out-of-bounds write on every boot), and on the
-> follower, power-on calibration drops from 11 s to 1.3 s. Note that this line
-> replaces an *official* leader 1.2.1, so it trades that provenance for the
-> fixes — see [`firmware/README.md`](firmware/README.md).
-> **Power-cycle after any flash** (24 V on a follower, not just USB).
-
-### What's in
+## What's in
 
 - **TC-GU-01 protocol** — async transport with ACK matching, per-command DATA
   subscribers, byte-stuffed framing.
@@ -171,6 +100,84 @@ Visuotactile (OG) capture lives at the Python level via the `xensesdk` wheel —
 Full per-commit history in [CHANGELOG.md](CHANGELOG.md).
 
 ---
+
+## Firmware
+
+The SDK talks **command set V2.3** over **wire framing V1.8**, and it requires
+matching firmware.
+
+**Follower: 1.2.5 or newer, enforced.** `FollowerGripper` throws rather than
+warns when it opens an older unit; `Config::allow_outdated_firmware=True` is the
+escape hatch for inspecting a device before upgrading it. Two independent
+reasons stack up to that floor. Below **1.1.6** there is no stall protection at
+all on the MIT command path, so a blocked jaw is bounded only by the motor's own
+0x700B ceiling and browns out the board on 24 V. Below **1.2.5**
+auto-calibration wrote the closed zero with an inset (20 mrad through 1.2.3,
+5 mrad in 1.2.4), while this SDK's closed-endpoint preload assumes normalized
+0.0 *is* the mechanical stop — so on older firmware it presses past what the
+position map calls fully closed. The second is bounded rather than dangerous,
+but a scale that quietly means something else is worse to debug than a refusal.
+
+**Leader: not gated, deliberately.** `ota_update.py` opens every gripper —
+followers included — through `LeaderGripper`, so a floor there would block the
+upgrade path for exactly the devices that need it. Leader **1.2.0** is what the
+V2.1 command set needs (`EncoderMaxCal` 0x2C, i.e. normalized leader position);
+that is a capability floor, not an enforced one.
+
+**Per-command floors are advisory the same way.** V2.2 follower diagnostics need
+follower >= 1.1.2; the V2.3 additions (`GetMotorSpec` 0x56, `GetHomeDiag` 0x57)
+need >= 1.2.3. A command the firmware does not implement fails loudly with
+`ProtocolError(InvalidCmd)` rather than misbehaving, and payload length is never
+a version probe. Ask a device what it answers with
+`python python/examples/fisheye_cal.py show left`.
+
+**The motor has a floor of its own, 1.0.5.0.4**, which the SDK does not enforce
+— see [固件版本要求:电机 ≥ 1.0.5.0.4](#固件版本要求电机--10504).
+
+**V2.3 changed how a failed command answers.** A failure comes back as a pure
+ACK with `cmd == 0` and a one-byte error code; success keeps the original command
+code. Before, a failure also carried the command code with a one-byte error
+payload — indistinguishable on the wire from a success returning one byte of
+data, so every no-data command's failure was invisible. Talking to firmware older
+than 1.2.3 gets the old, ambiguous form.
+
+### `firmware/` — the images this SDK ships
+
+Flashable images live in [`firmware/`](firmware/), so you can upgrade a gripper
+without access to the firmware source, which is **not** part of this repository.
+
+```
+firmware/
+  tc-gu-01-master-<ver>.bin    leader  — SN ends 'm'
+  tc-gu-01-slave-<ver>.bin     follower — SN ends 's'
+  manifest.json                what ota_update.py actually reads
+  README.md                    per-release notes and provenance
+```
+
+Only the current release is kept; older images come from git history rather than
+from extra files. Pick the image by the gripper's **role** — the last character
+of its firmware SN, `m` for master/leader and `s` for slave/follower — not by
+which hand it is on.
+
+`manifest.json` is load-bearing, not descriptive: it carries each image's
+version, size and CRC32, and `ota_update.py` resolves which file to send by
+**CRC32** rather than trusting the filename. So bumping a version means updating
+the `.bin` and the manifest together; `python/tests/test_ota_update_all.py`
+fails if they disagree.
+
+```bash
+python python/examples/ota_update.py slave left    # role selector, picks the image
+python python/examples/ota_update.py --all         # every attached gripper, its own image
+```
+
+**Power-cycle after any flash.** On a follower that means cutting the **24 V**
+supply, not just unplugging USB — 24 V is a separate rail, and the bank-swap
+reboot is a soft reset that leaves the device looking healthy while quietly
+dropping status frames.
+
+Per-release notes live in [`firmware/README.md`](firmware/README.md); how the
+images are produced and what the reference clones are for is in
+[docs/FIRMWARE.md](docs/FIRMWARE.md).
 
 ## Install
 

@@ -24,7 +24,7 @@ they sit next to the SDK for easy `grep` / IDE discovery but never
 appear in `git status`.
 
 You do **not** need either to flash a gripper — the released images ship
-in [`firmware/`](firmware/).
+in [`firmware/`](../firmware/).
 
 What's in them:
 
@@ -104,7 +104,7 @@ are told to use. `test_ota_update_all.py` fails if they disagree.
 > 都不可信。** 固件侧跟踪见 tc-gu-01 issue #6。
 
 > Only builds you made yourself need that path. To flash the **released**
-> images, name them and let the script find them in [`firmware/`](firmware/) —
+> images, name them and let the script find them in [`firmware/`](../firmware/) —
 > that resolves from any working directory, including a parent repo that
 > vendors this one as a submodule:
 >
