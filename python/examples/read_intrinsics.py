@@ -33,7 +33,7 @@ import json
 import sys
 
 import _target
-from xense.taccap import LeaderGripper, FollowerGripper, log
+from xense.taccap import FollowerGripper, LeaderGripper, log
 
 # 标定记录里**不存图像尺寸**。SDK 一律按标定时的 640x480 使用这组内参,按别的
 # 分辨率缩放就是猜 —— 所以这里把假设显式写进输出,而不是假装知道。

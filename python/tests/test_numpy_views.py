@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from xense.taccap import CameraFisheyeCal, scan_grippers
 
 

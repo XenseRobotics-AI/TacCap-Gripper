@@ -31,9 +31,11 @@ import argparse
 import time
 
 import _target
-
 from xense.taccap import (
-    ForcePositionConfig, ForcePositionController, ForcePositionState, log,
+    ForcePositionConfig,
+    ForcePositionController,
+    ForcePositionState,
+    log,
 )
 
 

@@ -49,16 +49,15 @@ holding 是观测量:命令用满了力矩预算而爪子仍然没在走。在�
 """
 
 from __future__ import annotations
+
 import argparse
 import time
 
 import _target
-
 from xense.taccap import (
-    FollowerGripper,
+    GRIPPER_ENVELOPE_ENFORCE,
     ForcePositionConfig,
     ForcePositionController,
-    GRIPPER_ENVELOPE_ENFORCE,
     log,
 )
 

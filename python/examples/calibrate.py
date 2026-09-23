@@ -44,10 +44,9 @@ import math
 import sys
 import time
 
-from xense.taccap import LeaderGripper, Side, scan_grippers
-
-import _target
 import _calib_flow
+import _target
+from xense.taccap import LeaderGripper
 
 # No expected full-open angle is defined on purpose. The measured span IS
 # the calibration — it is what the mechanism does and what the SDK normalizes
@@ -108,7 +107,7 @@ def calibrate(target: str, *, skip_open_probe: bool) -> int:
 
     print()
     print(_cyan("=" * 64))
-    print(_cyan(f"  TacCap leader-gripper encoder calibration"))
+    print(_cyan("  TacCap leader-gripper encoder calibration"))
     print(_cyan("=" * 64))
     print(f"  requested    : {_bold(target)}"
           f"{'  (resolved by side)' if by_side else ''}")
@@ -145,7 +144,7 @@ def calibrate(target: str, *, skip_open_probe: bool) -> int:
 
     # ---- 2. Latch zero -----------------------------------------------------
     print(_yellow("Step 1/2: hold the gripper FULLY CLOSED."))
-    print(_yellow(f"          (Ctrl+C any time to abort without changing zero.)"))
+    print(_yellow("          (Ctrl+C any time to abort without changing zero.)"))
     _prompt(_yellow("→ press [Enter] when held closed:"))
 
     pre_raw, pre_cooked = _read_positions_rad(g)

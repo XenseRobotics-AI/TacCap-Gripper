@@ -30,7 +30,6 @@ import argparse
 import time
 
 import _target
-
 from xense.taccap import MotorStopReason, log
 
 

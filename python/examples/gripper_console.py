@@ -40,25 +40,22 @@ import fcntl
 import os
 import sys
 import termios
-import threading
 import time
 import tty
 from typing import Optional
 
 import _target
-
 from xense.taccap import (
+    GRIPPER_ENVELOPE_ENFORCE,
+    GRIPPER_ENVELOPE_VALID,
+    MOTOR_RATED_TORQUE_NM,
     FollowerGripper,
     ForcePositionConfig,
+    ForcePositionController,
     ImpedanceConfig,
     ImpedanceController,
-    ForcePositionController,
-    GRIPPER_ENVELOPE_VALID,
-    GRIPPER_ENVELOPE_ENFORCE,
-    MOTOR_RATED_TORQUE_NM,
     log,
 )
-
 
 # argparse 的默认值一律从库默认派生,不写字面量 —— 这里的 --rated-torque 曾经
 # 硬编码 2.0,而 SDK 侧把上界从峰值收到额定后没人改它,阻抗模式默认参数崩了十天。

@@ -38,6 +38,34 @@ jobs:
       - name: Unit tests
         run: ./build/cpp/tests/taccap_unit_tests
 
+      # The build above already put _taccap_native and libtaccap_core into
+      # python/xense/taccap/, and python/tests/conftest.py puts that directory
+      # first on sys.path and asserts the extension came from this checkout —
+      # so there is nothing to install and no risk of testing a different copy.
+      #
+      # This runs the guards a C++ test structurally cannot: that the bound
+      # config surface still has the fields and defaults downstream code sets,
+      # that the version is single-sourced, that numpy views are not
+      # zero-stride, and that the docstrings are still there.
+      - name: Install test dependencies
+        run: python3 -m pip install --break-system-packages pytest numpy
+
+      - name: Python tests
+        run: python3 -m pytest python/tests -q
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The enforced rule set is pinned in pyproject.toml, not taken from
+      # ruff's defaults — those broaden between releases, which would turn an
+      # unrelated ruff upgrade into a red build.
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: check --output-format=github
+
   protocol-drift:
     name: protocol mirror vs firmware
     runs-on: ubuntu-latest

@@ -51,15 +51,14 @@ from __future__ import annotations
 import argparse
 import sys
 
+import _calib_flow
+import _target
 from xense.taccap import (
     CameraFisheyeCal,
     FollowerGripper,
     LeaderGripper,
     ProtocolError,
 )
-
-import _target
-import _calib_flow
 
 _TTY = sys.stdout.isatty()
 

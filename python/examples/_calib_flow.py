@@ -24,9 +24,8 @@ from __future__ import annotations
 
 import os
 
-from xense.taccap import ProtocolError
-
 from _target import bold, deg, firmware_version, green, red, yellow
+from xense.taccap import ProtocolError
 
 # Tolerance for the "did the new zero actually take" check. The firmware
 # latches whatever it sees the instant it processes the command, so any

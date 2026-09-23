@@ -75,16 +75,14 @@ import sys
 import time
 from typing import Optional
 
+import _target
 from xense.taccap import (
     LeaderGripper,
-    OtaSession,
     OtaTargetVersion,
     Side,
     crc32_iso_hdlc,
     log,
 )
-
-import _target
 
 
 def _open_gripper(target: str | None) -> tuple[LeaderGripper, object]:

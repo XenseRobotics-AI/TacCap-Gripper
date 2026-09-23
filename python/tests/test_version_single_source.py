@@ -22,7 +22,6 @@ import pathlib
 import re
 
 import pytest
-
 import xense.taccap as t
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]

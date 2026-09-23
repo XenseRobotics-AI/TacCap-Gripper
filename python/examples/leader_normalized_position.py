@@ -31,10 +31,9 @@ import math
 import sys
 import time
 
-from xense.taccap import LeaderGripper, ProtocolError
-
-import _target
 import _calib_flow
+import _target
+from xense.taccap import LeaderGripper, ProtocolError
 
 
 def main() -> int:

@@ -36,10 +36,13 @@ import argparse
 import time
 
 import _target
-
 from xense.taccap import (
-    FollowerGripper, ImpedanceConfig, ImpedanceController, ImpedanceState,
-    GRIPPER_ENVELOPE_VALID, GRIPPER_ENVELOPE_ENFORCE, log,
+    GRIPPER_ENVELOPE_ENFORCE,
+    GRIPPER_ENVELOPE_VALID,
+    ImpedanceConfig,
+    ImpedanceController,
+    ImpedanceState,
+    log,
 )
 
 # 认为「到位」的归一化误差。阻抗跟随会停在 kp x 误差 抵住摩擦的地方,不是数学上

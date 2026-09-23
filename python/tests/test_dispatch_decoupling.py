@@ -26,7 +26,6 @@ import threading
 import time
 
 import pytest
-
 from xense.taccap import Address, Cmd, FrameType, Transport, pack_frame
 
 

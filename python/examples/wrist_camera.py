@@ -98,7 +98,6 @@ import sys
 import time
 
 import numpy as np
-
 from xense.taccap import (
     FISHEYE_FALLBACK_CAL,
     Camera,

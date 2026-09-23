@@ -31,10 +31,12 @@ import statistics as st
 import time
 
 import _target
-
 from xense.taccap import (
-    ForcePositionConfig, ForcePositionController,
-    ImpedanceConfig, ImpedanceController, log,
+    ForcePositionConfig,
+    ForcePositionController,
+    ImpedanceConfig,
+    ImpedanceController,
+    log,
 )
 
 
@@ -95,7 +97,9 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
 
     per_dir: dict[str, list] = {"闭合": [], "张开": []}
     try:
-        c.set_target(1.0); settle(); time.sleep(0.4)
+        c.set_target(1.0)
+        settle()
+        time.sleep(0.4)
         for _ in range(rounds):
             for label, tgt in (("闭合", 0.0), ("张开", 1.0)):
                 rows.clear()

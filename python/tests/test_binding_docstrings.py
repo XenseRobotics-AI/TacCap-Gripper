@@ -21,7 +21,6 @@ from __future__ import annotations
 import re
 
 import pytest
-
 import xense.taccap as t
 
 # The classes a caller actually holds. Adding one here is a commitment to

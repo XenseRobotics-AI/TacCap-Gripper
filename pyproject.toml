@@ -19,6 +19,22 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/XenseRobotics-AI/TacCap-Gripper"
 
+# Ruff's default rule set is not stable across releases: 0.16 turned on I001,
+# BLE001, S110 and others that earlier versions left off, which is how a repo
+# that was clean silently becomes un-gateable. Pin what we enforce so a ruff
+# upgrade changes the version, not the contract.
+#
+# What is deliberately NOT enforced: BLE001 and S110. This SDK swallows
+# exceptions on purpose in teardown and best-effort paths (see
+# FollowerGripper release, IMU::on_data, the controller stop() paths) and those
+# handlers carry comments explaining why; turning them into errors would
+# reward refactoring documented behaviour into noqa comments.
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
 [tool.scikit-build]
 wheel.packages = ["python/xense"]
 cmake.version = ">=3.20"

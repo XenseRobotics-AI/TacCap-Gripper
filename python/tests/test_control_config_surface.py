@@ -19,9 +19,7 @@ Run with:  pytest python/tests
 from __future__ import annotations
 
 import pytest
-
 import xense.taccap as t
-
 
 # ---- ForcePositionConfig -------------------------------------------------
 

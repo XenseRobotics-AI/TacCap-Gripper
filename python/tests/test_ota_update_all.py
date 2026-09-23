@@ -4,7 +4,6 @@ import types
 import zlib
 from pathlib import Path
 
-
 xense = types.ModuleType("xense")
 taccap = types.ModuleType("xense.taccap")
 
