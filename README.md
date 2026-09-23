@@ -537,18 +537,18 @@ OTA 本身走 `LeaderGripper`(角色无关),**不受这个检查影响**,升级�
 
 ```bash
 # 阻抗控制 —— ImpedanceController:set_target(0..1) + snapshot()
-python python/examples/impedance_control.py --side right
+python python/examples/impedance_control.py right
 
 # 夹持 —— ForcePositionController:同样的两个调用,但命令被钳在 grasp_torque_nm
-python python/examples/force_position_control.py --side right
+python python/examples/force_position_control.py right
 ```
 
 **先配好运动安全包络。** 它是固件侧的力矩与热保护,默认**不启用**(出厂设备
 `GripperConfig.reserved` 全 0),不开就没有:
 
 ```bash
-python python/examples/impedance_control.py --show-envelope              # 查看
-python python/examples/impedance_control.py --set-envelope \
+python python/examples/impedance_control.py right --show-envelope       # 查看
+python python/examples/impedance_control.py right --set-envelope \
        --peak 2.0 --cont 1.6                                             # 写入并启用
 ```
 
@@ -616,7 +616,113 @@ g.diagnostics.disable_logging()                                  # off again
 
 ## Examples
 
-All scripts live under `python/examples/`; the table is in
+Twelve runnable scripts under `python/examples/`. They are the fastest way to
+learn the SDK, because each one is the smallest program that exercises one
+capability — and they are also the tools we use to bring up hardware.
+
+### One selector, everywhere
+
+Every script takes the same **positional** argument:
+
+```bash
+python python/examples/follower_status.py left      # by side
+python python/examples/follower_status.py right
+python python/examples/follower_status.py TCGU01A28Z0015s   # by firmware SN
+python python/examples/follower_status.py           # omit when exactly one is plugged in
+```
+
+There is no `--side` / `--sn` / `--device` flag — a rig has a left and a right
+of everything, and the side is the only handle that means the same thing for the
+gripper, its wrist camera and its tactile pair. Side comes from the
+**firmware-burned SN** (`Cmd::GetSn`), never the CH343 USB-chip SN. With two
+grippers plugged in and no argument, a script refuses rather than guessing which
+half of the rig you meant; `calibrate.py` always requires it, because it writes.
+
+### Bringing up a gripper, in order
+
+```bash
+# 1. Is it there, and what is it?  (read-only)
+python -c "from xense.taccap import scan_grippers
+for g in scan_grippers(): print(g.side, g.role, g.firmware_sn, g.mcu_device)"
+
+# 2. Read its state. Every field explained in the script's header.  (read-only)
+python python/examples/follower_status.py left
+
+# 3. Configure the firmware motion-safety envelope. NOT enabled out of the box,
+#    and it is the only protection layer on the MIT path nothing can bypass.
+python python/examples/impedance_control.py left --show-envelope
+python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.6
+
+# 4. First motion, interactively, with j/k/o/c keys.
+python python/examples/gripper_console.py left
+
+# 5. Grasp something.
+python python/examples/force_position_control.py left --grasp-torque 1.1
+```
+
+Step 3 before step 4 is the load-bearing order — see
+[固件版本要求](#固件版本要求从爪--125) for what the envelope protects against and
+why the default is off.
+
+### By task
+
+**Control.** Both controllers take the same two non-blocking calls,
+`set_target(0..1)` and `snapshot()`:
+
+```bash
+python python/examples/impedance_control.py left                  # follow a position
+python python/examples/impedance_control.py left --targets 1.0,0.5,0.0
+python python/examples/force_position_control.py left             # grasp: bounded torque
+python python/examples/gripper_console.py left --mode force-position
+python python/examples/control_and_read.py left                   # read state WHILE controlling
+python python/examples/control_ripple.py left --controller both   # measure tracking quality
+```
+
+`control_and_read.py` answers the question everyone hits second: during control,
+read `snapshot()` — never `motor.read_status()`, whose ACK collides with the
+control frames on the same serial link.
+
+**Calibration** — required before normalized `0..1` position means anything:
+
+```bash
+python python/examples/calibrate.py left          # leader: encoder zero + travel span
+python python/examples/fisheye_cal.py show left   # inspect the flash-persisted records
+python python/examples/read_intrinsics.py left --out cal.json    # read-only, JSON out
+```
+
+**Camera and leader:**
+
+```bash
+python python/examples/wrist_camera.py left --undistort
+python python/examples/leader_normalized_position.py left
+```
+
+**Firmware:**
+
+```bash
+python python/examples/ota_update.py slave left   # then CUT 24 V, not just USB
+```
+
+### What each one does to the device
+
+Check this column before running anything on a rig that matters.
+
+| | scripts |
+|---|---|
+| **Read-only** | `follower_status`, `read_intrinsics`, `wrist_camera`, `leader_normalized_position`, `fisheye_cal show` |
+| **Moves the motor** | `impedance_control`, `force_position_control`, `control_and_read`, `control_ripple`, `gripper_console` |
+| **Writes flash** | `calibrate`, `fisheye_cal set-*`, `--set-envelope` on `impedance_control` / `gripper_console` |
+| **Flashes firmware** | `ota_update` — destructive; power-cycle by cutting 24 V afterwards |
+
+### Two shared modules, not runnable
+
+`_target.py` is the selector above plus version/colour helpers, imported by
+every script but `wrist_camera.py`. `_calib_flow.py` is the guided calibration
+walkthrough, used by the three scripts that can meet an uncalibrated unit. Both
+stay out of `xense.taccap` deliberately: they prompt on stdin, and a library
+that blocks on stdin breaks every headless consumer.
+
+Per-script detail, including what each flag measures, is in
 **[docs/EXAMPLES.md](docs/EXAMPLES.md)**. C++ examples build by default into
 `build/cpp/examples/` (`-DTACCAP_BUILD_EXAMPLES=OFF` to skip them); the wheel
 build turns them off on its own.
