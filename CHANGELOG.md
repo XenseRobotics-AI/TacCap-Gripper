@@ -1723,7 +1723,6 @@ visualiser.
   diagrams, threading model, USB-topology discovery, boundary
   between this SDK and downstream consumers (dataset recording,
   lerobot adapters).
-- `CLAUDE.md` — house-rules file for AI-assisted maintenance.
 
 ## [0.0.1] - 2026-04-29
 

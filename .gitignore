@@ -36,3 +36,9 @@ Thumbs.db
 # third_party/firmware/ (May 2026). Kept ignored in case anyone still
 # has the old path lying around in a clean checkout.
 Embedded Software/
+
+# Working notes for AI-assisted maintenance — local only.
+# Carries bench details, device serials and internal infrastructure, none of
+# which belongs in a distributed checkout. Keep your own copy; it is not
+# shared through this repo.
+/CLAUDE.md
