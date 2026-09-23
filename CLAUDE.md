@@ -5,9 +5,9 @@ carries deep background; this file is *house rules*.
 
 ## Repo identity
 - C++17 SDK + Python (pybind11) bindings. Apache-2.0. Long-term maintained.
-- Sister repo `taccap_gripper_ros2` (under `~/taccap_ros2_ws/src/`) only
-  *imports* the `xense.taccap` Python package; it does **not** reimplement
-  any lower-layer comms. The two repos release independently.
+- Downstream consumers only *import* the `xense.taccap` package and never
+  reimplement lower-layer comms. `lerobot-xense` is the one in use, via the
+  `third_party/taccap-gripper` submodule; it releases independently.
 
 ## Build & test (C++)
 - Build dir is `build/` (existing CMake/Ninja generator).
@@ -74,7 +74,7 @@ carries deep background; this file is *house rules*.
 ## Build & install (Python wheel)
 - conda env `xense-taccap` (py3.12, primary dev env):
   `pip install -e . --no-build-isolation`
-- System py3.10 (used by ROS2 Humble):
+- System py3.10:
   `/usr/bin/python3 -m pip install --user --no-build-isolation .`
 - C++ examples build by default (`-DTACCAP_BUILD_EXAMPLES=OFF` to skip). They
   are on so CI compiles them: while they were off, an SDK signature change
@@ -289,8 +289,6 @@ be yours.
 - C++: `#include <taccap/log.hpp>`, then `xense::taccap::logger()->info(...)`.
 - Python: `from xense.taccap import log; log.info(...)` /
   `log.set_level("debug")`.
-- The ROS2 sibling repo is out of scope here — it uses `rclpy`'s
-  `Node.get_logger()` instead.
 
 ### Sinks (both attached by default)
 
@@ -331,10 +329,6 @@ archive format never changes (keeps historical greps parseable).
   rates actually do — `cpp/src/stream_rate.hpp` mirrors it.
 - Side L/R detection reads the firmware-burned SN via `Cmd::GetSn`, **not**
   the CH343 USB chip SN.
-- ROS2 nodes must run with `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and QoS
-  `BEST_EFFORT`. Fast-DDS drops 20–35% of image frames on this setup.
-- ROS2 image bytes go through `msg.data = array.array('B', arr.tobytes())`
-  — assigning a `bytes` object directly hits a slow rclpy octet[] path.
 
 ## Risky actions — confirm before
 - Running `python/examples/ota_update.py` (flashes firmware; wrong artifact
@@ -349,7 +343,6 @@ archive format never changes (keeps historical greps parseable).
 - Any change under `third_party/firmware/` or to the firmware-protocol
   mirror headers in `cpp/include/taccap/protocol/`.
 - `git push --force*` to `main` (the only remote here is GitHub `origin`).
-- Stopping the system ROS2 daemon or editing cyclonedds config files.
 
 ## When in doubt
 Auto-memory for this repo lives in
