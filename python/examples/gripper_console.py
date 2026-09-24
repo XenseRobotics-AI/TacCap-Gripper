@@ -485,6 +485,17 @@ def main() -> int:
                     backend.start()
                     g.motor.enable()
                     controller_active = True
+                    # ...and that seeding is why the local target has to be
+                    # re-read. The motor was DISABLED while paused, so the jaw
+                    # is back-drivable and may have been moved by hand; start()
+                    # takes wherever it is now as the target, while `target`
+                    # still holds the pre-pause number. Leave them apart and the
+                    # header lies about what is commanded, then the next j/k
+                    # steps from the stale value -- a jump, not a step. start()
+                    # reads one status synchronously, so this is valid at once.
+                    resumed = backend.observation()
+                    if resumed.valid:
+                        target = resumed.position
                 elif ch == "d" and controller_active:
                     # Stop owns the safe ordering: zero torque first, then
                     # disable, and finally tear down the status subscription.
