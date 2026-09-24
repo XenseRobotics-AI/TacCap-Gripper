@@ -279,6 +279,30 @@ public:
     protocol::MotorVersion motor_version(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{3000});
 
+    // ---- Which actuator this gripper is built around (0x59 / 0x5A) ---------
+    // This asks the MCU what it has RECORDED, not the motor what it is. The
+    // motor cannot answer: its version frame carries a version and nothing
+    // else, neither manual's parameter table has a model field, and the
+    // closest proxy is a private-protocol parameter, which is unreadable while
+    // the motor speaks MIT -- so a boot-time probe would need exactly what is
+    // unavailable at boot.
+    //
+    // Read this when a gripper behaves as though its torques are scaled: MIT
+    // frames quantise torque and velocity against the model's ranges, so a
+    // wrong record is not an error, it is a constant factor on every frame.
+    // `t_max_nm` / `v_max_rad_s` in the reply are the ranges actually in force.
+    // Firmware 1.2.7+; older followers NACK InvalidCmd.
+    protocol::MotorModel get_model(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+    // Record which actuator is installed. WRITES MCU FLASH and takes effect on
+    // the NEXT POWER CYCLE, not immediately: the MIT ranges are fixed during
+    // init and the control loop is already running against them, so swapping
+    // scales mid-flight would have in-flight commands and feedback interpreted
+    // on two different rulers. Same shape as changing the motor CAN id.
+    void set_model(uint8_t model_id,
+                   std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
     // Subscribe to streamed MotorStatus DATA frames (StreamSrc::MotorStatus
     // must be enabled in start_streaming for these to arrive).
     SubId on_status(Callback cb);

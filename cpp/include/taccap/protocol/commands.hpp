@@ -114,6 +114,16 @@ enum class Cmd : uint8_t {
     GetMotorSpec             = 0x56,  // 电机型号规格(40B)
     GetHomeDiag              = 0x57,  // 自动标定诊断(64B)
     GetMotorVersion          = 0x58,  // 电机自身固件版本(8B,仅私有协议)
+    // Which actuator this gripper is built around. NOT a query to the motor:
+    // the motor cannot answer it (its version frame carries only a version
+    // number, neither manual's parameter table has a model field, and private
+    // parameters are unreadable under MIT). The MCU keeps the answer in flash.
+    //
+    // It matters because MIT frames quantise torque and velocity against the
+    // model's ranges, so the wrong model is not an error -- it is a fixed
+    // scale factor on every frame (EL05 +/-6 Nm vs RS00 +/-14 Nm).
+    GetMotorModel            = 0x59,  // 本机记录的电机型号(20B)
+    SetMotorModel            = 0x5A,  // 写电机型号(1B),掉电保持,重启生效
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

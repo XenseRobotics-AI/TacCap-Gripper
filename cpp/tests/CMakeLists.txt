@@ -8,6 +8,7 @@ add_executable(taccap_unit_tests
     test_codec_v17.cpp
     test_codec_v21.cpp
     test_codec_v22.cpp
+    test_codec_motor_model.cpp
     test_fisheye_undistort.cpp
     test_calibration_pty.cpp
     test_ota_retry_pty.cpp

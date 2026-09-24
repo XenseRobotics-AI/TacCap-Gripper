@@ -457,6 +457,48 @@ void bind_motor(py::module_& m) {
              "Copy of the installed converter; .valid is False when none is "
              "installed.");
 
+    // ---- MotorModel (0x59 / 0x5A) ----------------------------------------
+    py::class_<protocol::MotorModel>(m, "MotorModel",
+        "Which actuator this gripper is built around, as the MCU records it.\n\n"
+        "**This is not a question the motor can answer.** Its version frame\n"
+        "carries a version and nothing else, neither the EL05 nor the RS00\n"
+        "manual has a model field anywhere in the readable parameter tables,\n"
+        "and the closest proxy (0x302d rated_i) is an inference rather than an\n"
+        "identity AND is a private-protocol parameter -- unreadable while the\n"
+        "motor speaks MIT. So the MCU keeps the answer in flash and this reads\n"
+        "that record back.\n\n"
+        "Getting it wrong does not raise: MIT frames quantise torque and\n"
+        "velocity into 16 bits against the model's ranges, so an EL05 record on\n"
+        "an RS00 turns a commanded 1.1 N*m into 2.57 N*m and reads feedback\n"
+        "back at 0.43x -- which keeps the host's torque ceiling from tripping.\n"
+        "t_max_nm and v_max_rad_s are the ranges actually in force, so they are\n"
+        "the evidence when a gripper behaves as if its torques were scaled.")
+        .def_readonly("id", &protocol::MotorModel::id,
+                      "Stable model id as persisted. Not a table index -- ids are\n"
+                      "never renumbered or reused, because a stored byte cannot\n"
+                      "follow a table that got reordered.")
+        .def_property_readonly("name", [](const protocol::MotorModel& s) {
+            return std::string(s.name, ::strnlen(s.name, sizeof(s.name)));
+        }, "Model name, e.g. 'EL05' or 'RS00'.")
+        .def_readonly("from_flash", &protocol::MotorModel::from_flash,
+                      "True when this device has a model written to flash. False\n"
+                      "means the MCU fell back to its compile-time default -- a\n"
+                      "legitimate state, but one where the ranges are an\n"
+                      "assumption rather than a record.")
+        .def_readonly("t_max_nm", &protocol::MotorModel::t_max_nm,
+                      "MIT torque range currently in force, N*m. EL05 6.0, RS00 14.0.")
+        .def_readonly("v_max_rad_s", &protocol::MotorModel::v_max_rad_s,
+                      "MIT velocity range currently in force, rad/s. EL05 50.0, RS00 33.0.")
+        .def("__repr__", [](const protocol::MotorModel& s) {
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "MotorModel(%s, id=%u, %s, t_max=%.1fNm, v_max=%.1frad/s)",
+                std::string(s.name, ::strnlen(s.name, sizeof(s.name))).c_str(),
+                (unsigned)s.id, s.from_flash ? "from flash" : "COMPILE-TIME DEFAULT",
+                (double)s.t_max_nm, (double)s.v_max_rad_s);
+            return std::string(buf);
+        });
+
     // ---- MotorSpec (0x56) ------------------------------------------------
     py::class_<protocol::MotorSpec>(m, "MotorSpec",
         "The device's own ratings for the actuator it has (Cmd 0x56).\n\n"
@@ -675,6 +717,24 @@ void bind_motor(py::module_& m) {
            "The firmware ACKs OK even with nothing to report, so check report_flags\n"
            "before trusting the fault codes. Same 1.1.2 firmware floor as\n"
            "read_status_ext().")
+        .def("get_model", [](Motor& self, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            return self.get_model(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 1000,
+           "本机记录的电机型号(0x59)。**问的是 MCU 的 flash,不是电机** ——\n"
+           "电机答不出自己的型号,见 MotorModel。需要从爪固件 >= 1.2.7。\n\n"
+           "当一台夹爪表现得像是力矩被整体缩放时先读它:回包里的 t_max_nm /\n"
+           "v_max_rad_s 就是当前真正在用的 MIT 量程。")
+        .def("set_model", [](Motor& self, uint8_t model_id, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            self.set_model(model_id, std::chrono::milliseconds(timeout_ms));
+        }, py::arg("model_id"), py::arg("timeout_ms") = 1000,
+           "记录本机装的是哪一款电机(0x5A)。**写 MCU flash,掉电保持。**\n\n"
+           "**下次上电才生效**,不是立刻:MIT 量程在启动时定下来,控制环已经按它在\n"
+           "跑,中途换刻度会让在途的命令和反馈用两套标准解释。和改电机 CAN ID 一样,\n"
+           "写完要断电重启(USB 线和电源线同时拔)。\n\n"
+           "写错型号不会报错,只会让之后每一帧力矩差一个固定倍率 —— 先用\n"
+           "get_model() 确认写进去的是对的。")
         .def("motor_version", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release g;
             return self.motor_version(std::chrono::milliseconds(timeout_ms));

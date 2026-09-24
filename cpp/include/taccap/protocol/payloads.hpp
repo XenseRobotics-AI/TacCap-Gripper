@@ -307,6 +307,30 @@ struct __attribute__((packed)) MotorVersion {
     uint8_t reserved;
 };
 
+// Which actuator the gripper is built around, as the MCU has it recorded.
+//
+// The motor cannot be asked. Its version frame returns four version bytes and
+// nothing else, neither the EL05 nor the RS00 manual (260713) has a model field
+// anywhere in the readable parameter tables, and the closest proxy -- 0x302d
+// rated_i -- is an inference rather than an identity AND is a private-protocol
+// parameter, which is unreadable while the motor speaks MIT. So the MCU stores
+// the answer and this reads that record back.
+//
+// Getting it wrong does not fail: MIT frames quantise torque and velocity into
+// 16 bits against the model's ranges, so an EL05-configured MCU driving an RS00
+// turns a commanded 1.1 Nm into 2.57 Nm and reads feedback back at 0.43x, which
+// keeps the host's torque ceiling from ever tripping. t_max_nm and v_max_rad_s
+// below are the ranges actually in force -- they are the evidence.
+constexpr size_t MOTOR_MODEL_SIZE = 20;
+struct __attribute__((packed)) MotorModel {
+    uint8_t  id;             // stable model id, persisted; never reused
+    char     name[8];        // "EL05" / "RS00", NUL-padded
+    uint8_t  from_flash;     // 1 = stored on this device, 0 = compile-time default
+    float    t_max_nm;       // MIT torque range currently in force
+    float    v_max_rad_s;    // MIT velocity range currently in force
+    uint8_t  reserved[2];
+};
+
 struct __attribute__((packed)) HomeDiagReport {
     std::uint8_t  version;            // == HOME_DIAG_REPORT_VERSION
     std::uint8_t  state;              // HomeState
@@ -1065,6 +1089,7 @@ static_assert(sizeof(MotorImpedanceCtrl) == 20);  // V1.7 (+ feed-forward vel)
 static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
 static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
 static_assert(sizeof(MotorVersion)       == MOTOR_VERSION_SIZE);
+static_assert(sizeof(MotorModel)         == MOTOR_MODEL_SIZE);
 static_assert(sizeof(MotorStatus)        == 31);  // V1.9 motor_status_t (was 40)
 static_assert(sizeof(MotorStatus)        == MOTOR_STATUS_LEGACY_SIZE);
 // V2.2 — 0x53 payload. Its first 31 bytes must stay layout-identical to

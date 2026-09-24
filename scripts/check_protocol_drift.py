@@ -75,6 +75,7 @@ STRUCT_MAP = {
     "motor_status_t": "MotorStatusExt",
     "motor_fault_report_t": "MotorFaultReport",
     "motor_control_stats_packet_t": "MotorControlStats",
+    "motor_model_t": "MotorModel",
     "gripper_config_t": "GripperConfig",
     "gripper_auto_cal_config_t": "GripperAutoCalConfig",
     "gripper_auto_cal_stall_param_t": "GripperAutoCalStallParam",

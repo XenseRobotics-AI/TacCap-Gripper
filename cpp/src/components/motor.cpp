@@ -1,6 +1,7 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 
 #include <taccap/components/motor.hpp>
+#include <taccap/log.hpp>
 #include <taccap/error.hpp>
 #include <taccap/protocol/codec.hpp>
 
@@ -144,6 +145,27 @@ static std::string motor_version_hint(protocol::ErrorCode err) {
     if (err != protocol::ErrorCode::InvalidCmd) return {};
     return " — GetMotorVersion (0x58) needs follower firmware >= 1.2.6; an "
            "older follower does not have the command at all";
+}
+
+protocol::MotorModel Motor::get_model(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::GetMotorModel, {}, timeout);
+    if (ack.data.size() < sizeof(protocol::MotorModel)) {
+        throw ProtocolError("Motor::get_model: short payload (" +
+                            std::to_string(ack.data.size()) + " bytes) -- "
+                            "follower firmware older than 1.2.7 has no 0x59");
+    }
+    protocol::MotorModel out{};
+    std::memcpy(&out, ack.data.data(), sizeof(out));
+    return out;
+}
+
+void Motor::set_model(uint8_t model_id, std::chrono::milliseconds timeout) {
+    send_or_throw(t_, protocol::Cmd::SetMotorModel, {model_id}, "set_model",
+                  timeout);
+    logger()->warn(
+        "Motor::set_model: wrote model id {} to flash -- POWER CYCLE the "
+        "gripper before driving it. The MIT ranges in use are still the ones "
+        "chosen at boot.", static_cast<unsigned>(model_id));
 }
 
 protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {

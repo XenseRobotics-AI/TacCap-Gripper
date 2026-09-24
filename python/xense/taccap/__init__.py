@@ -151,6 +151,9 @@ MotorStatusExt = _taccap_native.MotorStatusExt  # V2.2 72-byte status (Cmd 0x53)
 MotorFaultReport = (
     _taccap_native.MotorFaultReport
 )  # V2.2 64-byte fault report (Cmd 0x52)
+# 本机记录的电机型号 (Cmd 0x59/0x5A, 需固件 >= 1.2.7)。问的是 MCU 的 flash,
+# 不是电机 —— 电机答不出自己的型号
+MotorModel = _taccap_native.MotorModel
 MotorVersion = (
     _taccap_native.MotorVersion
 )  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
@@ -281,6 +284,7 @@ __all__ = [
     "MotorStatusExt",
     "MotorFaultReport",
     "MotorVersion",
+    "MotorModel",
     "MotorStopReason",
     "GripperAutoCalStallParam",
     "GripperAutoCalStallParamEx",
