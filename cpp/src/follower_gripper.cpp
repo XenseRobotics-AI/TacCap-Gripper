@@ -459,6 +459,19 @@ protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit) {
 
 }  // namespace detail
 
+protocol::HomeDiagReport FollowerGripper::home_diag(
+        std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::GetHomeDiag, {}, timeout);
+    if (ack.data.size() < sizeof(protocol::HomeDiagReport)) {
+        throw ProtocolError("FollowerGripper::home_diag: short payload (" +
+                            std::to_string(ack.data.size()) + " bytes) -- "
+                            "follower firmware older than 1.2.0 has no 0x57");
+    }
+    protocol::HomeDiagReport out{};
+    std::memcpy(&out, ack.data.data(), sizeof(out));
+    return out;
+}
+
 protocol::GripperEnvelope FollowerGripper::get_envelope(
         std::chrono::milliseconds timeout) {
     const protocol::GripperConfig cfg = get_gripper_config(timeout);

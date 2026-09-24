@@ -133,6 +133,13 @@ MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM  # 1.8 Nm, indefini
 MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM  # 6.0 Nm, transient
 # 1.1 Nm —— 堵转额定,被挡住的爪子可以无限期维持的那个。别和 RATED(旋转额定)混
 MOTOR_STALL_CONT_TORQUE_NM = _taccap_native.MOTOR_STALL_CONT_TORQUE_NM
+# 两个控制器共用的目标接近速度。它是**目标**不是测量:阻抗侧的接近速度是
+# 预算/kd(涌现的),力位侧由斜坡直接调到这个值。提预算必须同时提 kd,否则
+# 夹持力上去了、接近速度也跟着上去 —— 这是 for_spec() 替你做的事
+MOTOR_APPROACH_SPEED_RADPS = _taccap_native.MOTOR_APPROACH_SPEED_RADPS
+MOTOR_MAX_APPROACH_SPEED_RADPS = _taccap_native.MOTOR_MAX_APPROACH_SPEED_RADPS
+# 只是理智上限,不是电机额定 —— 真正的界是设备自报的规格,在 start() 里校验
+MOTOR_ABSOLUTE_TORQUE_CEILING_NM = _taccap_native.MOTOR_ABSOLUTE_TORQUE_CEILING_NM
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
 ForcePositionSnapshot = _taccap_native.ForcePositionSnapshot
@@ -154,6 +161,10 @@ MotorFaultReport = (
 # 本机记录的电机型号 (Cmd 0x59/0x5A, 需固件 >= 1.2.7)。问的是 MCU 的 flash,
 # 不是电机 —— 电机答不出自己的型号
 MotorModel = _taccap_native.MotorModel
+# 上电自动标定的诊断 (Cmd 0x57)。标定的失败原因此前只走没接到 USB 的 UART7
+HomeDiagReport = _taccap_native.HomeDiagReport
+HomeState = _taccap_native.HomeState
+HomeFail = _taccap_native.HomeFail
 MotorVersion = (
     _taccap_native.MotorVersion
 )  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
@@ -267,6 +278,9 @@ __all__ = [
     "MOTOR_RATED_TORQUE_NM",
     "MOTOR_PEAK_TORQUE_NM",
     "MOTOR_STALL_CONT_TORQUE_NM",
+    "MOTOR_APPROACH_SPEED_RADPS",
+    "MOTOR_MAX_APPROACH_SPEED_RADPS",
+    "MOTOR_ABSOLUTE_TORQUE_CEILING_NM",
     "ForcePositionState",
     "ForcePositionConfig",
     "ForcePositionSnapshot",
@@ -285,6 +299,9 @@ __all__ = [
     "MotorFaultReport",
     "MotorVersion",
     "MotorModel",
+    "HomeDiagReport",
+    "HomeState",
+    "HomeFail",
     "MotorStopReason",
     "GripperAutoCalStallParam",
     "GripperAutoCalStallParamEx",

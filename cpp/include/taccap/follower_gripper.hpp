@@ -281,6 +281,24 @@ public:
         std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
     void set_envelope(const protocol::GripperEnvelope& env);
 
+    // ---- Power-on auto-calibration diagnostics (0x57) ----------------------
+    // Why this exists as a command at all: the homing sequence's five failure
+    // reasons only ever went to LOG_E on UART7, and UART7 is not wired to USB.
+    // From the host, a calibration that ended early and one that ended right
+    // looked identical -- both leave a plausible max_open_rad behind.
+    //
+    // The fields that answer "did it really reach the stop": `stall_threshold_nm`
+    // is what the firmware computed (limit x the model's feedback saturation
+    // ratio x margin) and `last_abs_torque` is what it actually measured when it
+    // called the stall. If the second is barely above the first, the call was
+    // marginal. `report_miss_count` above zero means the motor never honoured
+    // MIT instruction 13, so the firmware fell back to polling.
+    //
+    // Note the sequence ENDS with a deliberate 0.12 rad back-off from the open
+    // limit, so a jaw resting short of max_open_rad is expected, not a fault.
+    protocol::HomeDiagReport home_diag(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{200});
+
     // ---- Envelope policy --------------------------------------------------
     // Which numbers belong in the envelope is not the caller's question: the
     // device knows its own motor's ratings (0x56) and the firmware clamps

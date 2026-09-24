@@ -514,6 +514,21 @@ void bind_gripper(py::module_& m) {
            "the record instead of misreading it.\n\n"
            "Setting the Enforce flag changes real motion behaviour: the firmware\n"
            "then clamps every MIT frame against this envelope. Write it deliberately.")
+        .def("home_diag", [](FollowerGripper& g, unsigned timeout_ms) {
+            py::gil_scoped_release r;
+            return g.home_diag(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 200u,
+           "上电自动标定到底做了什么(0x57)。\n\n"
+           "它存在的理由:标定的五种失败原因此前只走固件的 UART7,而 UART7 没接到\n"
+           "USB —— 从主机看,一次提前结束的标定和一次正常的标定长得一模一样,两者\n"
+           "都会留下一个看起来合理的 max_open_rad。\n\n"
+           "判断一次堵转判定实不实:拿 last_abs_torque 和 stall_threshold_nm 比。\n"
+           "阈值 = 命令限流 × 型号的反馈饱和比 × 余量;实测只比阈值高一点点,说明\n"
+           "那次判定很勉强。型号表里饱和比还是 0(未测)时,阈值会落到一个保守的\n"
+           "回退值上,而保守意味着**偏向提前判出堵转**。\n\n"
+           "注意标定最后一步是从开限位**故意后退 0.12 rad**,所以爪子停在比\n"
+           "max_open_rad 小的位置是设计如此,不是故障。"
+        )
         .def("audit_envelope", [](FollowerGripper& g, unsigned timeout_ms) {
             py::gil_scoped_release r;
             return g.audit_envelope(std::chrono::milliseconds(timeout_ms));

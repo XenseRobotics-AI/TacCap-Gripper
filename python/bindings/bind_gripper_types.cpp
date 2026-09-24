@@ -128,6 +128,93 @@ void bind_gripper_types(py::module_& m) {
     envmod.attr("GRIPPER_ENVELOPE_LAYOUT_VERSION") = protocol::GripperEnvelopeFlag::LayoutVersion;
     envmod.attr("GRIPPER_ENVELOPE_ENFORCE") = (uint16_t)0x0002;
 
+    // ---- HomeDiagReport (0x57) ---------------------------------------------
+    py::enum_<protocol::HomeState>(m, "HomeState",
+        "Phase of the power-on auto-calibration. The sequence ends with\n"
+        "OpenFinalBackoff, a deliberate 0.12 rad retreat from the open limit --\n"
+        "so a jaw resting short of max_open_rad is expected, not a fault.")
+        .value("Idle", protocol::HomeState::Idle)
+        .value("Init", protocol::HomeState::Init)
+        .value("ClearFault", protocol::HomeState::ClearFault)
+        .value("Close", protocol::HomeState::Close)
+        .value("CloseBackoff", protocol::HomeState::CloseBackoff)
+        .value("CloseAverageHold", protocol::HomeState::CloseAverageHold)
+        .value("SetZero", protocol::HomeState::SetZero)
+        .value("PostZero", protocol::HomeState::PostZero)
+        .value("Open", protocol::HomeState::Open)
+        .value("OpenBackoff", protocol::HomeState::OpenBackoff)
+        .value("SaveMax", protocol::HomeState::SaveMax)
+        .value("OpenFinalBackoff", protocol::HomeState::OpenFinalBackoff)
+        .value("Done", protocol::HomeState::Done)
+        .value("Error", protocol::HomeState::Error);
+
+    py::enum_<protocol::HomeFail>(m, "HomeFail", "Why auto-calibration stopped.")
+        .value("None", protocol::HomeFail::None)
+        .value("Timeout", protocol::HomeFail::Timeout)
+        .value("ClearFault", protocol::HomeFail::ClearFault)
+        .value("SetZero", protocol::HomeFail::SetZero)
+        .value("MaxOpenTooSmall", protocol::HomeFail::MaxOpenTooSmall)
+        .value("SaveConfig", protocol::HomeFail::SaveConfig);
+
+    py::class_<protocol::HomeDiagReport>(m, "HomeDiagReport",
+        "What the power-on auto-calibration actually did (Cmd 0x57).\n\n"
+        "It exists because the sequence's failure reasons only ever went to the\n"
+        "firmware's UART7, which is not wired to USB -- from the host, a\n"
+        "calibration that ended early and one that ended right look identical,\n"
+        "since both leave a plausible max_open_rad behind.\n\n"
+        "To judge whether a stall call was real, compare `last_abs_torque`\n"
+        "against `stall_threshold_nm`: the threshold is the commanded limit\n"
+        "times the model's feedback saturation ratio times a margin, and a\n"
+        "measurement barely above it means the call was marginal. On a model\n"
+        "whose saturation ratio is not measured yet (0 in the firmware's table)\n"
+        "the threshold falls back to a conservative ratio, which errs towards\n"
+        "calling the stall EARLY.")
+        .def_readonly("version", &protocol::HomeDiagReport::version)
+        .def_readonly("state", &protocol::HomeDiagReport::state,
+                      "HomeState value of the last/current phase.")
+        .def_readonly("fail_reason", &protocol::HomeDiagReport::fail_reason,
+                      "HomeFail value; 0 when nothing failed.")
+        .def_readonly("flags", &protocol::HomeDiagReport::flags,
+                      "0x01 active, 0x02 done, 0x04 attempted, 0x08 saw real motion.")
+        .def_readonly("fail_ret", &protocol::HomeDiagReport::fail_ret)
+        .def_readonly("elapsed_ms", &protocol::HomeDiagReport::elapsed_ms)
+        .def_readonly("state_elapsed_ms", &protocol::HomeDiagReport::state_elapsed_ms,
+                      "Time in the current phase -- a hang shows up here first.")
+        .def_readonly("vel_cmd", &protocol::HomeDiagReport::vel_cmd)
+        .def_readonly("torque_limit_nm", &protocol::HomeDiagReport::torque_limit_nm,
+                      "Last commanded current limit, N*m.")
+        .def_readonly("stall_threshold_nm", &protocol::HomeDiagReport::stall_threshold_nm,
+                      "limit * the model's feedback saturation ratio * margin.")
+        .def_readonly("last_abs_torque", &protocol::HomeDiagReport::last_abs_torque,
+                      "|torque| at the last stall evaluation. Compare with\n"
+                      "stall_threshold_nm to see how marginal the call was.")
+        .def_readonly("last_abs_vel", &protocol::HomeDiagReport::last_abs_vel)
+        .def_readonly("peak_vel", &protocol::HomeDiagReport::peak_vel)
+        .def_readonly("progress_rad", &protocol::HomeDiagReport::progress_rad)
+        .def_readonly("last_pos", &protocol::HomeDiagReport::last_pos)
+        .def_readonly("close_pos", &protocol::HomeDiagReport::close_pos,
+                      "Measured closed limit, raw rad.")
+        .def_readonly("open_pos", &protocol::HomeDiagReport::open_pos,
+                      "Measured open limit, raw rad.")
+        .def_readonly("open_sign", &protocol::HomeDiagReport::open_sign)
+        .def_readonly("reenable_count", &protocol::HomeDiagReport::reenable_count,
+                      "Times the motor was found in Reset while the MCU believed\n"
+                      "it enabled.")
+        .def_readonly("report_miss_count", &protocol::HomeDiagReport::report_miss_count,
+                      "Times active reporting was asked for and never delivered, so\n"
+                      "the firmware fell back to polling. Non-zero means this motor\n"
+                      "does not honour MIT instruction 13.")
+        .def("__repr__", [](const protocol::HomeDiagReport& d) {
+            char buf[224];
+            std::snprintf(buf, sizeof(buf),
+                "HomeDiagReport(state=%u fail=%u close=%.4f open=%.4f "
+                "thr=%.3f last_tq=%.3f %ums)",
+                (unsigned)d.state, (unsigned)d.fail_reason, d.close_pos,
+                d.open_pos, d.stall_threshold_nm, d.last_abs_torque,
+                (unsigned)d.elapsed_ms);
+            return std::string(buf);
+        });
+
     // ---- Envelope audit -----------------------------------------------------
     namespace Issue = xense::taccap::GripperEnvelopeIssue;
     envmod.attr("GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN")   = Issue::NotWritten;
