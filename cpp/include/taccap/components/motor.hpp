@@ -35,6 +35,16 @@ namespace xense::taccap {
 // 14.0, and nothing in this repository knows which actuator is plugged in.
 constexpr float MOTOR_RATED_TORQUE_NM = 1.8f;   // EL05 rated  — fallback
 constexpr float MOTOR_PEAK_TORQUE_NM  = 6.0f;   // EL05 peak   — fallback
+// The third number, and the one the other two get mistaken for. RATED is the
+// ROTATING rating; what a blocked jaw may hold indefinitely is the STALL
+// rating, and the manual's overload curve puts those far apart:
+//     6.0 Nm -> 1 s   4.0 -> 6 s   1.8 -> 175 s   1.1 -> indefinite
+// A gripper's main duty cycle IS the blocked hold, so this is the number that
+// governs it. The firmware clamps a host-supplied envelope cont_torque_nm down
+// to its own per-model copy of it (motor_spec.c), which is why writing RATED
+// there does not raise the grip -- it only makes the record disagree with what
+// is enforced. Same fallback caveat as above: ask the device.
+constexpr float MOTOR_STALL_CONT_TORQUE_NM = 1.1f;  // EL05 continuous stall — fallback
 
 struct MotorStatusSample {
     std::chrono::steady_clock::time_point host_time;
@@ -352,7 +362,11 @@ public:
     // wrong for any other actuator (RS00: 5.0 rated / 14.0 peak). A zero field
     // means the firmware's table does not have that number yet -- unknown, not
     // zero. Throws on firmware older than the command (1.1.6.26).
-    protocol::MotorSpec get_spec();
+    //
+    // timeout of zero keeps the transport's configured ack timeout, which is
+    // what every caller got before the parameter existed.
+    protocol::MotorSpec get_spec(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{0});
 
     static MotorStatusSample decode(const std::uint8_t* payload, std::size_t len);
 

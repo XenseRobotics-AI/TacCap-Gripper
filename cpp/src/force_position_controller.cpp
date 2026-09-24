@@ -633,22 +633,25 @@ void ForcePositionController::start() {
     // resembling a torque fault. Reported from the field at a 1.5 Nm grasp
     // against a 1.6 Nm continuous envelope, on a gripper stood upright so the
     // jaw's own weight added to the hold.
+    // ADVISORY, NEVER FATAL, AND IT MUST NOT WRITE -- ensure_envelope() persists
+    // to MCU flash and has no business running on every controller start.
+    //
+    // Compare against what the firmware ENFORCES. A device storing an inflated
+    // cont would otherwise silence this exact warning: the host reads 1.8 while
+    // the firmware runs at 1.1, so the grasp looks in-budget and is not.
     try {
-        const auto env = g_.get_envelope();
-        const bool enforced =
-            (env.flags & protocol::GripperEnvelopeFlag::Enforce) != 0;
-        if (std::isfinite(env.cont_torque_nm) && env.cont_torque_nm > 0.0f) {
-            if (cfg_.grasp_torque_nm > env.cont_torque_nm) {
+        const auto audit = g_.audit_envelope();
+        if (audit.effective && std::isfinite(audit.effective->cont_torque_nm) &&
+            audit.effective->cont_torque_nm > 0.0f) {
+            const float cont = audit.effective->cont_torque_nm;
+            if (cfg_.grasp_torque_nm > cont) {
                 logger()->warn(
                     "ForcePositionController: grasp torque {:.3f} Nm exceeds the "
-                    "device's continuous envelope {:.3f} Nm, and a force hold is "
-                    "indefinite. {}",
-                    cfg_.grasp_torque_nm, env.cont_torque_nm,
-                    enforced ? "The firmware will derate it, so the actual grip "
-                               "will not be what was asked for."
-                             : "The envelope is NOT enforced, so nothing below "
-                               "this host limits the sustained draw.");
-            } else if (cfg_.grasp_torque_nm > env.cont_torque_nm * 0.9f &&
+                    "{:.3f} Nm the firmware sustains, and a force hold is "
+                    "indefinite -- it will be derated, so the actual grip will "
+                    "not be what was asked for",
+                    cfg_.grasp_torque_nm, cont);
+            } else if (cfg_.grasp_torque_nm > cont * 0.9f &&
                        cfg_.grasp_torque_nm > ForcePositionConfig{}.grasp_torque_nm) {
                 // Only when the caller asked for MORE than the default. The
                 // default IS the continuous rating, so testing the 90% band
@@ -659,14 +662,16 @@ void ForcePositionController::start() {
                     "10% of the continuous envelope {:.3f} Nm. A long hold at "
                     "this level has browned out the 24 V rail and dropped the "
                     "USB link; leave headroom if the grasp is load-bearing",
-                    cfg_.grasp_torque_nm, env.cont_torque_nm);
+                    cfg_.grasp_torque_nm, cont);
             }
         }
-        if (!enforced) {
+        if (!audit.ok()) {
             logger()->warn(
-                "ForcePositionController: the motion envelope is not enforced, "
-                "so the firmware's I2t derate and temperature wall are inactive "
-                "and an indefinite force hold has no protection below this host");
+                "ForcePositionController: motion envelope: {}. An indefinite "
+                "force hold has no protection below this host until it is "
+                "repaired -- FollowerGripper::ensure_envelope() (writes MCU "
+                "flash).",
+                audit.detail);
         }
     } catch (const std::exception& e) {
         logger()->debug("ForcePositionController: envelope unavailable ({})",

@@ -330,27 +330,40 @@ void ImpedanceController::start() {
             "verify the value before enabling motion");
     }
 
-    // The ceiling holds indefinitely, so the same sustained-torque cross-check
-    // ForcePositionController does applies here. Advisory, never fatal.
+    // The error clamp saturates and HOLDS, so it gets the same sustained-torque
+    // cross-check ForcePositionController does.
+    //
+    // ADVISORY, NEVER FATAL, AND IT MUST NOT WRITE. ensure_envelope() persists
+    // to MCU flash; calling it from here would turn every controller start into
+    // a flash write, including the ones that only meant to look.
+    //
+    // Compare against what the firmware ENFORCES, not what the device stores.
+    // A unit holding an inflated cont in flash would otherwise silence exactly
+    // the warning it needs -- the host would read 1.8 while the firmware ran at
+    // 1.1.
     try {
-        const auto env = g_.get_envelope();
-        const bool enforced =
-            (env.flags & protocol::GripperEnvelopeFlag::Enforce) != 0;
-        if (std::isfinite(env.cont_torque_nm) && env.cont_torque_nm > 0.0f &&
-            cfg_.rated_torque_nm > env.cont_torque_nm) {
+        const auto audit = g_.audit_envelope();
+        // The budget is what a blocked jaw sits on indefinitely. NOT
+        // rated_torque_nm: that is a trip level on MEASURED torque and the
+        // header requires it to sit ABOVE the operating band, so comparing it
+        // against a sustained ceiling is a category error -- it would fire at
+        // stock defaults on any correctly configured device.
+        const float budget = cfg_.max_position_torque_nm;
+        if (audit.effective && std::isfinite(audit.effective->cont_torque_nm) &&
+            audit.effective->cont_torque_nm > 0.0f &&
+            budget > audit.effective->cont_torque_nm + 1e-4f) {
             logger()->warn(
-                "ImpedanceController: torque ceiling {:.3f} Nm is above the "
-                "device's continuous envelope {:.3f} Nm, and the hold it "
-                "produces is indefinite. {}",
-                cfg_.rated_torque_nm, env.cont_torque_nm,
-                enforced ? "The firmware will derate it."
-                         : "The envelope is NOT enforced, so nothing below this "
-                           "host limits the sustained draw.");
+                "ImpedanceController: torque budget {:.3f} Nm is above the "
+                "{:.3f} Nm the firmware sustains, and the hold it produces is "
+                "indefinite -- the firmware will derate it, so a blocked jaw "
+                "will not hold what was asked for",
+                budget, audit.effective->cont_torque_nm);
         }
-        if (!enforced) {
+        if (!audit.ok()) {
             logger()->warn(
-                "ImpedanceController: the motion envelope is not enforced, so "
-                "the firmware's I2t derate and temperature wall are inactive");
+                "ImpedanceController: motion envelope: {}. Repair it with "
+                "FollowerGripper::ensure_envelope() (writes MCU flash).",
+                audit.detail);
         }
     } catch (const std::exception& e) {
         logger()->debug("ImpedanceController: envelope unavailable ({})", e.what());

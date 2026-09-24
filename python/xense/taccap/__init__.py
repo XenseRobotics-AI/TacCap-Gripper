@@ -89,6 +89,27 @@ GripperEnvelope = (
 )  # motion safety envelope (in GripperConfig)
 GRIPPER_ENVELOPE_VALID = _taccap_native.GRIPPER_ENVELOPE_VALID
 GRIPPER_ENVELOPE_ENFORCE = _taccap_native.GRIPPER_ENVELOPE_ENFORCE
+# 审计结果:存的 / 生效的 / 推荐的是三件不同的事 —— 见 EnvelopeAudit
+EnvelopeAudit = _taccap_native.EnvelopeAudit
+EnvelopeWrite = _taccap_native.EnvelopeWrite
+GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN = _taccap_native.GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN
+GRIPPER_ENVELOPE_ISSUE_NOT_ENFORCED = _taccap_native.GRIPPER_ENVELOPE_ISSUE_NOT_ENFORCED
+GRIPPER_ENVELOPE_ISSUE_LAYOUT_MISMATCH = (
+    _taccap_native.GRIPPER_ENVELOPE_ISSUE_LAYOUT_MISMATCH
+)
+GRIPPER_ENVELOPE_ISSUE_PEAK_UNLIMITED = (
+    _taccap_native.GRIPPER_ENVELOPE_ISSUE_PEAK_UNLIMITED
+)
+GRIPPER_ENVELOPE_ISSUE_CONT_UNLIMITED = (
+    _taccap_native.GRIPPER_ENVELOPE_ISSUE_CONT_UNLIMITED
+)
+GRIPPER_ENVELOPE_ISSUE_CONT_ABOVE_STALL_RATING = (
+    _taccap_native.GRIPPER_ENVELOPE_ISSUE_CONT_ABOVE_STALL_RATING
+)
+GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT = (
+    _taccap_native.GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT
+)
+GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK = _taccap_native.GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK
 GRIPPER_ENVELOPE_LAYOUT_VERSION = _taccap_native.GRIPPER_ENVELOPE_LAYOUT_VERSION
 GripperPosition = _taccap_native.GripperPosition  # raw rad <-> normalized [0,1]
 CameraFisheyeCal = (
@@ -110,6 +131,8 @@ ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
 ImpedanceController = _taccap_native.ImpedanceController
 MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM  # 1.8 Nm, indefinite
 MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM  # 6.0 Nm, transient
+# 1.1 Nm —— 堵转额定,被挡住的爪子可以无限期维持的那个。别和 RATED(旋转额定)混
+MOTOR_STALL_CONT_TORQUE_NM = _taccap_native.MOTOR_STALL_CONT_TORQUE_NM
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
 ForcePositionSnapshot = _taccap_native.ForcePositionSnapshot
@@ -214,6 +237,16 @@ __all__ = [
     "GripperEnvelope",
     "GRIPPER_ENVELOPE_VALID",
     "GRIPPER_ENVELOPE_ENFORCE",
+    "EnvelopeAudit",
+    "EnvelopeWrite",
+    "GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN",
+    "GRIPPER_ENVELOPE_ISSUE_NOT_ENFORCED",
+    "GRIPPER_ENVELOPE_ISSUE_LAYOUT_MISMATCH",
+    "GRIPPER_ENVELOPE_ISSUE_PEAK_UNLIMITED",
+    "GRIPPER_ENVELOPE_ISSUE_CONT_UNLIMITED",
+    "GRIPPER_ENVELOPE_ISSUE_CONT_ABOVE_STALL_RATING",
+    "GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT",
+    "GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK",
     "GRIPPER_ENVELOPE_LAYOUT_VERSION",
     "GripperPosition",
     "CameraFisheyeCal",
@@ -230,6 +263,7 @@ __all__ = [
     "ImpedanceController",
     "MOTOR_RATED_TORQUE_NM",
     "MOTOR_PEAK_TORQUE_NM",
+    "MOTOR_STALL_CONT_TORQUE_NM",
     "ForcePositionState",
     "ForcePositionConfig",
     "ForcePositionSnapshot",

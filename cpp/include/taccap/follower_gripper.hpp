@@ -49,9 +49,115 @@
 #include <cerrno>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace xense::taccap {
+
+// ---- Motion safety envelope: what is wrong with a stored record -------------
+//
+// The firmware's clamp is opt-in and its rejections are silent, so "the device
+// has an envelope" is not a yes/no question -- a record can be present, print
+// as ENFORCED, and still leave the command path unbounded. These bits name each
+// way that happens so a caller can act on the difference instead of guessing.
+//
+// These are an SDK judgement, not a wire concept: nothing here crosses the
+// link, and protocol/payloads.hpp stays a pure firmware mirror.
+namespace GripperEnvelopeIssue {
+
+constexpr uint32_t None = 0;
+
+// ---- Gating: the firmware ignores the record wholesale ----
+// Mutually exclusive, evaluated in this order. A factory record is flags==0,
+// which also fails the layout comparison; reporting both would read as two
+// unrelated faults when there is only one -- nothing has been written.
+constexpr uint32_t NotWritten     = 1u << 0;  // Valid clear
+constexpr uint32_t NotEnforced    = 1u << 1;  // Valid set, Enforce clear
+constexpr uint32_t LayoutMismatch = 1u << 2;  // layout nibble != LayoutVersion
+
+// ---- Values: the record is readable, but leaves a hole or misreports ----
+// Only evaluated when the layout nibble is current. That is the whole point of
+// the nibble: on a mismatch the field bytes are not what they claim to be, and
+// the incident it exists for looked exactly like plausible numbers.
+//
+// PeakUnlimited is a hole, not a nit. The firmware's position-error clamp
+// returns the target untouched when peak/kp is not positive, so peak==0
+// alongside Valid|Enforce leaves kp*error unbounded -- the ~12 Nm brown-out
+// path the envelope exists to stop -- while the record prints as ENFORCED.
+constexpr uint32_t PeakUnlimited = 1u << 3;   // peak <= 0
+constexpr uint32_t ContUnlimited = 1u << 4;   // cont <= 0
+
+// The stored value is not the enforced one: firmware clamps cont down to the
+// installed motor's stall rating and says so only on a UART that is not wired
+// to USB. Set only when the spec was actually read -- with no spec we do not
+// know the rating and must not guess one.
+constexpr uint32_t ContAboveStallRating = 1u << 5;
+
+// ---- Advisory: reported, never repaired ----
+// With peak <= cont the firmware skips the I2t derate entirely and only peak
+// plus the temperature wall apply. That is TIGHTER than the recommendation,
+// so it is not a hole and nothing should be widened to open the band.
+constexpr uint32_t PeakNotAboveCont = 1u << 6;
+
+// What ensure_envelope() will rewrite. PeakNotAboveCont is deliberately absent.
+constexpr uint32_t RepairMask = NotWritten | NotEnforced | LayoutMismatch |
+                                PeakUnlimited | ContUnlimited |
+                                ContAboveStallRating;
+
+}  // namespace GripperEnvelopeIssue
+
+// What the device stores, what it would be told to store, and what it is
+// actually enforcing right now -- which are three different things.
+struct EnvelopeAudit {
+    protocol::GripperEnvelope stored{};       // the record in flash
+    protocol::GripperEnvelope recommended{};  // derived from this device's spec
+
+    // What the firmware applies TODAY. Empty means it applies NOTHING: the
+    // record is unwritten, not enforced, or carries a layout this firmware
+    // refuses. It cannot be a zeroed struct -- in this record 0 means
+    // "unlimited", which would state the opposite.
+    std::optional<protocol::GripperEnvelope> effective{};
+
+    uint32_t issues = GripperEnvelopeIssue::None;
+
+    // Two flags, not one. The firmware's table gives EL05 a stall rating but
+    // leaves it zero for every RS0x while still giving them real rated torque,
+    // so a single flag would read "from device" on an RS00 whose cont silently
+    // came from the compiled-in EL05 number.
+    bool peak_from_device = false;
+    bool cont_from_device = false;
+
+    std::string motor_model;  // "EL05"; empty when the spec could not be read
+    std::string detail;       // one human-readable line per issue
+
+    bool ok() const noexcept { return issues == GripperEnvelopeIssue::None; }
+    bool needs_write() const noexcept {
+        return (issues & GripperEnvelopeIssue::RepairMask) != 0;
+    }
+};
+
+struct EnvelopeWrite {
+    EnvelopeAudit             before{};   // the audit that drove the decision
+    bool                      wrote = false;
+    protocol::GripperEnvelope written{};  // meaningful only when wrote
+};
+
+namespace detail {
+
+// Pure policy -- no transport, no logging, no clock, so the decision table is
+// testable without a device or a pty. spec absent = the device could not be
+// asked, which is different from a spec that answered with zeros.
+protocol::GripperEnvelope recommend_envelope(
+    const std::optional<protocol::MotorSpec>& spec);
+
+EnvelopeAudit audit_envelope(const protocol::GripperEnvelope& stored,
+                             const std::optional<protocol::MotorSpec>& spec);
+
+// Never widens. A unit deliberately tightened keeps its tighter numbers; only
+// what is absent, untrustworthy or unenforceable is replaced.
+protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit);
+
+}  // namespace detail
 
 class FollowerGripper {
 public:
@@ -174,6 +280,36 @@ public:
     protocol::GripperEnvelope get_envelope(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
     void set_envelope(const protocol::GripperEnvelope& env);
+
+    // ---- Envelope policy --------------------------------------------------
+    // Which numbers belong in the envelope is not the caller's question: the
+    // device knows its own motor's ratings (0x56) and the firmware clamps
+    // against them regardless of what was written. These derive the record
+    // from that spec so the answer lives in one place instead of in every
+    // script that ever writes one.
+    //
+    // The timeout covers both round trips (0x67 then 0x56) and defaults to the
+    // transport's own ack timeout rather than get_gripper_config()'s 100 ms --
+    // 0x56 has always run on the longer one, and shortening it here would be a
+    // silent regression on a slow ACK.
+    //
+    // Both block on ACKs, so neither may be called while a controller is
+    // running: the reply collides with the phase-locked 100 Hz control frames.
+    // Before start(), or after stop().
+
+    // Read-only. Never writes.
+    EnvelopeAudit audit_envelope(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+    // Idempotent, and WRITES MCU FLASH -- persistent, survives power loss --
+    // but only when the stored record is ineffective or misreports what is
+    // enforced. Calling it twice writes once.
+    //
+    // It never widens an envelope. To put a unit back on its device-derived
+    // numbers, that is a different intent and says so at the call site:
+    //     g.set_envelope(g.audit_envelope().recommended);
+    EnvelopeWrite ensure_envelope(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
     // ---- Power-on auto-calibration config (V1.9 — Cmd 0x68/0x69) ------------
     // When enabled, the firmware auto-calibrates on power-up (close-to-stall =>

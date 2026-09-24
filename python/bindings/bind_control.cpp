@@ -46,6 +46,9 @@ void bind_control(py::module_& m) {
     // ---- ImpedanceController: supervised position tracking ---------------
     m.attr("MOTOR_RATED_TORQUE_NM") = MOTOR_RATED_TORQUE_NM;
     m.attr("MOTOR_PEAK_TORQUE_NM")  = MOTOR_PEAK_TORQUE_NM;
+    // The third rating, and the one the other two get mistaken for: what a
+    // BLOCKED jaw may hold indefinitely. Both controller budgets default to it.
+    m.attr("MOTOR_STALL_CONT_TORQUE_NM") = MOTOR_STALL_CONT_TORQUE_NM;
 
     py::enum_<ImpedanceState>(m, "ImpedanceState",
         "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING。\n\n"

@@ -38,6 +38,7 @@ DOCUMENTED_CLASSES = [
     "FollowerGripper",
     "LeaderGripper",
     "Motor",
+    "EnvelopeAudit",
 ]
 
 # pybind11 emits `name(...) -> ret` as the first line(s) of __doc__, and for an

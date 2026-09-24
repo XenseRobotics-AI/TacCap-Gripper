@@ -127,7 +127,7 @@ enum class ForcePositionState : uint8_t {
 // the command; the firmware's motion envelope is what actually bounds output.
 // See docs/CONTROL_REFACTOR.md.
 struct ForcePositionConfig {
-    float grasp_torque_nm      = 1.1f;   // torque budget; EL05 continuous rating
+    float grasp_torque_nm      = MOTOR_STALL_CONT_TORQUE_NM;  // torque budget
     float close_speed_radps    = 0.5f;   // ramp speed, raw motor units
     // The two MOTOR RATINGS, not two arbitrary safety margins -- see the note
     // at the top of this file.

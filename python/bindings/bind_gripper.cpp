@@ -514,6 +514,37 @@ void bind_gripper(py::module_& m) {
            "the record instead of misreading it.\n\n"
            "Setting the Enforce flag changes real motion behaviour: the firmware\n"
            "then clamps every MIT frame against this envelope. Write it deliberately.")
+        .def("audit_envelope", [](FollowerGripper& g, unsigned timeout_ms) {
+            py::gil_scoped_release r;
+            return g.audit_envelope(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 1000u,
+           "Read the envelope and judge it. Never writes.\n\n"
+           "Returns an EnvelopeAudit carrying `stored` (what is in flash),\n"
+           "`effective` (what the firmware applies, or None when it applies\n"
+           "nothing) and `recommended` (derived from this device's motor spec).\n"
+           "Those are three different things -- see EnvelopeAudit.\n\n"
+           "Two blocking transactions, 0x67 then 0x56. Do NOT call it while a\n"
+           "controller is running: the ACK collides with the phase-locked 100 Hz\n"
+           "control frames. Before start(), or after stop().")
+        .def("ensure_envelope", [](FollowerGripper& g, unsigned timeout_ms) {
+            py::gil_scoped_release r;
+            return g.ensure_envelope(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 1000u,
+           "Make sure this gripper has a usable motion safety envelope.\n\n"
+           "**Writes MCU flash** -- persistent, survives power loss -- but only when\n"
+           "the stored record is ineffective or misreports what is enforced. Calling\n"
+           "it twice writes once; `wrote` says which happened. Not for a loop, a\n"
+           "constructor, or a controller start().\n\n"
+           "It never WIDENS an envelope. A unit deliberately tightened to cont=0.6\n"
+           "keeps 0.6 and only has its flags repaired. To put a device back on its\n"
+           "own derived numbers -- a different intent, so it says so at the call\n"
+           "site:\n\n"
+           "    g.set_envelope(g.audit_envelope().recommended)\n\n"
+           "Which numbers belong here is not the caller's question. The device\n"
+           "knows its motor's ratings and the firmware clamps against them whatever\n"
+           "was written, so the values come from the device (0x56) rather than from\n"
+           "a flag someone has to pick.\n\n"
+           "Same threading rule as audit_envelope(): not while a controller runs.")
         .def("get_auto_cal_config", [](FollowerGripper& g, unsigned timeout_ms) {
             py::gil_scoped_release gil;
             return g.get_auto_cal_config(std::chrono::milliseconds(timeout_ms));

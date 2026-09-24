@@ -8,8 +8,10 @@
 #include <taccap/protocol/codec.hpp>
 #include <taccap/protocol/payloads.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 
 namespace xense::taccap {
@@ -274,6 +276,189 @@ protocol::GripperConfig FollowerGripper::get_gripper_config(
     return protocol::decode_gripper_config(ack.data.data(), ack.data.size());
 }
 
+namespace detail {
+
+namespace {
+
+void note(std::string& detail, const std::string& line) {
+    if (!detail.empty()) detail += "; ";
+    detail += line;
+}
+
+std::string fmt(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.3f", static_cast<double>(v));
+    return buf;
+}
+
+}  // namespace
+
+protocol::GripperEnvelope recommend_envelope(
+        const std::optional<protocol::MotorSpec>& spec) {
+    protocol::GripperEnvelope out{};
+
+    // peak is the ROTATING rating, deliberately not t_max_nm. t_max_nm is the
+    // motor's absolute ceiling and is also the firmware's own default for the
+    // persisted 0x700B startup limit -- writing it here would make the envelope
+    // a no-op relative to a protection that already exists.
+    out.peak_torque_nm =
+        (spec && spec->rated_torque_nm > 0.0f) ? spec->rated_torque_nm
+                                               : MOTOR_RATED_TORQUE_NM;
+
+    // cont is the STALL rating: what a blocked jaw may hold indefinitely, which
+    // is the gripper's main duty cycle. min() rather than the bare constant so
+    // a small actuator whose rated torque is below it cannot end up with
+    // cont >= peak, which switches the firmware's I2t derate off entirely.
+    const float fallback_cont =
+        std::min(MOTOR_STALL_CONT_TORQUE_NM, out.peak_torque_nm);
+    out.cont_torque_nm =
+        (spec && spec->stall_cont_torque_nm > 0.0f) ? spec->stall_cont_torque_nm
+                                                    : fallback_cont;
+
+    // Left at 0 on purpose: 0 means "firmware default" (90/100), and that pair
+    // is a product decision that lives in the firmware. Writing the numbers
+    // here would pin them and diverge silently if the firmware ever moves them.
+    out.temp_derate_start_c = 0;
+    out.temp_wall_c         = 0;
+
+    out.flags = static_cast<uint16_t>(protocol::GripperEnvelopeFlag::Valid |
+                                      protocol::GripperEnvelopeFlag::Enforce |
+                                      protocol::GripperEnvelopeFlag::LayoutBits);
+    return out;
+}
+
+EnvelopeAudit audit_envelope(const protocol::GripperEnvelope& stored,
+                             const std::optional<protocol::MotorSpec>& spec) {
+    EnvelopeAudit a;
+    a.stored      = stored;
+    a.recommended = recommend_envelope(spec);
+
+    if (spec) {
+        a.motor_model      = std::string(
+            spec->name, ::strnlen(spec->name, sizeof(spec->name)));
+        a.peak_from_device = spec->rated_torque_nm > 0.0f;
+        a.cont_from_device = spec->stall_cont_torque_nm > 0.0f;
+        if (!a.cont_from_device && a.peak_from_device) {
+            note(a.detail,
+                 "cont " + fmt(a.recommended.cont_torque_nm) +
+                     " Nm is this SDK's fallback -- the firmware's table has no "
+                     "stall rating for " + a.motor_model);
+        }
+    } else {
+        note(a.detail,
+             "motor spec unavailable; both values are compiled-in fallbacks");
+    }
+
+    // ---- Gating, first match wins ----
+    const bool valid =
+        (stored.flags & protocol::GripperEnvelopeFlag::Valid) != 0;
+    const bool enforce =
+        (stored.flags & protocol::GripperEnvelopeFlag::Enforce) != 0;
+    const bool layout_ok =
+        protocol::GripperEnvelopeFlag::layout_of(stored.flags) ==
+        protocol::GripperEnvelopeFlag::LayoutVersion;
+
+    if (!valid) {
+        a.issues |= GripperEnvelopeIssue::NotWritten;
+        note(a.detail,
+             "no envelope has ever been written -- the firmware clamps nothing "
+             "on the MIT path: no position-error clamp, no I2t derate, no "
+             "temperature wall");
+        return a;
+    }
+    if (!enforce) {
+        a.issues |= GripperEnvelopeIssue::NotEnforced;
+        note(a.detail, "envelope stored but Enforce is clear, so it is ignored");
+        return a;
+    }
+    if (!layout_ok) {
+        a.issues |= GripperEnvelopeIssue::LayoutMismatch;
+        note(a.detail,
+             "record layout v" +
+                 std::to_string(
+                     protocol::GripperEnvelopeFlag::layout_of(stored.flags)) +
+                 " but this SDK speaks v" +
+                 std::to_string(protocol::GripperEnvelopeFlag::LayoutVersion) +
+                 "; the firmware refuses it and the field bytes cannot be "
+                 "trusted either way");
+        return a;
+    }
+
+    // ---- Values. The layout is current, so the fields mean what they say. ----
+    protocol::GripperEnvelope eff = stored;
+
+    if (stored.peak_torque_nm <= 0.0f) {
+        a.issues |= GripperEnvelopeIssue::PeakUnlimited;
+        note(a.detail,
+             "peak is 0 (unlimited): kp*error is NOT bounded even though the "
+             "record reads as enforced");
+    }
+    if (stored.cont_torque_nm <= 0.0f) {
+        a.issues |= GripperEnvelopeIssue::ContUnlimited;
+        note(a.detail, "cont is 0 (unlimited): no sustained-torque ceiling");
+    }
+    if (spec && spec->stall_cont_torque_nm > 0.0f &&
+        stored.cont_torque_nm > spec->stall_cont_torque_nm) {
+        a.issues |= GripperEnvelopeIssue::ContAboveStallRating;
+        eff.cont_torque_nm = spec->stall_cont_torque_nm;
+        note(a.detail,
+             "stored cont " + fmt(stored.cont_torque_nm) +
+                 " Nm is above the " + a.motor_model + " stall rating; the "
+                 "firmware enforces " + fmt(spec->stall_cont_torque_nm) +
+                 " Nm and logs that on a UART not wired to USB");
+    }
+    if (stored.cont_torque_nm > 0.0f &&
+        stored.peak_torque_nm <= stored.cont_torque_nm) {
+        a.issues |= GripperEnvelopeIssue::PeakNotAboveCont;
+        note(a.detail,
+             "peak is not above cont, so the I2t derate never engages; only "
+             "peak and the temperature wall apply (tighter, not a hole)");
+    }
+
+    a.effective = eff;
+    return a;
+}
+
+protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit) {
+    const auto& rec    = audit.recommended;
+    const auto& stored = audit.stored;
+
+    protocol::GripperEnvelope out = rec;
+
+    const bool untrustworthy =
+        (audit.issues & (GripperEnvelopeIssue::NotWritten |
+                         GripperEnvelopeIssue::LayoutMismatch)) != 0;
+    if (!untrustworthy) {
+        // The layout is current, so a stored value that is already STRICTER
+        // than the recommendation is a deliberate choice and is kept. Raising
+        // it would quietly undo an operator's tightening for a delicate task.
+        if (stored.cont_torque_nm > 0.0f &&
+            stored.cont_torque_nm <= rec.cont_torque_nm) {
+            out.cont_torque_nm = stored.cont_torque_nm;
+        }
+        if (stored.peak_torque_nm > 0.0f &&
+            stored.peak_torque_nm <= rec.peak_torque_nm) {
+            out.peak_torque_nm = stored.peak_torque_nm;
+        }
+        // Temperatures carry over verbatim, 0 included -- 0 is "firmware
+        // default", a valid choice, not a missing value.
+        out.temp_derate_start_c = stored.temp_derate_start_c;
+        out.temp_wall_c         = stored.temp_wall_c;
+
+        // A carried-over peak must not collapse the I2t band.
+        if (out.peak_torque_nm <= out.cont_torque_nm) {
+            out.peak_torque_nm = rec.peak_torque_nm;
+        }
+    }
+
+    out.flags = static_cast<uint16_t>(protocol::GripperEnvelopeFlag::Valid |
+                                      protocol::GripperEnvelopeFlag::Enforce |
+                                      protocol::GripperEnvelopeFlag::LayoutBits);
+    return out;
+}
+
+}  // namespace detail
+
 protocol::GripperEnvelope FollowerGripper::get_envelope(
         std::chrono::milliseconds timeout) {
     const protocol::GripperConfig cfg = get_gripper_config(timeout);
@@ -300,6 +485,69 @@ void FollowerGripper::set_envelope(const protocol::GripperEnvelope& env) {
         "FollowerGripper envelope written: cont={:.3f}Nm peak={:.3f}Nm "
         "flags=0x{:04x}",
         stamped.cont_torque_nm, stamped.peak_torque_nm, stamped.flags);
+}
+
+EnvelopeAudit FollowerGripper::audit_envelope(std::chrono::milliseconds timeout) {
+    const protocol::GripperEnvelope stored = get_envelope(timeout);
+
+    std::optional<protocol::MotorSpec> spec;
+    std::string spec_error;
+    try {
+        spec = motor().get_spec(timeout);
+    } catch (const std::exception& e) {
+        spec_error = e.what();
+        // warn, not debug: this fallback decides a value that ensure_envelope()
+        // may persist to flash. 0x56 landed in firmware 1.1.6.26 and this class
+        // already refuses followers below 1.2.5, so a failure here is a
+        // transport problem, not an old device.
+        logger()->warn(
+            "FollowerGripper::audit_envelope: motor spec unavailable ({}), "
+            "falling back to the compiled-in EL05 ratings", spec_error);
+    }
+
+    EnvelopeAudit a = detail::audit_envelope(stored, spec);
+    if (!spec_error.empty()) {
+        a.detail += a.detail.empty() ? "" : "; ";
+        a.detail += "spec read failed: " + spec_error;
+    }
+    return a;
+}
+
+EnvelopeWrite FollowerGripper::ensure_envelope(std::chrono::milliseconds timeout) {
+    EnvelopeWrite out;
+    out.before = audit_envelope(timeout);
+    if (!out.before.needs_write()) {
+        logger()->info("FollowerGripper::ensure_envelope: already correct ({})",
+                       out.before.detail.empty() ? "no issues" : out.before.detail);
+        return out;
+    }
+
+    // set_envelope() republishes the whole GripperConfig record, so a config
+    // that is already unrecognisable is about to be rewritten with whatever
+    // travel calibration came back. Say so before doing it rather than after.
+    try {
+        const protocol::GripperConfig cfg = get_gripper_config(timeout);
+        const bool cfg_valid =
+            (cfg.flags & protocol::GripperConfigFlag::Valid) != 0;
+        if (cfg.magic != protocol::GRIPPER_CONFIG_MAGIC || !cfg_valid) {
+            logger()->warn(
+                "FollowerGripper::ensure_envelope: gripper config looks "
+                "uninitialised (magic=0x{:08x} flags=0x{:04x}); the envelope "
+                "write republishes that record, travel calibration included",
+                cfg.magic, cfg.flags);
+        }
+    } catch (const std::exception& e) {
+        logger()->debug("ensure_envelope: config pre-check skipped ({})", e.what());
+    }
+
+    out.written = detail::repair_envelope(out.before);
+    set_envelope(out.written);
+    out.wrote = true;
+    logger()->info(
+        "FollowerGripper::ensure_envelope: repaired [{}] -> cont={:.3f}Nm "
+        "peak={:.3f}Nm", out.before.detail, out.written.cont_torque_nm,
+        out.written.peak_torque_nm);
+    return out;
 }
 
 void FollowerGripper::set_gripper_config(const protocol::GripperConfig& cfg) {

@@ -146,7 +146,7 @@ struct ImpedanceConfig {
     // rad/s -- 1.1 rad/s at these defaults. 0 disables it, which is not
     // recommended: an unclamped step crosses a loose object at 5.5 rad/s and
     // knocks it out without the torque ever rising enough to notice.
-    float max_position_torque_nm = 1.1f;
+    float max_position_torque_nm = MOTOR_STALL_CONT_TORQUE_NM;
     // Output ceiling, on MEASURED torque -- a backstop, not the grasp. The
     // error clamp above bounds the COMMAND; this watches what the motor
     // actually produces, which is a different quantity and the only reason both
@@ -156,6 +156,13 @@ struct ImpedanceConfig {
     //
     // Capped at the motor's rated torque because the resulting hold is
     // indefinite. 0 disables it.
+    //
+    // IT SITS ABOVE THE FIRMWARE ENVELOPE'S cont_torque_nm BY DESIGN, so do not
+    // "fix" that by warning about it: start() once compared this against the
+    // envelope and the comparison was a category error. The sustained draw is
+    // bounded by max_position_torque_nm above; this is a trip level that must
+    // stay out of the operating band, and on a correctly configured device
+    // (cont == the stall rating == the budget) such a warning fires every time.
     float rated_torque_nm = MOTOR_RATED_TORQUE_NM;
     unsigned status_timeout_ms = 350;      // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;

@@ -303,8 +303,10 @@ float Motor::get_startup_limit_torque() {
     return torque_nm;
 }
 
-protocol::MotorSpec Motor::get_spec() {
-    auto ack = t_.send_cmd(protocol::Cmd::GetMotorSpec, {});
+protocol::MotorSpec Motor::get_spec(std::chrono::milliseconds timeout) {
+    auto ack = timeout.count() > 0
+                   ? t_.send_cmd(protocol::Cmd::GetMotorSpec, {}, timeout)
+                   : t_.send_cmd(protocol::Cmd::GetMotorSpec, {});
     if (ack.is_nack) {
         throw ProtocolError(std::string("Motor::get_spec NACK: ") +
                             protocol::to_string(ack.error_code));

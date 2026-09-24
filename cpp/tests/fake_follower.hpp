@@ -80,6 +80,34 @@ public:
     }
     unsigned submit_count() const { return submits_.load(); }
 
+    // ---- Persisted gripper config / motor spec -----------------------------
+    // config_writes() is what pins "the second ensure_envelope() does not
+    // write": a claim no amount of reading the returned struct can establish.
+    unsigned config_writes() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return config_writes_;
+    }
+    tp::GripperConfig stored_config() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return cfg_;
+    }
+    tp::GripperEnvelope stored_envelope() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        tp::GripperEnvelope e{};
+        std::memcpy(&e, cfg_.reserved, sizeof(e));
+        return e;
+    }
+    void set_stored_envelope(const tp::GripperEnvelope& e) {
+        std::lock_guard<std::mutex> lk(mu_);
+        std::memcpy(cfg_.reserved, &e, sizeof(e));
+    }
+    void set_motor_spec(const tp::MotorSpec& s) {
+        std::lock_guard<std::mutex> lk(mu_);
+        spec_ = s;
+    }
+    // Firmware older than 1.1.6.26 has no 0x56.
+    void set_spec_supported(bool on) { spec_supported_.store(on); }
+
 private:
     void run_() {
         auto next_status = std::chrono::steady_clock::now();
@@ -110,13 +138,30 @@ private:
                 return;
             }
             case tp::Cmd::GetGripperConfig: {
-                tp::GripperConfig c{};
-                c.magic = 0x47435047UL;
-                c.version = 1;
-                c.flags = tp::GripperConfigFlag::Valid;
-                c.max_open_rad = 1.30f;
-                c.min_open_rad = 0.0f;
-                pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
+                std::lock_guard<std::mutex> lk(mu_);
+                pty_.send_response(f.seq, f.cmd,
+                                   pod_bytes(&cfg_, sizeof(cfg_)));
+                return;
+            }
+            case tp::Cmd::SetGripperConfig: {
+                // Round-trips the record, so a write is observable rather than
+                // a NACK. Without this every path that persists anything --
+                // the envelope included -- is untestable.
+                if (f.payload.size() >= sizeof(tp::GripperConfig)) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    std::memcpy(&cfg_, f.payload.data(), sizeof(cfg_));
+                    ++config_writes_;
+                }
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
+            }
+            case tp::Cmd::GetMotorSpec: {
+                if (!spec_supported_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidCmd);
+                    return;
+                }
+                std::lock_guard<std::mutex> lk(mu_);
+                pty_.send_response(f.seq, f.cmd, pod_bytes(&spec_, sizeof(spec_)));
                 return;
             }
             case tp::Cmd::GetGripperAutoCalConfig: {
@@ -177,9 +222,39 @@ private:
     std::atomic<bool> streaming_{false};
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
+    std::atomic<bool> spec_supported_{true};
     mutable std::mutex mu_;
     tp::MotorStatus status_{};
     std::optional<tp::MotorImpedanceCtrl> last_submit_;
+
+    // Factory state: a valid travel calibration and a ZEROED envelope, which
+    // is what a device that has never had one written looks like.
+    tp::GripperConfig cfg_ = [] {
+        tp::GripperConfig c{};
+        c.magic        = tp::GRIPPER_CONFIG_MAGIC;
+        c.version      = 1;
+        c.flags        = tp::GripperConfigFlag::Valid;
+        c.max_open_rad = 1.30f;
+        c.min_open_rad = 0.0f;
+        return c;
+    }();
+    unsigned config_writes_ = 0;
+
+    // The firmware's EL05 row. Only the fields the SDK reads are filled.
+    tp::MotorSpec spec_ = [] {
+        tp::MotorSpec s{};
+        std::strncpy(s.name, "EL05", sizeof(s.name));
+        s.p_max_rad            = 12.57f;
+        s.v_max_rad_s          = 50.0f;
+        s.t_max_nm             = 6.0f;
+        s.kp_max               = 500.0f;
+        s.kd_max               = 5.0f;
+        s.rated_torque_nm      = 1.8f;
+        s.stall_cont_torque_nm = 1.1f;
+        s.winding_limit_c      = 135;
+        s.board_limit_c        = 103;
+        return s;
+    }();
 };
 
 inline std::unique_ptr<tx::FollowerGripper> open_follower(const Pty& pty) {

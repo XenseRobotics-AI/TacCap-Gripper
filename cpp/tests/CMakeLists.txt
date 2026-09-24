@@ -19,6 +19,8 @@ add_executable(taccap_unit_tests
     test_components.cpp
     test_discovery.cpp
     test_gripper_position.cpp
+    test_gripper_envelope.cpp
+    test_envelope_pty.cpp
     test_force_position_controller.cpp
     test_force_position_pty.cpp
     test_impedance_controller.cpp
