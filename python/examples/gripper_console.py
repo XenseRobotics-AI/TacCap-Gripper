@@ -60,6 +60,7 @@ from xense.taccap import (
 # argparse 的默认值一律从库默认派生,不写字面量 —— 这里的 --rated-torque 曾经
 # 硬编码 2.0,而 SDK 侧把上界从峰值收到额定后没人改它,阻抗模式默认参数崩了十天。
 _IMP = ImpedanceConfig()
+_FP = ForcePositionConfig()
 
 
 # ── 状态位(protocol::MotorStatusBit) ────────────────────────────────────────
@@ -342,16 +343,19 @@ def main() -> int:
     ap.add_argument(
         "--grasp-torque",
         type=float,
-        default=1.1,
+        default=_FP.grasp_torque_nm,
         dest="grasp_torque",
-        help="接触后的纯前馈保持力矩 Nm",
+        help=f"接触后的纯前馈保持力矩 Nm(默认 {_FP.grasp_torque_nm:.2f} = EL05 连续"
+        f"堵转额定 —— 被挡住的爪子会无限期坐在这个力矩上,没有任何东西给它计时)",
     )
     ap.add_argument(
         "--close-speed",
         type=float,
-        default=0.5,
+        default=_FP.close_speed_radps,
         dest="close_speed",
-        help="闭合速度 rad/s",
+        help=f"闭合速度 rad/s(默认 {_FP.close_speed_radps:.2f})。与 --grasp-torque "
+        f"不独立:阻尼增益是 grasp/close_speed 且上限 5,所以低于 grasp/5 时增益"
+        f"饱和,validate_config() 会直接拒掉而不是给一个悄悄变软的夹持",
     )
     # ---- 固件运动安全包络 ----
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
