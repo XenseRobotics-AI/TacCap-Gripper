@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-24
+
+### Fixed
+
+- **`gripper_console.py`: `d` (disable) did not actually stop the gripper.** The
+  key called `motor.disable()` while the controller kept streaming MIT frames,
+  so the next frame raced the disable and the jaw stayed live — the key looked
+  like it did nothing. `d` now calls the controller's `stop()`, which is the one
+  path that orders it correctly: zero torque, then disable, then tear down the
+  status subscription. `e` restarts the controller before re-enabling the motor,
+  and the motion keys are inert while paused.
+
+  Two consequences worth knowing. `f` (clear fault) no longer calls `reset()`
+  while paused — that threw `std::logic_error` and killed the console. And `e`
+  now re-reads the jaw position into the displayed target: `start()` re-seeds
+  the controller wherever the jaw is, and the motor is back-drivable while
+  paused, so without the re-read the header showed a stale target and the next
+  `j`/`k` stepped from it — a jump rather than a step.
+
+  Reported by a user; fixed in #17.
+
 ### Changed
 
 - **The shipped leader image is now 1.2.4, not 1.2.6.** The firmware repository
@@ -17,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilt the leader only to keep the numbers equal. **Same code** — the
   replacement image differs from the one it replaces in exactly two bytes, the
   patch byte. The follower stays at 1.2.6.
+
+- **Firmware version statements now say which role they are about.** The two
+  roles number independently, so "firmware >= 1.2.5" was ambiguous and 1.2.4 is
+  now both the leader's current version and a number the follower line passed
+  through. The `FollowerGripper` gate, its binding docstring, both READMEs and
+  `docs/FIRMWARE.md` name the follower line explicitly. A leader in the field
+  may still report 1.2.5 or 1.2.6 from the single-number period; that is the
+  same code as 1.2.4, so flashing the current leader image lowers the number it
+  reports, which nothing refuses and nothing should read as a downgrade.
 
 ## [0.2.5] - 2026-09-24
 
