@@ -144,7 +144,8 @@ def main() -> int:
             "修:impedance_control.py --set-envelope"
         )
 
-    cfg = ForcePositionConfig()
+    # 按设备实际装的电机取默认值(grasp / hold / motion / close_speed 全部跟着走)
+    cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
     cfg.grasp_torque_nm = args.grasp_torque  # 接触后的纯前馈保持力矩 = 夹持力
     # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),低于
     # grasp/5 会被 validate_config() 拒掉,否则夹持力会悄悄低于设定值。

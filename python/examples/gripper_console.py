@@ -50,7 +50,6 @@ from typing import Optional
 
 import _target
 from xense.taccap import (
-    MOTOR_RATED_TORQUE_NM,
     FollowerGripper,
     ForcePositionConfig,
     ForcePositionController,
@@ -59,10 +58,15 @@ from xense.taccap import (
     log,
 )
 
-# argparse 的默认值一律从库默认派生,不写字面量 —— 这里的 --rated-torque 曾经
-# 硬编码 2.0,而 SDK 侧把上界从峰值收到额定后没人改它,阻抗模式默认参数崩了十天。
-_IMP = ImpedanceConfig()
-_FP = ForcePositionConfig()
+# argparse 的默认值全部是 None,真正的默认在设备打开之后由它自报的电机规格推出
+# (ImpedanceConfig.for_spec / ForcePositionConfig.for_spec)。
+#
+# 不能在这里写死:EL05 的持续夹持是 1.1 Nm,RS00 是 3.6 —— 差 3.3 倍,而那正是
+# 换电机的理由。更隐蔽的是 kd:接近速度是 预算/kd,写死 kd 会让"夹得更紧"顺带
+# 变成"撞得更快"。这两件事必须一起由电机决定。
+#
+# (历史:--rated-torque 曾经硬编码 2.0,SDK 把上界从峰值收到额定后没人改它,
+#  阻抗模式默认参数崩了十天。写死默认值的代价这里付过一次了。)
 
 
 # ── 状态位(protocol::MotorStatusBit) ────────────────────────────────────────
@@ -131,21 +135,28 @@ class ImpedanceBackend:
     label = "IMPEDANCE"
 
     def __init__(self, g: FollowerGripper, args):
-        cfg = ImpedanceConfig()
-        cfg.kp = args.kp  # 刚度 Nm/rad
-        cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
+        # 默认值来自设备自报的电机规格,不是编译期常量 —— EL05 和 RS00 的持续
+        # 夹持差 3.3 倍,而 kd 又跟着预算走好让接近速度不变。
+        cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
+        if args.kp is not None:
+            cfg.kp = args.kp  # 刚度 Nm/rad
+        if args.kd is not None:
+            cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
         # 误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。主保护 —— 它同时
         # 限住了「接近」和「堵转」,而只防堵转是不够的:实测不钳位的大步进会以
         # 5.5 rad/s 掠过物体把它撞飞,全程力矩不到 0.03 Nm,没有持续接触可检测。
-        cfg.max_position_torque_nm = args.max_position_torque
+        if args.max_position_torque is not None:
+            cfg.max_position_torque_nm = args.max_position_torque
         # 力矩天花板:作用在实测力矩上(不是命令值)。顶住后改发 kp=kd=0 的纯前馈
         # 帧,位置误差再也加不进输出。上限是额定 1.8 而非峰值 6.0 —— 这个保持无限期。
-        cfg.rated_torque_nm = args.rated_torque
+        if args.rated_torque is not None:
+            cfg.rated_torque_nm = args.rated_torque
         # 前馈保持 0。它一度被加进来是为了在失速跳闸后还剩点力,而那个守卫已经
         # 删了 —— 现在误差钳位自己就保持在预算上。再给前馈只会叠加在总命令上,
         # 把持续夹持力抬到预算之上,正好绕过"预算必须能无限期保持"这个选择。
         # status_timeout_ms / motor_stream_hz 用默认值(350 ms / 100 Hz)。
         self.ctl = ImpedanceController(g, cfg)
+        self.cfg = cfg  # 标题行显示**生效值**,不是命令行原值
         self._snap = None
 
     def start(self):
@@ -197,16 +208,20 @@ class ForcePositionBackend:
     label = "FORCE-POSITION"
 
     def __init__(self, g: FollowerGripper, args):
-        cfg = ForcePositionConfig()
-        cfg.grasp_torque_nm = args.grasp_torque  # 接触后的保持力矩 = 夹持力
-        # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),
-        # 所以 close_speed < grasp/5 时增益饱和,爪子会堵转在低于设定的力上 ——
-        # validate_config() 直接拒掉,而不是给一个悄悄变软的夹持。
-        cfg.close_speed_radps = args.close_speed
-        # hold/motion 上限与传输参数用默认值(1.8 / 6.0 Nm,350 ms / 100 Hz)。
+        # 同上:grasp / hold / motion / close_speed 全部按设备的电机推出来。
+        cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
+        if args.grasp_torque is not None:
+            cfg.grasp_torque_nm = args.grasp_torque  # 保持力矩 = 夹持力
+        # 闭合速度与 grasp **是独立的**。曾经有过 grasp/close_speed 的耦合规则
+        # (行程阻尼增益当年就是这个比值),现在斜坡自己调速、预算拆分定增益,
+        # 所以慢就只是慢 —— 见 force_position_controller.cpp 的 validate_config。
+        if args.close_speed is not None:
+            cfg.close_speed_radps = args.close_speed
+        # hold/motion 上限也来自电机(EL05 1.8/6.0,RS00 5.0/14.0)。
         # 接触判定常数与位置增益不再是可配项:它们是固件常量的镜像和实测值,
         # 对这台夹爪只有一个正确答案。--kp/--kd 仍然喂 ImpedanceBackend。
         self.ctl = ForcePositionController(g, cfg)
+        self.cfg = cfg
         self._snap = None
 
     def start(self):
@@ -309,8 +324,14 @@ def main() -> int:
         choices=("impedance", "force-position"),
         help="阻抗 (ImpedanceController) 或力位混合 (ForcePositionController)",
     )
-    ap.add_argument("--kp", type=float, default=20.0, help="刚度 Nm/rad")
-    ap.add_argument("--kd", type=float, default=1.0, help="阻尼 Nm·s/rad")
+    ap.add_argument("--kp", type=float, default=None, help="刚度 Nm/rad(默认 20)")
+    ap.add_argument(
+        "--kd",
+        type=float,
+        default=None,
+        help="阻尼 Nm·s/rad。**同时决定接近速度**(≈ 预算/kd)。默认由电机推出,"
+        "让接近速度落在 2 rad/s",
+    )
     ap.add_argument(
         "--hz",
         type=float,
@@ -325,11 +346,11 @@ def main() -> int:
     ap.add_argument(
         "--max-position-torque",
         type=float,
-        default=_IMP.max_position_torque_nm,
+        default=None,
         dest="max_position_torque",
-        help=f"力矩预算/误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。"
-        f"被挡住时命令饱和在这里并一直保持,那就是夹持力 "
-        f"(默认 {_IMP.max_position_torque_nm:.2f},须低于 --rated-torque)",
+        help="力矩预算/误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。"
+        "被挡住时命令饱和在这里并一直保持,那就是夹持力。默认取电机自报的"
+        "**连续堵转额定**(EL05 1.10 / RS00 3.60),须低于 --rated-torque",
     )
     # 默认值从 MOTOR_RATED_TORQUE_NM 派生,不要再写字面量:这里原本硬编码 2.0,
     # 而 aa3d0a9 把 ImpedanceConfig 的上界从峰值 6.0 收到额定 1.8(那个保持是
@@ -337,27 +358,30 @@ def main() -> int:
     ap.add_argument(
         "--rated-torque",
         type=float,
-        default=_IMP.rated_torque_nm,
+        default=None,
         dest="rated_torque",
-        help=f"力矩天花板:实测力矩到顶后转纯前馈保持(上限=额定 {MOTOR_RATED_TORQUE_NM:.2f} Nm)",
+        help="力矩天花板:实测力矩到顶后转纯前馈保持。默认取电机自报的**旋转额定**"
+        "(EL05 1.80 / RS00 5.00);start() 会拿设备实际额定卡它",
     )
     # ---- ForcePositionController ----
     ap.add_argument(
         "--grasp-torque",
         type=float,
-        default=_FP.grasp_torque_nm,
+        default=None,
         dest="grasp_torque",
-        help=f"接触后的纯前馈保持力矩 Nm(默认 {_FP.grasp_torque_nm:.2f} = EL05 连续"
-        f"堵转额定 —— 被挡住的爪子会无限期坐在这个力矩上,没有任何东西给它计时)",
+        help="接触后的纯前馈保持力矩 Nm = 夹持力。默认取电机自报的**连续堵转额定**"
+        "(EL05 1.10 / RS00 3.60)—— 被挡住的爪子会无限期坐在这个力矩上,"
+        "没有任何东西给它计时",
     )
     ap.add_argument(
         "--close-speed",
         type=float,
-        default=_FP.close_speed_radps,
+        default=None,
         dest="close_speed",
-        help=f"闭合速度 rad/s(默认 {_FP.close_speed_radps:.2f})。与 --grasp-torque "
-        f"不独立:阻尼增益是 grasp/close_speed 且上限 5,所以低于 grasp/5 时增益"
-        f"饱和,validate_config() 会直接拒掉而不是给一个悄悄变软的夹持",
+        help="闭合速度 rad/s,默认 2.0(MOTOR_APPROACH_SPEED_RADPS)。它与 "
+        "--grasp-torque **是独立的** —— 曾经有过 grasp/close_speed 的耦合规则,"
+        "因为行程阻尼增益当年就是这个比值;现在斜坡自己调速、预算拆分定增益,"
+        "所以慢就只是慢",
     )
     # ---- 固件运动安全包络 ----
     ap.add_argument(
@@ -425,13 +449,17 @@ def main() -> int:
         if eff
         else "  envelope: *** 未生效 —— 固件不钳 kp x 误差,I2t 与温度墙也不生效 ***"
     )
-    # 只在阻抗模式显示增益:力位模式的位置增益已经不是可配项(在
-    # detail::ForcePositionTuning 里),再把 --kp/--kd 印在标题上会让人以为
-    # 它们生效了。
+    # 显示的是**生效值**而不是命令行原值 —— 现在这些默认值由设备的电机规格推出来
+    # (for_spec),命令行不给就是 None,直接格式化会抛 TypeError。
+    #
+    # 只在阻抗模式显示增益:力位模式的位置增益不是可配项(在
+    # detail::ForcePositionTuning 里),把它印在标题上会让人以为它生效了。
+    c = backend.cfg
     gains = (
-        f"  kp={args.kp:.2f} kd={args.kd:.2f}"
+        f"  预算={c.max_position_torque_nm:.2f}Nm kp={c.kp:.1f} kd={c.kd:.2f}"
+        f" ({c.max_position_torque_nm / c.kd:.1f}rad/s)"
         if args.mode == "impedance"
-        else f"  grasp={args.grasp_torque:.2f}Nm"
+        else f"  grasp={c.grasp_torque_nm:.2f}Nm close={c.close_speed_radps:.2f}rad/s"
     )
     head = (
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "

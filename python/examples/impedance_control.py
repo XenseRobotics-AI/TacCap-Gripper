@@ -76,8 +76,16 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _target.add_target_argument(ap)
-    ap.add_argument("--kp", type=float, default=20.0, help="阻抗刚度 Nm/rad")
-    ap.add_argument("--kd", type=float, default=1.0, help="阻抗阻尼 Nm·s/rad")
+    # 默认值一律 None,由设备的电机规格推出来 —— 写死 kd 会把 for_spec() 算好的
+    # 那个值盖掉,而 kd 正是让"夹得更紧"不变成"撞得更快"的那一项。
+    ap.add_argument("--kp", type=float, default=None, help="阻抗刚度 Nm/rad(默认 20)")
+    ap.add_argument(
+        "--kd",
+        type=float,
+        default=None,
+        help="阻抗阻尼 Nm·s/rad。**同时决定接近速度**(≈ 预算/kd)。默认由电机推出:"
+        "预算 / MOTOR_APPROACH_SPEED_RADPS,EL05 上 0.55、RS00 上 1.80,两边都是 2 rad/s",
+    )
     ap.add_argument(
         "--show-envelope", action="store_true", help="打印包络(存的/生效的)后退出"
     )
@@ -125,11 +133,19 @@ def main() -> int:
     if args.show_envelope:
         return 0
 
-    cfg = ImpedanceConfig()
-    cfg.kp = args.kp  # 刚度 Nm/rad
-    cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
-    # 其余走默认:误差钳位 1.5 Nm(命令目标限在实测位置 ±1.5/kp rad),力矩天花板
-    # 1.8 Nm(作用在实测力矩上),流超时 350 ms,状态流 100 Hz。
+    # 按设备实际装的电机取默认值:预算取连续堵转额定、天花板取旋转额定、
+    # kd 由预算算出来好让接近速度维持在 MOTOR_APPROACH_SPEED_RADPS
+    spec = g.motor.get_spec()
+    cfg = ImpedanceConfig.for_spec(spec)
+    if args.kp is not None:
+        cfg.kp = args.kp
+    if args.kd is not None:
+        cfg.kd = args.kd
+    print(
+        f"[motor] {spec.name}  预算={cfg.max_position_torque_nm:.2f}Nm "
+        f"天花板={cfg.rated_torque_nm:.2f}Nm kp={cfg.kp:.1f} kd={cfg.kd:.3f} "
+        f"-> 接近 {cfg.max_position_torque_nm / cfg.kd:.2f} rad/s"
+    )
 
     c = ImpedanceController(g, cfg)
     failures = 0

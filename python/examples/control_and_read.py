@@ -53,7 +53,8 @@ def main() -> int:
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
-    cfg = ForcePositionConfig()
+    # 按设备实际装的电机取默认值 —— EL05 和 RS00 的持续夹持差 3.3 倍
+    cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
     cfg.grasp_torque_nm = args.grasp_torque
     c = ForcePositionController(g, cfg)
     c.start()

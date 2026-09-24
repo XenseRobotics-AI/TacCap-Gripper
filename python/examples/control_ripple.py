@@ -173,7 +173,7 @@ def main() -> int:
     if args.controller in ("force-position", "both"):
 
         def mk_fp():
-            cfg = ForcePositionConfig()
+            cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
             cfg.close_speed_radps = args.close_speed
             return ForcePositionController(g, cfg)
 
@@ -182,7 +182,7 @@ def main() -> int:
     if args.controller in ("impedance", "both"):
 
         def mk_imp():
-            cfg = ImpedanceConfig()
+            cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
             return ImpedanceController(g, cfg)
 
         # 阻抗没有「命令速度」这个量:接近速度由 peak/kd 决定。用实测均速自比,
