@@ -19,7 +19,7 @@ after unplugging and replugging, three runs each way. Treat the replug as part
 of the update, not as troubleshooting.
 
 The released images ship in this repo under `firmware/`, and their filenames
-carry the version (tc-gu-01-slave-1.2.5.bin). Prefer the role selectors below:
+carry the version (tc-gu-01-slave-1.2.6.bin). Prefer the role selectors below:
 they read the current filename from firmware/manifest.json, so they keep
 working across releases, while a literal filename goes stale the next time the
 firmware is bumped. A name you do pass resolves against firmware/ from any
@@ -42,7 +42,7 @@ Usage:
 
     # An explicit image, when you mean a specific build rather than the
     # current release.
-    python python/examples/ota_update.py tc-gu-01-master-1.2.5.bin
+    python python/examples/ota_update.py tc-gu-01-master-1.2.6.bin
 
     # The version sent to the firmware (it writes bank metadata and the
     # post-install verification log with it) is taken from manifest.json by
@@ -166,7 +166,7 @@ def _gripper_role(eps) -> str:
 def _default_firmware_for_role(role: str) -> str:
     """The shipped image for a role, named by firmware/manifest.json.
 
-    The filename carries the version (tc-gu-01-slave-1.2.5.bin), so it cannot be
+    The filename carries the version (tc-gu-01-slave-1.2.6.bin), so it cannot be
     derived from the role alone — the manifest is the single place the current
     release's filename is written, and `file` there is what this reads. That
     also means the manifest is load-bearing for every role-selector and --all
@@ -325,7 +325,7 @@ def _resolve_firmware(path: str) -> Optional[str]:
     """Find the image whether `path` is relative to the cwd or to this repo.
 
     The images ship inside this repo, but the repo is usually vendored as a
-    submodule of something else — so `firmware/tc-gu-01-master-1.2.5.bin`, the path
+    submodule of something else — so `firmware/tc-gu-01-master-1.2.6.bin`, the path
     our docs print because it works from the SDK root, is not the path that
     works from the parent repo's root. Rather than making every downstream
     README carry its own prefix, accept both: the literal path first, then the
@@ -376,7 +376,7 @@ def _identify_image(fw_bytes: bytes):
     """CRC32 反查 firmware/manifest.json,返回 (role, meta) 或 (None, None)。
 
     **按内容认,不按文件名认。** 发布镜像的文件名带版本
-    (tc-gu-01-slave-1.2.5.bin),但文件名是可以被改的 —— 拷走、重命名、从别处
+    (tc-gu-01-slave-1.2.6.bin),但文件名是可以被改的 —— 拷走、重命名、从别处
     下载,名字就开始说谎。CRC32 不会:它认的是这一份字节。
 
     认不出来不是错误,只是"不是我们发布的镜像"(自己编的、第三方的),调用方按

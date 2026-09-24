@@ -81,7 +81,7 @@ python python/examples/ota_update.py \
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.5.bin`). That is deliberate:
+`firmware/` carry the version (`tc-gu-01-master-1.2.6.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
 build into `firmware/`, rename it and update `firmware/manifest.json` in the
