@@ -294,13 +294,51 @@ TEST(ImpedanceConfigValidation, FeedForwardCountsTowardTheBackstop) {
     EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
 }
 
-TEST(ImpedanceConfigValidation, CeilingIsCappedAtRatedNotPeakTorque) {
-    // The hold it produces is indefinite, so the peak rating is the wrong bound.
+TEST(ImpedanceConfigValidation, CeilingIsNoLongerCappedAtTheEl05Rating) {
+    // 2.0 used to throw, because the bound was EL05's 1.8 compiled in. The
+    // rating that matters belongs to the motor actually fitted, so the check
+    // moved to start() where the device can be asked. The hold is still
+    // indefinite and still bounded by the RATED torque -- by that device's.
     ImpedanceConfig cfg;
     cfg.rated_torque_nm = 2.0f;
-    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
-    cfg.rated_torque_nm = 1.8f;
     EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+    cfg.rated_torque_nm = xense::taccap::MOTOR_ABSOLUTE_TORQUE_CEILING_NM + 1.0f;
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+}
+
+TEST(ImpedanceConfigValidation, ForSpecDerivesBudgetCeilingAndDampingTogether) {
+    // The whole point: a bigger grip must not silently become a faster
+    // approach. kd is derived from the budget so the speed stays put.
+    xense::taccap::protocol::MotorSpec rs00{};
+    rs00.rated_torque_nm      = 5.0f;
+    rs00.stall_cont_torque_nm = 3.6f;
+    const auto cfg = xense::taccap::ImpedanceConfig::for_spec(rs00);
+    EXPECT_FLOAT_EQ(cfg.max_position_torque_nm, 3.6f);
+    EXPECT_FLOAT_EQ(cfg.rated_torque_nm, 5.0f);
+    EXPECT_NEAR(cfg.max_position_torque_nm / cfg.kd,
+                xense::taccap::MOTOR_APPROACH_SPEED_RADPS, 1e-4f);
+
+    xense::taccap::protocol::MotorSpec el05{};
+    el05.rated_torque_nm      = 1.8f;
+    el05.stall_cont_torque_nm = 1.1f;
+    const auto e = xense::taccap::ImpedanceConfig::for_spec(el05);
+    EXPECT_FLOAT_EQ(e.max_position_torque_nm, 1.1f);
+    EXPECT_NEAR(e.max_position_torque_nm / e.kd,
+                xense::taccap::MOTOR_APPROACH_SPEED_RADPS, 1e-4f);
+    EXPECT_GT(cfg.max_position_torque_nm, e.max_position_torque_nm)
+        << "the RS00 was fitted to grip harder; that must reach the config";
+}
+
+TEST(ImpedanceConfigValidation, ForSpecFallsBackPerFieldNotPerSpec) {
+    // An RS0x row carries a real rated torque but no stall rating. One
+    // all-or-nothing flag would pair an RS00 rating with an EL05 budget.
+    xense::taccap::protocol::MotorSpec partial{};
+    partial.rated_torque_nm      = 5.0f;
+    partial.stall_cont_torque_nm = 0.0f;   // unknown, not zero
+    const auto cfg = xense::taccap::ImpedanceConfig::for_spec(partial);
+    EXPECT_FLOAT_EQ(cfg.rated_torque_nm, 5.0f);
+    EXPECT_FLOAT_EQ(cfg.max_position_torque_nm,
+                    xense::taccap::MOTOR_STALL_CONT_TORQUE_NM);
 }
 
 TEST(ImpedanceConfigValidation, RejectsUnusableGainsAndRates) {

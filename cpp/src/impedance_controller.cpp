@@ -28,18 +28,21 @@ void validate_config(const ImpedanceConfig& cfg) {
             "ImpedanceConfig.feedforward_torque must be within +/-1.8 Nm");
     }
     if (!finite(cfg.max_position_torque_nm) || cfg.max_position_torque_nm < 0.0f ||
-        cfg.max_position_torque_nm > MOTOR_PEAK_TORQUE_NM) {
+        cfg.max_position_torque_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
         throw std::invalid_argument(
-            "ImpedanceConfig.max_position_torque_nm must be in [0, 6.0]");
+            "ImpedanceConfig.max_position_torque_nm must be in [0, 20]");
     }
     // The ceiling holds indefinitely and nothing here times it out, so it is
     // bounded by the RATED torque, not the peak.
+    // Sanity ceiling only -- the binding limit is this DEVICE's rated torque,
+    // checked in start(). The hold it produces is indefinite, so the device
+    // check uses the rated (rotating) torque and not the peak; but which number
+    // that is depends on the motor, and a config is built before the device is
+    // reachable.
     if (!finite(cfg.rated_torque_nm) || cfg.rated_torque_nm < 0.0f ||
-        cfg.rated_torque_nm > MOTOR_RATED_TORQUE_NM) {
+        cfg.rated_torque_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
         throw std::invalid_argument(
-            "ImpedanceConfig.rated_torque_nm must be in [0, 1.8] -- the hold it "
-            "produces is indefinite, so it is capped at the motor's rated "
-            "torque rather than its peak");
+            "ImpedanceConfig.rated_torque_nm must be in [0, 20]");
     }
     // The ceiling is a BACKSTOP for torque the control law did not ask for, so
     // it has to sit above the band the law works in. max_position_torque_nm
@@ -287,6 +290,40 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::step(
 
 }  // namespace detail
 
+namespace {
+
+// A spec field is 0 when the firmware's table does not carry that number for
+// this model, which means UNKNOWN, never the number zero. Fall back per FIELD,
+// not per spec: the RS0x rows carry a real rated torque but no stall rating, so
+// an all-or-nothing fallback would quietly pair an RS00 rated torque with an
+// EL05 grip budget.
+float spec_or(float v, float fallback) {
+    return (std::isfinite(v) && v > 0.0f) ? v : fallback;
+}
+
+}  // namespace
+
+ImpedanceConfig ImpedanceConfig::for_spec(const protocol::MotorSpec& spec) {
+    ImpedanceConfig cfg;
+    cfg.max_position_torque_nm =
+        spec_or(spec.stall_cont_torque_nm, MOTOR_STALL_CONT_TORQUE_NM);
+    cfg.rated_torque_nm = spec_or(spec.rated_torque_nm, MOTOR_RATED_TORQUE_NM);
+
+    // The backstop has to sit above the budget, or it fires inside the
+    // operating band and position control is lost mid-grasp. If a model ever
+    // reports the two equal, back the BUDGET off rather than raising a rating
+    // the motor does not have.
+    if (cfg.rated_torque_nm <= cfg.max_position_torque_nm) {
+        cfg.max_position_torque_nm = cfg.rated_torque_nm * 0.9f;
+    }
+
+    // Approach speed is budget/kd. This is the line that keeps a bigger grip
+    // from silently also being a faster one -- the coupling that makes "just
+    // raise the torque" wrong.
+    cfg.kd = cfg.max_position_torque_nm / MOTOR_APPROACH_SPEED_RADPS;
+    return cfg;
+}
+
 // ---------------------------------------------------------------------------
 // ImpedanceController — transport owner
 // ---------------------------------------------------------------------------
@@ -341,6 +378,45 @@ void ImpedanceController::start() {
     // A unit holding an inflated cont in flash would otherwise silence exactly
     // the warning it needs -- the host would read 1.8 while the firmware ran at
     // 1.1.
+    // Bind the ceiling to THIS DEVICE's rated torque. Same reasoning as
+    // ForcePositionController: a config is built before a device is reachable,
+    // so validate_config() can only sanity-check, and the real bound lives here.
+    try {
+        const auto spec = g_.motor().get_spec();
+        const float rated = spec.rated_torque_nm;
+        const std::string model(spec.name, ::strnlen(spec.name, sizeof(spec.name)));
+        if (std::isfinite(rated) && rated > 0.0f &&
+            cfg_.rated_torque_nm > rated + 1e-4f) {
+            throw std::invalid_argument(
+                "ImpedanceConfig.rated_torque_nm " +
+                std::to_string(cfg_.rated_torque_nm) + " Nm exceeds the " + model +
+                "'s rated torque " + std::to_string(rated) +
+                " Nm; the hold it produces is indefinite. Build the config with "
+                "ImpedanceConfig::for_spec().");
+        }
+        // Approach speed is budget/kd. Raising the budget without raising kd
+        // raises the speed with it, straight towards the regime where a loose
+        // object is pushed away before contact can register (measured 5.5 rad/s).
+        if (cfg_.kd > 0.0f) {
+            const float approach = cfg_.max_position_torque_nm / cfg_.kd;
+            if (approach > MOTOR_MAX_APPROACH_SPEED_RADPS) {
+                throw std::invalid_argument(
+                    "ImpedanceConfig implies an approach speed of " +
+                    std::to_string(approach) + " rad/s (budget " +
+                    std::to_string(cfg_.max_position_torque_nm) + " / kd " +
+                    std::to_string(cfg_.kd) + "), above the " +
+                    std::to_string(MOTOR_MAX_APPROACH_SPEED_RADPS) +
+                    " rad/s ceiling. Raise kd with the budget -- "
+                    "ImpedanceConfig::for_spec() does.");
+            }
+        }
+    } catch (const std::invalid_argument&) {
+        throw;
+    } catch (const std::exception& e) {
+        logger()->warn("ImpedanceController: motor spec unavailable ({}), "
+                       "torque ceiling not checked against the device", e.what());
+    }
+
     try {
         const auto audit = g_.audit_envelope();
         // The budget is what a blocked jaw sits on indefinitely. NOT

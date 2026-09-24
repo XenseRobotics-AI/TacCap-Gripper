@@ -42,6 +42,12 @@ constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL
 // holding a mid-stroke target would drag the jaw off that target.
 constexpr float kClosedEndpointEps = 1e-3f;
 
+namespace {
+float detail_spec_or(float v, float fallback) {
+    return (std::isfinite(v) && v > 0.0f) ? v : fallback;
+}
+}  // namespace
+
 void validate_config(const ForcePositionConfig& cfg) {
     auto finite = [](float v) { return std::isfinite(v); };
     if (!finite(cfg.close_speed_radps) || cfg.close_speed_radps <= 0.0f) {
@@ -50,15 +56,19 @@ void validate_config(const ForcePositionConfig& cfg) {
     if (!finite(cfg.grasp_torque_nm) || cfg.grasp_torque_nm <= 0.0f) {
         throw std::invalid_argument("ForcePositionConfig.grasp_torque_nm must be > 0");
     }
+    // Only a sanity ceiling here. The binding limits are the DEVICE's ratings,
+    // and they are checked in start() where the device can be asked -- capping
+    // a config at one model's numbers is what kept an RS00 from ever being
+    // given the 3.6 N·m grip it was fitted for.
     if (!finite(cfg.hold_torque_limit_nm) || cfg.hold_torque_limit_nm <= 0.0f ||
-        cfg.hold_torque_limit_nm > FORCE_POSITION_MAX_HOLD_TORQUE_NM) {
+        cfg.hold_torque_limit_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
         throw std::invalid_argument(
-            "ForcePositionConfig.hold_torque_limit_nm must be in (0, 1.8]");
+            "ForcePositionConfig.hold_torque_limit_nm must be in (0, 20]");
     }
     if (!finite(cfg.motion_torque_limit_nm) || cfg.motion_torque_limit_nm <= 0.0f ||
-        cfg.motion_torque_limit_nm > FORCE_POSITION_MAX_MOTION_TORQUE_NM) {
+        cfg.motion_torque_limit_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
         throw std::invalid_argument(
-            "ForcePositionConfig.motion_torque_limit_nm must be in (0, 6.0]");
+            "ForcePositionConfig.motion_torque_limit_nm must be in (0, 20]");
     }
     if (cfg.hold_torque_limit_nm > cfg.motion_torque_limit_nm) {
         throw std::invalid_argument(
@@ -90,6 +100,7 @@ void validate_config(const ForcePositionConfig& cfg) {
             "motor_stream_hz in [1,100]");
     }
 }
+
 
 void validate_tuning(const detail::ForcePositionTuning& t,
                      const ForcePositionConfig& cfg) {
@@ -485,6 +496,34 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
 
 }  // namespace detail
 
+ForcePositionConfig ForcePositionConfig::for_spec(const protocol::MotorSpec& spec) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm =
+        detail_spec_or(spec.stall_cont_torque_nm, MOTOR_STALL_CONT_TORQUE_NM);
+    cfg.hold_torque_limit_nm =
+        detail_spec_or(spec.rated_torque_nm, FORCE_POSITION_MAX_HOLD_TORQUE_NM);
+    cfg.motion_torque_limit_nm =
+        detail_spec_or(spec.t_max_nm, FORCE_POSITION_MAX_MOTION_TORQUE_NM);
+    cfg.close_speed_radps = MOTOR_APPROACH_SPEED_RADPS;
+
+    // Ordering the validator enforces anyway, restored here so a model with an
+    // odd table yields a usable config instead of one that throws on use.
+    if (cfg.hold_torque_limit_nm > cfg.motion_torque_limit_nm) {
+        cfg.hold_torque_limit_nm = cfg.motion_torque_limit_nm;
+    }
+    if (cfg.grasp_torque_nm > cfg.hold_torque_limit_nm) {
+        cfg.grasp_torque_nm = cfg.hold_torque_limit_nm;
+    }
+    // close_preload_nm stays put on purpose: 0.25 N·m was swept on one
+    // mechanism (0.15 seats it, 0.50 moves it no further). It is a property of
+    // the jaw and its gearbox, not of the motor, so deriving it from the motor
+    // would be inventing a number.
+    if (cfg.close_preload_nm > cfg.grasp_torque_nm) {
+        cfg.close_preload_nm = cfg.grasp_torque_nm;
+    }
+    return cfg;
+}
+
 ForcePositionController::ForcePositionController(FollowerGripper& gripper)
     : ForcePositionController(gripper, ForcePositionConfig{}) {}
 
@@ -639,6 +678,44 @@ void ForcePositionController::start() {
     // Compare against what the firmware ENFORCES. A device storing an inflated
     // cont would otherwise silence this exact warning: the host reads 1.8 while
     // the firmware runs at 1.1, so the grasp looks in-budget and is not.
+    // The binding torque limits are THIS DEVICE's ratings. They are checked
+    // here rather than in validate_config() because a config is built before
+    // any device is reachable -- capping it at one model's numbers is what kept
+    // an RS00 from ever being given the 3.6 N·m grip it was fitted for.
+    //
+    // Fatal, not advisory: every other check in this block warns about a
+    // question of degree, while this one is "the config names a torque this
+    // motor cannot sustain", and the hold it produces has nothing timing it out.
+    try {
+        const auto spec = g_.motor().get_spec();
+        const float rated = spec.rated_torque_nm;
+        const float peak  = spec.t_max_nm;
+        const std::string model(spec.name, ::strnlen(spec.name, sizeof(spec.name)));
+        if (std::isfinite(rated) && rated > 0.0f &&
+            cfg_.hold_torque_limit_nm > rated + 1e-4f) {
+            throw std::invalid_argument(
+                "ForcePositionConfig.hold_torque_limit_nm " +
+                std::to_string(cfg_.hold_torque_limit_nm) + " Nm exceeds the " +
+                model + "'s rated torque " + std::to_string(rated) +
+                " Nm; a force hold is indefinite, so it is bounded by the rated "
+                "torque. Build the config with ForcePositionConfig::for_spec().");
+        }
+        if (std::isfinite(peak) && peak > 0.0f &&
+            cfg_.motion_torque_limit_nm > peak + 1e-4f) {
+            throw std::invalid_argument(
+                "ForcePositionConfig.motion_torque_limit_nm " +
+                std::to_string(cfg_.motion_torque_limit_nm) + " Nm exceeds the " +
+                model + "'s torque range " + std::to_string(peak) + " Nm");
+        }
+    } catch (const std::invalid_argument&) {
+        throw;
+    } catch (const std::exception& e) {
+        // Spec unreadable (old firmware, transport hiccup): fall through on the
+        // compiled fallbacks rather than refusing to run.
+        logger()->warn("ForcePositionController: motor spec unavailable ({}), "
+                       "torque limits not checked against the device", e.what());
+    }
+
     try {
         const auto audit = g_.audit_envelope();
         if (audit.effective && std::isfinite(audit.effective->cont_torque_nm) &&

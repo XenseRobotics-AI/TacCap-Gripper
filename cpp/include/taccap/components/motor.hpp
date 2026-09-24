@@ -46,6 +46,50 @@ constexpr float MOTOR_PEAK_TORQUE_NM  = 6.0f;   // EL05 peak   — fallback
 // is enforced. Same fallback caveat as above: ask the device.
 constexpr float MOTOR_STALL_CONT_TORQUE_NM = 1.1f;  // EL05 continuous stall — fallback
 
+// The approach speed both controllers are tuned to, rad/s at the joint.
+//
+// It is a TARGET, not a measurement: neither controller has a velocity setpoint
+// in the MIT sense. ImpedanceController's jaw accelerates until damping
+// balances the clamped error torque, so its speed is budget/kd and the tuning
+// picks kd to land here; ForcePositionController ramps to it directly.
+//
+// Why it has to be derived per motor rather than left as a fixed kd: the budget
+// IS the sustained grip, and it scales with the motor (EL05 1.1 N·m, RS00 3.6).
+// Hold kd fixed and tripling the grip triples the approach speed with it --
+// straight into the regime where a loose object is knocked away before the
+// torque ever rises enough to notice (measured at 5.5 rad/s).
+//
+// 1.1 rad/s, not the 2.0 this briefly shipped as. Two reasons, both measured on
+// an RS00 follower (TCGU01A28Z0086s) against an EL05 (TCGU01A28Z0015s):
+//
+//   - At 2 rad/s with the RS00's 3.6 N*m budget the closing stroke rippled at
+//     100% of mean velocity with 9.1 rad/s peak-to-peak; at 1.0 rad/s the same
+//     config gives 20% and 0.87. The jaw is audibly and palpably notchy at the
+//     higher speed.
+//   - 1.1 puts EL05's kd back at exactly 1.0, the value its tuning was measured
+//     with. 2.0 silently changed a machine that was already right.
+//
+// The ripple is not really about speed, though -- see max_position_torque_nm in
+// impedance_controller.hpp. The error clamp band is budget/kp, and raising the
+// budget for a bigger grip widens that band: EL05 sits at +/-0.055 rad, an RS00
+// at 3.6/20 sits at +/-0.18, which is 15% of its whole travel. Lowering the
+// speed compensates; it does not address the cause.
+constexpr float MOTOR_APPROACH_SPEED_RADPS = 1.1f;
+
+// Above this the approach is fast enough to move an object before contact can
+// register. Not a guess: an unclamped step was measured crossing a loose object
+// at 5.5 rad/s with peak torque under 0.03 N·m. Controllers refuse a config
+// whose implied approach speed exceeds it.
+constexpr float MOTOR_MAX_APPROACH_SPEED_RADPS = 4.0f;
+
+// Absolute sanity ceiling for any torque a config may name, N·m. NOT a motor
+// rating and not a safety limit -- it only catches a number that cannot mean
+// what it says (a unit slip, a stray zero). The real bound is the device's own
+// spec, which the controllers check at start() where the device is reachable;
+// a config is built long before that and must not be capped at one model's
+// numbers, or an RS00 could never be given the 3.6 N·m grip it was fitted for.
+constexpr float MOTOR_ABSOLUTE_TORQUE_CEILING_NM = 20.0f;
+
 struct MotorStatusSample {
     std::chrono::steady_clock::time_point host_time;
     float    actual_pos;        // rad

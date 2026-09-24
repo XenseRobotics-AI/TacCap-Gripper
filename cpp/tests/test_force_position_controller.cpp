@@ -417,16 +417,23 @@ TEST(ForcePositionPolicy, RejectsGraspTorqueAboveMaximum) {
                  std::invalid_argument);
 }
 
-TEST(ForcePositionPolicy, RejectsHoldLimitAboveSoftwareMaximum) {
+TEST(ForcePositionPolicy, AcceptsLimitsAboveTheEl05RatingsForOtherMotors) {
+    // This USED to throw: the bounds were EL05's 1.8 / 6.0 compiled in, which
+    // made an RS00 (5.0 rated, 14.0 range) unable to be given the 3.6 N·m grip
+    // it was fitted for. The device's real ratings are enforced in start(),
+    // where the device can actually be asked; a config is built long before.
     ForcePositionConfig cfg;
-    cfg.hold_torque_limit_nm = 1.81f;
-    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
-                 std::invalid_argument);
+    cfg.motion_torque_limit_nm = 14.0f;   // RS00 torque range
+    cfg.hold_torque_limit_nm   = 5.0f;    // RS00 rated
+    cfg.grasp_torque_nm        = 3.6f;    // RS00 continuous stall
+    EXPECT_NO_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg));
 }
 
-TEST(ForcePositionPolicy, RejectsMotionLimitAboveDeviceMaximum) {
+TEST(ForcePositionPolicy, StillRejectsATorqueNoMotorCouldMean) {
+    // The sanity ceiling catches a unit slip or a stray zero -- it is not a
+    // motor rating and must not be read as one.
     ForcePositionConfig cfg;
-    cfg.motion_torque_limit_nm = 6.01f;
+    cfg.motion_torque_limit_nm = xense::taccap::MOTOR_ABSOLUTE_TORQUE_CEILING_NM + 1.0f;
     EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg),
                  std::invalid_argument);
 }

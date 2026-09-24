@@ -166,6 +166,30 @@ struct ImpedanceConfig {
     float rated_torque_nm = MOTOR_RATED_TORQUE_NM;
     unsigned status_timeout_ms = 350;      // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
+
+    // Defaults tuned for the actuator the device actually has.
+    //
+    // The member defaults above are EL05 numbers compiled in so the struct has
+    // something to initialise to; they are NOT right for another motor. On an
+    // RS00 the sustained grip this struct allows is 1.1 N·m out of the 3.6 the
+    // motor can hold indefinitely -- a third of the reason that motor was
+    // fitted. Build the config from the device instead:
+    //
+    //     auto cfg = ImpedanceConfig::for_spec(g.motor().get_spec());
+    //
+    // What it derives, and why each one has to move together with the others:
+    //   max_position_torque_nm = the motor's CONTINUOUS STALL rating. A blocked
+    //     jaw sits on this budget forever and nothing times it out.
+    //   rated_torque_nm = the motor's ROTATING rating, which is the backstop.
+    //     It must stay above the budget or a normal grasp trips it and position
+    //     control is lost while holding the object.
+    //   kd = budget / MOTOR_APPROACH_SPEED_RADPS. The approach speed is
+    //     budget/kd, so raising the budget without raising kd raises the speed
+    //     with it. This is the coupling that makes "just bump the torque" wrong.
+    //
+    // A zero field in the spec means the firmware's table does not carry that
+    // number for this model; the compiled fallback is used for that field alone.
+    static ImpedanceConfig for_spec(const protocol::MotorSpec& spec);
 };
 
 struct ImpedanceSnapshot {

@@ -64,13 +64,29 @@ FORCE_POSITION_REMOVED = [
 ]
 
 
+# `for_spec` is a factory, not a field: it builds a config from the device's own
+# motor spec so the numbers follow the actuator instead of a compiled-in EL05
+# default. Listed separately from the data surface, but still pinned -- removing
+# it would silently put every gripper back on EL05 numbers.
+FACTORIES = {"for_spec"}
+
+
 def _public_fields(obj) -> set:
-    return {a for a in dir(obj) if not a.startswith("_")}
+    return {a for a in dir(obj) if not a.startswith("_")} - FACTORIES
 
 
 def test_force_position_config_has_exactly_the_declared_fields():
     cfg = t.ForcePositionConfig()
     assert _public_fields(cfg) == set(FORCE_POSITION_FIELDS)
+
+
+@pytest.mark.parametrize("cls", [t.ForcePositionConfig, t.ImpedanceConfig])
+def test_both_configs_can_be_built_from_a_motor_spec(cls):
+    assert callable(getattr(cls, "for_spec", None)), (
+        f"{cls.__name__}.for_spec is gone -- without it every gripper falls "
+        "back to the compiled-in EL05 numbers, which cap an RS00's grip at "
+        "1.1 N*m of the 3.6 it was fitted for"
+    )
 
 
 @pytest.mark.parametrize("name,expected", sorted(FORCE_POSITION_FIELDS.items()))

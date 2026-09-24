@@ -49,6 +49,9 @@ void bind_control(py::module_& m) {
     // The third rating, and the one the other two get mistaken for: what a
     // BLOCKED jaw may hold indefinitely. Both controller budgets default to it.
     m.attr("MOTOR_STALL_CONT_TORQUE_NM") = MOTOR_STALL_CONT_TORQUE_NM;
+    m.attr("MOTOR_APPROACH_SPEED_RADPS") = MOTOR_APPROACH_SPEED_RADPS;
+    m.attr("MOTOR_MAX_APPROACH_SPEED_RADPS") = MOTOR_MAX_APPROACH_SPEED_RADPS;
+    m.attr("MOTOR_ABSOLUTE_TORQUE_CEILING_NM") = MOTOR_ABSOLUTE_TORQUE_CEILING_NM;
 
     py::enum_<ImpedanceState>(m, "ImpedanceState",
         "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING。\n\n"
@@ -62,9 +65,10 @@ void bind_control(py::module_& m) {
         .value("FAULT",         ImpedanceState::Fault)
         .def("__str__", [](ImpedanceState s) { return to_string(s); });
 
-    py::class_<ImpedanceConfig>(m, "ImpedanceConfig",
+    py::class_<ImpedanceConfig> impedance_config(m, "ImpedanceConfig",
         "Tuning for ImpedanceController. Validated by the constructor, which\n"
-        "raises ValueError rather than clamping.")
+        "raises ValueError rather than clamping.");
+    impedance_config
         .def(py::init<>())
         .def_readwrite("kp",                &ImpedanceConfig::kp,
                        "Position stiffness, N*m/rad. Must be > 0.")
@@ -92,6 +96,18 @@ void bind_control(py::module_& m) {
         .def_readwrite("motor_stream_hz",   &ImpedanceConfig::motor_stream_hz,
                        "Motor-status rate the controller requests, 1..100 Hz. One command\n"
                        "is submitted per status frame, so this is also the control rate.");
+
+    impedance_config.def_static("for_spec", &ImpedanceConfig::for_spec, py::arg("spec"),
+        "按设备实际装的电机给出默认值(传 motor.get_spec() 的结果)。\n\n"
+        "类里的成员默认值是编译期烘进去的 EL05 数,**换了电机就不对**:RS00 上它把\n"
+        "持续夹持限在 1.1 Nm,而那颗电机能无限期维持 3.6 —— 换它的理由有三分之二\n"
+        "就这么没了。\n\n"
+        "    cfg = ImpedanceConfig.for_spec(g.motor.get_spec())\n\n"
+        "三个值必须一起动:预算取**连续堵转额定**(被挡住的爪子无限期坐在它上面),\n"
+        "天花板取**旋转额定**(必须高于预算,否则正常夹持就跳闸、位置控制丢失),\n"
+        "kd = 预算 / MOTOR_APPROACH_SPEED_RADPS —— 接近速度是 预算/kd,只提预算\n"
+        "会把接近速度一起提上去,这正是「直接把力矩调大」不对的地方。"
+    );
 
     py::class_<ImpedanceSnapshot>(m, "ImpedanceSnapshot",
         "A consistent view of ImpedanceController, taken under one lock.\n\n"
@@ -220,9 +236,10 @@ void bind_control(py::module_& m) {
     // position gains are firmware mirrors / measured values with one right
     // answer for this gripper, and live in detail::ForcePositionTuning on the
     // C++ side where a caller cannot reach them.
-    py::class_<ForcePositionConfig>(m, "ForcePositionConfig",
+    py::class_<ForcePositionConfig> fp_config(m, "ForcePositionConfig",
         "Tuning for ForcePositionController. Validated by the constructor and again\n"
-        "at start(), against the motor's own persisted limit.")
+        "at start(), against the motor's own persisted limit.");
+    fp_config
         .def(py::init<>())
         .def_readwrite("grasp_torque_nm",      &ForcePositionConfig::grasp_torque_nm,
                        "Torque budget for the grip, N*m. The default is the EL05's continuous\n"
@@ -248,6 +265,17 @@ void bind_control(py::module_& m) {
                        "Feed-forward applied only while holding the CLOSED endpoint, N*m, to seat\n"
                        "the jaw against its mechanical stop and take up backlash. Measured: 0.15\n"
                        "seats it fully and 0.50 moves it no further, so raising this buys nothing.");
+
+    fp_config.def_static("for_spec", &ForcePositionConfig::for_spec, py::arg("spec"),
+        "按设备实际装的电机给出默认值(传 motor.get_spec() 的结果)。\n\n"
+        "    cfg = ForcePositionConfig.for_spec(g.motor.get_spec())\n\n"
+        "grasp_torque_nm 取连续堵转额定、hold_torque_limit_nm 取旋转额定、\n"
+        "motion_torque_limit_nm 取力矩量程、close_speed_radps 取\n"
+        "MOTOR_APPROACH_SPEED_RADPS。\n\n"
+        "**close_preload_nm 不派生**:0.25 Nm 是在某一个机构上扫出来的落座力矩\n"
+        "(0.15 就能坐死,0.50 不再前进),它是爪子和减速箱的属性,不跟着电机走 ——\n"
+        "按电机推它等于凭空编一个数。"
+    );
 
     py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot",
         "A consistent view of ForcePositionController, taken under one lock.")

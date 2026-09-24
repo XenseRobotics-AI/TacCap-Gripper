@@ -133,6 +133,18 @@ struct ForcePositionConfig {
     // at the top of this file.
     float hold_torque_limit_nm   = FORCE_POSITION_MAX_HOLD_TORQUE_NM;
     float motion_torque_limit_nm = FORCE_POSITION_MAX_MOTION_TORQUE_NM;
+
+    // Defaults for the actuator the device actually has -- see the note on
+    // ImpedanceConfig::for_spec. The member defaults above are EL05 numbers,
+    // and on an RS00 they cap the grip at 1.1 N·m of the 3.6 available.
+    //
+    //     auto cfg = ForcePositionConfig::for_spec(g.motor().get_spec());
+    //
+    // grasp_torque_nm becomes the stall rating, hold_torque_limit_nm the rated
+    // torque, motion_torque_limit_nm the torque range, and close_speed_radps
+    // MOTOR_APPROACH_SPEED_RADPS. close_preload_nm is NOT derived: it is a
+    // seating torque measured on one mechanism and does not follow the motor.
+    static ForcePositionConfig for_spec(const protocol::MotorSpec& spec);
     unsigned status_timeout_ms = 350;    // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
     // Feed-forward torque added ONLY while holding the closed endpoint, to seat
