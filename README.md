@@ -232,7 +232,7 @@ python python/examples/follower_status.py left
 # 3. Configure the firmware motion-safety envelope. NOT enabled out of the box,
 #    and it is the only protection layer on the MIT path nothing can bypass.
 python python/examples/impedance_control.py left --show-envelope
-python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.1
+python python/examples/impedance_control.py left --set-envelope
 
 # 4. First motion, interactively, with j/k/o/c keys.
 python python/examples/gripper_console.py left
@@ -640,17 +640,28 @@ thermal protection, and it is **off on a factory device**
 (`GripperConfig.reserved` all zero). Until you write it, it does not exist:
 
 ```bash
-python python/examples/impedance_control.py right --show-envelope        # read
-python python/examples/impedance_control.py right --set-envelope \
-       --peak 2.0 --cont 1.1                                             # write + enable
+python python/examples/impedance_control.py right --show-envelope   # read, never writes
+python python/examples/impedance_control.py right --set-envelope    # repair, writes flash
 ```
 
-| Flag | Default | Meaning |
+**There is no number to pick.** The device knows its own motor's ratings and the
+firmware clamps against them whatever you write, so the SDK reads them (`0x56`)
+and derives the record:
+
+| Field | Value | Meaning |
 |---|---|---|
-| `--peak` | 2.0 N·m | Transient ceiling during motion. **It also sets the approach speed**, roughly `peak/kd` |
-| `--cont` | 1.1 N·m | Sustainable ceiling, the floor of the I²t derate. Defaults to the motor's own continuous **stall** rating — set it higher and the firmware silently clamps it back, while the read-back still shows what you wrote |
-| `--temp-derate-start` | 0 → firmware 90 °C | Where the thermal derate begins |
-| `--temp-wall` | 0 → firmware 100 °C | Temperature wall; above it only 0.30 N·m remains |
+| `peak_torque_nm` | the motor's **rated** torque (1.8 N·m on an EL05) | Transient ceiling during motion, applied as a position-error clamp. **It also sets the approach speed**, roughly `peak/kd` |
+| `cont_torque_nm` | the motor's continuous **stall** rating (1.1 N·m) | What a blocked jaw may hold indefinitely, and the floor of the I²t derate. Not the rated torque — that is the *rotating* rating, and a gripper's main duty cycle is the blocked hold |
+| `temp_derate_start_c` | 0 → firmware 90 °C | Where the thermal derate begins |
+| `temp_wall_c` | 0 → firmware 100 °C | Temperature wall; above it only 0.30 N·m remains |
+
+**What a device stores is not what it enforces.** The firmware clamps `cont`
+down to the stall rating and says so only on a UART that is not wired to USB,
+while a read-back returns flash. A unit on our bench stored `cont=1.800` and ran
+at `1.100` for weeks. `audit_envelope()` reports `stored`, `effective` and
+`recommended` separately; `effective` is `None` when the firmware enforces
+nothing at all. `ensure_envelope()` repairs it, writes only when needed, and
+never widens a record someone deliberately tightened.
 
 The envelope lives in the `GripperConfig` record (commands `0x66`/`0x67`, **no
 protocol change**), survives power loss, and is written once per device. It is

@@ -205,7 +205,7 @@ python python/examples/follower_status.py left
 # 3. 配置固件的运动安全包络。出厂默认没有启用,
 #    而它是 MIT 通路上唯一一层谁都绕不过去的保护。
 python python/examples/impedance_control.py left --show-envelope
-python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.1
+python python/examples/impedance_control.py left --set-envelope
 
 # 4. 第一次运动,用 j/k/o/c 按键交互进行。
 python python/examples/gripper_console.py left
@@ -591,17 +591,25 @@ g.set_auto_cal_config(cfg)                # (闭合到堵转),并记录 max_open
 **关着的**(`GripperConfig.reserved` 全为零)。在你写入它之前,它根本不存在:
 
 ```bash
-python python/examples/impedance_control.py right --show-envelope        # 读取
-python python/examples/impedance_control.py right --set-envelope \
-       --peak 2.0 --cont 1.1                                             # 写入 + 启用
+python python/examples/impedance_control.py right --show-envelope   # 只读,不写
+python python/examples/impedance_control.py right --set-envelope    # 修复,写 flash
 ```
 
-| 参数 | 默认值 | 含义 |
+**没有数要你来挑。** 设备自己知道它装的电机额定多少,而固件无论写进去什么都按那个
+额定钳,所以 SDK 直接读(`0x56`)并推出这条记录:
+
+| 字段 | 取值 | 含义 |
 |---|---|---|
-| `--peak` | 2.0 N·m | 运动过程中的瞬态上限。**它同时决定了接近速度**,大致是 `peak/kd` |
-| `--cont` | 1.1 N·m | 可持续上限,也是 I²t 降额的下限。默认取电机自报的连续**堵转**额定;写大了固件会静默钳回来,而读回的值仍是你写进去的那个 |
-| `--temp-derate-start` | 0 → 固件取 90 °C | 热降额从哪里开始 |
-| `--temp-wall` | 0 → 固件取 100 °C | 温度墙;超过之后只剩 0.30 N·m |
+| `peak_torque_nm` | 电机的**额定**力矩(EL05 为 1.8 N·m) | 运动瞬态上限,以位置误差钳位的形式生效。**它同时决定接近速度**,大致是 `peak/kd` |
+| `cont_torque_nm` | 电机的连续**堵转**额定(1.1 N·m) | 被挡住的爪子可以无限期维持的力矩,也是 I²t 降额的下限。**不是**额定力矩 —— 那是*旋转*额定,而夹爪的主工况就是堵住不放 |
+| `temp_derate_start_c` | 0 → 固件取 90 °C | 热降额从哪里开始 |
+| `temp_wall_c` | 0 → 固件取 100 °C | 温度墙;超过之后只剩 0.30 N·m |
+
+**设备存的不等于它执行的。** 固件把 `cont` 钳到堵转额定,而这件事只记在一条没接到
+USB 的 UART 上,读回来的则是 flash。我们台架上有一台存着 `cont=1.800`、按 `1.100`
+跑了几周。`audit_envelope()` 把 `stored` / `effective` / `recommended` 分开报,
+`effective` 为 `None` 表示固件什么都不执行;`ensure_envelope()` 负责修,只在需要时
+写,并且**绝不放宽**特意收紧过的记录。
 
 包络存在 `GripperConfig` 记录里(命令 `0x66`/`0x67`,**不改协议**),断电不丢,
 每台设备写一次即可。它在固件的 MIT 分支里强制执行 —— 那是每条运动命令都必须

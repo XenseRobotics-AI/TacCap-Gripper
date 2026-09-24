@@ -55,7 +55,6 @@ import time
 
 import _target
 from xense.taccap import (
-    GRIPPER_ENVELOPE_ENFORCE,
     ForcePositionConfig,
     ForcePositionController,
     log,
@@ -130,12 +129,19 @@ def main() -> int:
     log.set_level("warn")
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
-    env = g.get_envelope()
-    print(f"[envelope] {env}")
-    if not (env.flags & GRIPPER_ENVELOPE_ENFORCE):
+    # audit 而不是 get_envelope:只看 Enforce 标志的话,对"存的值不是生效值"
+    # 和布局错配这两种情况都是瞎的,而这两种都会让保持失去热保护。
+    a = g.audit_envelope()
+    print(f"[envelope] stored    {a.stored}")
+    print(
+        f"[envelope] effective "
+        f"{a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+    )
+    if not a.ok:
         print(
-            "[warn] 包络未启用 —— 固件侧的 I2t 与温度墙不生效,"
-            "长时间保持没有热保护。见 impedance_control.py --set-envelope"
+            f"[warn] {a.detail}\n"
+            "       长时间保持的热保护就落在这上面。"
+            "修:impedance_control.py --set-envelope"
         )
 
     cfg = ForcePositionConfig()

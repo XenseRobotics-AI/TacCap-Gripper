@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The envelope's numbers now come from the device, and the examples no longer
+  ask for them.** `--peak`, `--cont`, `--temp-derate-start` and `--temp-wall`
+  are gone from `gripper_console.py` and `impedance_control.py`. Which torques
+  belong in the motion safety envelope was never the caller's question: the
+  device reports its motor's ratings over `0x56` and the firmware clamps
+  against them whatever was written. `FollowerGripper::ensure_envelope()`
+  derives the record (`cont` = the continuous **stall** rating, `peak` = the
+  **rated** torque) and writes it only when the stored one is ineffective or
+  misreports what is enforced.
+
+  `--cont` had defaulted to **1.6 N·m**, which the firmware never ran: 1.8 is
+  the *rotating* rating and the stall rating is 1.1. This was invisible from the
+  host — the firmware clamps rather than refuses, logs it on a UART that is not
+  wired to USB, and a read-back returns flash rather than the enforced value.
+
+- **New: `audit_envelope()`, and `MOTOR_STALL_CONT_TORQUE_NM`.** The audit
+  reports `stored`, `effective` and `recommended` separately; `effective` is
+  `None` when the firmware enforces **nothing at all** — no position-error
+  clamp, no I²t derate, no temperature wall, which is the state of any device
+  that never had an envelope written. Both controllers now warn against
+  `effective` instead of `stored`: a unit storing an inflated `cont` used to
+  *silence* the warning it needed. They stay advisory and never write.
+
+- `ImpedanceController::start()` compared `rated_torque_nm` against the
+  envelope's `cont_torque_nm`. That is a category error — the rating is a trip
+  level on measured torque and is required to sit above the operating band —
+  and it stayed quiet only because devices stored an inflated `cont`. It now
+  compares the sustained budget, `max_position_torque_nm`.
+
+- **On hardware carrying an old record, the first `--set-envelope` lowers it.**
+  A unit storing `cont=1.8 peak=3.0` becomes `1.1 / 1.8`: weaker sustained grip
+  and a slightly slower approach (`peak/kd`, 2.0 → 1.8 rad/s at `kd=1`). Safe
+  direction, explicit trigger, but it is a real change on deployed grippers.
+  An envelope deliberately set *tighter* than the recommendation is preserved —
+  `ensure_envelope()` never widens.
+
 ## [0.2.6] - 2026-09-24
 
 ### Fixed

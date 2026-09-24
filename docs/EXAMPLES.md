@@ -65,7 +65,7 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `impedance_control.py` | 动电机 | `ImpedanceController` 的用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列,并检查「到位」与「被挡住」可分。同时是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope --peak --cont --temp-wall`)。|
+| `impedance_control.py` | 动电机 | `ImpedanceController` 的用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列,并检查「到位」与「被挡住」可分。同时是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope`,值从设备读,没有数值参数)。|
 | `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 的用法:同样两个调用。**全程一条有界力矩控制律,不检测接触** —— 钳位饱和就是接触;闭合端点另有有界前馈预压把爪子坐死在机械止点。输出里 `cmd` 与实测力矩的差就是固件的热降额。|
 | `gripper_console.py` | 动电机 + 夹持力 | 单夹爪键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个 UI,并内置**运动安全包络**的配置入口。表头常驻 `ENFORCED` / `*** INACTIVE ***`。见 [力位混合控制器](#力位混合控制器)。|
 | `control_and_read.py` | 动电机 | **边控制边读**:控制器跑着的时候状态从哪里拿。`snapshot()` 非阻塞、一把锁一致视图,读侧不发任何命令 —— 控制期间调 `read_status()` 会让 ACK 和控制帧在串口上撞车。读侧频率与控制无关,示例里控制 100 Hz、读 10 Hz。|
@@ -132,8 +132,8 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 100 Hz 相位锁,主机反应下限几十毫秒,8 rad/s 下就是 0.24 rad。
 
 ```bash
-# 写入并启用后退出(set 在 show 之前执行),默认 peak=2.0、cont 取电机自报的
-# 连续堵转额定(EL05 = 1.1)、温度走固件 90/100
+# 修好并启用后退出(set 在 show 之前执行)。没有数值参数 —— 值从设备自报的
+# 电机额定推出来;已经正确就什么都不写
 python python/examples/gripper_console.py right --set-envelope --show-envelope
 
 # 写完直接进控制台
@@ -142,22 +142,35 @@ python python/examples/gripper_console.py right --set-envelope --mode force-posi
 # 只看不写
 python python/examples/gripper_console.py right --show-envelope
 
-# 等价入口,参数名一致
-python python/examples/impedance_control.py right --set-envelope --peak 2.0 --cont 1.1
+# 等价入口
+python python/examples/impedance_control.py right --set-envelope
 ```
 
 读回 `flags=0x2003` 即生效(高 4 位 layout 2 | `VALID` | `ENFORCE`)。
 
-| 包络参数 | 默认 | 含义 |
-|---|---|---|
-| `--peak` | 2.0 Nm | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
-| `--cont` | 1.1 Nm | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。默认取电机自报的连续堵转额定;写大了固件会静默钳回来,而读回的是 flash 里的值 |
-| `--temp-derate-start` | 0 → 固件 90 °C | 温度降额起点 |
-| `--temp-wall` | 0 → 固件 100 °C | 温度墙,之上只留 0.30 Nm |
+**这些值没有命令行参数,这是有意的。** 包络该填什么不是使用者要回答的问题:设备
+自己知道它装的电机额定多少,而固件无论写进去什么都按那个额定钳。SDK 读 `0x56` 把
+记录推出来:
 
-传 0 和传 90/100 等价:0 表示"用固件默认",而固件默认就是 90/100。注意两处
-显示不一致但都对 —— `[envelope]` 那行是**原始记录**,存的 0 就打印 `temp=0/0C`;
-控制台表头那行已经把 0 解释成固件默认,所以打印 `temp=90/100C`。
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `peak_torque_nm` | 电机**额定**力矩(EL05 = 1.8 Nm) | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
+| `cont_torque_nm` | 电机连续**堵转**额定(1.1 Nm) | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。不是额定力矩:那是*旋转*额定 |
+| `temp_derate_start_c` | 0 → 固件 90 °C | 温度降额起点 |
+| `temp_wall_c` | 0 → 固件 100 °C | 温度墙,之上只留 0.30 Nm |
+
+温度传 0 和传 90/100 等价:0 表示"用固件默认",而固件默认就是 90/100。
+
+**存的不等于执行的。** 固件把 `cont` 钳到堵转额定,只记在一条没接到 USB 的 UART
+上,而读回的是 flash。所以 `--show-envelope` 把两者分开打印:
+
+```
+[envelope] stored    GripperEnvelope(cont=1.800 Nm, peak=3.000 Nm, ...)
+[envelope] effective GripperEnvelope(cont=1.100 Nm, peak=3.000 Nm, ...)
+```
+
+`effective` 显示为"固件什么都不执行"时,位置误差钳位、I²t、温度墙**一条都没有**
+—— 不是"保护弱一点"。
 
 包络**不是** `start()` 的前提 —— `start()` 只校验设备持久化的 0x700B 启动上限
 (必须 <= `motion_torque_limit_nm`)。包络没开照样启动,只是长时间保持没有 I²t
@@ -187,8 +200,10 @@ python python/examples/force_position_control.py right --grasp-torque 1.4
 位置增益不再可配 —— 见下。
 
 `--grasp-torque` 的硬上限是 **1.8 Nm**(`hold_torque_limit_nm`,即电机额定力矩),
-超了 `validate_config()` 直接抛 `invalid_argument`。另外**持续保持超过 `--cont`
-会被包络的 I²t 降额拉回来**,所以默认包络下实际可用区间到 1.6 Nm。
+超了 `validate_config()` 直接抛 `invalid_argument`。但那只是上限:**持续保持超过
+包络的 `cont_torque_nm` 会被 I²t 降额拉回来**,而 `cont` 就是电机的连续堵转额定
+(EL05 = 1.1 Nm)。所以默认包络下,长期夹持实际可用的就是 **1.1 Nm** —— 设更大的
+数不会让夹得更紧,只会让请求值和实际保持值对不上。
 
 ### 3. `ForcePositionConfig` 完整字段(API 用户)
 

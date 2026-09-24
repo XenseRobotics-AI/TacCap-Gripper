@@ -24,7 +24,7 @@
 
 用法
     python python/examples/impedance_control.py --show-envelope
-    python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.1
+    python python/examples/impedance_control.py --set-envelope
     python python/examples/impedance_control.py right
     python python/examples/impedance_control.py --targets 1.0,0.5,0.0
 
@@ -38,8 +38,6 @@ import time
 
 import _target
 from xense.taccap import (
-    GRIPPER_ENVELOPE_ENFORCE,
-    GRIPPER_ENVELOPE_VALID,
     ImpedanceConfig,
     ImpedanceController,
     ImpedanceState,
@@ -80,20 +78,14 @@ def main() -> int:
     _target.add_target_argument(ap)
     ap.add_argument("--kp", type=float, default=20.0, help="阻抗刚度 Nm/rad")
     ap.add_argument("--kd", type=float, default=1.0, help="阻抗阻尼 Nm·s/rad")
-    ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
-    ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
-    ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
     ap.add_argument(
-        "--cont",
-        type=float,
-        default=None,
-        help="可无限期维持的力矩上限 Nm。默认取电机自报的连续堵转额定(EL05 = 1.10)"
-        " —— 超过它固件会静默钳位,而读回的是 flash 里存的值,看不出来",
+        "--show-envelope", action="store_true", help="打印包络(存的/生效的)后退出"
     )
     ap.add_argument(
-        "--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认"
+        "--set-envelope",
+        action="store_true",
+        help="按设备自报的电机额定修好包络后继续(写 MCU flash,已正确则不写)",
     )
-    ap.add_argument("--temp-wall", type=int, default=0, help="温度墙 °C,0=固件默认")
     ap.add_argument(
         "--targets",
         default="1.0,0.6,0.3,0.6,1.0",
@@ -112,42 +104,23 @@ def main() -> int:
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
-    # cont 的上界是电机的**堵转**额定,不是手册首页的「额定负载」:EL05 的 1.8 N·m
-    # 是旋转额定,过载曲线里 1.1 才是可无限期维持的值,而夹爪的主工况就是堵住不放。
-    # 固件按型号把它钳到 1.1 —— 钳位而不是拒绝,只打一条走物理 UART7 的日志,主机
-    # 侧看不到;get_envelope() 读回的又是 flash 里的记录而不是生效值。所以设了个
-    # 大数会一直显示着、却从来没生效过。实测 0015s 的 flash 里就存着 1.800。
-    stall_cont = 0.0
-    try:
-        stall_cont = float(g.motor.get_spec().stall_cont_torque_nm)
-    except Exception as exc:
-        log.warning(f"读不到电机规格,--cont 回退到 1.1 Nm: {exc}")
-    if stall_cont <= 0.0:
-        stall_cont = 1.1
-    cont = args.cont if args.cont is not None else stall_cont
-    if cont > stall_cont:
-        print(
-            f"[warn] --cont {cont:.3f} 超过连续堵转额定 {stall_cont:.3f} Nm,"
-            f"固件会静默钳到 {stall_cont:.3f}(读回的值仍是 {cont:.3f})。"
-        )
-
+    # 包络填什么不是调用方的问题:设备自己知道它装的电机额定多少,而固件无论写
+    # 进去什么都按那个额定钳。数由 SDK 从设备读(0x56)。
+    #
+    # stored 与 effective 会不一样:固件把 cont 钳下去只记在一条没接到 USB 的
+    # UART 上,而读回的是 flash 里的记录。
+    a = g.audit_envelope()
+    print(f"[envelope] stored    {a.stored}")
+    print(
+        f"[envelope] effective "
+        f"{a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+    )
+    if not a.ok:
+        print(f"[warn] {a.detail}")
     if args.set_envelope:
-        e = g.get_envelope()
-        e.cont_torque_nm, e.peak_torque_nm = cont, args.peak
-        e.temp_derate_start_c, e.temp_wall_c = args.temp_derate_start, args.temp_wall
-        e.flags = GRIPPER_ENVELOPE_VALID | GRIPPER_ENVELOPE_ENFORCE
-        g.set_envelope(e)
-    env = g.get_envelope()
-    print(f"[envelope] {env}")
-    if env.cont_torque_nm > stall_cont:
+        w = g.ensure_envelope()
         print(
-            f"[warn] 存的 cont={env.cont_torque_nm:.3f} 超过连续堵转额定 "
-            f"{stall_cont:.3f} Nm —— 固件实际按 {stall_cont:.3f} 执行。"
-            f"要让两者一致:--set-envelope --cont {stall_cont:.1f}"
-        )
-    if not (env.flags & GRIPPER_ENVELOPE_ENFORCE):
-        print(
-            "[warn] 包络未启用 —— 被挡住时 kp*误差 没有上界。用 --set-envelope 开启。"
+            f"[envelope] 已写入 {w.written}" if w.wrote else "[envelope] 已正确,未写入"
         )
     if args.show_envelope:
         return 0

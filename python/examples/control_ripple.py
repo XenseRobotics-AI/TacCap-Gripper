@@ -160,8 +160,14 @@ def main() -> int:
     log.set_level("warn")
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
-    env = g.get_envelope()
-    print(f"[envelope] {env}")
+    a = g.audit_envelope()
+    print(f"[envelope] stored    {a.stored}")
+    print(
+        f"[envelope] effective "
+        f"{a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+    )
+    if not a.ok:
+        print(f"[warn] {a.detail}")
 
     bad = 0
     if args.controller in ("force-position", "both"):
