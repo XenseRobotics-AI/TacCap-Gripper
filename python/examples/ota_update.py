@@ -42,7 +42,7 @@ Usage:
 
     # An explicit image, when you mean a specific build rather than the
     # current release.
-    python python/examples/ota_update.py tc-gu-01-master-1.2.6.bin
+    python python/examples/ota_update.py tc-gu-01-master-1.2.4.bin
 
     # The version sent to the firmware (it writes bank metadata and the
     # post-install verification log with it) is taken from manifest.json by
@@ -325,7 +325,7 @@ def _resolve_firmware(path: str) -> Optional[str]:
     """Find the image whether `path` is relative to the cwd or to this repo.
 
     The images ship inside this repo, but the repo is usually vendored as a
-    submodule of something else — so `firmware/tc-gu-01-master-1.2.6.bin`, the path
+    submodule of something else — so `firmware/tc-gu-01-master-1.2.4.bin`, the path
     our docs print because it works from the SDK root, is not the path that
     works from the parent repo's root. Rather than making every downstream
     README carry its own prefix, accept both: the literal path first, then the

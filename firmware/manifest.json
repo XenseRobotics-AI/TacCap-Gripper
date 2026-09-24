@@ -1,15 +1,15 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.6.bin",
-      "version": "1.2.6",
+      "file": "tc-gu-01-master-1.2.4.bin",
+      "version": "1.2.4",
       "size_bytes": 118236,
-      "crc32": "0xbd8e47df",
+      "crc32": "0x17f5e76b",
       "sn_suffix": "m",
       "protocol": "V2.4",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "GET_MOTOR_VERSION(0x58) is follower-only; the leader is rebuilt solely to keep both roles on one version number, which is policy since 1.2.5 collapsed the two #ifdef-guarded version definitions into one. No leader-visible behaviour changes in 1.2.6. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
+      "note": "Leader line. 1.2.3 plus the one shared change that added GET_MOTOR_VERSION(0x58) to protocol_handler.c. The image briefly shipped as 1.2.6 because the two roles were forced onto one version number; that policy was dropped on 2026-09-24 and the leader was renumbered to its own line. Identical code — the 1.2.6 and 1.2.4 images differ in exactly two bytes, the patch byte. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
     },
     "slave": {
       "file": "tc-gu-01-slave-1.2.6.bin",

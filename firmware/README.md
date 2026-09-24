@@ -6,7 +6,7 @@ of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.4 | 118,236 B | `0xbd8e47df` |
+| `tc-gu-01-master-1.2.4.bin` | leader (SN ends **`m`**) | **1.2.4** | V2.4 | 118,236 B | `0x17f5e76b` |
 | `tc-gu-01-slave-1.2.6.bin` | follower (SN ends **`s`**) | **1.2.6** | V2.4 + 运动安全包络 | 163,000 B | `0xbffbadc8` |
 
 Only the current release is kept here. Older images come from this directory's
@@ -18,10 +18,22 @@ and checks the image by **CRC32** rather than trusting the filename. Bumping a
 version therefore means replacing the `.bin` *and* updating the manifest in the
 same change — `python/tests/test_ota_update_all.py` fails if they disagree.
 
-Both roles carry the same version number by policy. Since 1.2.5 the two roles
-build from a single version definition, so a change touching only one role still
-rebuilds the other; that is the cost of never having two devices report the same
-number while running different code.
+**The two roles carry independent version numbers**, so the table above will
+usually show two different values. Each role has its own definition in the
+firmware's `protocol_handler.c`.
+
+They were briefly forced onto one number: 1.2.3 aligned the digits and 1.2.5
+collapsed the two definitions into one, because a shared-layer change had once
+been bumped on the follower and forgotten on the leader — two leaders then ran
+binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped on
+2026-09-24 in favour of a rule the firmware repo states explicitly: **a change to
+shared code bumps both roles**, and only a change confined to one role's own
+sources bumps that role alone.
+
+The leader is at 1.2.4 rather than 1.2.6 for that reason — 1.2.5 and 1.2.6 were
+follower releases that rebuilt the leader only to keep the numbers equal. The
+1.2.4 image is the same code as the 1.2.6 one it replaces, differing in exactly
+two bytes: the patch byte.
 
 ## Flashing
 
@@ -66,8 +78,8 @@ The manifest's CRC32 is the same value `ota_update.py` prints and sends in
 ```bash
 python -c "
 from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
-# -> 0xbd8e47df
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.4.bin','rb').read())))"
+# -> 0x17f5e76b
 ```
 
 ## ⚠️ Power-cycle the gripper after flashing

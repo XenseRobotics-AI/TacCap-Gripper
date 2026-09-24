@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The shipped leader image is now 1.2.4, not 1.2.6.** The firmware repository
+  stopped forcing both roles onto one version number on 2026-09-24: a change
+  touching only one role now bumps only that role, with the rule that a change
+  to *shared* code bumps both. The leader line had genuinely reached 1.2.3 plus
+  one shared change, so it is 1.2.4; 1.2.5 and 1.2.6 were follower releases that
+  rebuilt the leader only to keep the numbers equal. **Same code** — the
+  replacement image differs from the one it replaces in exactly two bytes, the
+  patch byte. The follower stays at 1.2.6.
+
 ## [0.2.5] - 2026-09-24
 
 ### Fixed
