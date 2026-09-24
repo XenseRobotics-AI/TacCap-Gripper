@@ -24,7 +24,7 @@
 
 用法
     python python/examples/impedance_control.py --show-envelope
-    python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
+    python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.1
     python python/examples/impedance_control.py right
     python python/examples/impedance_control.py --targets 1.0,0.5,0.0
 
@@ -83,7 +83,13 @@ def main() -> int:
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
     ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
     ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
-    ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
+    ap.add_argument(
+        "--cont",
+        type=float,
+        default=None,
+        help="可无限期维持的力矩上限 Nm。默认取电机自报的连续堵转额定(EL05 = 1.10)"
+        " —— 超过它固件会静默钳位,而读回的是 flash 里存的值,看不出来",
+    )
     ap.add_argument(
         "--temp-derate-start", type=int, default=0, help="降额起点 °C,0=固件默认"
     )
@@ -106,14 +112,39 @@ def main() -> int:
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
+    # cont 的上界是电机的**堵转**额定,不是手册首页的「额定负载」:EL05 的 1.8 N·m
+    # 是旋转额定,过载曲线里 1.1 才是可无限期维持的值,而夹爪的主工况就是堵住不放。
+    # 固件按型号把它钳到 1.1 —— 钳位而不是拒绝,只打一条走物理 UART7 的日志,主机
+    # 侧看不到;get_envelope() 读回的又是 flash 里的记录而不是生效值。所以设了个
+    # 大数会一直显示着、却从来没生效过。实测 0015s 的 flash 里就存着 1.800。
+    stall_cont = 0.0
+    try:
+        stall_cont = float(g.motor.get_spec().stall_cont_torque_nm)
+    except Exception as exc:
+        log.warning(f"读不到电机规格,--cont 回退到 1.1 Nm: {exc}")
+    if stall_cont <= 0.0:
+        stall_cont = 1.1
+    cont = args.cont if args.cont is not None else stall_cont
+    if cont > stall_cont:
+        print(
+            f"[warn] --cont {cont:.3f} 超过连续堵转额定 {stall_cont:.3f} Nm,"
+            f"固件会静默钳到 {stall_cont:.3f}(读回的值仍是 {cont:.3f})。"
+        )
+
     if args.set_envelope:
         e = g.get_envelope()
-        e.cont_torque_nm, e.peak_torque_nm = args.cont, args.peak
+        e.cont_torque_nm, e.peak_torque_nm = cont, args.peak
         e.temp_derate_start_c, e.temp_wall_c = args.temp_derate_start, args.temp_wall
         e.flags = GRIPPER_ENVELOPE_VALID | GRIPPER_ENVELOPE_ENFORCE
         g.set_envelope(e)
     env = g.get_envelope()
     print(f"[envelope] {env}")
+    if env.cont_torque_nm > stall_cont:
+        print(
+            f"[warn] 存的 cont={env.cont_torque_nm:.3f} 超过连续堵转额定 "
+            f"{stall_cont:.3f} Nm —— 固件实际按 {stall_cont:.3f} 执行。"
+            f"要让两者一致:--set-envelope --cont {stall_cont:.1f}"
+        )
     if not (env.flags & GRIPPER_ENVELOPE_ENFORCE):
         print(
             "[warn] 包络未启用 —— 被挡住时 kp*误差 没有上界。用 --set-envelope 开启。"

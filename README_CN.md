@@ -205,7 +205,7 @@ python python/examples/follower_status.py left
 # 3. 配置固件的运动安全包络。出厂默认没有启用,
 #    而它是 MIT 通路上唯一一层谁都绕不过去的保护。
 python python/examples/impedance_control.py left --show-envelope
-python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.6
+python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.1
 
 # 4. 第一次运动,用 j/k/o/c 按键交互进行。
 python python/examples/gripper_console.py left
@@ -593,13 +593,13 @@ g.set_auto_cal_config(cfg)                # (闭合到堵转),并记录 max_open
 ```bash
 python python/examples/impedance_control.py right --show-envelope        # 读取
 python python/examples/impedance_control.py right --set-envelope \
-       --peak 2.0 --cont 1.6                                             # 写入 + 启用
+       --peak 2.0 --cont 1.1                                             # 写入 + 启用
 ```
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
 | `--peak` | 2.0 N·m | 运动过程中的瞬态上限。**它同时决定了接近速度**,大致是 `peak/kd` |
-| `--cont` | 1.6 N·m | 可持续上限,也是 I²t 降额的下限 |
+| `--cont` | 1.1 N·m | 可持续上限,也是 I²t 降额的下限。默认取电机自报的连续**堵转**额定;写大了固件会静默钳回来,而读回的值仍是你写进去的那个 |
 | `--temp-derate-start` | 0 → 固件取 90 °C | 热降额从哪里开始 |
 | `--temp-wall` | 0 → 固件取 100 °C | 温度墙;超过之后只剩 0.30 N·m |
 

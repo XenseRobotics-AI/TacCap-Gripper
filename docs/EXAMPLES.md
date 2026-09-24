@@ -132,7 +132,8 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 100 Hz 相位锁,主机反应下限几十毫秒,8 rad/s 下就是 0.24 rad。
 
 ```bash
-# 写入并启用后退出(set 在 show 之前执行),默认 peak=2.0 cont=1.6、温度走固件 90/100
+# 写入并启用后退出(set 在 show 之前执行),默认 peak=2.0、cont 取电机自报的
+# 连续堵转额定(EL05 = 1.1)、温度走固件 90/100
 python python/examples/gripper_console.py right --set-envelope --show-envelope
 
 # 写完直接进控制台
@@ -142,7 +143,7 @@ python python/examples/gripper_console.py right --set-envelope --mode force-posi
 python python/examples/gripper_console.py right --show-envelope
 
 # 等价入口,参数名一致
-python python/examples/impedance_control.py right --set-envelope --peak 2.0 --cont 1.6
+python python/examples/impedance_control.py right --set-envelope --peak 2.0 --cont 1.1
 ```
 
 读回 `flags=0x2003` 即生效(高 4 位 layout 2 | `VALID` | `ENFORCE`)。
@@ -150,7 +151,7 @@ python python/examples/impedance_control.py right --set-envelope --peak 2.0 --co
 | 包络参数 | 默认 | 含义 |
 |---|---|---|
 | `--peak` | 2.0 Nm | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
-| `--cont` | 1.6 Nm | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板** |
+| `--cont` | 1.1 Nm | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。默认取电机自报的连续堵转额定;写大了固件会静默钳回来,而读回的是 flash 里的值 |
 | `--temp-derate-start` | 0 → 固件 90 °C | 温度降额起点 |
 | `--temp-wall` | 0 → 固件 100 °C | 温度墙,之上只留 0.30 Nm |
 

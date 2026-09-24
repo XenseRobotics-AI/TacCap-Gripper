@@ -451,7 +451,7 @@ python python/examples/force_position_control.py right --grasp-torque 0.35
 
 # motion-safety envelope (the firmware's torque and thermal protection; off by default, written once per device)
 python python/examples/impedance_control.py --show-envelope
-python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
+python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.1
 ```
 
 Note: 6 Nm is the motor's peak, and it only allows **instantaneous** torque of that

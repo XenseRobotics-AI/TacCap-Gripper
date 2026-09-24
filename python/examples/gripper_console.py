@@ -20,7 +20,7 @@ kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被�
 
 用法
     python python/examples/gripper_console.py --show-envelope
-    python python/examples/gripper_console.py --set-envelope --peak 2.0 --cont 1.6
+    python python/examples/gripper_console.py --set-envelope --peak 2.0 --cont 1.1
     python python/examples/gripper_console.py --mode force-position --grasp-torque 1.2
 
 按键
@@ -61,6 +61,12 @@ from xense.taccap import (
 # 硬编码 2.0,而 SDK 侧把上界从峰值收到额定后没人改它,阻抗模式默认参数崩了十天。
 _IMP = ImpedanceConfig()
 _FP = ForcePositionConfig()
+
+# --cont 的回退值。这一个是字面量,因为 SDK 没有导出「连续堵转额定」这个常量 ——
+# MOTOR_RATED_TORQUE_NM 是 1.8,那是**旋转**额定,拿来当 cont 用正好是这段代码要
+# 防的错。真值源是电机自己:motor.get_spec().stall_cont_torque_nm,只有在设备报 0
+# (手册未给该型号的堵转额定)时才落到这里。
+_FALLBACK_CONT_NM = 1.1
 
 
 # ── 状态位(protocol::MotorStatusBit) ────────────────────────────────────────
@@ -360,8 +366,22 @@ def main() -> int:
     # ---- 固件运动安全包络 ----
     ap.add_argument("--show-envelope", action="store_true", help="打印包络后退出")
     ap.add_argument("--set-envelope", action="store_true", help="写入包络后继续")
-    ap.add_argument("--peak", type=float, default=2.0, help="运动瞬态力矩上限 Nm")
-    ap.add_argument("--cont", type=float, default=1.6, help="可持续力矩上限 Nm")
+    ap.add_argument(
+        "--peak",
+        type=float,
+        default=2.0,
+        help="运动瞬态力矩上限 Nm(默认 2.0)。固件把命令位置钳在实测位置 "
+        "±peak/kp 以内,所以它是 kp x 误差 的天花板;它同时定接近速度,约 "
+        "peak/kd(实测 peak 1.5 / kd 1.0 -> 1.70 rad/s),想合得慢就调小它",
+    )
+    ap.add_argument(
+        "--cont",
+        type=float,
+        default=None,
+        help="可无限期维持的力矩上限 Nm。默认取**电机自报的连续堵转额定**"
+        f"({_FALLBACK_CONT_NM:.2f} on EL05),不写字面量 —— 超过这个数固件会"
+        "静默钳位,而状态行读的是 flash 里存的值,看不出来",
+    )
     ap.add_argument(
         "--temp-derate-start",
         type=int,
@@ -383,9 +403,36 @@ def main() -> int:
     print(f"[fw] {g.firmware_version}")
 
     # ---- 运动安全包络:固件侧、MIT 路径上唯一绕不过的一层 ----
+    #
+    # cont 的上界是电机的**堵转**额定,不是手册首页那个「额定负载」。EL05 的
+    # 1.8 N·m 是旋转额定(@100rpm);过载曲线给的是 6->1s / 4->6s / 1.8->175s /
+    # 1.1->无限,而夹爪的主工况就是堵住不放,所以管我们的是 1.1。
+    #
+    # 固件按型号把 cont 钳到这个数,并且是**钳位而不是拒绝**(拒绝会让 flash 里
+    # 带旧配置的设备直接失去保护),只打一条限频日志 —— 而日志走物理 UART7,没引
+    # 到 USB,主机侧看不到。更糟的是 get_envelope() 读回的是 flash 里存的值,不是
+    # 实际执行的值:写 1.6 进去,状态行会一直显示 1.600 而固件在按 1.1 执行。
+    # 这个例子的默认值曾经就是 1.6。
+    stall_cont = 0.0
+    try:
+        stall_cont = float(g.motor.get_spec().stall_cont_torque_nm)
+    except Exception as exc:
+        log.warning(f"读不到电机规格,--cont 回退到 {_FALLBACK_CONT_NM:.2f} Nm: {exc}")
+    if stall_cont <= 0.0:
+        # 该型号手册没给堵转额定 —— 固件也就不会钳,保护完全落在这个数上。
+        stall_cont = _FALLBACK_CONT_NM
+    cont = args.cont if args.cont is not None else stall_cont
+    if cont > stall_cont:
+        print(
+            f"[warn] --cont {cont:.3f} 超过电机连续堵转额定 {stall_cont:.3f} Nm,"
+            f"固件会静默钳到 {stall_cont:.3f}。\n"
+            f"       写进去的值仍是 {cont:.3f},状态行显示的也是它 —— "
+            f"读回的是 flash,不是实际执行的值。"
+        )
+
     if args.set_envelope:
         e = g.get_envelope()
-        e.cont_torque_nm, e.peak_torque_nm = args.cont, args.peak
+        e.cont_torque_nm, e.peak_torque_nm = cont, args.peak
         e.temp_derate_start_c = args.temp_derate_start
         e.temp_wall_c = args.temp_wall
         e.flags = GRIPPER_ENVELOPE_VALID | GRIPPER_ENVELOPE_ENFORCE
@@ -397,7 +444,18 @@ def main() -> int:
         print(
             "[warn] 包络未启用 —— 被挡住时固件不钳 kp x 误差,I2t 与温度墙也不"
             "生效。\n"
-            "       用 --set-envelope --peak 2.0 --cont 1.6 写一次(掉电保持)。"
+            f"       用 --set-envelope --peak {args.peak:.1f} --cont {cont:.1f} "
+            f"写一次(掉电保持)。"
+        )
+    if env.cont_torque_nm > stall_cont:
+        # 实测在 0015s 上撞到过:flash 里存着 cont=1.800(那是**旋转**额定),
+        # 固件一直按 1.100 执行,而控制台此前只显示 1.800。
+        print(
+            f"[warn] 存的 cont={env.cont_torque_nm:.3f} 超过连续堵转额定 "
+            f"{stall_cont:.3f} Nm —— 固件实际按 {stall_cont:.3f} 执行。\n"
+            f"       读回的是 flash 里的记录,不是生效值;固件那条钳位日志走"
+            f"物理 UART7,主机侧看不到。\n"
+            f"       要让两者一致:--set-envelope --cont {stall_cont:.1f}"
         )
     if args.show_envelope:
         return 0
@@ -412,8 +470,13 @@ def main() -> int:
     ]
     backend = Backend(g, args)
 
+    # 存的值超出堵转额定时,把固件实际执行的数一起显示 —— 只显示 flash 里的值
+    # 会让人以为设置生效了。
+    cont_shown = f"{env.cont_torque_nm:.3f}"
+    if env.cont_torque_nm > stall_cont:
+        cont_shown += f"->{stall_cont:.3f}(固件钳位)"
     envline = (
-        f"  envelope: cont={env.cont_torque_nm:.3f} "
+        f"  envelope: cont={cont_shown} "
         f"peak={env.peak_torque_nm:.3f} Nm  "
         f"temp={env.temp_derate_start_c or 90}/{env.temp_wall_c or 100}C  "
         + ("ENFORCED" if enforced else "*** INACTIVE ***")

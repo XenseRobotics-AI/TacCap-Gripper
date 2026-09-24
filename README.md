@@ -232,7 +232,7 @@ python python/examples/follower_status.py left
 # 3. Configure the firmware motion-safety envelope. NOT enabled out of the box,
 #    and it is the only protection layer on the MIT path nothing can bypass.
 python python/examples/impedance_control.py left --show-envelope
-python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.6
+python python/examples/impedance_control.py left --set-envelope --peak 2.0 --cont 1.1
 
 # 4. First motion, interactively, with j/k/o/c keys.
 python python/examples/gripper_console.py left
@@ -642,13 +642,13 @@ thermal protection, and it is **off on a factory device**
 ```bash
 python python/examples/impedance_control.py right --show-envelope        # read
 python python/examples/impedance_control.py right --set-envelope \
-       --peak 2.0 --cont 1.6                                             # write + enable
+       --peak 2.0 --cont 1.1                                             # write + enable
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--peak` | 2.0 N·m | Transient ceiling during motion. **It also sets the approach speed**, roughly `peak/kd` |
-| `--cont` | 1.6 N·m | Sustainable ceiling, the floor of the I²t derate |
+| `--cont` | 1.1 N·m | Sustainable ceiling, the floor of the I²t derate. Defaults to the motor's own continuous **stall** rating — set it higher and the firmware silently clamps it back, while the read-back still shows what you wrote |
 | `--temp-derate-start` | 0 → firmware 90 °C | Where the thermal derate begins |
 | `--temp-wall` | 0 → firmware 100 °C | Temperature wall; above it only 0.30 N·m remains |
 
