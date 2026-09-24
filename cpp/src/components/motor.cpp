@@ -12,8 +12,9 @@ namespace xense::taccap {
 namespace {
 
 void send_or_throw(bus::Transport& t, protocol::Cmd cmd,
-                   const std::vector<uint8_t>& payload, const char* what) {
-    auto ack = t.send_cmd(cmd, payload);
+                   const std::vector<uint8_t>& payload, const char* what,
+                   std::chrono::milliseconds timeout = std::chrono::milliseconds{0}) {
+    auto ack = t.send_cmd(cmd, payload, timeout);
     if (ack.is_nack) {
         throw ProtocolError(std::string("Motor::") + what + " NACK: " +
                             protocol::to_string(ack.error_code));
@@ -217,13 +218,24 @@ void Motor::set_can_id(uint8_t can_id) {
     send_or_throw(t_, protocol::Cmd::MotorSetCanId, {can_id}, "set_can_id");
 }
 
+// 3000 ms rather than the transport default: both of these were measured
+// timing out on every attempt at 200 ms while the motor spoke the private
+// protocol, and answering at 3000 ms. The switch triggers a discovery scan of
+// up to ~1.25 s in firmware, during which the receive buffer is flushed
+// repeatedly. A caller cannot be expected to know that, and the symptom --
+// TimeoutError on a command that works fine in the other protocol -- reads as
+// a dead link.
+constexpr std::chrono::milliseconds kProtocolCmdTimeout{3000};
+
 void Motor::switch_protocol(protocol::MotorProtocol p) {
     send_or_throw(t_, protocol::Cmd::MotorSwitchProtocol,
-                  {static_cast<uint8_t>(p)}, "switch_protocol");
+                  {static_cast<uint8_t>(p)}, "switch_protocol",
+                  kProtocolCmdTimeout);
 }
 
 protocol::MotorProtocol Motor::get_protocol() {
-    auto ack = t_.send_cmd(protocol::Cmd::MotorGetProtocol, {});
+    auto ack = t_.send_cmd(protocol::Cmd::MotorGetProtocol, {},
+                           kProtocolCmdTimeout);
     if (ack.is_nack) {
         throw ProtocolError(std::string("Motor::get_protocol NACK: ") +
                             protocol::to_string(ack.error_code));

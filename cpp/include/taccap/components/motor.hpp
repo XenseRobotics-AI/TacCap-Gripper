@@ -282,8 +282,18 @@ public:
     void              set_zero();                              // Cmd 0x33 (zero)
     uint8_t           get_can_id();                            // Cmd 0x34
     void              set_can_id(uint8_t can_id);              // Cmd 0x35
-    void              switch_protocol(protocol::MotorProtocol);// Cmd 0x36 (persists)
-    protocol::MotorProtocol get_protocol();                    // Cmd 0x37
+    // Cmd 0x36 / 0x37. Both send with a 3000 ms ACK timeout of their own rather
+    // than the transport default: measured 2026-09-24 on TCGU01A28Z0015s, each
+    // timed out on every attempt at the default 200 ms while the motor spoke
+    // the private protocol, and both answered at 3000 ms. The switch triggers a
+    // discovery scan of up to ~1.25 s in firmware, during which the receive
+    // buffer is flushed repeatedly. Callers need do nothing; before the
+    // per-command timeout the symptom was a TimeoutError on a command that
+    // works fine in the other protocol, which reads as a dead link.
+    //
+    // The switch persists and needs a 24 V power cycle to take effect.
+    void              switch_protocol(protocol::MotorProtocol);
+    protocol::MotorProtocol get_protocol();
     // Single-parameter access to the motor (Cmd 0x38/0x39). The firmware
     // whitelists index + R/W; the 4-byte raw_value is interpreted per
     // MotorPrivateParam::type (u8 / f32).
@@ -306,12 +316,17 @@ public:
     // forward happened: the old blanket gate answered InvalidParam up front,
     // before any CAN traffic.
     //
-    // So the practical rule is unchanged from before the firmware change -- no
-    // motor parameters under MIT -- but the reason moved from the firmware to
-    // the motor, and so did the error code. Still untested: whether the same
-    // indices answer under the private protocol on this unit, which would pin
-    // the cause to MIT rather than to the motor's firmware; that costs a 24 V
-    // power cycle each way.
+    // THE CONTROL WAS RUN 2026-09-24 and it pins the cause to MIT. Same unit,
+    // same firmware, switched to the private protocol and power-cycled: all four
+    // indices answered immediately -- 0x701C 24.1063 V, 0x7017 50.0, 0x7028 0,
+    // 0x700B 6.0 N*m. So the motor is not broken and the index set is not
+    // wrong; the parameter channel simply does not reply while it speaks MIT.
+    //
+    // The practical rule therefore stands -- no motor parameters under MIT --
+    // and it is now a property of the protocol rather than an open question.
+    // Reading them means switching protocols, which costs a 24 V power cycle
+    // each way, so there is still no runtime path. For the 0x700B limit use
+    // set_startup_limit_torque(), which needs no parameter access at all.
     //
     // For the 0x700B limit use set_startup_limit_torque(), which is applied at
     // boot and needs no parameter access at all.

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Motor::switch_protocol()` and `get_protocol()` send with their own 3000 ms
+  ACK timeout.** Measured: while the motor speaks the private protocol both
+  timed out on every attempt at the transport's 200 ms default and both
+  answered at 3000 ms. The switch triggers a discovery scan of up to ~1.25 s in
+  firmware. The old symptom was a `TimeoutError` on a command that works fine in
+  the other protocol, which reads as a dead link rather than a slow command.
+
+### Changed
+
+- **`firmware/` ships only the current release.** The 1.2.5 images were removed;
+  `manifest.json` has pointed at 1.2.6 since it shipped, and `ota_update.py`
+  resolves images through the manifest by CRC32, so the older pair was
+  unreachable through any supported path. Older images come from git history.
+
 ## [0.2.4] - 2026-09-24
 
 Documentation and tooling only — no library code changed, so a consumer pinned
