@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-09-24
+
+### Added
+
+- **`FollowerGripper.audit_envelope()` / `.ensure_envelope()`**, plus the
+  `EnvelopeAudit` / `EnvelopeWrite` result types, the
+  `GRIPPER_ENVELOPE_ISSUE_*` bits and `MOTOR_STALL_CONT_TORQUE_NM` (1.1 N·m —
+  the continuous **stall** rating, the third number the other two ratings keep
+  getting mistaken for).
+
 ### Changed
 
 - **The envelope's numbers now come from the device, and the examples no longer
