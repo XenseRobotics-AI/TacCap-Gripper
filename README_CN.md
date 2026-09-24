@@ -548,7 +548,7 @@ finally:
 
 | | 默认值 | 它是什么 |
 |---|---|---|
-| `grasp_torque_nm` | **1.1 Nm** | 夹持力。空行程不用它;被挡住的夹爪会稳定在这个值上 |
+| `grasp_torque_nm` | **设备自报的连续堵转额定** | 夹持力。空行程不用它;被挡住的夹爪会稳定在这个值上。EL05 上 1.1 Nm,RS00 上 3.6 —— 用 `ForcePositionConfig.for_spec(g.motor.get_spec())` 取,别写死 |
 | `close_speed_radps` | **0.5 rad/s** | 行进速度 |
 
 ```python

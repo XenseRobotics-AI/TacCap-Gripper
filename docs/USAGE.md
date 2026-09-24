@@ -316,7 +316,9 @@ command(target, kp, kd, torque budget = grasp_torque_nm)
 **Contact needs no decision — saturation is contact**, and holding is the natural
 consequence of saturation. There is no mode switch.
 
-`grasp_torque_nm` defaults to **1.1 N·m**, the EL05's continuous stall rating.
+`grasp_torque_nm` defaults to **the device's own continuous stall rating**
+(`ForcePositionConfig.for_spec()`) — 1.1 N·m on an EL05, 3.6 on an RS00. The
+measurements below were taken on an EL05.
 Re-checked by measurement: the grip is indefinite by construction, so the default has
 to be a torque this gripper can genuinely hold forever — which is a question about the
 whole machine, not about the motor. Sustained holds on a real workpiece, measured

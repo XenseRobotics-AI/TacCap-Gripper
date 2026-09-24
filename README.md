@@ -593,7 +593,7 @@ finally:
 
 | | default | what it is |
 |---|---|---|
-| `grasp_torque_nm` | **1.1 Nm** | the grip force. Free travel does not use it; a blocked jaw settles here |
+| `grasp_torque_nm` | **the device's continuous stall rating** | the grip force. Free travel does not use it; a blocked jaw settles here. 1.1 N·m on an EL05, 3.6 on an RS00 — take it from `ForcePositionConfig.for_spec(g.motor.get_spec())` rather than hard-coding it |
 | `close_speed_radps` | **0.5 rad/s** | travel speed |
 
 ```python

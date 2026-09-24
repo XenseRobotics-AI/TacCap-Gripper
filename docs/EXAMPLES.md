@@ -148,6 +148,11 @@ python python/examples/impedance_control.py right --set-envelope
 
 读回 `flags=0x2003` 即生效(高 4 位 layout 2 | `VALID` | `ENFORCE`)。
 
+> **控制器的力矩参数也按电机走。** `ImpedanceConfig.for_spec()` /
+> `ForcePositionConfig.for_spec()` 从 `motor.get_spec()` 推默认值,所有例子默认
+> 用它。连带的一条:**接近速度是 `预算/kd`**,所以 `kd` 也由预算推出,目标
+> 2 rad/s —— 只提夹持力不提 kd,爪子会夹得更紧**也撞得更快**。
+
 **这些值没有命令行参数,这是有意的。** 包络该填什么不是使用者要回答的问题:设备
 自己知道它装的电机额定多少,而固件无论写进去什么都按那个额定钳。SDK 读 `0x56` 把
 记录推出来:

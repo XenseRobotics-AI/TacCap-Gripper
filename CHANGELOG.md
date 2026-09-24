@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-25
+
+**This release exists because a second actuator arrived.** Everything below
+follows from one thing: the SDK had the EL05's numbers compiled into it, and an
+RS00 gripper is a different motor — 3.6 N·m of continuous stall against 1.1,
+±14 N·m of MIT torque range against ±6, a different rated torque, a different
+torque range. A minor bump rather than a patch because the defaults a caller
+gets now depend on the device, and two of them changed on EL05 hardware too.
+
+### Added
+
+- **Per-motor control defaults: `ImpedanceConfig.for_spec()` /
+  `ForcePositionConfig.for_spec()`.** They take the device's own `MotorSpec`
+  (Cmd 0x56) and derive the numbers from it: the budget/grasp from the
+  **continuous stall** rating, the ceiling from the **rated** torque, the motion
+  limit from the torque range. All examples now use them.
+
+  This is why it matters: a gripper fitted with an RS00 can hold **3.6 N·m**
+  indefinitely, and the compiled-in defaults capped it at the EL05's **1.1** —
+  two thirds of the reason that motor was fitted, lost silently.
+
+  **`kd` is derived too, and that is the load-bearing part.** The approach speed
+  is `budget / kd`, so raising the grip without raising `kd` raises the approach
+  speed with it, towards the regime where a loose object is pushed away before
+  contact can register (measured at 5.5 rad/s). Both controllers now target
+  `MOTOR_APPROACH_SPEED_RADPS` = **2 rad/s**, and `start()` refuses a config
+  whose implied approach exceeds 4 rad/s.
+
+  Fallback is **per field, not per spec**: the firmware's RS0x rows carry a real
+  rated torque but no stall rating, so an all-or-nothing fallback would pair an
+  RS00 rating with an EL05 grip budget.
+
+- **`FollowerGripper.home_diag()` and the `HomeDiagReport` record** (Cmd 0x57).
+  The power-on auto-calibration's five failure reasons only ever went to the
+  firmware's UART7, which is not wired to USB — from the host, a calibration
+  that ended early and one that ended right look identical, because both leave
+  a plausible `max_open_rad` behind. `stall_threshold_nm` against
+  `last_abs_torque` is the only way to see whether a stall call was marginal.
+
+- **`Motor.get_model()` / `set_model()` and the `MotorModel` record** (Cmd
+  0x59/0x5A, follower firmware 1.2.7+). This asks the MCU what it has recorded,
+  not the motor what it is — the motor cannot answer, so the MCU keeps it in
+  flash. `t_max_nm` / `v_max_rad_s` in the reply are the MIT ranges actually in
+  force, which is what to read first when a gripper behaves as if its torques
+  were scaled.
+
+### Changed
+
+- **Torque bounds are no longer compile-time EL05 numbers.** Construction now
+  checks structure (finite, positive, `grasp <= hold <= motion`, budget below
+  ceiling) plus a 20 N·m sanity ceiling that is *not* a motor rating; the
+  binding limits are the device's own ratings, enforced in `start()` where the
+  device can be asked. `ForcePositionConfig.hold_torque_limit_nm = 5.0` on an
+  RS00 used to raise `ValueError` against EL05's 1.8.
+
+- **On an EL05 the approach speed moves from ~1.1 rad/s to 2.0** once a config
+  comes from `for_spec()` (`kd` 1.0 → 0.55). The struct's member defaults are
+  unchanged, so code constructing `ImpedanceConfig()` directly keeps the old
+  behaviour — but every example now uses the factory, and so does anything that
+  copies them.
+
+### Fixed
+
+- `--close-speed`'s help and the console's own comment described a coupling
+  rule between `close_speed_radps` and `grasp_torque_nm` (damping gain =
+  grasp/speed, capped at 5) that **no longer exists** — the ramp regulates speed
+  and the budget split sets the gains, so a slow close is just a slow close.
+
 ## [0.2.7] - 2026-09-24
 
 ### Added
