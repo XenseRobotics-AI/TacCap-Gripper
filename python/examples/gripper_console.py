@@ -27,7 +27,7 @@ kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被�
     j / k   — 目标开度 + / -(一个 --step;归一化 0..1,0=闭合 1=张开)
     o       — 全开(1.0)          c — 全合(0.0)
     h       — 保持当前位置(仅力位混合)
-    e / d   — 使能 / 失能          f — 清故障(力位混合同时 reset 出 Fault)
+    e / d   — 恢复控制/失能         f — 清故障(力位混合同时 reset 出 Fault)
     q / ESC — 退出
 
 安全:真实运动。退出路径必定先 stop()(下发零力矩)再 disable()。
@@ -428,6 +428,13 @@ def main() -> int:
     )
 
     last_key = "-"
+    # The controller owns the periodic MIT stream.  A bare Motor.disable() is
+    # not enough while that stream is alive: the next status frame would send
+    # another control command and the firmware can re-enter its run mode.
+    # Keep this bit as the lifecycle guard for the e/d keys.  `d` stops the
+    # controller (which sends zero torque and disables), and `e` starts it
+    # again before enabling the motor, matching the SDK lifecycle contract.
+    controller_active = False
     sys.stdout.write("\033[2J")
     sys.stdout.flush()
 
@@ -435,6 +442,7 @@ def main() -> int:
         g.motor.clear_fault()
         backend.start()  # 控制器自己起状态流,并以当前位置播种,不会跳变
         g.motor.enable()
+        controller_active = True
 
         # 等首帧,用实际开度初始化本地目标。控制器 start() 已经播过种了,这里
         # 只是让 UI 和按键从同一个数出发 —— 不主动下发,避免多余的一次命令。
@@ -454,29 +462,51 @@ def main() -> int:
                 if ch is not None:
                     last_key = repr(ch)
 
-                if ch == "j":
+                if ch == "j" and controller_active:
                     target = min(1.0, target + args.step)
                     backend.set_target(target)
-                elif ch == "k":
+                elif ch == "k" and controller_active:
                     target = max(0.0, target - args.step)
                     backend.set_target(target)
-                elif ch == "o":
+                elif ch == "o" and controller_active:
                     target = 1.0
                     backend.open_full()
-                elif ch == "c":
+                elif ch == "c" and controller_active:
                     target = 0.0
                     backend.set_target(target)
-                elif ch == "h":
+                elif ch == "h" and controller_active:
                     held = backend.hold()
                     if held is not None:
                         target = held
-                elif ch == "e":
+                elif ch == "e" and not controller_active:
+                    # start() must precede enable(): it seeds the controller
+                    # from the disabled motor's current position and starts
+                    # the status stream before any control frame is accepted.
+                    backend.start()
                     g.motor.enable()
-                elif ch == "d":
-                    g.motor.disable()
+                    controller_active = True
+                    # ...and that seeding is why the local target has to be
+                    # re-read. The motor was DISABLED while paused, so the jaw
+                    # is back-drivable and may have been moved by hand; start()
+                    # takes wherever it is now as the target, while `target`
+                    # still holds the pre-pause number. Leave them apart and the
+                    # header lies about what is commanded, then the next j/k
+                    # steps from the stale value -- a jump, not a step. start()
+                    # reads one status synchronously, so this is valid at once.
+                    resumed = backend.observation()
+                    if resumed.valid:
+                        target = resumed.position
+                elif ch == "d" and controller_active:
+                    # Stop owns the safe ordering: zero torque first, then
+                    # disable, and finally tear down the status subscription.
+                    # Calling motor.disable() alone races the controller's
+                    # next MIT frame and is why `d` used to appear ineffective.
+                    backend.stop()
+                    controller_active = False
                 elif ch == "f":
                     g.motor.clear_fault()
-                    backend.after_fault_clear()
+                    if controller_active:
+                        backend.after_fault_clear()
                 elif ch in ("q", "\x1b", "\x03"):
                     break
 
