@@ -757,9 +757,9 @@ taccap-gripper/
 
 ## Documentation
 
-- **[docs/USAGE.md](docs/USAGE.md)** — end-to-end usage (in Chinese): bringing
-  up all three data paths — tactile (OG), wrist camera, and gripper
-  readout/control.
+- **[docs/USAGE.md](docs/USAGE.md)** — end-to-end usage: bringing up all three
+  data paths — tactile (OG), wrist camera, and gripper readout/control. Also in
+  Chinese as [docs/USAGE_CN.md](docs/USAGE_CN.md).
 - **[docs/INSTALL.md](docs/INSTALL.md)** — prerequisites, C++-only builds,
   device permissions, rebuild/clean, environment traps.
 - **[docs/CALIBRATION.md](docs/CALIBRATION.md)** — encoder zero + travel span,

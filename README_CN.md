@@ -135,6 +135,12 @@ python -c "import xense.taccap as t; print(t.__version__)"
 `uv` 随环境一起装好,并且会自己认准当前激活的 conda 环境。用 `pip` 也行 ——
 参数完全一样。
 
+然后把检查挂上去,一次即可,这样它们在提交时就跑,而不是只在 CI 里跑:
+
+```bash
+pre-commit install
+```
+
 **为什么必须 `--no-build-isolation`。** `environment.yml` 把构建依赖
 (`pybind11`、`scikit-build-core`)和 C++ 依赖(`libopencv`、`spdlog`)钉在
 一起,这个参数的意思是「就按环境里钉住的版本来编」。不加它,安装器会在一个
@@ -697,8 +703,9 @@ taccap-gripper/
 
 ## 文档
 
-- **[docs/USAGE.md](docs/USAGE.md)** —— 端到端使用说明(中文):把三条数据通路
-  都带起来 —— 触觉(OG)、腕部相机,以及夹爪的读取 / 控制。
+- **[docs/USAGE_CN.md](docs/USAGE_CN.md)** —— 端到端使用说明:把三条数据通路
+  都带起来 —— 触觉(OG)、腕部相机,以及夹爪的读取 / 控制。英文版见
+  [docs/USAGE.md](docs/USAGE.md)。
 - **[docs/INSTALL.md](docs/INSTALL.md)** —— 前置依赖、纯 C++ 构建、设备权限、
   重新构建 / 清理、环境陷阱。
 - **[docs/CALIBRATION.md](docs/CALIBRATION.md)** —— 编码器零位 + 行程量程、

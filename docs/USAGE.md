@@ -1,85 +1,98 @@
-# 使用文档 —— 三路数据怎么开起来
+# Usage — bringing up the three data paths
 
-<!-- 面向"第一次要把设备跑起来"的人:触觉、视觉、夹爪读数与控制,各一节,
-     每节都是从插上线到拿到数据的完整路径。API 细节见 README 与各专题文档。 -->
+> A Chinese version is available at [USAGE_CN.md](USAGE_CN.md). This English file is authoritative.
 
-一台 TacCap-Gripper 上有三路互相独立的数据,**分别由不同的软件栈负责**,
-这是本文档最重要的一件事:
+<!-- For anyone bringing the hardware up for the first time: one section each for
+     tactile, vision, and gripper readout/control, and each section is the complete
+     path from plugging the cable in to holding the data. API detail is in the README
+     and the topic docs. -->
 
-| 数据 | 硬件 | 由谁负责 | 设备节点 |
+A TacCap-Gripper carries three independent data paths, and **each is owned by a
+different software stack**. That is the single most important thing in this document:
+
+| Data | Hardware | Owned by | Device node |
 | --- | --- | --- | --- |
-| **夹爪** 读数与控制 | STM32 MCU(IMU / 编码器 / 电机) | **本 SDK** `xense.taccap` | `/dev/serial/by-id/...-if02` |
-| **视觉** 腕部相机 | XC 系列 UVC 相机 | **本 SDK** 的 `Camera`(可选) | `/dev/video*` |
-| **触觉** 视触觉(OG)传感器 | GSPS01 视触觉模组 | **`xensesdk` wheel,不在本 SDK 内** | `/dev/video*` |
+| **Gripper** readout and control | STM32 MCU (IMU / encoder / motor) | **this SDK**, `xense.taccap` | `/dev/serial/by-id/...-if02` |
+| **Vision**, the wrist camera | XC-series UVC camera | **this SDK**'s `Camera` (opt-in) | `/dev/video*` |
+| **Tactile**, the visuotactile (OG) sensor | GSPS01 visuotactile module | **the `xensesdk` wheel, not part of this SDK** | `/dev/video*` |
 
-三者没有共享的会话:开一路不需要开另一路,某一路坏了也不会拖垮其它两路。
-夹爪走串口,两个相机走 USB 视频,互不抢占同一个句柄 —— 但它们**共享 USB 带宽**,
-见[三路一起跑](#4-三路一起跑)。
+The three share no session: opening one does not require opening another, and one of
+them breaking does not drag the other two down. The gripper speaks over a serial port
+and the two cameras over USB video, so they never contend for the same handle — but
+they do **share USB bandwidth**; see [Running all three at once](#4-running-all-three-at-once).
 
-> **示例脚本一律用位置参数 `left` / `right` 选设备**(或直接给序列号),没有
-> `--sn` / `--side` / `--device` 之类的开关 —— 见
-> [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right)。
+> **Every example script selects a device with the positional argument `left` /
+> `right`** (or with a serial number directly). There is no `--sn` / `--side` /
+> `--device` flag — see [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right).
 
-前置的安装、设备权限、`PYTHONPATH` / `LD_LIBRARY_PATH` 陷阱见
-[docs/INSTALL.md](INSTALL.md)。下文假定 `xense-taccap` 环境已激活、
-`import xense.taccap` 能成功。
+Installation, device permissions and the `PYTHONPATH` / `LD_LIBRARY_PATH` traps are
+covered in [docs/INSTALL.md](INSTALL.md). Everything below assumes the `xense-taccap`
+env is activated and `import xense.taccap` works.
 
 ---
 
-## 0. 先确认设备在
+## 0. First, confirm the devices are there
 
-三条线各有各的枚举方式,**先分别确认,再写业务代码** —— 大多数"读不到数据"
-最后都是设备没被认出来。
+Each of the three enumerates differently, so **confirm them separately before you
+write any application code** — most "I can't read any data" reports end up being a
+device that was never recognized.
 
 ```bash
-# 夹爪(MCU):按固件烧录的 SN 发现,不依赖 udev 规则
+# Gripper (MCU): discovered by the firmware-burned SN, no udev rule needed
 python -c "from xense.taccap import scan_grippers, Side
 for g in scan_grippers():
     s='L' if g.side==Side.Left else 'R'
     print(f'  [{s}] {g.role} ch343={g.mcu_serial} fw_sn={g.firmware_sn!r}')"
 
-# 视觉(腕相机)+ 触觉(OG):都在 /dev/v4l/by-id 下,按序列号区分
+# Vision (wrist camera) + tactile (OG): both under /dev/v4l/by-id, told apart by serial
 python python/examples/wrist_camera.py --list
 
-# 触觉(OG):由 xensesdk 自己扫,返回 {序列号: cam_id}
+# Tactile (OG): scanned by xensesdk itself, returns {serial: cam_id}
 python -c "from xensesdk import Sensor; print(Sensor.scanSerialNumber())"
 ```
 
-健康的输出:夹爪那条打出 `[L]` / `[R]` 且 `fw_sn` 非空;`--list` 那条把腕相机
-(`XC…`)和视触觉(`GSPS01…`)分开列出;OG 那条打出形如 `{'OG000352': 10}` 的
-字典。`fw_sn` 为空说明固件还没烧 SN(或固件早于 V1.6),此时侧别会是
-`Side.Unknown`。
+Healthy output: the gripper line prints `[L]` / `[R]` with a non-empty `fw_sn`; the
+`--list` line lists the wrist camera (`XC…`) and the visuotactile sensor (`GSPS01…`)
+separately; the OG line prints a dict of the form `{'OG000352': 10}`. An empty `fw_sn`
+means the firmware has not burned an SN yet (or the firmware predates V1.6), and the
+side then comes back as `Side.Unknown`.
 
-> **三类设备靠序列号区分,不靠设备号。** `/dev/videoN` 的编号随插拔顺序变,而且
-> 腕相机和视触觉挨着枚举 —— 认错了就会把触觉传感器当相机打开。序列号语法和
-> 夹爪固件 SN 是同一套(**序号末位单左双右**,`m` = leader / `s` = follower):
+> **All three device classes are told apart by serial number, not by device number.**
+> The number in `/dev/videoN` moves with plug order, and the wrist camera and the
+> visuotactile sensor enumerate right next to each other — get it wrong and you open
+> the tactile sensor as if it were the camera. The serial syntax is the same one the
+> gripper firmware SN uses (**odd last digit = left, even = right**, `m` = leader /
+> `s` = follower):
 >
-> | 设备 | 语法 | 例 |
+> | Device | Syntax | Example |
 > | --- | --- | --- |
-> | 夹爪 | `TCGU01<批次><产线><序号><m\|s>` | `TCGU01A28Z0116m` |
-> | 腕相机 | `XC<批次><产线><序号><m\|s>` | `XCA28Z0116m` |
-> | 视触觉 | `GSPS01<批次><产线><序号>` | `GSPS01A31Z0049` |
+> | Gripper | `TCGU01<batch><line><seq><m\|s>` | `TCGU01A28Z0116m` |
+> | Wrist camera | `XC<batch><line><seq><m\|s>` | `XCA28Z0116m` |
+> | Visuotactile | `GSPS01<batch><line><seq>` | `GSPS01A31Z0049` |
 >
-> 腕相机的序号和它所在夹爪的序号一致,所以 `left` / `right` 一个选择器就能同时
-> 定位夹爪和它的腕相机。
+> A wrist camera's sequence number matches that of the gripper it sits on, so the one
+> `left` / `right` selector locates both the gripper and its wrist camera.
 
-> **腕相机不在发现结果里,这是设计使然。** 发现层只认 MCU:UVC 设备通常由外部
-> 相机服务持有,SDK 不去抢。所以夹爪对象默认 **不打开** 腕相机
-> (`open_cameras=False`),要用就自己给设备路径。
+> **The wrist camera is absent from discovery by design.** The discovery layer only
+> knows about MCUs: a UVC device is usually held by an external camera service, and
+> the SDK does not fight it for the handle. So a gripper object does **not** open the
+> wrist camera by default (`open_cameras=False`); pass the device path yourself when
+> you want it.
 
 ---
 
-## 1. 夹爪:读数与控制
+## 1. Gripper: readout and control
 
-### 1.1 打开
+### 1.1 Opening one
 
 ```python
 import xense.taccap as t
 
-g = t.LeaderGripper.open()        # 恰好插了一台时;插了多台会抛 IoError
+g = t.LeaderGripper.open()        # when exactly one is plugged in; more than one throws IoError
 ```
 
-多台的场合别用 `open()`,一次扫描拿全再按侧别/角色挑,避免重复探测:
+With several attached, don't use `open()`. Take one scan, then pick by side or role —
+that avoids re-probing:
 
 ```python
 from xense.taccap import LeaderGripper, FollowerGripper, scan_grippers, Side, Role
@@ -90,341 +103,406 @@ lead  = next(e for e in eps if e.role == Role.Leader)
 g     = LeaderGripper(mcu_device=left.mcu_device)
 ```
 
-leader 与 follower 是**两种硬件**,由 SN 尾缀决定(`m` = leader,`s` = follower),
-类只是决定你拿到哪套命令面 —— 用错类不会自动纠正,只会在发命令时 NACK。
+Leader and follower are **two different pieces of hardware**, decided by the SN suffix
+(`m` = leader, `s` = follower); the class only decides which command surface you get —
+picking the wrong one is not corrected for you, it just NACKs when you send a command.
 
-### 1.2 读数:一次性 vs 流式
+### 1.2 Reading: one-shot vs streaming
 
-一次性读(阻塞,等 ACK),适合标定、自检这类低频场合:
+One-shot reads block waiting for an ACK, which suits low-rate work like calibration
+and self-tests:
 
 ```python
 s = g.encoder.read_once()
-print(s.position_rad, s.raw_position_rad)   # 熟化值(钳到 >= 0) vs 原始值
+print(s.position_rad, s.raw_position_rad)   # cooked (clamped >= 0) vs raw
 print(g.imu.read_once())
 ```
 
-流式(固件按固定频率推,回调在后台线程里跑),这是采数据的正路:
+Streaming — the firmware pushes at a fixed rate and your callback runs on a background
+thread — is the proper way to collect data:
 
 ```python
 sub_e = g.encoder.on_data(lambda s: print("enc", s.position_rad))
 sub_i = g.imu.on_data(lambda s: print("imu", s.accel_mps2, s.gyro_radps))
 
-g.start_streaming(imu_hz=100, encoder_hz=100)   # leader:两路都可单独关(0)
+g.start_streaming(imu_hz=100, encoder_hz=100)   # leader: either stream can be turned off on its own (0)
 ...
 g.stop_streaming()
 ```
 
-follower 只有一路可流:**电机状态**。IMU/编码器在这个角色上被固件编译掉了,
-所以签名不同,`motor_hz=0` 会直接抛 `IoError(EINVAL)`,而不是开一条空流:
+A follower has only one stream: **motor status**. IMU and encoder are compiled out of
+the firmware for that role, so the signature differs, and `motor_hz=0` throws
+`IoError(EINVAL)` outright rather than opening an empty stream:
 
 ```python
 f = t.FollowerGripper.open()
 f.motor.on_status(lambda s: print(s.actual_pos, s.actual_torque))
-f.start_streaming(motor_hz=100)     # 固件把 1 kHz 整除,只有 1000 的因数能精确命中
+f.start_streaming(motor_hz=100)     # the firmware divides 1 kHz; only divisors of 1000 land exactly
 ```
 
-> 频率不是随便填的:固件用 1 kHz 整除,非因数的频率会被它悄悄调整;
-> SDK 检测到这种情况会打 warning,但不会 NACK。
+> The rate is not a free parameter: the firmware divides 1 kHz, and a rate that is not
+> a divisor gets silently adjusted. The SDK warns when it detects this, but does not
+> NACK.
 
-### 1.3 归一化开口度(0 = 闭合,1 = 张开)
+### 1.3 Normalized opening (0 = closed, 1 = open)
 
-原始编码器是弧度,策略/数据集通常要 `[0, 1]`。打开 `normalize_position=True`
-后,一次性读和每一个流式样本都会带上 `.position`:
+The raw encoder reads in radians, while policies and datasets usually want `[0, 1]`.
+With `normalize_position=True`, both one-shot reads and every streamed sample carry
+`.position`:
 
 ```python
 g = t.LeaderGripper(mcu_device=dev, normalize_position=True)
 s = g.encoder.read_once()
-s.position_rad     # 0.65  —— 永远是弧度,含义不变
-s.position         # 0.50  —— 归一化;没开这个标志时是 nan
-g.position()       # 0.50  —— 一次性读+换算
+s.position_rad     # 0.65  — always radians, meaning never changes
+s.position         # 0.50  — normalized; nan when the flag is off
+g.position()       # 0.50  — one-shot read + convert
 ```
 
-这依赖固件里存的 **行程上限**(`Cmd::EncoderMaxCal`,固件 ≥ V2.1)。没标定过时
-构造会抛 `ProtocolError`(固件答 `CalNotSet`,而不是给个假的 0)。标定顺序是
-**先置零,再存行程**:
+This relies on the **travel span** stored in firmware (`Cmd::EncoderMaxCal`, firmware
+≥ V2.1). On an uncalibrated unit, construction raises `ProtocolError` (the firmware
+answers `CalNotSet` rather than handing back a bogus 0). The calibration order is
+**zero first, then store the span**:
 
 ```bash
-python python/examples/calibrate.py left            # 交互式:置零 + 存行程
-python python/examples/fisheye_cal.py measure-encoder-max   # 只做行程那一步
+python python/examples/calibrate.py left            # interactive: zero + store span
+python python/examples/fisheye_cal.py measure-encoder-max   # just the span step
 ```
 
-细节见 [docs/CALIBRATION.md](CALIBRATION.md)。
+Details in [docs/CALIBRATION.md](CALIBRATION.md).
 
-### 1.4 控制(仅 follower)
+### 1.4 Control (follower only)
 
-follower 驱动一个 FDCAN 电机,控制原语是 **MIT 阻抗帧**(力位混合):
-`kp`/`kd` 跟踪目标位置,前馈力矩叠加力的分量。动之前必须 enable:
+A follower drives a FDCAN motor, and the control primitive is the **MIT impedance
+frame** (the force-position hybrid): `kp`/`kd` track a target position and the
+feed-forward torque adds the force component. The motor must be enabled before
+anything moves, but **the order is `start()` first, then `enable()`**: both
+controllers' `start()` reads the device's persisted `0x700B` startup limit and
+validates the config against it, and that check is only worth anything before the
+motor can move.
 
 ```python
 f = t.FollowerGripper.open()
 f.motor.clear_fault()
-f.motor.enable()
 ```
 
-**推荐路径 —— `ImpedanceController`**:跟随一个位置目标(遥操作、leader-follower
-转发)就用它。C++ 后台线程按电机状态流的相位提交,你的策略只碰两个非阻塞调用:
+**The recommended path — `ImpedanceController`**: use it whenever you follow a
+position target (teleoperation, leader-follower forwarding). A C++ background thread
+submits in phase with the motor-status stream, and your policy touches only two
+non-blocking calls:
 
 ```python
 cfg = t.ImpedanceConfig()
-cfg.kp = 20.0                      # 刚度 Nm/rad:位置误差换成力矩的比例,手感硬不硬
-cfg.kd = 1.0                       # 阻尼 Nm·s/rad:抑振,并决定接近速度(见下)
-cfg.feedforward_torque = 0.0       # 恒定前馈 Nm,叠在 PD 上。抵消重力/预载用,平时 0
-cfg.max_position_torque_nm = 1.1   # 误差钳位 Nm(就是保护):命令目标限制在实测位置
-                                   #   ±(1.1/kp)=0.055 rad 内,并把接近速度定在
-                                   #   约 1.1/kd = 1.1 rad/s。被挡住时饱和在这里并保持
-cfg.rated_torque_nm = 1.8          # 力矩天花板 Nm(兜底),作用在“实测”力矩上,不是命令值。
-                                   #   顶住后改发 kp=kd=0 的纯前馈帧,钉在预算上。
-                                   #   须高于 max_position_torque_nm + |前馈|
-cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
-cfg.motor_stream_hz = 100          # 状态流速率 Hz;提交锁在这个相位,一帧一提交
+cfg.kp = 20.0                      # stiffness Nm/rad: error-to-torque ratio, how stiff it feels
+cfg.kd = 1.0                       # damping Nm·s/rad: suppresses oscillation, and sets approach speed (below)
+cfg.feedforward_torque = 0.0       # constant feed-forward Nm on top of the PD. For gravity/preload; normally 0
+cfg.max_position_torque_nm = 1.1   # error clamp Nm (this is the protection): the commanded target is held
+                                   #   within ±(1.1/kp)=0.055 rad of the measured position, and the approach
+                                   #   speed is thereby fixed at about 1.1/kd = 1.1 rad/s. A blocked jaw
+                                   #   saturates here and holds
+cfg.rated_torque_nm = 1.8          # torque ceiling Nm (the backstop), acting on the "measured" torque, not on
+                                   #   the command. Once pressed against it, pure feed-forward frames with
+                                   #   kp=kd=0 go out instead, pinned at the budget.
+                                   #   Must be higher than max_position_torque_nm + |feed-forward|
+cfg.status_timeout_ms = 350        # status stream gone this long → FAULT + zero torque + observation invalid
+cfg.motor_stream_hz = 100          # status-stream rate Hz; submission locks to this phase, one per frame
 
 c = t.ImpedanceController(f, cfg)
-c.start()                         # 以当前位置作为初始目标,不会跳
+c.start()                         # validates the device limit; seeds the target with
+                                  #   the current position, so no jump
+f.motor.enable()                  # enable AFTER start() — see above
 try:
     while running:
-        s = c.snapshot()          # 一把锁、一致视图
+        s = c.snapshot()          # one lock, one consistent view
         if s.state == t.ImpedanceState.FAULT:
             print("fault:", s.fault_reason)
             break
         c.set_target(policy(s.observation))
 finally:
-    c.stop()                      # 先下发零力矩
+    c.stop()                      # commands zero torque first
     f.motor.disable()
 ```
 
-`start()` 之后**不要**再自己 `start_streaming()` 或注册 `motor.on_status()` ——
-控制器独占状态流与控制路径,观测一律从 `snapshot()` 取。
+After `start()`, do **not** call `start_streaming()` yourself or register a
+`motor.on_status()` callback — the controller owns the status stream and the control
+path exclusively, and every observation comes from `snapshot()`.
 
-#### 七个字段分别控制什么
+#### What each of the seven fields controls
 
-| 字段 | 默认 | 控制什么 |
+| Field | Default | What it controls |
 |---|---|---|
-| `kp` | 20.0 Nm/rad | 刚度。位置误差换算成力矩的比例,"手感硬不硬" |
-| `kd` | 1.0 Nm·s/rad | 阻尼。抑制振荡,同时决定接近速度(见下) |
-| `feedforward_torque` | 0.0 Nm | 恒定前馈力矩,叠加在 PD 之上。抵消重力/预载用,平时留 0 |
-| `max_position_torque_nm` | 1.1 Nm | **误差钳位**,就是保护。命令目标被限制在实测位置 ±(该值/`kp`) 内 |
-| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,兜底。作用在**实测**力矩上,不是命令值 |
-| `status_timeout_ms` | 350 ms | 状态流断这么久 → `FAULT` + 零力矩 + 观测置 invalid |
-| `motor_stream_hz` | 100 | 状态流速率。提交锁在这个相位上,一帧一提交 |
+| `kp` | 20.0 Nm/rad | Stiffness. The ratio that turns position error into torque — "how stiff it feels" |
+| `kd` | 1.0 Nm·s/rad | Damping. Suppresses oscillation, and also sets the approach speed (below) |
+| `feedforward_torque` | 0.0 Nm | A constant feed-forward torque added on top of the PD. For cancelling gravity or preload; normally left at 0 |
+| `max_position_torque_nm` | 1.1 Nm | **Error clamp** — this is the protection. The commanded target is confined to within ±(that value / `kp`) of the measured position |
+| `rated_torque_nm` | 1.8 Nm | **Torque ceiling**, the backstop. It acts on the **measured** torque, not on the commanded value |
+| `status_timeout_ms` | 350 ms | Status stream gone this long → `FAULT` + zero torque + observation marked invalid |
+| `motor_stream_hz` | 100 | Status-stream rate. Submission locks to this phase, one submit per frame |
 
-真正要按任务调的是前两个加 `max_position_torque_nm`;后两个是传输参数,
-`rated_torque_nm` 一般就放在电机额定值上。
+The ones you actually tune per task are the first two plus `max_position_torque_nm`.
+The last two are transport parameters, and `rated_torque_nm` normally just sits at the
+motor's rated value.
 
-**这两层保护是不同的东西,别混。**
+**These two layers of protection are different things — don't conflate them.**
 
-- `max_position_torque_nm` 钳的是**命令**:`kp × 误差` 不允许超过它。窗口是
-  `max_position_torque_nm / kp`,默认 1.1/20 = **0.055 rad**。它也顺带定死了
-  接近速度 —— 爪子一直加速到阻尼平衡住钳位后的力矩,约
-  `max_position_torque_nm / kd`,默认 **1.1 rad/s**。所以调 `kd` 会同时改手感
-  和接近速度。被挡住时命令饱和在这个值上**并一直保持**,那就是夹持力 —— 接触
-  不需要检测,饱和本身就是接触。默认 1.1 是 EL05 的持续堵转额定,因为这个保持
-  没有任何东西给它计时。
-- `rated_torque_nm` 看的是**电机实际发出来的**力矩(由电流推算)。压住这个值
-  够久之后,控制器改发 `kp=kd=0` 的纯前馈帧:位置误差在结构上再也加不进输出,
-  力矩被**钉死**在预算 `max_position_torque_nm` 上(预算为 0 时才钉在天花板上),
-  而不是"估计不超过"。它是兜底,正常工作到不了:配置校验要求
-  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`。
-- 为什么两层都要:钳位管的是命令值,而 1.1.5 实测堵转时反馈只有命令的约 0.59
-  —— 那个比例是一台机、一个温度、一个负载测出来的。**天花板不关心这个比例。**
+- `max_position_torque_nm` clamps the **command**: `kp × error` is not allowed to
+  exceed it. The window is `max_position_torque_nm / kp`, by default 1.1/20 =
+  **0.055 rad**. It also fixes the approach speed as a side effect — the jaw
+  accelerates until damping balances the clamped torque, roughly
+  `max_position_torque_nm / kd`, by default **1.1 rad/s**. So tuning `kd` changes the
+  feel and the approach speed at the same time. When the jaw is blocked the command
+  saturates at this value **and stays there**, and that is the grip force — contact
+  needs no detecting, saturation itself is contact. The default of 1.1 is the EL05's
+  continuous stall rating, because nothing puts a clock on that hold.
+- `rated_torque_nm` looks at the torque the **motor actually delivers** (inferred from
+  current). Once that has pressed against the value for long enough, the controller
+  switches to pure feed-forward frames with `kp=kd=0`: position error can no longer
+  enter the output at all, structurally, and the torque is **pinned** at the budget
+  `max_position_torque_nm` (only when the budget is 0 does it pin at the ceiling)
+  rather than merely "estimated not to exceed" it. It is a backstop; normal operation
+  never reaches it, because config validation requires
+  `max_position_torque_nm + |feedforward_torque| < rated_torque_nm`.
+- Why both layers: the clamp governs the commanded value, and in a measured stall on
+  1.1.5 the feedback was only about 0.59 of the command — a ratio measured on one
+  unit, at one temperature, under one load. **The ceiling does not care about that
+  ratio.**
 
-`rated_torque_nm` 上限卡在 **1.8 Nm(额定)而不是 6.0 Nm(峰值)**,因为它产生的
-保持是**无限期**的,没有任何东西给它计时。超过额定值长期保持,主要风险不是热:
-电机欠压保护很快,持续大电流会把 24 V 拉垮并把 USB 一起带走 —— 到主机这边表现为
-`SerialBus::write: Input/output error`,完全不像力矩故障。
+`rated_torque_nm` is capped at **1.8 Nm (rated) rather than 6.0 Nm (peak)**, because
+the hold it produces is **indefinite** — nothing puts a clock on it. For a long hold
+above the rated value the main risk is not heat: the motor's undervoltage protection
+is fast, and a sustained high current collapses the 24 V rail and takes USB down with
+it — which shows up on the host as `SerialBus::write: Input/output error`, looking
+nothing like a torque fault.
 
-#### 状态机
+#### The state machine
 
-`IDLE` → `TRACKING` → `TORQUE_CAPPED` → `FAULT`,优先级
-**`FAULT` > `TORQUE_CAPPED` > `TRACKING`**。
+`IDLE` → `TRACKING` → `TORQUE_CAPPED` → `FAULT`, with priority
+**`FAULT` > `TORQUE_CAPPED` > `TRACKING`**.
 
-| 状态 | 含义 |
+| State | Meaning |
 |---|---|
-| `TRACKING` | 正常跟随。被挡住、误差钳位饱和在预算上,也还是这个状态 |
-| `TORQUE_CAPPED` | 实测力矩顶到天花板,正在发纯前馈帧 |
-| `FAULT` | 状态流断 / 电机故障位 / 提交失败。零力矩,需 `reset()` |
+| `TRACKING` | Following normally. A blocked jaw whose error clamp has saturated at the budget is still in this state |
+| `TORQUE_CAPPED` | Measured torque has hit the ceiling; pure feed-forward frames are going out |
+| `FAULT` | Status stream lost / motor fault bit / submit failed. Zero torque; needs `reset()` |
 
-**没有 `STALLED`。** 失速守卫已删除:它把有效目标钳到爪子停住的位置,误差归零,
-力矩随之塌掉 —— 实测接触后 60 ms 在 0.35 Nm 松手。要判断是不是被挡住,看
-`snapshot().commanded_torque_nm` 有没有顶到 `max_position_torque_nm`
-(`impedance_control.py` 就是这么查的)。
+**There is no `STALLED`.** The stall guard was removed: it clamped the effective
+target to wherever the jaw had stopped, which zeroed the error and collapsed the
+torque with it — measured, it let go 60 ms after contact at 0.35 Nm. To tell whether
+the jaw is blocked, check whether `snapshot().commanded_torque_nm` has reached
+`max_position_torque_nm` (that is exactly how `impedance_control.py` checks).
 
-`snapshot()` 另外给了 `torque_capped` 布尔和计数 `torque_caps`;运行期改增益用
-`set_gains(kp, kd, feedforward_torque)`。
+`snapshot()` additionally gives you a `torque_capped` boolean and a `torque_caps`
+count; change gains at runtime with `set_gains(kp, kd, feedforward_torque)`.
 
-原先与它并列的底层 `ControlLoop` 已删除:它是同一套控制律的第二份拷贝,已经和
-这里漂移开(预算不同,还留着那个会塌力矩的失速守卫)。
+The low-level `ControlLoop` that used to sit alongside it has been removed: it was a
+second copy of the same control law and had already drifted from this one (different
+budget, and it still carried the stall guard that collapses torque).
 
-**硬物夹持/限力保持 —— `ForcePositionController`**:普通位置阻抗在物体挡住夹爪后
-会继续积累 `kp × 位置误差`,不适合把目标长期放在完全闭合点。力位混合控制器改用
-**一条有界力矩的控制律**,全程不变:
+**Grasping rigid objects / force-limited holding — `ForcePositionController`**: plain
+position impedance keeps accumulating `kp × position error` once an object blocks the
+jaw, so it is a poor fit for parking the target at the fully-closed point for any
+length of time. The force-position hybrid controller uses **one control law with a
+bounded torque**, unchanged throughout:
 
 ```
-command(target, kp, kd, 力矩预算 = grasp_torque_nm)
+command(target, kp, kd, torque budget = grasp_torque_nm)
 ```
 
-- **自由行程**:所需力矩只有摩擦那么多(本机构实测约 0.1 N·m),远低于预算,
-  钳位不生效,爪子沿斜坡以 `close_speed_radps` 行进;
-- **被挡住**:爪子停下、斜坡跑到前面、误差钳位饱和,命令**恰好**停在
-  `grasp_torque_nm` 并保持在那里。
+- **Free travel**: the torque required is only as much as friction (measured on this
+  mechanism at about 0.1 N·m), far below the budget, so the clamp never engages and
+  the jaw follows the ramp at `close_speed_radps`;
+- **Blocked**: the jaw stops, the ramp runs ahead, the error clamp saturates, and the
+  command settles **exactly** at `grasp_torque_nm` and stays there.
 
-**接触不需要判定 —— 饱和就是接触**,保持就是饱和的自然结果。没有模式切换。
+**Contact needs no decision — saturation is contact**, and holding is the natural
+consequence of saturation. There is no mode switch.
 
-`grasp_torque_nm` 默认 **1.1 N·m**,即 EL05 的连续堵转额定。实测复核:夹持按构造是
-无限期的,所以默认值必须是这台夹爪真能一直保持的力矩 —— 那是关于整机的问题,
-不是关于电机的。真实工件持续保持实测(24V、包络启用):
+`grasp_torque_nm` defaults to **1.1 N·m**, the EL05's continuous stall rating.
+Re-checked by measurement: the grip is indefinite by construction, so the default has
+to be a torque this gripper can genuinely hold forever — which is a question about the
+whole machine, not about the motor. Sustained holds on a real workpiece, measured
+(24 V, envelope enabled):
 
-| 夹持力 | 结果 |
+| Grip force | Result |
+| --- | --- |
+| 1.1 N·m (default) | 36→70℃ / 600s, rate 8→4→3→2→1 ℃/min, **extrapolated plateau ≈75℃** |
+| 0.6 N·m | 41→49℃ / 600s, 0.00℃/min over the last 60 s, **plateau already reached** |
+
+At 1.1 the rate of temperature rise decays throughout — a first-order approach to a
+plateau, not a linear climb — and the plateau sits about 15℃ below the firmware's
+90℃ temperature wall. The margin is real but not generous: both runs started from
+36–41℃, and a high ambient temperature eats it directly.
+
+Also, `grasp_torque_nm` is **not a hard ceiling**: during a steady hold the measured
+feedback runs 5~7% above the budget. The budget shapes the command; what actually
+constrains the output is the firmware's motion envelope.
+
+> Before 2026-09 what ran here was a host-side contact state machine (`kp=0`
+> velocity-damped close → stall decision → pure `tau_ff` hold). It was removed for
+> three reasons: it duplicated what the MCU already does at 500 Hz
+> (`task_canmotor_is_stalled()`, and `docs/CONTROL_LAYERING.md` §3 had long since
+> assigned contact detection to the firmware); to keep the stall signature clean, the
+> travel phase was made `kp=0` **deliberately**, which measured out at 37% velocity
+> ripple and a mean speed only 77% of the commanded value; and its most central
+> judgement — telling "arrived" apart from "blocked" — is physically continuous in the
+> empty-jaw case and therefore unreliable. See `docs/CONTROL_REFACTOR.md`.
+
+**State here is an observation, not a control state.** `snapshot()` derives, every
+frame:
+
+| Observation | Meaning |
 |---|---|
-| 1.1 N·m(默认) | 36→70℃ / 600s,速率 8→4→3→2→1 ℃/min,**外推平台 ≈75℃** |
-| 0.6 N·m | 41→49℃ / 600s,末 60 秒 0.00℃/min,**已进平台** |
+| `arrived` | `\|position error\| <= arrival_eps_rad` |
+| `holding` | The setpoint has run as far ahead as the budget allows (lead ≥ half the limit) **and** the jaw has not kept up (velocity ≤ 25% of the commanded speed) |
+| `state` | Derived from those two plus the direction of motion; for display only |
 
-1.1 的温升速率全程在衰减,是一阶趋近平台而非线性爬升,平台低于固件 90℃ 温度墙
-约 15℃。余量真实但不宽裕:两轮都从 36–41℃ 起测,高环境温度会直接吃掉它。
+The velocity threshold in `holding` uses the firmware's own
+`TASK_CANMOTOR_STALL_VEL_RATIO = 0.25` — deliberately the same number, so that host
+and MCU describe the same physical event the same way.
 
-另外 `grasp_torque_nm` **不是硬上限**:稳定保持时实测反馈比预算高 5~7%。预算塑造
-命令,真正约束输出的是固件的运动包络。
+**The criterion is not "does the command use up the budget".** That one is true the
+instant the target changes: the setpoint jumps, the command saturates, and the jaw has
+not had time to move. Measured, the consequence was that every "grasp" step completed
+within 0.01 s at a measured torque of only 0.016 N·m — nothing was gripped, and the
+acceptance run was all green. The lead carries its own timing: the ramp is planted on
+the jaw, is zero at the start, and only grows once the jaw stops following.
 
-> 2026-09 之前这里跑的是一套主机侧接触状态机(`kp=0` 速度阻尼闭合 → 堵转判定 →
-> 纯 `tau_ff` 保持)。删掉的原因有三:它重复了 MCU 已经在 500 Hz 做的事
-> (`task_canmotor_is_stalled()`,而 `docs/CONTROL_LAYERING.md` §3 早已把接触判定
-> 划给固件);为了让堵转特征干净,行进段被**刻意**做成 `kp=0`,实测代价是 37% 的
-> 速度纹波和只有命令值 77% 的均速;而它最核心的判断——区分「到位」与「被挡住」
-> ——在空爪场景下物理上本就连续,不可靠。详见 `docs/CONTROL_REFACTOR.md`。
+`hold_position` is where the jaw **actually** stopped and `target_position` is the
+position originally asked for; the two remain distinguishable.
 
-**状态是观测量,不是控制状态。** `snapshot()` 每帧导出:
+**What separates the two is the velocity gate, not the torque number.** Measured over
+a full unloaded close on a 1.1.5 follower (1578 frames): in free travel `|vel|` never
+dropped below 0.183 rad/s, five times the 0.035 threshold, while `|torque|` stayed
+≤ 0.142 Nm; at the mechanical stop `|vel|` ≈ 0.012 rad/s and `|torque|` ≈ 0.21 Nm.
+**Not a single frame satisfied both conditions at once.** These two criteria now live
+only in the firmware — the host-side copy went away with the contact state machine.
 
-| 观测 | 含义 |
-|---|---|
-| `arrived` | `\|位置误差\| <= arrival_eps_rad` |
-| `holding` | 设定点已跑到预算允许的最前面(前导量 ≥ 一半上限)**而且**爪子没跟上(速度 ≤ 命令速度的 25%) |
-| `state` | 由上面两者与运动方向导出,仅用于显示 |
+**Worth recording in passing, and still true**: with a `kd`-form MIT frame at stall,
+the feedback torque does not reach the commanded value. From the same measurement:
+commanded 0.359 N·m, feedback saturating at only 0.213 N·m (≈0.59). So any criterion
+that "compares feedback torque against the commanded limit" can never be met. The
+criterion above — setpoint lead plus velocity — works precisely because both of
+its terms are **command-side** quantities, which are reachable by construction.
 
-`holding` 的速度门限用的是固件自己的 `TASK_CANMOTOR_STALL_VEL_RATIO = 0.25`,
-刻意取同一个数,让主机和 MCU 用同样的方式描述同一个物理事件。
+The controller splits the torque limit into two ceilings with clearly separated
+jobs, and those two ceilings are **the motor's own two ratings**, not safety
+margins picked by hand:
 
-**判据不是「命令是否用满预算」。** 那个在目标一变的瞬间就成立:设定点跳了、命令
-饱和了,而爪子还没来得及动。实测后果是每一步"夹持"都在 0.01 秒内完成、实测力矩
-只有 0.016 N·m —— 什么都没夹住,验收却全绿。前导量自带时序:斜坡是种在爪子上的,
-起步时为零,只有爪子不跟才会涨上去。
+- `motion_torque_limit_nm`: the **instantaneous** torque ceiling for the velocity
+  damping and the PD term during closing, opening and position holding, at most
+  **6.0 Nm** — the motor's **peak torque**. A feedback torque above it drops the
+  controller into a zero-torque fault state. 6.0 Nm is also the firmware's default and maximum for the
+  `0x700B` startup limit (`storage.c`,
+  `STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM`), so the default config agrees with a
+  factory device.
+- `hold_torque_limit_nm`: the ceiling on the **long-term** hold torque, at most
+  **1.8 Nm** — the motor's **rated (nominal) torque**. Neither `grasp_torque_nm`
+  nor a target torque passed in at runtime may exceed it. Note that it clamps
+  **nothing** in the current control law: it only bounds `grasp_torque_nm` and
+  warns when that exceeds the motor's actual rating.
 
-`hold_position` 是爪子**实际**停住的位置,`target_position` 是当初要的位置,
-两者仍然分得清。
-
-**做分离的是速度门,不是力矩数字。** 在 1.1.5 从爪上实测整段空载闭合(1578 帧):
-自由行程 `|vel|` 始终 ≥ 0.183 rad/s,是 0.035 门限的五倍,同时 `|力矩|` ≤ 0.142 Nm;
-机械止点处 `|vel|` ≈ 0.012 rad/s、`|力矩|` ≈ 0.21 Nm。**没有任何一帧同时满足两个
-条件**。这两条判据现在只留在固件里 —— 主机侧的那份已随接触状态机删除。
-
-**顺带记下一条仍然有效的事实**:`kd` 形式的 MIT 帧在堵转时,反馈力矩达不到命令值。
-同一次实测:命令 0.359 N·m,反馈只饱和到 0.213 N·m(≈0.59)。所以任何"拿反馈力矩
-去比命令上限"的判据都是够不到的。现在的 `holding` 判据比的是**命令**用没用满预算
-(`commanded_torque_nm >= 95% × grasp_torque_nm`),而命令按构造一定够得到 ——
-和 `impedance_control.py` 用命令力矩判断"被挡住"是同一个道理。
-
-控制器把力矩限制拆成两个职责明确的上限:
-
-这两个上限就是**电机自身的两个额定值**,不是随手取的安全裕度:
-
-- `motion_torque_limit_nm`:闭合/张开/位置保持过程中的速度阻尼和 PD **瞬时**力矩
-  上限,最大 **6.0 Nm** —— 电机的**峰值力矩**;反馈力矩超过它会进入零力矩故障状态。
-  6.0 Nm 同时也是固件对 `0x700B` 启动上限的默认值和最大值
-  (`storage.c` `STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM`),所以默认配置和
-  出厂设备是一致的。
-- `hold_torque_limit_nm`:检测到接触后 `kp=kd=0` 的纯 `tau_ff` **长期**保持力矩上限,
-  最大 **1.8 Nm** —— 电机的**额定(标称)力矩**;`grasp_torque_nm` 和运行时传入的
-  目标力矩都不能超过它。
-
-`start()` 会读取 V2.2 的持久化 `0x700B limit_torque`,并要求设备值不高于配置的
-运动上限。这里持久化的是**夹爪 MCU Flash 中的启动配置**,不是电机自身 Flash。
-第一次配置设备上限后必须物理断电重启,让 MCU 在开机时把该值写入电机运行参数
-0x700B:
+`start()` reads the V2.2 persisted `0x700B limit_torque` and requires the device's
+value to be no higher than the configured motion ceiling. What is persisted here is
+the **startup configuration in the gripper MCU's flash**, not the motor's own flash.
+After configuring the device limit for the first time you must power-cycle physically,
+so that the MCU writes the value into the motor's runtime parameter 0x700B at boot:
 
 ```python
 f = t.FollowerGripper.open()
-f.motor.set_startup_limit_torque(6.0)   # 写 MCU Flash,只需配置一次
+f.motor.set_startup_limit_torque(6.0)   # writes MCU flash; configure once
 print(f.motor.get_startup_limit_torque())
-# 此处退出并拔插夹爪;不要在同一次上电中直接继续运动
+# exit here and replug the gripper; do not carry straight on into motion on this power cycle
 ```
 
-重启后使用控制器:
+After the restart, use the controller:
 
 ```python
 cfg = t.ForcePositionConfig()
-cfg.grasp_torque_nm = 0.35         # 接触后的纯前馈保持力矩 Nm —— 就是夹持力设定值
-cfg.close_speed_radps = 0.5        # 闭合/张开速度 rad/s。与上一项不独立:阻尼增益是
-                                   #   grasp/close_speed(上限 5),低于 grasp/5 会被拒
-cfg.hold_torque_limit_nm = 1.8     # 无限期保持上限 = 电机额定力矩,校验 (0, 1.8]
-cfg.motion_torque_limit_nm = 6.0   # 运动瞬态上限 = 电机峰值力矩,校验 (0, 6.0]
-cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
-cfg.motor_stream_hz = 100          # 状态流速率 Hz;确认帧数由它和固件 30 ms 推导
+cfg.grasp_torque_nm = 0.35         # torque budget, Nm — the grip force setpoint; a
+                                   #   blocked jaw settles here
+cfg.close_speed_radps = 0.5        # close/open speed rad/s. Not independent of the above: the damping gain is
+                                   #   grasp/close_speed (capped at 5), and anything below grasp/5 is rejected
+cfg.hold_torque_limit_nm = 1.8     # indefinite-hold ceiling = motor rated torque, validated (0, 1.8]
+cfg.motion_torque_limit_nm = 6.0   # motion transient ceiling = motor peak torque, validated (0, 6.0]
+cfg.status_timeout_ms = 350        # status stream gone this long → FAULT + zero torque + observation invalid
+cfg.motor_stream_hz = 100          # status-stream rate Hz; the confirm-frame count derives from it and the firmware's 30 ms
 
 f = t.FollowerGripper.open()
 f.motor.clear_fault()
 grasp = t.ForcePositionController(f, cfg)
-grasp.start()                 # 先验证设备上限,尚不主动闭合
+grasp.start()                 # validates the device limit first; does not close on its own yet
 f.motor.enable()
 try:
-    grasp.set_target(0.0)     # 闭合 -> 接触 -> 0.35 Nm 纯力矩保持
-    grasp.set_target(0.35, 0.45)  # 运行时改为 35% 开度、0.45 Nm
+    grasp.set_target(0.0)     # close; blocked, the command saturates at 0.35 Nm and holds
+    grasp.set_target(0.35, 0.45)  # change at runtime to 35% opening, 0.45 Nm
     while running:
         print(grasp.snapshot())
-    grasp.release()           # 有界速度张开
+    grasp.release()           # open at bounded speed
 finally:
-    grasp.stop()              # 先下发零力矩
+    grasp.stop()              # commands zero torque first
     f.motor.disable()
 ```
 
-示例:
+Examples:
 
 ```bash
-# 两个控制器的用法
+# how to use the two controllers
 python python/examples/impedance_control.py right
 python python/examples/force_position_control.py right --grasp-torque 0.35
 
-# 运动安全包络(固件侧的力矩与热保护,默认不启用,每台设备配一次)
+# motion-safety envelope (the firmware's torque and thermal protection; off by default, written once per device)
 python python/examples/impedance_control.py --show-envelope
 python python/examples/impedance_control.py --set-envelope --peak 2.0 --cont 1.6
 ```
 
-注意:6 Nm 是电机峰值、只允许运动阶段的**瞬时**力矩到这个量级,并不把夹爪机构的
-安全额定值提高到 6 Nm。如果机构本身不能承受高于 1.8 Nm 的瞬时负载,应把
-`motion_torque_limit_nm` 和设备 `0x700B` 一并设低;软件只能保证进入
-`HoldingForce` 后的命令力矩不超过 1.8 Nm。
+Note: 6 Nm is the motor's peak, and it only allows **instantaneous** torque of that
+magnitude during the motion phase; it does not raise the gripper mechanism's safe
+rating to 6 Nm. If the mechanism itself cannot take an instantaneous load above
+1.8 Nm, lower `motion_torque_limit_nm` and the device's `0x700B` together. All the
+software can guarantee is that the commanded torque during the hold does not exceed
+`grasp_torque_nm`, whose own ceiling is 1.8 Nm.
 
-该控制器需要 follower 固件 ≥ 1.1.2(支持 V2.2 启动力矩上限读取),并且从爪
-开合行程已经标定。运行期间它独占电机控制与状态流,不要并发使用 `ImpedanceController`
-或直接发送其他运动命令。
+This controller needs follower firmware ≥ 1.1.2 (which supports reading the V2.2
+startup torque limit), and a follower whose open/close travel has been calibrated.
+While it runs it owns motor control and the status stream exclusively — do not use
+`ImpedanceController` concurrently, and do not send other motion commands directly.
 
-**相位为什么重要**:主机帧只要在 MCU 发送期间落地,就会让它丢掉正在发的那一帧,
-整帧作废。所以碰撞取决于**落在什么时刻**,不是发了多少 —— 两个控制器都
-是每收到一帧状态提交一次,落在 MCU 已知空闲的窗口里,实测 6000 提交 : 6000 帧 :
-0 丢失;同一条件下自由跑 100 Hz 每轮丢 156–308 帧。别把 500 Hz 当预算花。
+**Why phase matters**: a host frame that lands while the MCU is transmitting costs it
+the frame it was sending — the whole frame is voided. So a collision depends on **when
+a frame lands**, not on how many you send. Both controllers submit once per received
+status frame, inside the window the MCU is known to be idle: measured, 6000 submits :
+6000 frames : 0 lost, while free-running at 100 Hz under the same conditions lost
+156–308 frames per run. Do not treat 500 Hz as a budget to spend.
 
-**没有低层写法了。** 裸电机原语(`motor.set_impedance` / `submit_impedance` /
-`set_position` / `set_velocity` / `set_torque`,以及归一化包装
-`FollowerGripper.set_position`)**不再暴露给 Python**。它们都是把控制帧直接丢上
-总线:没有误差钳位、没有力矩天花板。走 `ImpedanceController` 或
-`ForcePositionController`。C++ 侧保留这些方法,两个控制器内部在用。
+**There is no low-level path any more.** The raw motor primitives
+(`motor.set_impedance` / `submit_impedance` / `set_position` / `set_velocity` /
+`set_torque`, and the normalized wrapper `FollowerGripper.set_position`) are **no
+longer exposed to Python**. All of them drop a control frame straight onto the bus: no
+error clamp, no torque ceiling. Go through `ImpedanceController` or
+`ForcePositionController`. The C++ side keeps these methods; the two controllers use
+them internally.
 
-**反馈频率**:电机 `actual_*` 遥测只有 ~50–100 Hz,读观测请走
-`observation()` / `snapshot()`,别用 `read_status()` 轮询 —— 超过 ~100 Hz 会拖住
-固件自己的刷新,而且控制期间的 ACK 往返会撞坏遥测帧。
+**Feedback rate**: the motor's `actual_*` telemetry is only ~50–100 Hz, so read
+observations through `observation()` / `snapshot()` and do not poll with
+`read_status()` — above ~100 Hz it holds back the firmware's own refresh, and during
+control the ACK round-trip corrupts telemetry frames.
 
-> **抓取力**要用 `ForcePositionController`:接触判定之后 `kp=kd=0`,
-> `grasp_torque_nm` 就是保持力矩本身。位置模式的 `max_torque` 不是紧的力上限,
-> 拿它当夹持力会把软物压坏。
+> For **grip force**, use `ForcePositionController`: after contact is decided,
+> `kp=kd=0` and `grasp_torque_nm` is the hold torque itself. The `max_torque` of
+> position mode is not a tight force ceiling, and using it as a grip force will crush
+> a soft object.
 
-可跑的示例:`impedance_control.py`、`force_position_control.py`(见上)、
-`gripper_console.py`(交互控制台,两种模式)。
+Runnable examples: `impedance_control.py`, `force_position_control.py` (above), and
+`gripper_console.py` (interactive console, both modes).
 
 ---
 
-## 2. 视觉:腕部相机
+## 2. Vision: the wrist camera
 
-腕相机是普通 UVC 设备,本 SDK 用 `Camera` 类(底层 `cv::VideoCapture`)读它。
-**默认没人替你打开它** —— 两种开法:
+The wrist camera is an ordinary UVC device, and this SDK reads it with the `Camera`
+class (`cv::VideoCapture` underneath). **Nothing opens it for you by default** — there
+are two ways to open it:
 
-### 2.1 独立开(推荐,和夹爪解耦)
+### 2.1 Standalone (recommended, decoupled from the gripper)
 
 ```python
 from xense.taccap import Camera, ColorMode
@@ -432,173 +510,204 @@ from xense.taccap import Camera, ColorMode
 cam = Camera(device="/dev/video2", width=640, height=480, fps=30.0,
              use_mjpg=True, color_mode=ColorMode.BGR)
 
-frame = cam.read(timeout_ms=500)      # 同步一次性读;失败返回 None
+frame = cam.read(timeout_ms=500)      # synchronous one-shot read; returns None on failure
 print(frame.frame_index, frame.image.shape)
 
-cam.start(lambda f: handle(f.image))  # 或者异步:后台线程回调
+cam.start(lambda f: handle(f.image))  # or asynchronously: a callback on a background thread
 ...
 cam.stop()
 ```
 
-设备路径优先用 `/dev/v4l/by-id/...-video-index0` 这种稳定路径,`/dev/videoN`
-的编号会随插拔顺序变。用 `python python/examples/wrist_camera.py --list` 列。
+Prefer a stable device path such as `/dev/v4l/by-id/...-video-index0`; the number in
+`/dev/videoN` moves with plug order. List them with
+`python python/examples/wrist_camera.py --list`.
 
-### 2.2 挂在夹爪对象上
+### 2.2 Attached to the gripper object
 
 ```python
 g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True,
-                    undistort_wrist=True)     # 帧出来就是矫正过的
+                    undistort_wrist=True)     # frames come out already rectified
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
 
-> **通道顺序有个刻意的不一致**:裸 `Camera` 默认 **BGR**(OpenCV 原生,`imshow`/
-> `imwrite` 直接对);夹爪的 `wrist_camera` 默认 **RGB**(喂视觉/学习管线,
-> LeRobot 数据集存 RGB)。两边都能用 `color_mode` / `wrist_color_mode` 改回去。
-> 搞反了不会报错,只会录进去一份通道颠倒的数据。
+> **There is a deliberate inconsistency in channel order**: a bare `Camera` defaults to
+> **BGR** (OpenCV's native order, so `imshow` / `imwrite` are correct as-is), while the
+> gripper's `wrist_camera` defaults to **RGB** (it feeds vision and learning pipelines,
+> and LeRobot datasets store RGB). Either can be changed back with `color_mode` /
+> `wrist_color_mode`. Getting it backwards raises no error — it just records a dataset
+> with the channels swapped.
 
-### 2.3 鱼眼去畸变
+### 2.3 Fisheye undistortion
 
-腕部是鱼眼镜头,内参存在 MCU flash 里(`Cmd::CameraFisheyeCal`,固件 ≥ V2.0)。
-`FisheyeUndistorter` 把内参编译成一次性的 remap 表,之后每帧只做重采样:
+The wrist lens is a fisheye, and its intrinsics live in MCU flash
+(`Cmd::CameraFisheyeCal`, firmware ≥ V2.0). `FisheyeUndistorter` compiles the
+intrinsics into remap tables once, after which each frame is only resampled:
 
 ```python
 from xense.taccap import FisheyeUndistorter
 
 cal, is_reference, reason = g.calibration.resolve_fisheye()
 if is_reference:
-    log.warning(f"用的是 SDK 参考内参,不是这一台的:{reason}")
+    log.warning(f"using the SDK reference intrinsics, not this unit's: {reason}")
 
 undist = FisheyeUndistorter(cal, width=640, height=480, balance=0.0)
-cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的都是矫正帧
-# 或者手动:rect = undist.apply(img)
+cam.set_undistorter(undist)      # install into the capture path: read() and callbacks both get rectified frames
+# or manually: rect = undist.apply(img)
 ```
 
-三个必须知道的约束:
+Three constraints you must know:
 
-- **读内参用 `resolve_fisheye()`,不要用 `read_fisheye()`。** 没标定过的机器
-  不是 NACK,而是返回一条**全零**记录,它能过 `if cal is None` 检查,但
-  `fx = fy = 0` 会把每个像素映射到画面外 —— 得到一张纯黑的"矫正帧",全程无报错。
-  `resolve_fisheye()` 已经把这个策略(读 → 判可用 → 回退参考值)做在一处了。
-- **只支持 640×480**,即标定分辨率。固件记录里不带图像尺寸,所以缩放内参等于
-  猜,构造函数宁可抛错。要别的分辨率就得先在固件里存一份对应的标定。
-- **参考内参是近似的**。每台的镜头装配位置有差异(尤其主点),回退到
-  `FISHEYE_FALLBACK_CAL` 只是比完全不矫正强,不能拿它去按像素做测量。
-  自己标定后用 `fisheye_cal.py set-fisheye --from-npz cam.npz` 写进 flash。
+- **Read intrinsics with `resolve_fisheye()`, not `read_fisheye()`.** An uncalibrated
+  unit does not NACK; it returns an **all-zero** record, which passes an
+  `if cal is None` check, but `fx = fy = 0` maps every pixel outside the frame — you
+  get a pure black "rectified frame", with no error raised anywhere.
+  `resolve_fisheye()` already puts that policy (read → judge usable → fall back to the
+  reference values) in one place.
+- **Only 640×480 is supported**, the calibration resolution. The firmware record
+  carries no image size, so scaling the intrinsics would be guessing, and the
+  constructor would rather throw. Another resolution means storing a matching
+  calibration in firmware first.
+- **The reference intrinsics are an approximation.** Lens mounting varies from unit to
+  unit (the principal point especially), so falling back to `FISHEYE_FALLBACK_CAL` is
+  only better than not rectifying at all — do not take pixel-accurate measurements
+  from it. Once you have calibrated your own, write it to flash with
+  `fisheye_cal.py set-fisheye --from-npz cam.npz`.
 
-`balance` 是取景口味:0 = 保持标定焦距(自然视角,和 PC 工具默认一致),
-1 = 焦距压到 0.70x 换最大视场,代价是四周更多黑边。
+`balance` is a framing preference: 0 = keep the calibrated focal length (natural field
+of view, matching the PC tool's default), 1 = squeeze the focal length to 0.70x for
+the maximum field of view, at the cost of more black border around the edges.
 
-> 画面看起来偏心或轻微倾斜,**不一定是标定错了** —— 传感器未必正好落在镜头
-> 光轴上,矫正是围绕主点做的,不是围绕画面中心。
+> An image that looks off-centre or slightly tilted is **not necessarily a bad
+> calibration** — the sensor does not necessarily sit exactly on the lens's optical
+> axis, and rectification is done around the principal point, not around the centre of
+> the image.
 
-### 2.4 一条命令看效果
+### 2.4 One command to see it
 
 ```bash
-python python/examples/wrist_camera.py right                 # 原始鱼眼(默认)
-python python/examples/wrist_camera.py right --undistort     # 矫正
-python python/examples/wrist_camera.py right --compare       # 左右对照
-python python/examples/wrist_camera.py XCA28Z0116m           # 也可以直接给序列号
+python python/examples/wrist_camera.py right                 # raw fisheye (default)
+python python/examples/wrist_camera.py right --undistort     # rectified
+python python/examples/wrist_camera.py right --compare       # side-by-side
+python python/examples/wrist_camera.py XCA28Z0116m           # a serial number works too
 python python/examples/wrist_camera.py right --no-mcu --no-display \
-    --duration 10 --save-dir /tmp/shots                      # 无头,存图
+    --duration 10 --save-dir /tmp/shots                      # headless, saves images
 ```
 
-选择器就是 `left` / `right`,和其它示例一致 —— 内参会自动去**同侧**的夹爪上读。
-**去畸变默认关**,和 SDK 本身一致(裸 `Camera` 不带 undistorter,夹爪的
-`undistort_wrist` 默认 `False`);窗口模式下即使起在 raw 也会先把内参读好,
-因为 `u` 随时可能切到矫正。无头 + raw 是唯一不会去碰夹爪的组合。
-窗口里 `u` 键在 原始 / 矫正 / 对照 之间循环切,`[` `]` 调 balance,`s` 存图。
-没插夹爪时加 `--no-mcu` 走参考内参;`--from-npz` 用离线标定文件。完整参数 `--help`。
+The selector is `left` / `right`, as in every other example — the intrinsics are read
+automatically from the gripper on the **same side**. **Undistortion is off by
+default**, matching the SDK itself (a bare `Camera` carries no undistorter, and the
+gripper's `undistort_wrist` defaults to `False`); in windowed mode the intrinsics are
+read up front even when it starts in raw, because `u` may switch to rectified at any
+moment. Headless + raw is the only combination that never touches the gripper.
+In the window, `u` cycles through raw / rectified / comparison, `[` and `]` adjust the
+balance, and `s` saves an image. With no gripper plugged in, add `--no-mcu` to use the
+reference intrinsics; `--from-npz` uses an offline calibration file. Full arguments
+with `--help`.
 
-> **这个脚本打不开视触觉传感器,是故意的。** 传 GSPS 序列号或 `/dev/videoN` 路径
-> 都会被拒绝并说明原因 —— OG 的采集和矫正在 `xensesdk` 里,不走本 SDK(见下一节)。
+> **This script cannot open a visuotactile sensor, and that is deliberate.** Passing a
+> GSPS serial number or a `/dev/videoN` path is refused with an explanation — OG
+> capture and rectification live in `xensesdk`, not in this SDK (see the next section).
 
 ---
 
-## 3. 触觉:视触觉(OG)传感器
+## 3. Tactile: the visuotactile (OG) sensor
 
-**这部分不在本 SDK 里。** `xense.taccap` 只覆盖夹爪协议和腕相机;OG 的采集、
-矫正、力/深度推理都在 `xensesdk` wheel 里(本机版本 2.1.1)。下面给的是把它
-跑起来的最短路径,接口以你装的那版 wheel 为准。
+**This part is not in this SDK.** `xense.taccap` covers the gripper protocol and the
+wrist camera only; OG capture, rectification and force/depth inference all live in the
+`xensesdk` wheel (version 2.1.1 on this machine). What follows is the shortest path to
+getting it running; the wheel you have installed is the authority on the interface.
 
 ```python
 from xensesdk import Sensor
 
-print(Sensor.scanSerialNumber())     # {'OG000352': 10, 'OG000344': 8} —— 序列号: cam_id
+print(Sensor.scanSerialNumber())     # {'OG000352': 10, 'OG000344': 8} — serial: cam_id
 
-sensor = Sensor.create("OG000352")   # 也接受 cam_id;第一次会建配置缓存,较慢
+sensor = Sensor.create("OG000352")   # a cam_id works too; the first call builds a config cache and is slow
 try:
-    # 一次要多个输出就传多个,返回值按顺序一一对应
+    # pass several outputs to get several at once; the return values correspond in order
     rectify, depth, force = sensor.selectSensorInfo(
-        Sensor.OutputType.Rectify,      # 矫正后的图像
-        Sensor.OutputType.Depth,        # 深度图,单位 mm
-        Sensor.OutputType.Force,        # 力分布
+        Sensor.OutputType.Rectify,      # rectified image
+        Sensor.OutputType.Depth,        # depth map, in mm
+        Sensor.OutputType.Force,        # force distribution
     )
 finally:
     sensor.release()
 ```
 
-常用的 `OutputType`(完整列表 `dir(Sensor.OutputType)`):
+The `OutputType`s you will use most (full list with `dir(Sensor.OutputType)`):
 
-| 输出 | 含义 |
+| Output | Meaning |
 | --- | --- |
-| `Rectify` | 矫正后的图像 |
-| `AugDifference` / `Difference` | 与参考帧的差分图(接触可视化) |
-| `Depth` | 深度图,mm |
-| `Force` / `ForceNorm` / `ForceResultant` | 力分布 / 法向力 / 合力(6 维) |
-| `Marker2D` / `Mesh3D` / `Mesh3DFlow` | 标记点与三维网格及其流场 |
+| `Rectify` | Rectified image |
+| `AugDifference` / `Difference` | Difference against the reference frame (contact visualization) |
+| `Depth` | Depth map, mm |
+| `Force` / `ForceNorm` / `ForceResultant` | Force distribution / normal force / resultant force (6-dimensional) |
+| `Marker2D` / `Mesh3D` / `Mesh3DFlow` | Markers and the 3D mesh, plus its flow field |
 
-实践上要注意的几点:
+A few practical points:
 
-- **只要图像、不要推理时加 `disable_infer=True`**,可以省掉推理引擎的加载;
-  `Rectify` 和 `Difference` 本来就不需要推理。
-- **首次 `create()` 慢**是在建每序列号的配置缓存(`~/.xensesdk/config`);
-  多传感器场景建议先预热缓存再并发开,否则会撞在一起。
-- **OG 和腕相机都是 `/dev/video*`**,但腕相机**不在** `Sensor.scanSerialNumber()`
-  的结果里 —— 它不是 OG 设备,别指望用触觉 SDK 去枚举它。反过来也一样:
-  `wrist_camera.py` 会拒绝 GSPS 序列号。两边都按序列号语法把对方挡在门外。
-- 力/网格类输出形状是固定的(力分布 `(35, 20, 3)`、合力 `(6,)`),
-  图像类的形状随 `rectify_size` 变。
+- **Pass `disable_infer=True` when you want images but no inference** — it saves
+  loading the inference engine, and `Rectify` and `Difference` never needed inference
+  in the first place.
+- **The first `create()` is slow** because it is building the per-serial config cache
+  (`~/.xensesdk/config`). With several sensors, warm the cache first and only then open
+  them concurrently, otherwise they collide.
+- **OG sensors and the wrist camera are both `/dev/video*`**, but the wrist camera is
+  **not** in the results of `Sensor.scanSerialNumber()` — it is not an OG device, so
+  do not expect the tactile SDK to enumerate it. The reverse holds too:
+  `wrist_camera.py` refuses a GSPS serial number. Each side keeps the other out by the
+  serial syntax.
+- The force and mesh outputs have fixed shapes (force distribution `(35, 20, 3)`,
+  resultant force `(6,)`); the image outputs change shape with `rectify_size`.
 
-要看完整的产品级用法(异步读、配置覆盖、多传感器编排),参考
-`lerobot` 侧的 `lerobot/cameras/xense/camera_xense.py`。
+For full production-grade usage (async reads, config overrides, multi-sensor
+orchestration), see `lerobot/cameras/xense/camera_xense.py` on the `lerobot` side.
 
 ---
 
-## 4. 三路一起跑
+## 4. Running all three at once
 
-各自独立,但同时开有几个已知的坑:
+They are independent, but running them together has a few known traps:
 
-- **USB 带宽是共享的。** 两个 OG + 一个腕相机同时 MJPG 满帧,已经吃掉相当一部分
-  总线;夹爪走的是串口,不受影响,但相机之间会互相挤。真要满配采集,
-  先测一遍实际帧率,别假设标称值。
-- **谁持有 UVC 设备。** 生产环境里外部相机服务持有 `/dev/video*`,这时
-  **不要**再用 `open_cameras=True` 或裸 `Camera` 去开同一个节点 —— 会失败或抢到
-  半路。SDK 默认不开相机,就是为了这个。
-- **控制回路要用 `ImpedanceController` 或 `ForcePositionController`。** 两者都把
-  提交锁在状态流的相位上;上面的相位说明在满负载下
-  尤其重要:实测就是在"所有相机都在流 + 电机在往复"的条件下做的。
-- **日志。** 全 SDK 一个单例 logger(`xense.taccap.log`),控制台默认 INFO,
-  文件 sink 恒为 DEBUG,落在 `~/.taccaplogs/session_*.log`(可用 `$TACCAP_LOG_DIR`
-  改),最多留 10 份。出问题先翻这个文件,里面有控制台被过滤掉的那些行。
-- **固件刷完必须重新插拔 —— USB 线与电源线同时拔下再一起插回。** bank-swap
-  之后是软复位,设备看起来完全正常
-  (版本对、流在跑、计数干净),但会静默丢状态帧。见 [docs/FIRMWARE.md](FIRMWARE.md)。
+- **USB bandwidth is shared.** Two OG sensors plus a wrist camera all running MJPG at
+  full frame rate already eat a substantial share of the bus. The gripper is on a
+  serial port and is unaffected, but the cameras squeeze each other. If you really
+  intend to collect with the full set, measure the actual frame rate first; do not
+  assume the nominal one.
+- **Who holds the UVC device.** In production an external camera service holds
+  `/dev/video*`, and in that case do **not** open the same node again with
+  `open_cameras=True` or a bare `Camera` — it will either fail or grab the device
+  halfway. That is exactly why the SDK does not open cameras by default.
+- **Use `ImpedanceController` or `ForcePositionController` for the control loop.**
+  Both lock submission to the phase of the status stream; the note on phase above
+  matters most under full load, since the measurements were taken with every camera
+  streaming and the motor cycling back and forth.
+- **Logging.** The whole SDK shares one singleton logger (`xense.taccap.log`): the
+  console defaults to INFO, the file sink is always DEBUG and lands in
+  `~/.taccaplogs/session_*.log` (changeable with `$TACCAP_LOG_DIR`), with at most 10
+  kept. When something goes wrong, read that file first — it has the lines the console
+  filtered out.
+- **After flashing firmware you must replug — unplug the USB cable and the power cable
+  at the same time, then plug both back in together.** The bank swap is a soft reset,
+  and the device looks entirely healthy afterwards (right version, stream running,
+  clean counters) while silently dropping status frames. See
+  [docs/FIRMWARE.md](FIRMWARE.md).
 
 ---
 
-## 出问题时
+## When things go wrong
 
-| 现象 | 多半是 |
+| Symptom | Most likely |
 | --- | --- |
-| `scan_grippers()` 返回空 | 串口权限(见 [INSTALL.md](INSTALL.md))或线没插好 |
-| `fw_sn` 为空 / `Side.Unknown` | 固件没烧 SN,或固件早于 V1.6 |
-| 矫正后画面全黑 | 用了 `read_fisheye()` 的全零记录 —— 改用 `resolve_fisheye()` |
-| 矫正后画面偏心 | 未必是错的,主点本来就不一定在画面中心 |
-| 录下来的颜色是反的 | 裸 `Camera` 是 BGR、`wrist_camera` 是 RGB,搞混了 |
-| 电机状态帧成片丢失 | 提交相位(用两个控制器之一,别自己发帧),或刷完固件没断电重插 |
-| 改了 C++/bindings 但 Python 里没生效 | 消费端的环境没重装,见 [INSTALL.md](INSTALL.md) |
-| `import xense.taccap` 报 `libopencv_core.so` | 缺 `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` |
+| `scan_grippers()` returns nothing | Serial port permissions (see [INSTALL.md](INSTALL.md)), or a cable that is not seated |
+| `fw_sn` empty / `Side.Unknown` | The firmware has no SN burned, or predates V1.6 |
+| Rectified image is all black | The all-zero record from `read_fisheye()` — use `resolve_fisheye()` instead |
+| Rectified image looks off-centre | Not necessarily wrong; the principal point was never guaranteed to be at the image centre |
+| Recorded colours are inverted | A bare `Camera` is BGR and `wrist_camera` is RGB; they got mixed up |
+| Motor status frames lost in blocks | Submission phase (use one of the two controllers, don't send frames yourself), or a firmware flash without a power-cycle and replug |
+| A C++/bindings change has no effect in Python | The consuming env was not reinstalled; see [INSTALL.md](INSTALL.md) |
+| `import xense.taccap` complains about `libopencv_core.so` | Missing `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` |
 
-更细的专题:[INSTALL.md](INSTALL.md) · [CALIBRATION.md](CALIBRATION.md) ·
+More detail by topic: [INSTALL.md](INSTALL.md) · [CALIBRATION.md](CALIBRATION.md) ·
 [FIRMWARE.md](FIRMWARE.md) · [EXAMPLES.md](EXAMPLES.md) ·
 [ARCHITECTURE.md](ARCHITECTURE.md)

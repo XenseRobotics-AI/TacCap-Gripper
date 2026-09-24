@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`docs/USAGE.md` is now English, with the Chinese original kept as
+  `docs/USAGE_CN.md`** — the same split the READMEs use. Translating it surfaced
+  four content bugs in the original, all verified against the source and fixed in
+  both files: the `holding` criterion was described as
+  `commanded_torque_nm >= 95% × grasp_torque_nm`, which appears nowhere in the
+  code (it is setpoint lead ≥ half the limit *and* velocity ≤ 25% of commanded,
+  as the table two paragraphs earlier already said); `hold_torque_limit_nm` was
+  described as clamping the hold, which it does not — it only bounds
+  `grasp_torque_nm`; two passages still described contact detection and a
+  `kp=kd=0` mode switch that were removed in 2026-09; and the
+  `ImpedanceController` example enabled the motor before `start()`, while both
+  controllers validate the persisted `0x700B` limit inside `start()`.
 - **Documentation corrected where it described APIs that do not exist.** The
   READMEs showed `g.set_position(...)` in a Python snippet — that method exists
   in C++ but is not bound — and claimed raw-radian motor control is unreachable

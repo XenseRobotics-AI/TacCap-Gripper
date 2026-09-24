@@ -232,7 +232,7 @@ def resolve_wrist_camera(target: str) -> dict:
     if TACTILE_SN_RE.search(key):
         raise SystemExit(
             f"{key} 是视触觉(GSPS)传感器,不是腕相机。它的采集与矫正在 xensesdk 里,"
-            "不走本 SDK —— 见 docs/USAGE.md 的触觉一节。"
+            "不走本 SDK —— 见 docs/USAGE_CN.md 的触觉一节。"
         )
     if key.startswith("/dev/"):
         raise SystemExit(
