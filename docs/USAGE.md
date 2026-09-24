@@ -378,8 +378,8 @@ finally:
 
 ```bash
 # 两个控制器的用法
-python python/examples/impedance_control.py --side right
-python python/examples/force_position_control.py --side right --grasp-torque 0.35
+python python/examples/impedance_control.py right
+python python/examples/force_position_control.py right --grasp-torque 0.35
 
 # 运动安全包络(固件侧的力矩与热保护,默认不启用,每台设备配一次)
 python python/examples/impedance_control.py --show-envelope

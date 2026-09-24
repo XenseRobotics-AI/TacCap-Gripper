@@ -369,11 +369,13 @@ does.
 ```
   set_impedance(pos,kp,kd,ff)  --ACK-->  Cmd::MotorImpedanceCtrl (blocking)
   submit_impedance(...)        --no ACK-> Cmd::MotorImpedanceCtrl (realtime)
-        (C++ only -- not exposed to Python; use ImpedanceController /
+        (set_impedance is C++ only; submit_impedance IS exposed to Python but
+         carries no host-side clamp -- prefer ImpedanceController /
          ForcePositionController, which call these internally)
         │                                   firmware runs a 500 Hz control task
         │                                   consuming the latest submitted target
   FollowerGripper.set_position(0..1) --> GripperPosition -> raw rad -> submit
+                     (C++ only)
   ImpedanceController (bg thread) ---->  submit latest target on the status-
                                           frame doorbell; error clamped at
                                           max_position_torque_nm; torque

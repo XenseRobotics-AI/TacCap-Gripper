@@ -43,7 +43,6 @@ dependencies:
   - pybind11
   - scikit-build-core
   - numpy
-  - pyserial         # used in step 2+ for TC-GU-01 serial; pre-installed
   - pytest
   # Needed for `pre-commit install`, which .pre-commit-config.yaml asks every
   # clone to run once. Without it the repo has rules that only CI enforces.
@@ -65,4 +64,3 @@ dependencies:
       # inside Markdown fences. A dev running a different build than the gate
       # finds out from a red CI. Bump this and .github/workflows/ci.yml together.
       - ruff==0.16.8
-      - rerun-sdk<0.27.0           # multimodal visualisation (examples/)

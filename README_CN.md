@@ -485,9 +485,12 @@ c.stop()
 
 ```python
 print(g.position())                       # -> 0.97   (接近张开)
-g.set_position(0.5, kp_nm_per_rad=8, kd_nm_s_per_rad=1)   # 开到 50%(不等 ACK,实时)
 g.pos_to_rad(0.5), g.rad_to_pos(-0.59)    # 显式换算
 ```
+
+一次性的 `FollowerGripper::set_position(0..1)` **只有 C++ 有** —— 在 Python 里,
+归一化目标一律通过控制器的 `set_target()` 下发。原始的 `Motor.submit_*` 倒是暴露给
+Python 了,参数也确实是弧度,但主机侧不对它们做任何钳位,见上面的警告。
 
 **`ImpedanceController`** —— 要**跟随位置**就用这个。一个 C++ 后台线程
 **与电机状态流同相位地**提交最新的归一化目标,同时这条流把一份线程安全的观测

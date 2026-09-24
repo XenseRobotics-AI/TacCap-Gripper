@@ -529,14 +529,15 @@ c.stop()
 
 **Normalized position** — work in `[0, 1]` (0 = closed, 1 = open) instead of raw
 radians. Requires a calibrated gripper (`GripperConfig` Valid); throws otherwise.
-Raw-radian motor control is not reachable from Python — see the controllers
-above.
-
 ```python
 print(g.position())                       # -> 0.97   (nearly open)
-g.set_position(0.5, kp_nm_per_rad=8, kd_nm_s_per_rad=1)   # 50% open (no-ACK, realtime)
 g.pos_to_rad(0.5), g.rad_to_pos(-0.59)    # explicit conversions
 ```
+
+The one-shot `FollowerGripper::set_position(0..1)` is **C++ only** — from Python
+a normalized target goes through a controller's `set_target()`. The raw
+`Motor.submit_*` primitives *are* exposed to Python and do take raw radians, but
+nothing on the host side clamps them; see the warning above.
 
 **`ImpedanceController`** — use this one to **follow a position**. A C++
 background thread submits the latest normalized target **in phase with the

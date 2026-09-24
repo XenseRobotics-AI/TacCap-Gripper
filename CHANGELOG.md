@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Documentation corrected where it described APIs that do not exist.** The
+  READMEs showed `g.set_position(...)` in a Python snippet — that method exists
+  in C++ but is not bound — and claimed raw-radian motor control is unreachable
+  from Python, while `Motor.submit_*` is bound and takes raw radians.
+  `docs/ARCHITECTURE.md` carried the same claim. Two `--side` flags that no
+  script accepts were left in `docs/USAGE.md`.
+- **`pyserial` and `rerun-sdk` dropped from `environment.yml`.** Nothing imports
+  either: the serial transport is C++ (termios), and the examples that used
+  rerun were deleted in an earlier cleanup.
 - **`firmware/` ships only the current release.** The 1.2.5 images were removed;
   `manifest.json` has pointed at 1.2.6 since it shipped, and `ota_update.py`
   resolves images through the manifest by CRC32, so the older pair was
