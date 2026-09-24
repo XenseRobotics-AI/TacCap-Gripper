@@ -97,6 +97,12 @@ public:
         // Refuse to open a follower whose firmware predates kMinFirmware*
         // below -- 1.2.5. Two reasons stack up to it, and they differ in kind.
         //
+        // EVERY NUMBER IN THIS COMMENT IS ON THE FOLLOWER VERSION LINE. The two
+        // roles number independently, so a leader's 1.2.4 has nothing to do with
+        // the follower 1.2.4 named below -- do not compare them, and do not
+        // widen this gate to leaders on the strength of a number that looks
+        // familiar.
+        //
         // 1.1.6 is where the motion safety envelope landed, and it is not
         // optional: before it, the MIT command path has NO stall protection at
         // all in firmware (can_motor_gripper_stop_on_limit_stall is wired only
@@ -122,7 +128,8 @@ public:
         bool        allow_outdated_firmware = false;
     };
 
-    // Minimum follower firmware this SDK will drive. See
+    // Minimum FOLLOWER firmware this SDK will drive -- a follower-line
+    // number, not comparable with a leader's. See
     // Config::allow_outdated_firmware for why it is a hard requirement.
     static constexpr uint8_t kMinFirmwareMajor = 1;
     static constexpr uint8_t kMinFirmwareMinor = 2;

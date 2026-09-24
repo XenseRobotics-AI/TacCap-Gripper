@@ -76,8 +76,18 @@ inactive bank and uses the STM32H5 bank swap, so one build serves both banks.
 ```bash
 python python/examples/ota_update.py \
     third_party/firmware/tc-gu-01/build/master/tc-gu-01-master.bin \
-    left --target-version 1.2.5
+    left --target-version 1.2.4
 ```
+
+**The two roles have independent version numbers** — at the time of writing the
+leader is 1.2.4 and the follower 1.2.6, and neither is "behind" the other. They
+were briefly forced onto one number; that was dropped on 2026-09-24, so a leader
+in the field may still report 1.2.5 or 1.2.6 from that period. Those are the
+same code as 1.2.4, which is why flashing the current leader image onto one
+lowers the number it reports. Nothing in the OTA path compares versions
+(`--target-version` is informational and defaults to the manifest's), so the
+numeric downgrade is not refused and not a problem. Compare versions only within
+one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under

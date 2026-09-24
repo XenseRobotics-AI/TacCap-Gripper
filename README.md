@@ -120,6 +120,15 @@ pulling only one leaves the other half of the board energised and does not reset
 it. The bank-swap reboot is a soft reset that leaves the device looking healthy
 while quietly dropping status frames.
 
+**The two roles carry independent version numbers.** At the time of writing the
+leader is 1.2.4 and the follower 1.2.6; neither is behind the other, and
+`gripper.firmware_version` returning different numbers for the two halves of a
+pair is normal. Compare versions only within a role — the floors above are
+follower numbers. A leader in the field may also report 1.2.5 or 1.2.6 from a
+period when the roles were forced onto one number; that is the same code as
+1.2.4, so flashing the current leader image lowers the number it reports, which
+nothing refuses and nothing should read as a downgrade.
+
 [`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
 the rest of the flashing detail.
 

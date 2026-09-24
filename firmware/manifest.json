@@ -3,6 +3,7 @@
     "master": {
       "file": "tc-gu-01-master-1.2.4.bin",
       "version": "1.2.4",
+      "source_commit": "97075c6",
       "size_bytes": 118236,
       "crc32": "0x17f5e76b",
       "sn_suffix": "m",
@@ -14,6 +15,7 @@
     "slave": {
       "file": "tc-gu-01-slave-1.2.6.bin",
       "version": "1.2.6",
+      "source_commit": "97075c6",
       "size_bytes": 163000,
       "crc32": "0xbffbadc8",
       "sn_suffix": "s",
