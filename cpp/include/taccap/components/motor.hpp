@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace xense::taccap {
 
@@ -346,6 +347,30 @@ public:
     // on two different rulers. Same shape as changing the motor CAN id.
     void set_model(uint8_t model_id,
                    std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
+
+    // ---- Raw extended-frame transfer onto the motor's CAN bus (0x5B) ------
+    // Send one 29-bit extended frame and return the first extended reply with
+    // (id & match_mask) == match_value, waited for on the MCU for up to
+    // reply_timeout_ms (0 = send only). Firmware 1.2.8+; older followers NACK
+    // InvalidCmd.
+    //
+    // A low-level tool, for motor OTA and for probing protocol behaviour --
+    // NOT for control. It can emit any frame, enable/stop/set-CAN-id
+    // included, so the firmware refuses it (SysBusy / OtaBusy -> throws)
+    // while the control loop, auto-calibration or a gripper OTA is running.
+    //
+    // "The motor did not answer" is a result, not an error: it comes back as
+    // status == NoReply rather than an exception. Throws only on a malformed
+    // request (dlc > 8, id > 29 bits, timeout over the cap) or a NACK.
+    //
+    // The transport timeout is derived from reply_timeout_ms plus headroom for
+    // the firmware's lazy CAN init: the first motor command after power-up
+    // runs a discovery scan (~1.4 s measured on 0x58) before sending anything.
+    protocol::MotorCanXferResp can_ext_xfer(uint32_t ext_id,
+                                            const std::vector<uint8_t>& data,
+                                            uint16_t reply_timeout_ms,
+                                            uint32_t match_mask,
+                                            uint32_t match_value);
 
     // Subscribe to streamed MotorStatus DATA frames (StreamSrc::MotorStatus
     // must be enabled in start_streaming for these to arrive).

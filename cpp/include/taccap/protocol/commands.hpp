@@ -124,6 +124,12 @@ enum class Cmd : uint8_t {
     // scale factor on every frame (EL05 +/-6 Nm vs RS00 +/-14 Nm).
     GetMotorModel            = 0x59,  // 本机记录的电机型号(20B)
     SetMotorModel            = 0x5A,  // 写电机型号(1B),掉电保持,重启生效
+    // Send one arbitrary 29-bit extended frame onto the motor's CAN bus and
+    // wait for the first matching extended reply (firmware 1.2.8+). The
+    // building block for host-side motor OTA and protocol probing. Refused
+    // while the control loop, auto-calibration or a gripper OTA is running:
+    // it can emit any frame, enable and stop included.
+    MotorCanExtXfer          = 0x5B,  // 扩展帧透传(req 24B / resp 16B)
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

@@ -6,6 +6,7 @@
 #include <taccap/protocol/codec.hpp>
 
 #include <cstring>
+#include <stdexcept>
 #include <string>
 
 namespace xense::taccap {
@@ -203,6 +204,49 @@ protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {
     }
     protocol::MotorVersion out{};
     std::memcpy(&out, ack.data.data(), protocol::MOTOR_VERSION_SIZE);
+    return out;
+}
+
+protocol::MotorCanXferResp Motor::can_ext_xfer(uint32_t ext_id,
+                                               const std::vector<uint8_t>& data,
+                                               uint16_t reply_timeout_ms,
+                                               uint32_t match_mask,
+                                               uint32_t match_value) {
+    // Validated here as well as in the firmware so a bad call fails with a
+    // message that names the field, not as a bare InvalidParam.
+    if (data.size() > 8) {
+        throw std::invalid_argument("Motor::can_ext_xfer: data longer than 8 bytes");
+    }
+    if (ext_id > 0x1FFFFFFFu) {
+        throw std::invalid_argument("Motor::can_ext_xfer: ext_id exceeds 29 bits");
+    }
+    if (reply_timeout_ms > protocol::MOTOR_CAN_XFER_MAX_TIMEOUT_MS) {
+        throw std::invalid_argument("Motor::can_ext_xfer: reply_timeout_ms over the "
+                                    "firmware cap of " +
+                                    std::to_string(protocol::MOTOR_CAN_XFER_MAX_TIMEOUT_MS));
+    }
+    protocol::MotorCanXferReq req{};
+    req.ext_id = ext_id;
+    std::memcpy(req.data, data.data(), data.size());
+    req.dlc = static_cast<uint8_t>(data.size());
+    req.timeout_ms = reply_timeout_ms;
+    req.match_mask = match_mask;
+    req.match_value = match_value;
+
+    std::vector<uint8_t> payload(sizeof(req));
+    std::memcpy(payload.data(), &req, sizeof(req));
+
+    const auto timeout = std::chrono::milliseconds{reply_timeout_ms + 3000};
+    auto ack = t_.send_cmd(protocol::Cmd::MotorCanExtXfer, payload, timeout);
+    if (const auto err = bus::ack_error_code(ack); err != protocol::ErrorCode::Ok) {
+        throw ProtocolError(std::string("Motor::can_ext_xfer NACK: ") +
+                            protocol::to_string(err));
+    }
+    if (ack.data.size() < protocol::MOTOR_CAN_XFER_RESP_SIZE) {
+        throw ProtocolError("Motor::can_ext_xfer: short payload");
+    }
+    protocol::MotorCanXferResp out{};
+    std::memcpy(&out, ack.data.data(), protocol::MOTOR_CAN_XFER_RESP_SIZE);
     return out;
 }
 

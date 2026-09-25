@@ -307,6 +307,51 @@ struct __attribute__((packed)) MotorVersion {
     uint8_t reserved;
 };
 
+// ---- 电机 CAN 扩展帧透传 (Cmd::MotorCanExtXfer 0x5B, firmware >= 1.2.8) ----
+//
+// One frame out, then the first EXTENDED frame whose id satisfies
+// (id & match_mask) == match_value within timeout_ms comes back. A matched
+// frame is handed to this transfer only; the firmware's own parser never sees
+// it. timeout_ms = 0 means send and do not wait.
+//
+// The wait lives in the firmware, not here, because RobStride motor OTA
+// (communication types 11-14) needs a reply per frame and the reply carries
+// the resume position -- doing the matching on the MCU keeps the host from
+// racing the 500 Hz status frames for the CAN ring buffer.
+//
+// NOT refused under MIT: whether the motor answers extended frames while it
+// speaks MIT is precisely one of the things this exists to find out.
+//
+// The command NACKs only on a malformed request or when refused (SysBusy /
+// OtaBusy). "The motor did not answer" is a result, reported in `status`.
+constexpr size_t MOTOR_CAN_XFER_REQ_SIZE  = 24;
+constexpr size_t MOTOR_CAN_XFER_RESP_SIZE = 16;
+constexpr uint16_t MOTOR_CAN_XFER_MAX_TIMEOUT_MS = 2000;
+
+struct __attribute__((packed)) MotorCanXferReq {
+    uint32_t ext_id;        // 29-bit extended id to send
+    uint8_t  data[8];
+    uint8_t  dlc;           // 0..8
+    uint8_t  reserved;      // 0
+    uint16_t timeout_ms;    // 0 = send only; max MOTOR_CAN_XFER_MAX_TIMEOUT_MS
+    uint32_t match_mask;    // reply id mask
+    uint32_t match_value;   // reply id value after masking
+};
+
+namespace motor_can_xfer_status {
+    constexpr uint8_t Ok       = 0;  // matched reply received (or sent, if timeout_ms == 0)
+    constexpr uint8_t NoReply  = 1;  // sent; nothing matched in time
+    constexpr uint8_t TxFailed = 2;  // never left the MCU (bus error / TX timeout)
+}
+
+struct __attribute__((packed)) MotorCanXferResp {
+    uint8_t  status;        // motor_can_xfer_status::*
+    uint8_t  dlc;           // reply length, 0 unless status == Ok
+    uint16_t elapsed_ms;    // send -> reply (or give-up), as the MCU timed it
+    uint32_t ext_id;        // reply id
+    uint8_t  data[8];       // reply data
+};
+
 // Which actuator the gripper is built around, as the MCU has it recorded.
 //
 // The motor cannot be asked. Its version frame returns four version bytes and
@@ -1090,6 +1135,8 @@ static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
 static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
 static_assert(sizeof(MotorVersion)       == MOTOR_VERSION_SIZE);
 static_assert(sizeof(MotorModel)         == MOTOR_MODEL_SIZE);
+static_assert(sizeof(MotorCanXferReq)    == MOTOR_CAN_XFER_REQ_SIZE);
+static_assert(sizeof(MotorCanXferResp)   == MOTOR_CAN_XFER_RESP_SIZE);
 static_assert(sizeof(MotorStatus)        == 31);  // V1.9 motor_status_t (was 40)
 static_assert(sizeof(MotorStatus)        == MOTOR_STATUS_LEGACY_SIZE);
 // V2.2 — 0x53 payload. Its first 31 bytes must stay layout-identical to

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Motor.can_ext_xfer()`** — send one 29-bit extended frame onto the motor's
+  CAN bus and get back the first matching extended reply, waited for on the MCU
+  (Cmd `0x5B`, follower firmware **>= 1.2.8**). A low-level tool for motor OTA
+  and protocol probing, not for control: the firmware refuses it while the
+  control loop, auto-calibration or a gripper OTA is running. "The motor did not
+  answer" comes back as `status == NoReply`, not an exception.
+
 ## [0.3.1] - 2026-09-25
 
 ### Fixed

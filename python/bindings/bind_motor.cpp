@@ -285,6 +285,39 @@ void bind_motor(py::module_& m) {
             return std::string(buf);
         });
 
+    // ---- MotorCanXferResp (Cmd 0x5B, 16 bytes, follower firmware >= 1.2.8) ----
+    py::class_<protocol::MotorCanXferResp>(m, "MotorCanXferResp",
+        "Result of Motor.can_ext_xfer: the first extended CAN frame that matched,\n"
+        "or why there was none. 'The motor did not answer' is reported here as\n"
+        "status == 1 (NoReply), not raised.")
+        .def_readonly("status", &protocol::MotorCanXferResp::status,
+                      "0 = matched reply received (or sent, when reply_timeout_ms == 0),\n"
+                      "1 = sent but nothing matched in time, 2 = never left the MCU.")
+        .def_property_readonly("ok", [](const protocol::MotorCanXferResp& r) {
+            return r.status == protocol::motor_can_xfer_status::Ok;
+        })
+        .def_readonly("elapsed_ms", &protocol::MotorCanXferResp::elapsed_ms,
+                      "Send -> reply (or give-up) in ms, as the MCU timed it.")
+        .def_readonly("ext_id", &protocol::MotorCanXferResp::ext_id)
+        .def_property_readonly("data", [](const protocol::MotorCanXferResp& r) {
+            return py::bytes(reinterpret_cast<const char*>(r.data), r.dlc);
+        }, "Reply data, dlc bytes long (empty unless status == 0).")
+        .def("__repr__", [](const protocol::MotorCanXferResp& r) {
+            static const char* names[] = {"Ok", "NoReply", "TxFailed"};
+            const char* st = r.status < 3 ? names[r.status] : "?";
+            char buf[128];
+            int n = std::snprintf(buf, sizeof(buf),
+                                  "MotorCanXferResp(%s, %ums, id=0x%08X, data=",
+                                  st, static_cast<unsigned>(r.elapsed_ms),
+                                  static_cast<unsigned>(r.ext_id));
+            std::string s(buf, n > 0 ? static_cast<size_t>(n) : 0);
+            for (unsigned i = 0; i < r.dlc && i < 8; ++i) {
+                std::snprintf(buf, sizeof(buf), "%02X", r.data[i]);
+                s += buf;
+            }
+            return s + ")";
+        });
+
     // ---- MotorFaultReport (V2.2 — Cmd 0x52, 64 bytes) --------------------
     py::class_<protocol::MotorFaultReport>(m, "MotorFaultReport",
         "One diagnostic snapshot merging the motor's own fault word, the MCU's\n"
@@ -752,6 +785,29 @@ void bind_motor(py::module_& m) {
            "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"
            "的电机会把它当停止执行。motor_stopped=1 就是这种情况,再发运动命令前\n"
            "要重新 enable()。")
+        .def("can_ext_xfer", [](Motor& self, uint32_t ext_id, py::bytes data,
+                                unsigned reply_timeout_ms, uint32_t match_mask,
+                                uint32_t match_value) {
+            const std::string s = data;
+            std::vector<uint8_t> buf(s.begin(), s.end());
+            if (reply_timeout_ms > 0xFFFF) {
+                throw py::value_error("reply_timeout_ms out of range");
+            }
+            py::gil_scoped_release g;
+            return self.can_ext_xfer(ext_id, buf,
+                                     static_cast<uint16_t>(reply_timeout_ms),
+                                     match_mask, match_value);
+        }, py::arg("ext_id"), py::arg("data") = py::bytes(),
+           py::arg("reply_timeout_ms") = 100, py::arg("match_mask") = 0,
+           py::arg("match_value") = 0,
+           "往电机 CAN 总线发一帧 29 位扩展帧,在 MCU 上等第一帧满足\n"
+           "(id & match_mask) == match_value 的扩展帧应答(0x5B,从爪固件 >= 1.2.8)。\n\n"
+           "给电机 OTA 和协议探测用的底层工具,**不是控制接口**:它能发出任何帧,\n"
+           "包括使能、停止、改 CAN ID,所以控制环、自动标定、夹爪 OTA 运行时固件\n"
+           "会拒绝(SysBusy / OtaBusy -> ProtocolError)。\n\n"
+           "电机没回不是异常,返回 status == 1(NoReply)。match_mask=0 表示任何\n"
+           "扩展帧都算应答 —— 包括 500Hz 的状态帧,通常不是你要的。\n"
+           "reply_timeout_ms=0 只发不等,上限 2000。")
         .def("set_startup_limit_torque", [](Motor& self, float torque_nm) {
             py::gil_scoped_release g; self.set_startup_limit_torque(torque_nm);
         }, py::arg("torque_nm"),
