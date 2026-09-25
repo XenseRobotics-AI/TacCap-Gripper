@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and protocol probing, not for control: the firmware refuses it while the
   control loop, auto-calibration or a gripper OTA is running. "The motor did not
   answer" comes back as `status == NoReply`, not an exception.
+- **Motor firmware update over the gripper's USB-C** — `MotorOtaSession` and
+  `python/examples/motor_ota_update.py` reflash the RobStride motor module
+  itself (not the gripper MCU) through `can_ext_xfer`, following RobStride's
+  published OTA protocol. First real flash: `0086s` (RS00) 0.0.3.22 → 0.0.3.32,
+  11,686 packs, 0 resumes, 27.6 s, version read back afterwards.
+  The motor must be on the **private** protocol (it ignores OTA frames under
+  MIT), and the protocol carries **no model check** — `preflight()` refuses an
+  image whose model does not match the gripper's recorded motor model. After
+  the update the motor comes back on MIT.
 
 ## [0.3.1] - 2026-09-25
 

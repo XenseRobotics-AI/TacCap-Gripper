@@ -39,6 +39,7 @@ DOCUMENTED_CLASSES = [
     "LeaderGripper",
     "Motor",
     "EnvelopeAudit",
+    "MotorOtaSession",
 ]
 
 # pybind11 emits `name(...) -> ret` as the first line(s) of __doc__, and for an

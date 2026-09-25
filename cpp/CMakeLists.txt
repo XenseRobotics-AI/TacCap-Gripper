@@ -22,6 +22,7 @@ add_library(taccap_core SHARED
     src/force_position_controller.cpp
     src/impedance_controller.cpp
     src/ota.cpp
+    src/motor_ota.cpp
     src/log.cpp
 )
 

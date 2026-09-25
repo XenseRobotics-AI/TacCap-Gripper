@@ -154,6 +154,85 @@ void bind_ota(py::module_& m) {
             static_cast<size_t>(info.size));
     }, py::arg("data"),
        "Compute CRC32 with the same parameters as zlib.crc32 / firmware.");
+
+    // ---- MotorOtaSession: reflash the RobStride motor itself ------------
+    py::class_<MotorOtaSession>(m, "MotorOtaSession",
+        "电机固件升级 —— 刷的是 RobStride 电机模组自己的程序,不是夹爪 MCU\n"
+        "(那是 gripper.ota)。每一帧经 Motor.can_ext_xfer(0x5B,从爪固件 >= 1.2.8)\n"
+        "由 MCU 转发并等电机应答,流程在主机侧。\n\n"
+        "前提(实测):电机必须在**私有协议**下 —— MIT 下电机不回 OTA 帧。切协议要\n"
+        "断 24V;而夹爪 OTA 会把电机切回 MIT,所以电机 OTA 要放在夹爪 OTA 之后。\n\n"
+        "**协议不校验型号**:升级包里没有型号字段,RS00 的包刷进 EL05 电机也会被\n"
+        "接受。update 之前先调 preflight(expected_model)。\n\n"
+        "中途失败时,RobStride 的建议是给电机断电重上,从头再刷。")
+        .def(py::init([](Motor& motor, uint8_t can_id, uint16_t handshake_timeout_ms,
+                         uint16_t data_timeout_ms, int max_attempts, int start_attempts,
+                         int max_resumes) {
+                 MotorOtaSession::Options o;
+                 o.start_attempts = start_attempts;
+                 o.handshake_timeout_ms = handshake_timeout_ms;
+                 o.data_timeout_ms = data_timeout_ms;
+                 o.max_attempts = max_attempts;
+                 o.max_resumes = max_resumes;
+                 return std::make_unique<MotorOtaSession>(motor, can_id, o);
+             }),
+             py::arg("motor"), py::arg("can_id"),
+             py::arg("handshake_timeout_ms") = 2000, py::arg("data_timeout_ms") = 500,
+             py::arg("max_attempts") = 3, py::arg("start_attempts") = 6,
+             py::arg("max_resumes") = 64,
+             py::keep_alive<1, 2>(),
+             "绑定到一台从爪的 motor。can_id 用 motor.get_can_id() 读。\n"
+             "超时是每次尝试的时长;max_attempts 是单帧无应答时的重发次数,\n"
+             "start_attempts 单独给启动帧:电机先重启进 bootloader 才应答,实测约 4 秒。\n"
+             "max_resumes 是整次升级里允许电机要求回退续传的次数。")
+        .def("preflight", [](MotorOtaSession& self, const std::string& expected_model) {
+            py::gil_scoped_release g;
+            self.preflight(expected_model);
+        }, py::arg("expected_model"),
+           "刷之前的把关:电机必须在私有协议下,且本机记录的电机型号必须是\n"
+           "expected_model(\"RS00\" / \"EL05\")。不满足就抛 ProtocolError。\n"
+           "型号只是编译期默认值(不是写进 flash 的记录)时只告警 —— 请核对铭牌。")
+        .def("read_uid", [](MotorOtaSession& self) {
+            std::array<uint8_t, 8> uid;
+            {
+                py::gil_scoped_release g;
+                uid = self.read_uid();
+            }
+            return py::bytes(reinterpret_cast<const char*>(uid.data()), uid.size());
+        }, "通信类型 0,读电机的 64 位 MCU UID。只读,不改变电机状态。")
+        .def("update_from_file", [](MotorOtaSession& self, const std::string& path,
+                                    py::object on_progress) {
+            MotorOtaSession::ProgressCallback cb;
+            if (!on_progress.is_none()) {
+                auto pycb = make_gil_safe_callback(py::function(on_progress));
+                cb = [pycb](uint32_t done, uint32_t total) {
+                    call_into_python("MotorOtaSession progress",
+                                     [&] { (*pycb)(done, total); });
+                };
+            }
+            py::gil_scoped_release g;
+            self.update_from_file(path, std::move(cb));
+        }, py::arg("path"), py::arg("on_progress") = py::none(),
+           "**会改写电机 flash。**完整流程:读 UID -> 启动 -> 信息 -> 逐包数据 -> 结束。\n"
+           "on_progress(packs_done, packs_total) 每 256 包调用一次,结束时再调一次。\n"
+           "电机不再应答抛 TimeoutError,电机报告无法恢复的失败抛 ProtocolError。\n"
+           "结束帧确认后电机会重启。")
+        .def("update_from_bytes", [](MotorOtaSession& self, py::bytes blob,
+                                     py::object on_progress) {
+            const std::string buf = blob;
+            std::vector<uint8_t> image(buf.begin(), buf.end());
+            MotorOtaSession::ProgressCallback cb;
+            if (!on_progress.is_none()) {
+                auto pycb = make_gil_safe_callback(py::function(on_progress));
+                cb = [pycb](uint32_t done, uint32_t total) {
+                    call_into_python("MotorOtaSession progress",
+                                     [&] { (*pycb)(done, total); });
+                };
+            }
+            py::gil_scoped_release g;
+            self.update_from_bytes(image, std::move(cb));
+        }, py::arg("image"), py::arg("on_progress") = py::none(),
+           "同 update_from_file,镜像已在内存里。**会改写电机 flash。**");
 }
 
 }  // namespace xense::taccap::python

@@ -170,6 +170,8 @@ MotorVersion = (
 )  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
 # 电机 CAN 扩展帧透传的结果 (Cmd 0x5B, 需固件 >= 1.2.8)
 MotorCanXferResp = _taccap_native.MotorCanXferResp
+# 电机固件升级(刷 RobStride 电机本身,不是夹爪 MCU),经 0x5B 透传
+MotorOtaSession = _taccap_native.MotorOtaSession
 MotorStopReason = _taccap_native.MotorStopReason  # V2.2
 # V2.2 partial auto-cal writes — patch stall params without a read-modify-write
 GripperAutoCalStallParam = _taccap_native.GripperAutoCalStallParam
@@ -301,6 +303,7 @@ __all__ = [
     "MotorFaultReport",
     "MotorVersion",
     "MotorCanXferResp",
+    "MotorOtaSession",
     "MotorModel",
     "HomeDiagReport",
     "HomeState",

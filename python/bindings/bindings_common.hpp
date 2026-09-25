@@ -38,6 +38,7 @@
 #include <taccap/leader_gripper.hpp>
 #include <taccap/discovery.hpp>
 #include <taccap/ota.hpp>
+#include <taccap/motor_ota.hpp>
 
 #include <chrono>
 #include <memory>
