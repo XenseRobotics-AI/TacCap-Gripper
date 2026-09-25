@@ -6,6 +6,7 @@
 // raw -1.1802 -> 1.0.
 
 #include <gtest/gtest.h>
+#include <cmath>
 #include <taccap/gripper_position.hpp>
 #include <taccap/protocol/payloads.hpp>
 
@@ -76,4 +77,46 @@ TEST(GripperPosition, RoundTripsAcrossRange) {
     for (float p = 0.0f; p <= 1.0f; p += 0.1f) {
         EXPECT_NEAR(gp.to_position(gp.to_rad(p)), p, 1e-5);
     }
+}
+
+// ---- Grip-frame rotation -----------------------------------------------
+//
+// GripperObservation used to carry a normalized position (rotated by the
+// mounting direction) next to a raw motor-frame velocity and torque (not
+// rotated). Two frames in one struct. It stayed invisible for as long as every
+// follower in the field was an EL05 with Reverse set; the first gripper built
+// the other way round reported the opposite sign for the same physical motion.
+//
+// What these pin is not the arithmetic -- it is that the sign a CALLER sees is
+// the same on both mountings.
+
+TEST(GripperPositionGripFrame, ClosingIsPositiveOnBothMountings) {
+    const auto fwd = tx::GripperPosition::from_travel(1.0f, 0.0f, /*reverse=*/false);
+    const auto rev = tx::GripperPosition::from_travel(1.0f, 0.0f, /*reverse=*/true);
+
+    // Reverse clear: open advances with the motor, so closing is motor-negative.
+    // Reverse set: open is the motor's negative direction, so closing is
+    // motor-positive. Opposite raw signs, one physical direction.
+    EXPECT_GT(fwd.to_grip_frame(-0.8f), 0.0f) << "closing must read positive";
+    EXPECT_GT(rev.to_grip_frame(+0.8f), 0.0f) << "closing must read positive";
+
+    EXPECT_LT(fwd.to_grip_frame(+0.8f), 0.0f) << "opening must read negative";
+    EXPECT_LT(rev.to_grip_frame(-0.8f), 0.0f) << "opening must read negative";
+}
+
+TEST(GripperPositionGripFrame, MagnitudeIsUntouched) {
+    const auto rev = tx::GripperPosition::from_travel(1.0f, 0.0f, /*reverse=*/true);
+    EXPECT_FLOAT_EQ(std::abs(rev.to_grip_frame(1.234f)), 1.234f);
+    EXPECT_FLOAT_EQ(rev.to_grip_frame(0.0f), 0.0f);
+}
+
+TEST(GripperPositionGripFrame, DisagreesWithPositionOnPurpose) {
+    // Position counts upwards towards OPEN; grip-frame velocity counts positive
+    // towards CLOSED. That is deliberate, not an oversight: the signed quantity
+    // a gripper caller reaches for is the grip. Pin it so nobody "fixes" the
+    // observation into d(position)/dt without meaning to.
+    const auto fwd = tx::GripperPosition::from_travel(1.0f, 0.0f, /*reverse=*/false);
+    const float raw_opening = +0.5f;                  // position rising
+    EXPECT_GT(fwd.to_position(0.6f), fwd.to_position(0.4f));
+    EXPECT_LT(fwd.to_grip_frame(raw_opening), 0.0f);
 }

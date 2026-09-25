@@ -299,7 +299,9 @@ def _redraw(
         envline,
         "  j/k=open-/+  o=open  c=close  h=hold  e/d=en/dis  f=fault_clear  q=quit",
         f"{'Tgt[0-1]':>10}{'Act[0-1]':>10}{'Act(rad)':>11}"
-        f"{'Vel(r/s)':>10}{'Torq(Nm)':>10}{'Temp(C)':>9}{'State':>17}",
+        # Vel/Torq 是夹爪坐标系:**正 = 闭合**。电机装配方向已被消掉,所以两台
+        # 装反的爪子上同一个动作符号相同(0.3.1 之前不是这样)。
+        f"{'Vel(+闭合)':>10}{'Torq(+闭合)':>10}{'Temp(C)':>9}{'State':>17}",
         "-" * 77,
         row,
         "  " + backend.detail(),

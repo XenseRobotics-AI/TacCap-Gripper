@@ -73,6 +73,26 @@ public:
         return std::clamp(travel / span, 0.0f, 1.0f);
     }
 
+    // Motor-frame rate or torque -> GRIP frame: positive means "towards closed"
+    // on every device, whatever direction its motor happens to be mounted.
+    //
+    // Why this exists: GripperObservation used to report a normalized position
+    // (which goes through dir_) next to a raw motor-frame velocity and torque
+    // (which did not). Two frames in one struct. It stayed invisible while every
+    // follower in the field was an EL05 with the Reverse flag set -- the first
+    // gripper built the other way round reported velocity and torque with the
+    // OPPOSITE sign for the same physical motion, and nothing in the SDK said so.
+    //
+    // The sign convention is deliberately NOT d(position)/dt. Position is an
+    // extent in [0,1] where 1 is open; velocity and torque are signed, and for a
+    // gripper the quantity a caller reaches for is the GRIP -- so closing is
+    // positive and a grasp reads as a positive torque. The two conventions
+    // disagree by construction; this one was chosen because "grip force is
+    // negative" is the more surprising of the two.
+    float to_grip_frame(float motor_frame) const noexcept {
+        return motor_frame * -dir_;
+    }
+
     // Normalized position [0, 1] -> raw shaft angle (rad). The input is clamped
     // to [0, 1] first so a caller can never command beyond the calibrated travel
     // (the firmware clamps too, but this keeps the host command honest).

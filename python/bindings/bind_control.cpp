@@ -22,8 +22,19 @@ void bind_control(py::module_& m) {
                       "False until the first frame arrives, and again once the stream goes stale.")
         .def_readonly("position", &GripperObservation::position,
                       "Normalized opening, 0 = closed, 1 = open. Needs a calibrated gripper.")
-        .def_readonly("velocity", &GripperObservation::velocity, "rad/s at the motor.")
-        .def_readonly("torque",   &GripperObservation::torque, "Measured torque, N*m.")
+        .def_readonly("velocity", &GripperObservation::velocity,
+                      "rad/s,**正 = 闭合**。\n\n"
+                      "这是夹爪坐标系,不是电机坐标系 —— 电机装配方向已经被消掉,\n"
+                      "所以同一个物理动作在每一台上符号都相同。0.3.1 之前它是原始\n"
+                      "电机值,符号取决于那台的电机怎么装,而这一点在所有从爪都是\n"
+                      "EL05 时看不出来。\n\n"
+                      "**故意不等于 d(position)/dt**:position 往 1(张开)方向数,\n"
+                      "而这里往闭合方向为正。position 是开合程度,它是有符号量,\n"
+                      "而夹爪上有意义的有符号量是夹持。")
+        .def_readonly("torque",   &GripperObservation::torque,
+                      "实测力矩 N*m,**正 = 闭合**,所以夹持力是正数。\n\n"
+                      "和 velocity 同一个坐标系。要的是请求值而不是实测值的话,\n"
+                      "读 snapshot 的 commanded_torque_nm(那是幅值)。")
         .def_readonly("raw_pos",  &GripperObservation::raw_pos,
                       "Motor angle in radians, before the normalized position map.")
         .def_readonly("status",   &GripperObservation::status,

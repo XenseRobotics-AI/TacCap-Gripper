@@ -215,3 +215,50 @@ TEST(ImpedanceControllerPty, StopReturnsAfterTheDeviceDisappears) {
         << "stop() took " << took.count() << " ms with the device gone";
     EXPECT_FALSE(c.running());
 }
+
+// The bug this pins: GripperObservation carried a normalized position (rotated
+// by the mounting direction) next to a raw motor-frame velocity and torque
+// (not rotated), so the sign a caller saw depended on how that unit's motor
+// happened to be mounted. It was invisible while every follower in the field
+// was an EL05 with Reverse set; the first gripper built the other way round
+// reported the opposite sign for the same physical motion, and nothing said so.
+//
+// Driving the fake is not needed -- the whole question is what the observation
+// does with a given status frame, and the fake lets us serve the same physical
+// direction as opposite raw signs on the two mountings.
+TEST(ImpedanceControllerPty, ObservationSignsAreTheSameOnBothMountings) {
+    auto grip_frame_for = [](bool reverse, float raw_vel, float raw_torque) {
+        Pty pty;
+        EXPECT_GE(pty.master(), 0);
+        FakeFollower fw(pty);
+        fw.set_reverse(reverse);
+        fw.set_status(0.60f, raw_vel, raw_torque);
+        auto g = open_follower(pty);
+
+        tx::ImpedanceController c(*g);
+        c.start();
+        EXPECT_TRUE(wait_for([&] { return c.snapshot().observation.valid; }, Ms(1000)));
+        const auto o = c.snapshot().observation;
+        c.stop();
+        return std::pair<float, float>{o.velocity, o.torque};
+    };
+
+    // Reverse CLEAR: open advances with the motor, so closing is motor-negative.
+    // Reverse SET:   open is the motor's negative direction, so closing is
+    //                motor-positive. One physical direction, opposite raw signs.
+    const auto fwd_closing = grip_frame_for(false, -0.40f, -0.25f);
+    const auto rev_closing = grip_frame_for(true, +0.40f, +0.25f);
+
+    EXPECT_GT(fwd_closing.first, 0.0f)  << "closing must read positive velocity";
+    EXPECT_GT(rev_closing.first, 0.0f)  << "closing must read positive velocity";
+    EXPECT_GT(fwd_closing.second, 0.0f) << "a grasp must read positive torque";
+    EXPECT_GT(rev_closing.second, 0.0f) << "a grasp must read positive torque";
+
+    // Same magnitude, same sign -- the mounting is fully taken out.
+    EXPECT_NEAR(fwd_closing.first, rev_closing.first, 1e-4f);
+    EXPECT_NEAR(fwd_closing.second, rev_closing.second, 1e-4f);
+
+    // And opening is negative on both.
+    EXPECT_LT(grip_frame_for(false, +0.40f, +0.25f).first, 0.0f);
+    EXPECT_LT(grip_frame_for(true, -0.40f, -0.25f).first, 0.0f);
+}

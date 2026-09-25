@@ -97,6 +97,18 @@ public:
         std::memcpy(&e, cfg_.reserved, sizeof(e));
         return e;
     }
+    // Flip the mounting direction the config advertises. The whole point of
+    // GripperPosition::to_grip_frame() is that observation signs must not depend
+    // on this, so a test has to be able to set it.
+    void set_reverse(bool on) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (on) {
+            cfg_.flags = static_cast<uint16_t>(cfg_.flags | tp::GripperConfigFlag::Reverse);
+        } else {
+            cfg_.flags = static_cast<uint16_t>(cfg_.flags & ~tp::GripperConfigFlag::Reverse);
+        }
+    }
+
     void set_stored_envelope(const tp::GripperEnvelope& e) {
         std::lock_guard<std::mutex> lk(mu_);
         std::memcpy(cfg_.reserved, &e, sizeof(e));

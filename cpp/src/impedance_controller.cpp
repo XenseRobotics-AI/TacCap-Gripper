@@ -457,8 +457,8 @@ void ImpedanceController::start() {
         observation_ = GripperObservation{};
         observation_.valid = true;
         observation_.position = map_.to_position(initial.actual_pos);
-        observation_.velocity = initial.actual_vel;
-        observation_.torque = initial.actual_torque;
+        observation_.velocity = map_.to_grip_frame(initial.actual_vel);
+        observation_.torque = map_.to_grip_frame(initial.actual_torque);
         observation_.raw_pos = initial.actual_pos;
         observation_.status = initial.status;
         observation_.motor_temp_c = initial.motor_temp_c;
@@ -537,8 +537,8 @@ void ImpedanceController::on_status_(const MotorStatusSample& sample) {
         have_sample_ = true;
         observation_.valid = true;
         observation_.position = map_.to_position(sample.actual_pos);
-        observation_.velocity = sample.actual_vel;
-        observation_.torque = sample.actual_torque;
+        observation_.velocity = map_.to_grip_frame(sample.actual_vel);
+        observation_.torque = map_.to_grip_frame(sample.actual_torque);
         observation_.raw_pos = sample.actual_pos;
         observation_.status = sample.status;
         observation_.motor_temp_c = sample.motor_temp_c;

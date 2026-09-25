@@ -21,9 +21,21 @@ namespace xense::taccap {
 struct GripperObservation {
     bool     valid    = false;   // false until the first status frame arrives
     float    position = 0.0f;    // [0,1] normalized open amount (0=closed,1=open)
-    float    velocity = 0.0f;    // rad/s (raw motor frame)
-    float    torque   = 0.0f;    // Nm
-    float    raw_pos  = 0.0f;    // raw shaft angle (rad)
+    // Velocity and torque are in the GRIP frame: **positive means closing**, so
+    // a grasp reads as a positive torque. Same on every device -- the mounting
+    // direction is taken out by GripperPosition::to_grip_frame().
+    //
+    // Note this is deliberately NOT d(position)/dt: position counts upwards
+    // towards OPEN while these count positive towards CLOSED. Position is an
+    // extent, these are signed, and for a gripper the signed quantity a caller
+    // wants is the grip.
+    //
+    // They were raw motor-frame values until 0.3.1, which meant their sign
+    // depended on how that unit's motor was mounted -- invisible until a
+    // follower built the other way round showed up.
+    float    velocity = 0.0f;    // rad/s, + = closing
+    float    torque   = 0.0f;    // Nm, + = closing (i.e. the grip)
+    float    raw_pos  = 0.0f;    // raw shaft angle (rad) -- MOTOR frame, unrotated
     uint16_t status   = 0;       // protocol::MotorStatusBit::*
     // Motor temperature (deg C). It rides in every status frame already, and
     // is here so that nothing needs read_status() while a control loop runs.

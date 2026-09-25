@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`GripperObservation.velocity` and `.torque` had a sign that depended on how
+  that unit's motor was mounted.** The struct carried a normalized `position`
+  (rotated by the config's Reverse flag) next to a raw motor-frame velocity and
+  torque (not rotated) — two frames in one struct. It stayed invisible for as
+  long as every follower in the field was an EL05 with Reverse set; the first
+  gripper built the other way round reported the **opposite sign for the same
+  physical motion**, and nothing in the SDK said so.
+
+  Both are now in the grip frame: **positive means closing**, so a grasp reads
+  as a positive torque, identically on every device.
+
+  This is deliberately *not* `d(position)/dt` — `position` counts upwards
+  towards open while these count positive towards closed. `position` is an
+  extent; these are signed, and the signed quantity a gripper caller reaches for
+  is the grip.
+
+  **Nothing changes on a device whose Reverse flag is set** — which is every
+  EL05 follower in the field. The rotation is `value * -dir_`, and with
+  `dir_ = -1` that is the identity: those units were already reporting closing
+  as positive, which is why they looked right. Only a gripper built the other
+  way round moves, and it moves to agree with them.
+
+  **No control behaviour changes either**: the control laws work from the raw
+  `MotorStatusSample`, never from the observation, and every existing consumer
+  of these two fields either takes `abs()` (the settle checks in
+  `impedance_control.py` and `control_ripple.py`) or only displays them.
+
+  Measured on the unit that was wrong (RS00, Reverse clear): closing now reads
+  velocity `+0.892` / torque `+0.128`, opening `-0.866` / `-0.105`.
+
 ## [0.3.0] - 2026-09-25
 
 **This release exists because a second actuator arrived.** Everything below
