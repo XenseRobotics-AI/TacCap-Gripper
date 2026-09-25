@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-25
+
 ### Fixed
 
 - **`GripperObservation.velocity` and `.torque` had a sign that depended on how
