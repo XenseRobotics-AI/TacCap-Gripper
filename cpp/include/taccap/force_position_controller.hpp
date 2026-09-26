@@ -44,14 +44,18 @@
 // safety layer, not this class. It clamps position error, runs I2t derating and
 // a temperature wall, and it is the only thermal protection in the system --
 // the motor's own over-temperature protection did not act at 100 C case
-// temperature. start() cross-checks grasp_torque_nm against the device's
-// reported continuous envelope and warns; it cannot enforce.
+// temperature. start() refuses (std::invalid_argument) a grasp_torque_nm above
+// the device's continuous stall rating, and warns when it exceeds the cont the
+// envelope actually enforces.
 //
-// 6.0 Nm is also the firmware's own default AND maximum for the persisted
-// 0x700B startup limit (storage.c STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM),
-// so the default configuration here matches a factory device. start() verifies
-// the V2.2 value persisted for the next boot against the motion limit. After
-// changing that stored value, physically power-cycle before calling start().
+// The persisted 0x700B startup limit defaults to, and is capped at, the
+// installed model's t_max since follower 1.2.9 (EL05 6.0, RS00 14.0; stored
+// values are kept -- before 1.2.9 it was 6.0 for every model). A bare
+// ForcePositionConfig() carries the EL05's 6.0, so on an RS00 storing 14 start()
+// throws: build the config with ForcePositionConfig::for_spec(). start()
+// verifies the V2.2 value persisted for the next boot against the motion limit.
+// After changing that stored value, physically power-cycle before calling
+// start().
 
 #pragma once
 
@@ -98,7 +102,8 @@ enum class ForcePositionState : uint8_t {
 //
 // THE DEFAULT IS THE EL05's CONTINUOUS STALL RATING, 1.1 Nm -- the torque the
 // datasheet says it can hold indefinitely, and the grip force this gripper is
-// specified to deliver. It replaces an earlier 0.35 Nm that had been copied from
+// specified to deliver. for_spec() takes the installed motor's stall rating
+// instead (RS00 3.6), and start() refuses anything above it. It replaces an earlier 0.35 Nm that had been copied from
 // the firmware's auto-calibration constant
 // (GRIPPER_AUTO_CAL_DEFAULT_CLOSE_TORQUE, the push used to find the mechanical
 // stop during homing) and was never justified as a grip force at all.

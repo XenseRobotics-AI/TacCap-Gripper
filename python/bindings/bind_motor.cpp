@@ -554,7 +554,8 @@ void bind_motor(py::module_& m) {
         .def_readonly("kd_max",               &protocol::MotorSpec::kd_max,
                       "Upper end of the damping range, N*m*s/rad.")
         .def_readonly("rated_torque_nm",      &protocol::MotorSpec::rated_torque_nm,
-                      "Rated torque, N*m -- what the motor may hold indefinitely.")
+                      "Rated (rotating) torque, N*m. NOT what a blocked jaw may hold\n"
+                      "indefinitely -- that is stall_cont_torque_nm.")
         .def_readonly("stall_cont_torque_nm", &protocol::MotorSpec::stall_cont_torque_nm,
                       "Indefinite stall rating, N*m. 0 = unknown.")
         .def_readonly("winding_limit_c",      &protocol::MotorSpec::winding_limit_c,
@@ -699,16 +700,18 @@ void bind_motor(py::module_& m) {
             py::gil_scoped_release g; return self.get_protocol();
         }, "Read the motor's current CAN protocol. Blocks for the ACK; raises\n"
            "ProtocolError on NACK or an empty reply.")
-        // Private-protocol single-parameter access (Cmd 0x38/0x39). NACKs
-        // InvalidParam under MIT (the whole SDK assumes MIT).
+        // Private-protocol single-parameter access (Cmd 0x38/0x39). Under MIT
+        // the firmware forwards (since 1.2.6) but the motor stays silent ->
+        // Timeout (the whole SDK assumes MIT).
         .def("get_private_param", [](Motor& self, uint16_t index) {
             py::gil_scoped_release g; return self.get_private_param(index);
         }, py::arg("index"),
            "Read one private-protocol motor parameter. Blocks for the ACK.\n\n"
-           "Measured on firmware 1.1.5: under MIT the firmware rejects every index up\n"
-           "front, so this raises ProtocolError(InvalidParam) there whatever the index\n"
-           "-- and MIT is the normal case for a gripper. A non-whitelisted index is\n"
-           "rejected the same way.")
+           "Under MIT -- the normal case for a gripper -- this raises\n"
+           "ProtocolError(Timeout): since follower 1.2.6 the firmware forwards the\n"
+           "request, but the motor does not answer it (measured). Switch to the\n"
+           "private protocol to read parameters. ProtocolError(InvalidParam) means\n"
+           "the index is not on the firmware's whitelist.")
         .def("set_private_param", [](Motor& self, uint16_t index, uint32_t raw_value) {
             py::gil_scoped_release g; self.set_private_param(index, raw_value);
         }, py::arg("index"), py::arg("raw_value"),
@@ -777,9 +780,9 @@ void bind_motor(py::module_& m) {
            "先看 valid 再读 version:读不到时在 payload 里如实上报而不是抛异常,\n"
            "因为『电机没应答』和『这里不支持这条命令』是两种不同的诊断,一个 NACK\n"
            "说不清是哪种。\n\n"
-           "**已实测**:私有协议下可读(0074s / 0018s 都答了 1.0.5.0.x)。MIT 下能否\n"
-           "读到**尚未验证** —— 请求是扩展帧,理论上 MIT 会忽略,但从没在跑 1.2.6 的\n"
-           "MIT 机器上试过。别基于任一假设去写开机检查,切协议来回要断两次 24V。\n\n"
+           "**已实测**:私有协议下可读(0074s / 0018s 都答了 1.0.5.0.x)。MIT 下\n"
+           "**读不到** —— 请求是扩展帧,MIT 下电机不理扩展帧(实测 0086s)。要读版本\n"
+           "得先切私有协议,切协议来回要断两次 24V。\n\n"
            "默认超时 3000 ms:实测往返可达约 1371 ms,原来的 500 ms 会在应答可能到达\n"
            "之前就超时,把一次正常读取显示成电机没反应。\n\n"
            "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"

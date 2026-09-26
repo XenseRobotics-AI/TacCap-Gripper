@@ -319,8 +319,10 @@ struct __attribute__((packed)) MotorVersion {
 // the resume position -- doing the matching on the MCU keeps the host from
 // racing the 500 Hz status frames for the CAN ring buffer.
 //
-// NOT refused under MIT: whether the motor answers extended frames while it
-// speaks MIT is precisely one of the things this exists to find out.
+// NOT refused under MIT, though the question it was left open for is now
+// answered: the motor does not answer extended frames while it speaks MIT
+// (measured on 0086s, RS00: type-0 read-UID 3/3 no reply). Under MIT expect a
+// no-reply `status`, not a NACK.
 //
 // The command NACKs only on a malformed request or when refused (SysBusy /
 // OtaBusy). "The motor did not answer" is a result, reported in `status`.

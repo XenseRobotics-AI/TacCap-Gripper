@@ -216,7 +216,7 @@ void bind_ota(py::module_& m) {
            "**会改写电机 flash。**完整流程:读 UID -> 启动 -> 信息 -> 逐包数据 -> 结束。\n"
            "on_progress(packs_done, packs_total) 每 256 包调用一次,结束时再调一次。\n"
            "电机不再应答抛 TimeoutError,电机报告无法恢复的失败抛 ProtocolError。\n"
-           "结束帧确认后电机会重启。")
+           "结束帧确认后电机会重启,并回到 MIT 协议(实测 0086s),当场读不到版本号。")
         .def("update_from_bytes", [](MotorOtaSession& self, py::bytes blob,
                                      py::object on_progress) {
             const std::string buf = blob;
@@ -232,7 +232,8 @@ void bind_ota(py::module_& m) {
             py::gil_scoped_release g;
             self.update_from_bytes(image, std::move(cb));
         }, py::arg("image"), py::arg("on_progress") = py::none(),
-           "同 update_from_file,镜像已在内存里。**会改写电机 flash。**");
+           "同 update_from_file,镜像已在内存里。**会改写电机 flash。**\n"
+           "结束后电机同样重启回 MIT 协议,当场读不到版本号。");
 }
 
 }  // namespace xense::taccap::python

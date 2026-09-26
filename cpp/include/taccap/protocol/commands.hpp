@@ -9,12 +9,14 @@
 // and any host-side Python implementation are secondary.
 //
 // Tracked firmware protocol: **wire framing V1.8** (global byte stuffing, see
-// bus/frame.cpp) + **command set V2.2** (V1.7 motor / CAN-id / gripper-config
-// commands; V1.9 WS2812 + private motor params; V2.0/V2.1 fisheye-camera and
-// leader-encoder-max calibration; V2.2 follower startup limit-torque, motor
-// fault report and extended motor status), plus the two diagnostic commands
-// below (0x54 / 0x55), which are NOT part of a V2.x level and are available on
-// both roles. All of it is hardware-validated.
+// bus/frame.cpp) + **command set through V2.6**, mirrored up to and including
+// 0x5B (V1.7 motor / CAN-id / gripper-config commands; V1.9 WS2812 + private
+// motor params; V2.0/V2.1 fisheye-camera and leader-encoder-max calibration;
+// V2.2 follower startup limit-torque, motor fault report and extended motor
+// status; later: motor spec 0x56, home diag 0x57, motor version 0x58 (follower
+// 1.2.6), motor model record 0x59/0x5A (1.2.7) and CAN extended-frame relay
+// 0x5B (1.2.8)), plus the two diagnostic commands below (0x54 / 0x55), which
+// are NOT part of a V2.x level and are available on both roles.
 //
 // Firmware builds carrying command set V2.1: leader (master) 1.2.0,
 // follower (slave) 1.1.0. V2.2 adds follower (slave) 1.1.2 — every V2.2 command

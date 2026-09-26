@@ -266,7 +266,8 @@ void bind_gripper_types(py::module_& m) {
         .def_readonly("cont_from_device",
                       &xense::taccap::EnvelopeAudit::cont_from_device,
                       "Separate from peak_from_device on purpose: the firmware's table\n"
-                      "gives every RS0x a real rated torque but no stall rating, so one\n"
+                      "gives EL05 and RS00 a stall rating but leaves it zero for\n"
+                      "RS01..RS06 while still giving them a real rated torque, so one\n"
                       "combined flag would read 'from device' while cont silently came\n"
                       "from the EL05 fallback.")
         .def_readonly("motor_model", &xense::taccap::EnvelopeAudit::motor_model,
@@ -278,8 +279,10 @@ void bind_gripper_types(py::module_& m) {
         .def_property_readonly("needs_write",
                                &xense::taccap::EnvelopeAudit::needs_write,
                                "ensure_envelope() would write. Narrower than `not ok`:\n"
-                               "an envelope TIGHTER than recommended is reported and\n"
-                               "never repaired, because tighter is not a hole.")
+                               "PEAK_NOT_ABOVE_CONT alone is advisory. When the device\n"
+                               "reported its spec, a record tighter than it is repaired\n"
+                               "to spec (NOT_AT_SPEC); only with the spec unknown is a\n"
+                               "tighter record reported and left alone.")
         .def("__repr__", [](const xense::taccap::EnvelopeAudit& a) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),

@@ -172,7 +172,7 @@ void bind_control(py::module_& m) {
         "set_impedance or start a second controller on the same gripper: they write\n"
         "to the same bus and the last frame wins.\n\n"
         "Enabling the motor is the caller's job and is separate from start().\n\n"
-        "    cfg = ImpedanceConfig()\n"
+        "    cfg = ImpedanceConfig.for_spec(g.motor.get_spec())\n"
         "    with ImpedanceController(g, cfg) as c:   # start() / stop()\n"
         "        g.motor.enable()\n"
         "        c.set_target(0.0)\n"
@@ -231,7 +231,7 @@ void bind_control(py::module_& m) {
             py::gil_scoped_release g; c.stop();
         }, "Calls stop(), including on an exception.");
 
-    // ---- ForcePositionController: contact -> bounded pure-torque hold ----
+    // ---- ForcePositionController: one error-clamped bounded-torque law ----
     m.attr("FORCE_POSITION_MAX_HOLD_TORQUE_NM") =
         FORCE_POSITION_MAX_HOLD_TORQUE_NM;
     m.attr("FORCE_POSITION_MAX_MOTION_TORQUE_NM") =
@@ -254,23 +254,26 @@ void bind_control(py::module_& m) {
     // C++ side where a caller cannot reach them.
     py::class_<ForcePositionConfig> fp_config(m, "ForcePositionConfig",
         "Tuning for ForcePositionController. Validated by the constructor and again\n"
-        "at start(), against the motor's own persisted limit.");
+        "at start(), against the motor's own persisted limit and reported ratings.\n"
+        "Build it with ForcePositionConfig.for_spec(g.motor.get_spec()): the bare\n"
+        "constructor carries EL05 numbers.");
     fp_config
         .def(py::init<>())
         .def_readwrite("grasp_torque_nm",      &ForcePositionConfig::grasp_torque_nm,
-                       "Torque budget for the grip, N*m. The default is the EL05's continuous\n"
-                       "rating. Configuring more than the firmware's envelope allows does not\n"
-                       "produce more: the firmware clamps it back and only the heating is real.")
+                       "Torque budget for the grip, N*m -- the grip force itself. for_spec()\n"
+                       "sets it to the device's continuous STALL rating (EL05 1.1, RS00 3.6);\n"
+                       "start() raises ValueError above that rating, and warns when it exceeds\n"
+                       "the cont the firmware's envelope actually enforces.")
         .def_readwrite("close_speed_radps",    &ForcePositionConfig::close_speed_radps,
                        "Advance rate of the SETPOINT RAMP during travel, rad/s at the motor --\n"
-                       "not a velocity command. Not independent of grasp_torque_nm: the damping\n"
-                       "gain is grasp/close_speed and saturates, so too low a speed stalls the\n"
-                       "jaw below the torque you asked for. Rejected rather than softened.")
+                       "not a velocity command. Independent of grasp_torque_nm: a slow close is\n"
+                       "just a slow close. for_spec() sets MOTOR_APPROACH_SPEED_RADPS (1.1).")
         .def_readwrite("hold_torque_limit_nm", &ForcePositionConfig::hold_torque_limit_nm,
                        "Upper bound accepted for grasp_torque_nm, N*m. Clamps nothing at runtime.")
         .def_readwrite("motion_torque_limit_nm", &ForcePositionConfig::motion_torque_limit_nm,
                        "Ceiling outside the grip budget, N*m; measured torque past it faults the\n"
-                       "controller. Cross-checked against the motor's 0x700B at start(), device wins.")
+                       "controller. start() raises if the motor's stored 0x700B exceeds it -- the\n"
+                       "bare config's EL05 6.0 does on an RS00 storing 14 -- and warns if below.")
         .def_readwrite("status_timeout_ms",    &ForcePositionConfig::status_timeout_ms,
                        "A status stream older than this faults the controller and commands\n"
                        "zero torque.")
@@ -342,7 +345,8 @@ void bind_control(py::module_& m) {
         "Same interface and the same bus rules as ImpedanceController: it owns the\n"
         "status stream, submits one command per frame, and must not share a gripper\n"
         "with another controller or with the Motor.set_* primitives.\n\n"
-        "    with ForcePositionController(g) as c:   # start() / stop()\n"
+        "    cfg = ForcePositionConfig.for_spec(g.motor.get_spec())\n"
+        "    with ForcePositionController(g, cfg) as c:   # start() / stop()\n"
         "        g.motor.enable()                    # start BEFORE enable, see start()\n"
         "        c.set_target(0.0)                   # close onto the object\n"
         "        c.release()                         # open with bounded damping")
@@ -357,8 +361,10 @@ void bind_control(py::module_& m) {
             py::gil_scoped_release g; c.start();
         }, "Start the status stream and the submit thread.\n\n"
            "Call this BEFORE Motor.enable(): start() reads the motor's persisted torque\n"
-           "limit (0x700B) and checks the config against it, which is a check worth\n"
-           "making before the motor can move.")
+           "limit (0x700B) and the motor's spec and checks the config against them,\n"
+           "which is a check worth making before the motor can move. Raises ValueError\n"
+           "for a grasp above the continuous stall rating (or limits above the rated\n"
+           "torque / torque range); warns for one above the envelope's effective cont.")
         .def("stop", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.stop();
         }, "Stop the thread, command zero torque, and DISABLE the motor.\n\n"

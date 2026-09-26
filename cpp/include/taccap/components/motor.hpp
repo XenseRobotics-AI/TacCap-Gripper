@@ -22,16 +22,17 @@
 namespace xense::taccap {
 
 // The EduLite05's two torque ratings. Every ceiling in this SDK is one of these
-// rather than an invented margin: RATED is what the motor may hold
-// indefinitely, PEAK what it may draw transiently. These are FALLBACKS for a
-// device that cannot report its spec: every controller builds its limits from
-// Motor::get_spec() via for_spec(). The persisted 0x700B startup limit is the
+// rather than an invented margin: RATED is the ROTATING rating, PEAK what it
+// may draw transiently. Neither is what a blocked jaw may hold indefinitely --
+// that is the STALL rating below. These are FALLBACKS for a device that cannot
+// report its spec: every controller builds its limits from Motor::get_spec()
+// via for_spec(). The persisted 0x700B startup limit is the
 // installed model's t_max by default and at most (follower firmware >= 1.2.9;
 // before that it was this EL05 6.0 for every model).
 //
-// Holding above RATED is not primarily a thermal risk: the motor's undervoltage
-// protection is prompt, and a sustained draw can brown out the 24 V rail and
-// take the USB link with it.
+// Holding above the STALL rating is not primarily a thermal risk: the motor's
+// undervoltage protection is prompt, and a sustained draw can brown out the
+// 24 V rail and take the USB link with it.
 // FALLBACK DEFAULTS ONLY -- EL05 numbers. They exist so the config structs have
 // something to initialise to before a device is open; they are NOT the authority.
 // Ask the device with Motor::get_spec(): an RS00 is rated 5.0 Nm and peaks at
@@ -232,9 +233,10 @@ public:
     // The only backstops left are thermal and slow: the motion envelope's I2t
     // derate and temperature wall, and only if the envelope is ENFORCED.
     //
-    // FIXED IN FIRMWARE on tc-gu-01 branch feat/actuator-can-timeout: the slave
-    // control task now watches how old its cached target is and degrades in two
-    // stages (300 ms -> zero-speed hold at 0.35 Nm, 30 s -> disable), reporting
+    // FIXED IN FIRMWARE since follower 1.2.5 (tc-gu-01 feat/actuator-can-timeout),
+    // which is this SDK's firmware floor: the slave control task now watches
+    // how old its cached target is and degrades in two stages (300 ms ->
+    // zero-speed hold at 0.35 Nm, 30 s -> disable), reporting
     // MotorStopReason::HostTimeout. Verified on hardware: 0.851 -> 0.157 Nm
     // within 1 s with the workpiece still held.
     //
@@ -244,8 +246,9 @@ public:
     // never fires. 0x7028 covers the MCU dying; the task watchdog covers the
     // host dying. Both are needed.
     //
-    // Until a gripper is running firmware with that fix, treat "the link can
-    // drop while loaded" as a physical hazard rather than a software state.
+    // A gripper below that floor (older than 1.2.5) lacks the fix; there, treat
+    // "the link can drop while loaded" as a physical hazard rather than a
+    // software state.
     void submit(const protocol::MotorImpedanceCtrl& c);  // primary (MIT hybrid)
     void submit(const protocol::MotorPosCtrl& c);
     void submit(const protocol::MotorVelCtrl& c);
@@ -309,11 +312,10 @@ public:
     // cannot say which.
     //
     // MEASURED: readable under the PRIVATE protocol (0074s and 0018s, both
-    // answered 1.0.5.0.x). Whether MIT mode also answers is NOT established —
-    // the request is an extended frame and MIT is expected to ignore those, but
-    // that expectation has never been tested against a unit running 1.2.6 in
-    // MIT. Do not build a startup check on the assumption either way until it
-    // is; switching protocols to find out costs a 24 V power cycle each way.
+    // answered 1.0.5.0.x). NOT readable under MIT: the request is an extended
+    // frame and the motor does not answer extended frames under MIT (0086s,
+    // RS00: 3/3 no reply). Reading it means switching to private first, which
+    // costs a 24 V power cycle each way.
     //
     // MAY STOP THE MOTOR. The request reuses RobStride communication type 4,
     // which is also "motor stop"; a motor that does not recognise the 00 C4
@@ -453,7 +455,7 @@ public:
     float get_startup_limit_torque();
 
     // The device's own motor ratings. Prefer these over the MOTOR_*_TORQUE_NM
-    // constants below, which are EL05 values compiled in as a fallback and are
+    // constants above, which are EL05 values compiled in as a fallback and are
     // wrong for any other actuator (RS00: 5.0 rated / 14.0 peak). A zero field
     // means the firmware's table does not have that number yet -- unknown, not
     // zero. Throws on firmware older than the command (1.1.6.26).

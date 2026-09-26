@@ -93,10 +93,12 @@ constexpr uint32_t ContUnlimited = 1u << 4;   // cont <= 0
 // know the rating and must not guess one.
 constexpr uint32_t ContAboveStallRating = 1u << 5;
 
-// ---- Advisory: reported, never repaired ----
+// ---- Advisory: reported, not repaired on its own ----
 // With peak <= cont the firmware skips the I2t derate entirely and only peak
 // plus the temperature wall apply. That is TIGHTER than the recommendation,
-// so it is not a hole and nothing should be widened to open the band.
+// so it is not a hole and this flag alone does not trigger a write. On a
+// device that reported its spec, such a record cannot match the ratings, so
+// it also trips NotAtSpec and is rewritten to spec through that flag.
 constexpr uint32_t PeakNotAboveCont = 1u << 6;
 
 // The device's spec is known and the record does not match it: cont is not
@@ -167,8 +169,10 @@ protocol::GripperEnvelope recommend_envelope(
 EnvelopeAudit audit_envelope(const protocol::GripperEnvelope& stored,
                              const std::optional<protocol::MotorSpec>& spec);
 
-// Never widens. A unit deliberately tightened keeps its tighter numbers; only
-// what is absent, untrustworthy or unenforceable is replaced.
+// When the device reported both ratings, cont/peak are set to them exactly --
+// lower values are raised too (NotAtSpec). Only when the spec is unknown is a
+// stored value stricter than the compiled-in recommendation kept; beyond that,
+// only what is absent, untrustworthy or unenforceable is replaced.
 protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit);
 
 }  // namespace detail
@@ -334,12 +338,13 @@ public:
         std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
     // Idempotent, and WRITES MCU FLASH -- persistent, survives power loss --
-    // but only when the stored record is ineffective or misreports what is
-    // enforced. Calling it twice writes once.
+    // but only when the stored record is ineffective, misreports what is
+    // enforced, or does not match the device's spec. Calling it twice writes
+    // once.
     //
-    // It never widens an envelope. To put a unit back on its device-derived
-    // numbers, that is a different intent and says so at the call site:
-    //     g.set_envelope(g.audit_envelope().recommended);
+    // When the device reports both ratings, cont/peak end up exactly at them
+    // (stall / rotating), and a lower stored value is raised too (NotAtSpec).
+    // Only when the spec is unknown is a stricter stored record kept.
     EnvelopeWrite ensure_envelope(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
