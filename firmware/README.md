@@ -6,8 +6,8 @@ of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master-1.2.4.bin` | leader (SN ends **`m`**) | **1.2.4** | V2.4 | 118,236 B | `0x17f5e76b` |
-| `tc-gu-01-slave-1.2.6.bin` | follower (SN ends **`s`**) | **1.2.6** | V2.4 + 运动安全包络 | 163,000 B | `0xbffbadc8` |
+| `tc-gu-01-master-1.2.5.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.6 | 118,220 B | `0x885b8706` |
+| `tc-gu-01-slave-1.2.9.bin` | follower (SN ends **`s`**) | **1.2.9** | V2.6 + 运动安全包络 | 165,056 B | `0xc69f7015` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -30,10 +30,30 @@ binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped o
 shared code bumps both roles**, and only a change confined to one role's own
 sources bumps that role alone.
 
-The leader is at 1.2.4 rather than 1.2.6 for that reason — 1.2.5 and 1.2.6 were
-follower releases that rebuilt the leader only to keep the numbers equal. The
-1.2.4 image is the same code as the 1.2.6 one it replaces, differing in exactly
-two bytes: the patch byte.
+The leader is at 1.2.5 while the follower is at 1.2.9 for that reason: 1.2.7 and
+1.2.8 touched only follower code, and 1.2.9 changed the shared `storage.c`, which
+is what moved the leader from 1.2.4 to 1.2.5 — with no change in its behaviour.
+
+## Follower: record the motor model once
+
+The follower image is built with the **EL05** as its compile-time *fallback*
+motor. The model that actually counts is recorded per device in MCU flash,
+because the motor cannot report it and every MIT frame is quantised against the
+model's torque and velocity ranges — the wrong model is not an error, it is a
+constant factor on every frame (EL05 ±6 N·m vs RS00 ±14 N·m).
+
+A follower built around an **RS00** therefore needs its model written once, then
+a power cycle:
+
+```python
+g.motor.set_model(1)          # 0 = EL05, 1 = RS00
+g.motor.get_model()           # -> MotorModel(RS00, ..., from flash, t_max=14.0Nm, ...)
+```
+
+A device upgraded from 1.2.8 or earlier keeps the 0x700B startup torque limit it
+had stored (6.0 N·m on every unit so far). 1.2.9 defaults a device that never
+stored one to its model's range, but will not overwrite a stored value — on an
+RS00 raise it once with `g.motor.set_startup_limit_torque(14.0)` and power-cycle.
 
 ## Flashing
 
@@ -78,8 +98,8 @@ The manifest's CRC32 is the same value `ota_update.py` prints and sends in
 ```bash
 python -c "
 from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.4.bin','rb').read())))"
-# -> 0x17f5e76b
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.5.bin','rb').read())))"
+# -> 0x885b8706
 ```
 
 ## ⚠️ Power-cycle the gripper after flashing

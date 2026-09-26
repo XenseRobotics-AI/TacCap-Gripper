@@ -1,28 +1,28 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.4.bin",
-      "version": "1.2.4",
-      "source_commit": "97075c6",
-      "size_bytes": 118236,
-      "crc32": "0x17f5e76b",
+      "file": "tc-gu-01-master-1.2.5.bin",
+      "version": "1.2.5",
+      "source_commit": "07ab9bb",
+      "size_bytes": 118220,
+      "crc32": "0x885b8706",
       "sn_suffix": "m",
-      "protocol": "V2.4",
+      "protocol": "V2.6",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Leader line. 1.2.3 plus the one shared change that added GET_MOTOR_VERSION(0x58) to protocol_handler.c. The image briefly shipped as 1.2.6 because the two roles were forced onto one version number; that policy was dropped on 2026-09-24 and the leader was renumbered to its own line. Identical code — the 1.2.6 and 1.2.4 images differ in exactly two bytes, the patch byte. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
+      "note": "Leader line. Same behaviour as 1.2.4: the only change is in the shared storage.c, which no longer writes a factory default for the follower's 0x700B startup torque limit (the follower now takes it from the motor model). The leader never reads that field, but the binary changed, so it gets its own number rather than two leaders reporting 1.2.4 on different images. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.6.bin",
-      "version": "1.2.6",
-      "source_commit": "97075c6",
-      "size_bytes": 163000,
-      "crc32": "0xbffbadc8",
+      "file": "tc-gu-01-slave-1.2.9.bin",
+      "version": "1.2.9",
+      "source_commit": "07ab9bb",
+      "size_bytes": 165056,
+      "crc32": "0xc69f7015",
       "sn_suffix": "s",
-      "protocol": "V2.4 + 运动安全包络",
+      "protocol": "V2.6 + 运动安全包络",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Adds GET_MOTOR_VERSION(0x58): reads the MOTOR's own program version over the RobStride private-protocol version frame (manual p.31), because MIT Commands 12/13/14/15 go unanswered on this motor firmware and no motor parameter is readable in MIT. The command always ACKs OK -- check `valid`. IT MAY STOP THE MOTOR (the request reuses communication type 4), so it is not pollable. Measured: 0018s = 1.0.5.0.4, 0074s = 1.0.5.0.2 before its motor firmware was upgraded and 1.0.5.0.4 after -- the same unit before and after, which is how the upgrade was confirmed by reading rather than by assumption. Whether MIT can also answer the version read is NOT established. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
+      "note": "Motor ranges and limits follow the installed motor model: torque/velocity/current clamps, private-protocol status decoding and the 0x700B startup limit were hard-coded to the EL05 (6 N*m / 50 rad/s / 11 A), which silently capped an RS00 at 6 of its 14 N*m. Also carries 1.2.7 (motor model record, 0x59/0x5A) and 1.2.8 (0x5B CAN extended-frame relay, used by MotorOtaSession to flash the motor itself). Built with the EL05 as the compile-time FALLBACK model: an RS00 follower must record its model once with motor.set_model(1) and be power-cycled, or it runs on EL05 ranges. A device upgraded from <= 1.2.8 keeps its stored 0x700B value; on an RS00 raise it with motor.set_startup_limit_torque(14.0). AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
     }
   }
 }
