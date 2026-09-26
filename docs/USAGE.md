@@ -426,7 +426,7 @@ so that the MCU writes the value into the motor's runtime parameter 0x700B at bo
 f = t.FollowerGripper.open()
 f.motor.set_startup_limit_torque(f.motor.get_model().t_max_nm)   # the model's t_max; writes MCU flash; configure once
 print(f.motor.get_startup_limit_torque())
-# exit here and replug the gripper; do not carry straight on into motion on this power cycle
+# exit here and cut 24 V for ~2 s (USB may stay in); do not carry straight on into motion on this power cycle
 ```
 
 After the restart, use the controller:
@@ -707,8 +707,9 @@ They are independent, but running them together has a few known traps:
   `~/.taccaplogs/session_*.log` (changeable with `$TACCAP_LOG_DIR`), with at most 10
   kept. When something goes wrong, read that file first — it has the lines the console
   filtered out.
-- **After flashing firmware you must replug — unplug the USB cable and the power cable
-  at the same time, then plug both back in together.** The bank swap is a soft reset,
+- **After flashing firmware you must power-cycle — on a follower, unplug the 24 V
+  power cable for ~2 s (USB can stay in); on a leader, replug its USB.** Pulling only
+  USB does not reset a follower: its MCU runs off 24 V. The bank swap is a soft reset,
   and the device looks entirely healthy afterwards (right version, stream running,
   clean counters) while silently dropping status frames. See
   [docs/FIRMWARE.md](FIRMWARE.md).

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Power-cycling a follower means cutting 24 V only; the USB cable can stay
+  in.** Every doc, docstring and printed message used to say "unplug USB and
+  power together — USB powers the MCU, 24 V the motor". Measured on an EL05
+  follower: the MCU runs on 24 V, so three 24 V-only cycles each restarted it,
+  both protocol-switch directions came up on the new protocol with
+  auto-calibration completing, and after an OTA plus one 24 V-only cycle a
+  60 s status stream lost 0 of 6000 frames. Pulling only USB does not reset a
+  follower at all. Leaders (no 24 V rail): replug USB. Confirm with
+  `gripper.device.heartbeat().uptime_ms` restarting near 0 — not with the
+  `/dev/serial/by-id` timestamp, which a 24 V-only cycle does not always move.
+- `pip install` no longer writes the built extension into the source tree
+  (`python/xense/taccap/`); only a plain `cmake --build` does. `INSTALL.md`
+  now says `LD_LIBRARY_PATH` is not needed and documents two PyQt6 pitfalls.
+
 ## [0.3.3] - 2026-09-27
 
 Closes the gaps a test tool hit when it moved from its own protocol code onto

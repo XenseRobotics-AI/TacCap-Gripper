@@ -118,10 +118,11 @@ python python/examples/ota_update.py --all         # every attached gripper
 Flashing the wrong role's image bricks the MCU and needs an SWD probe to
 recover, so check the SN before you flash.
 
-**Power-cycle after any flash.** Unplug **both the USB cable and the power
-cable, at the same time**, then reconnect — they feed different domains, so
-pulling only one leaves the other half of the board energised and does not reset
-it. The bank-swap reboot is a soft reset that leaves the device looking healthy
+**Power-cycle after any flash.** On a follower, unplug the **24 V power
+cable**, wait ~2 s and plug it back; the USB cable can stay in. The follower's
+MCU and motor run on 24 V, so this restarts both — and pulling only USB does
+not reset a follower. A leader has no 24 V rail: unplug and replug its USB. `gripper.device.heartbeat().uptime_ms` restarting near 0 confirms it
+worked. The bank-swap reboot is a soft reset that leaves the device looking healthy
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
@@ -167,8 +168,8 @@ python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 (`MotorOtaSession` from code.) The motor must be on the **private** protocol
-first — `motor.switch_protocol(MotorProtocol.Private)`, then unplug USB and
-24 V together. RobStride's OTA protocol does **no model check**, so
+first — `motor.switch_protocol(MotorProtocol.Private)`, then cut 24 V for
+~2 s (USB can stay in). RobStride's OTA protocol does **no model check**, so
 `preflight()` refuses an image whose model does not match the model recorded on
 the gripper. Afterwards the motor restarts on MIT, so its version is readable
 only after switching to private again. A gripper OTA also switches the motor
@@ -312,7 +313,7 @@ python python/examples/leader_normalized_position.py left
 **Firmware:**
 
 ```bash
-python python/examples/ota_update.py slave left   # then unplug USB + power together
+python python/examples/ota_update.py slave left   # then power-cycle (follower: cut 24 V)
 python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # the motor itself; private protocol
 ```
 
@@ -325,7 +326,7 @@ Check this column before running anything on a rig that matters.
 | **Read-only** | `follower_status`, `read_intrinsics`, `wrist_camera`, `leader_normalized_position`, `fisheye_cal show` |
 | **Moves the motor** | `impedance_control`, `force_position_control`, `control_and_read`, `control_ripple`, `gripper_console` |
 | **Writes flash** | `calibrate`, `fisheye_cal set-*`, `--set-envelope` on `impedance_control` / `gripper_console` |
-| **Flashes firmware** | `ota_update` — destructive; afterwards unplug USB and power together, then reconnect |
+| **Flashes firmware** | `ota_update` — destructive; afterwards power-cycle — follower: cut 24 V for ~2 s (USB may stay in); leader: replug USB |
 | **Flashes motor firmware** | `motor_ota_update` — flashes the RobStride motor's own firmware; needs the motor on the private protocol and follower firmware 1.2.8+ |
 
 ### Two shared modules, not runnable

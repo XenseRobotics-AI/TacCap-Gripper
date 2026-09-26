@@ -9,7 +9,7 @@ Motor.can_ext_xfer(0x5B)转发,所以需要从爪固件 >= 1.2.8。
 前提,缺一条就拒绝:
   - 电机在**私有协议**下。MIT 下电机不回 OTA 帧(实测)。切过去:
         motor.switch_protocol(MotorProtocol.Private),然后断电重插
-    (USB 线和 24V 电源线同时拔)。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪、
+    (拔 24V 电源线约 2 秒再插回,USB 可不拔)。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪、
     再刷电机。
   - 本机记录的电机型号与镜像一致。**RobStride 的 OTA 协议不校验型号**,
     RS00 的包刷进 EL05 电机也会被接受。型号取自文件名前缀(rs00-/el05-),
@@ -136,7 +136,7 @@ def main() -> int:
         print(
             "  the motor restarted on the MIT protocol (seen before: the update "
             "resets it),\n  so its version cannot be read here. Power-cycle "
-            "(USB and 24 V together);\n  if auto-calibration completes the motor is "
+            "(cut 24 V for ~2 s; USB may stay in);\n  if auto-calibration completes the motor is "
             "running. To confirm the version,\n  switch_protocol(Private), "
             f"power-cycle, and expect {version or 'the new version'}."
         )
@@ -145,14 +145,14 @@ def main() -> int:
     print(f"  motor fw     : {before or '?'} -> {after or 'no answer'}")
     if version and after != version:
         print(
-            f"!! expected {version}. Power-cycle (USB and 24 V together) and read again "
+            f"!! expected {version}. Power-cycle (cut 24 V for ~2 s) and read again "
             "before drawing conclusions."
         )
         return 2
     print(
         "\nThe motor is on the PRIVATE protocol. To use the gripper, switch it "
         "back:\n    motor.switch_protocol(MotorProtocol.Mit)\nthen power-cycle "
-        "(USB and 24 V together)."
+        "(cut 24 V for ~2 s; USB may stay in)."
     )
     return 0
 

@@ -103,9 +103,10 @@ python python/examples/ota_update.py --all         # 所有已连接的夹爪
 
 刷错角色的镜像会把 MCU 刷成砖,只能靠 SWD 探针恢复,所以刷之前先核对 SN。
 
-**任何一次刷写之后都要断电重启。** 把 **USB 线和电源线同时拔掉**,然后再插
-回去 —— 它们供的是不同的电域,只拔一根会让板子的另一半继续带电,复位不了。
-bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却在悄悄丢状态帧。
+**任何一次刷写之后都要断电重启。** 从爪:拔掉 **24V 电源线**,等约 2 秒再插回,
+USB 线可以不拔 —— 从爪的 MCU 和电机都靠 24V 运行,只拔 USB 复位不了从爪。
+主爪没有 24V:拔插它的 USB 即可。`gripper.device.heartbeat().uptime_ms` 从接近 0
+重新计起,就说明真的断过电了。bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却在悄悄丢状态帧。
 
 **主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.5、从爪是 1.2.9,
 谁也不比谁旧;一对夹爪的两半 `gripper.firmware_version` 读出不同的数是正常的。
@@ -143,7 +144,7 @@ python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 (在代码里用 `MotorOtaSession`。)电机必须先切到**私有**协议 ——
-`motor.switch_protocol(MotorProtocol.Private)`,然后同时拔掉 USB 和 24V 再插回。
+`motor.switch_protocol(MotorProtocol.Private)`,然后断 24V 约 2 秒再插回(USB 可以不拔)。
 RobStride 的 OTA 协议**不校验型号**,所以 `preflight()` 会拒绝型号与夹爪上记录的
 型号不一致的镜像。刷完后电机重启回 MIT,要再切回私有才能读版本。夹爪 OTA 也会
 把电机切回 MIT,所以先刷夹爪、再刷电机。在一台 RS00 上实测:0.0.3.22 → 0.0.3.32
@@ -277,7 +278,7 @@ python python/examples/leader_normalized_position.py left
 **固件:**
 
 ```bash
-python python/examples/ota_update.py slave left   # 之后要同时拔掉 USB 和电源
+python python/examples/ota_update.py slave left   # 之后要断电重启(从爪:断 24V)
 python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本身;需私有协议
 ```
 
@@ -290,7 +291,7 @@ python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本�
 | **只读** | `follower_status`、`read_intrinsics`、`wrist_camera`、`leader_normalized_position`、`fisheye_cal show` |
 | **会让电机动** | `impedance_control`、`force_position_control`、`control_and_read`、`control_ripple`、`gripper_console` |
 | **会写 flash** | `calibrate`、`fisheye_cal set-*`、`impedance_control` / `gripper_console` 上的 `--set-envelope` |
-| **会刷固件** | `ota_update` —— 破坏性操作;之后要同时拔掉 USB 和电源,再一起插回去 |
+| **会刷固件** | `ota_update` —— 破坏性操作;之后要断电重启 —— 从爪断 24V 约 2 秒(USB 可不拔),主爪拔插 USB |
 | **会刷电机固件** | `motor_ota_update` —— 刷 RobStride 电机自己的固件;需要电机在私有协议下、从爪固件 1.2.8+ |
 
 ### 两个共享模块,不能直接运行

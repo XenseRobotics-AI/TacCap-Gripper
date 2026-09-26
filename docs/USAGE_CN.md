@@ -361,7 +361,7 @@ command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 f = t.FollowerGripper.open()
 f.motor.set_startup_limit_torque(f.motor.get_model().t_max_nm)   # 型号的 t_max;写 MCU Flash,只需配置一次
 print(f.motor.get_startup_limit_torque())
-# 此处退出并拔插夹爪;不要在同一次上电中直接继续运动
+# 此处退出并断 24V 约 2 秒(USB 可不拔);不要在同一次上电中直接继续运动
 ```
 
 重启后使用控制器:
@@ -602,7 +602,8 @@ finally:
 - **日志。** 全 SDK 一个单例 logger(`xense.taccap.log`),控制台默认 INFO,
   文件 sink 恒为 DEBUG,落在 `~/.taccaplogs/session_*.log`(可用 `$TACCAP_LOG_DIR`
   改),最多留 10 份。出问题先翻这个文件,里面有控制台被过滤掉的那些行。
-- **固件刷完必须重新插拔 —— USB 线与电源线同时拔下再一起插回。** bank-swap
+- **固件刷完必须断电重启 —— 从爪拔掉 24V 电源线约 2 秒再插回(USB 可不拔),主爪拔插 USB。**
+  只拔 USB 复位不了从爪:它的 MCU 由 24V 供电。bank-swap
   之后是软复位,设备看起来完全正常
   (版本对、流在跑、计数干净),但会静默丢状态帧。见 [docs/FIRMWARE.md](FIRMWARE.md)。
 

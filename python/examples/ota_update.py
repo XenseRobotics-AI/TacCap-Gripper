@@ -6,16 +6,17 @@ TacCap-Gripper firmware over-the-air (OTA) update demo.
 Pushes a firmware .bin to the MCU's inactive Flash bank, verifies its
 CRC32, and triggers the bank-swap reboot. No SWD probe needed.
 
-POWER-CYCLE THE GRIPPER AFTERWARDS -- unplug the USB cable AND the power cable
-at the same time, then plug both back in. They feed different domains, so
-pulling only one leaves the other half of the board energised.
-The bank-swap reboot is a soft reset: it
+POWER-CYCLE THE GRIPPER AFTERWARDS. Follower: unplug the 24 V power cable,
+wait ~2 s, plug it back; the USB cable can stay in. The follower's MCU and
+motor run on 24 V, so this restarts both, and pulling only USB does not reset a
+follower. Leader: unplug and replug its USB. Device.heartbeat().uptime_ms
+restarting near 0 confirms it. The bank-swap reboot is a soft reset: it
 restarts the MCU but never powers down the USB-serial bridge, and the device
 comes back in a degraded state that is indistinguishable from a healthy one --
 right version string, stream running, counters clean. The only symptom is that
 it quietly drops status frames. Measured on hardware, same unit, same firmware,
 same cable, 60-second runs: 35-39 frames lost per run after OTA alone, zero
-after unplugging and replugging, three runs each way. Treat the replug as part
+after a power cycle, three runs each way. Treat the replug as part
 of the update, not as troubleshooting.
 
 The released images ship in this repo under `firmware/`, and their filenames
@@ -539,9 +540,11 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     print("to confirm GetVersion returns the new version.")
     print()
     print("!! POWER-CYCLE THE GRIPPER BEFORE YOU TRUST ANY MEASUREMENT.")
-    print("   Unplug the USB cable AND the power cable at the same time, then")
-    print("   plug both back in. Pulling only one leaves the other half of the")
-    print("   board energised, which does not reset it.")
+    print("   Follower: unplug the 24 V power cable, wait ~2 s, plug it back.")
+    print("   The USB cable can stay in -- the MCU and motor run on 24 V,")
+    print("   so pulling only USB does NOT reset a follower.")
+    print("   Leader: unplug and replug its USB.")
+    print("   Check: gripper.device.heartbeat().uptime_ms restarts near 0.")
     print("   The reboot above is a SOFT reset: it restarts the MCU but does")
     print("   not power the USB-serial bridge down, and the device comes back")
     print("   in a degraded state that looks completely healthy. Measured on")
@@ -550,7 +553,7 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     print("     after power cycle 0 lost, three runs in a row")
     print("   Nothing in the version string, the stream, or the counters")
     print("   distinguishes the two states -- the only symptom is that your")
-    print("   numbers are quietly wrong. Unplug and replug it.")
+    print("   numbers are quietly wrong. Power-cycle it.")
     return 0
 
 

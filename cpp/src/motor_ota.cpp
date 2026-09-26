@@ -66,8 +66,8 @@ void MotorOtaSession::preflight(const std::string& expected_model) {
     if (motor_->get_protocol() != protocol::MotorProtocol::Private) {
         throw ProtocolError(
             "motor OTA: the motor is on MIT; it does not answer OTA frames there "
-            "(measured). switch_protocol(Private), then power-cycle -- USB and 24 V "
-            "together -- and retry");
+            "(measured). switch_protocol(Private), then power-cycle -- cut 24 V "
+            "for ~2 s, USB may stay in -- and retry");
     }
     const auto model = motor_->get_model();
     const std::string name(model.name, ::strnlen(model.name, sizeof(model.name)));

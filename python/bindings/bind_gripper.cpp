@@ -262,7 +262,8 @@ void bind_gripper(py::module_& m) {
         .def_property_readonly("ota",           [](LeaderGripper& g) -> OtaSession&     { return g.ota(); },           py::return_value_policy::reference_internal,
                                "Firmware update session (command set V1.3+). Role-agnostic, so a\n"
                                "follower is also flashed through a LeaderGripper. After flashing,\n"
-                               "unplug USB and power together, then reconnect both.")
+                               "power-cycle: a follower by cutting 24 V (USB may stay in), a leader\n"
+                               "by replugging USB.")
         .def_property_readonly("transport",     [](LeaderGripper& g) -> bus::Transport& { return g.transport(); },     py::return_value_policy::reference_internal,
                                "The raw MCU link underneath, for commands this SDK does not wrap.")
         .def_property_readonly("is_streaming",  &LeaderGripper::is_streaming,
@@ -490,8 +491,8 @@ void bind_gripper(py::module_& m) {
         .def_property_readonly("ota",           [](FollowerGripper& g) -> OtaSession&     { return g.ota(); },           py::return_value_policy::reference_internal,
                                "Firmware update session (command set V1.3+). ota_update.py flashes a\n"
                                "follower through a LeaderGripper instead, so the upgrade path is never\n"
-                               "blocked by this class's firmware gate. After flashing, unplug USB\n"
-                               "and power together, then reconnect both.")
+                               "blocked by this class's firmware gate. After flashing, unplug the\n"
+                               "24 V cable for ~2 s (USB may stay in).")
         .def_property_readonly("transport",     [](FollowerGripper& g) -> bus::Transport& { return g.transport(); },     py::return_value_policy::reference_internal,
                                "The raw MCU link underneath, for commands this SDK does not wrap.")
         .def_property_readonly("is_streaming",  &FollowerGripper::is_streaming,

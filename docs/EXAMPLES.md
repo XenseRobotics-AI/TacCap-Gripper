@@ -96,8 +96,8 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `ota_update.py` | **刷固件** — 刷完 USB 与电源同时拔插 | 固件 OTA:带进度条,刷完探一次状态。**错镜像会让 MCU 起不来。** |
-| `motor_ota_update.py` | **刷电机固件** — 刷完 USB 与电源同时拔插 | 经从爪 USB-C 刷 RobStride 电机模组自己的程序(`MotorOtaSession`,每帧经 `can_ext_xfer` 0x5B 转发)。需要从爪固件 >= 1.2.8、电机在**私有协议**下(切协议要断 24V);RobStride 协议不校验型号,脚本先核对本机记录的型号与镜像一致。刷完电机回到 MIT。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪再刷电机。|
+| `ota_update.py` | **刷固件** — 刷完断电重启(从爪断 24V,主爪拔插 USB) | 固件 OTA:带进度条,刷完探一次状态。**错镜像会让 MCU 起不来。** |
+| `motor_ota_update.py` | **刷电机固件** — 刷完断 24V 重启(USB 可不拔) | 经从爪 USB-C 刷 RobStride 电机模组自己的程序(`MotorOtaSession`,每帧经 `can_ext_xfer` 0x5B 转发)。需要从爪固件 >= 1.2.8、电机在**私有协议**下(切协议要断 24V);RobStride 协议不校验型号,脚本先核对本机记录的型号与镜像一致。刷完电机回到 MIT。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪再刷电机。|
 
 ### C++ 示例
 

@@ -102,12 +102,14 @@ same change** — the manifest's `file` entry is what the role selectors and
 `--all` resolve, so the two drifting apart breaks exactly the path customers
 are told to use. `test_ota_update_all.py` fails if they disagree.
 
-> **刷完必须重新插拔,这是升级流程的一部分,不是排障手段。**
+> **刷完必须断电重启,这是升级流程的一部分,不是排障手段。**
 >
-> 做法:**USB 数据线和电源线同时拔下**,两条都断开之后再一起插回。这两条线供的
-> 是不同的部分 —— USB 给 MCU 和 USB 转串口桥,24 V 给电机 —— 所以只拔其中一条,
-> 另一半始终带电。先后拔、拔第二条时第一条已经插回去了,板子就从来没有过完全
-> 断电的一刻,也就没有复位。
+> 做法:**从爪拔掉 24V 电源线,等约 2 秒再插回**,USB 线可以不拔。从爪的 MCU 和电机
+> 都靠 24V 运行,断 24V 两者一起重启;反过来只拔 USB,MCU 靠 24V 照常运行,什么都没
+> 复位。在一台 EL05 从爪上实测:只断 24V 三次,MCU 每次都重启;OTA 后只断一次 24V,
+> 60 秒状态流 6000 帧一帧不丢。**主爪**没有 24V:拔插它的 USB 即可。
+> 确认真的断过电:看 `gripper.device.heartbeat().uptime_ms` 是否从接近 0 重新计起。
+> 不要看 `/dev/serial/by-id/` 的时间戳 —— 只断 24V 时 MCU 重启了,USB 却不一定重新枚举。
 >
 > bank-swap 重启是软复位：MCU 重新初始化，但片外的 USB 转串口桥从没断过电。设备
 > 回来之后停在一个降级状态，而这个状态和健康状态**从任何可观测的角度都分不出来**

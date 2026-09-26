@@ -118,13 +118,15 @@ Measured on the same unit, same firmware, same cable, 60-second runs:
 
 **Any measurement taken before the power cycle is suspect.**
 
-"Power-cycle" here means **unplug the USB cable and the power cable together,
-and have both out at the same time**, then plug them back in. The two feed
-different domains — USB powers the MCU and its USB-serial bridge, the 24 V line
-powers the motor — so pulling either one on its own leaves the other half
-energised. Pulling them one after another, with the first already back in, never
-gives the board a moment with no power at all, which is the thing that resets
-it.
+"Power-cycle" on a **follower** means **unplug the 24 V power cable, wait
+~2 s, and plug it back in**; the USB cable can stay connected. The follower's
+MCU and motor run on 24 V, so cutting it restarts both — while pulling only USB
+leaves the MCU running on 24 V and resets nothing. Measured on an EL05 follower:
+three 24 V-only cycles each restarted the MCU, and after an OTA plus one such
+cycle a 60 s status stream lost 0 of 6000 frames. A **leader** has no 24 V
+rail: unplug and replug its USB. To confirm the cycle really happened,
+`gripper.device.heartbeat().uptime_ms` restarts near 0. Do not go by the `/dev/serial/by-id/` timestamp: a
+24 V-only cycle restarts the MCU without always re-enumerating USB.
 
 ## How OTA works, briefly
 

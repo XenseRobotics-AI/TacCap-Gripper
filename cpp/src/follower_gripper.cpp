@@ -164,8 +164,8 @@ FollowerGripper::FollowerGripper(const Config& cfg)
                 "  (role 选择器,自动找从爪并挑对应镜像;插了多台时也可用\n"
                 "   SN 精确指定: ota_update.py slave "
                 + fw_sn_str + ")\n"
-                "  刷完后 USB 线与电源线必须同时拔下再插回 /\n"
-                "  after flashing, unplug USB and power together, then reconnect\n"
+                "  刷完后拔掉 24V 电源线约 2 秒再插回(USB 可不拔) /\n"
+                "  after flashing, unplug 24 V for ~2 s (USB may stay in)\n"
                 "==========================================================";
             logger()->error(msg);
             throw ProtocolError(msg);

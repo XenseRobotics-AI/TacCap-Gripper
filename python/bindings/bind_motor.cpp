@@ -805,7 +805,7 @@ void bind_motor(py::module_& m) {
            "记录本机装的是哪一款电机(0x5A)。**写 MCU flash,掉电保持。**\n\n"
            "**下次上电才生效**,不是立刻:MIT 量程在启动时定下来,控制环已经按它在\n"
            "跑,中途换刻度会让在途的命令和反馈用两套标准解释。和改电机 CAN ID 一样,\n"
-           "写完要断电重启(USB 线和电源线同时拔)。\n\n"
+           "写完要断电重启(拔 24V 电源线约 2 秒,USB 可不拔)。\n\n"
            "写错型号不会报错,只会让之后每一帧力矩差一个固定倍率 —— 先用\n"
            "get_model() 确认写进去的是对的。")
         .def("motor_version", [](Motor& self, unsigned timeout_ms) {
