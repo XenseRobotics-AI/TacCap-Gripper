@@ -23,6 +23,19 @@ void send_or_throw(bus::Transport& t, protocol::Cmd cmd,
     }
 }
 
+// The four admin writes below are stored by the MCU (or the motor) and take
+// effect only at the NEXT POWER-UP. The firmware says so on UART7, which is not
+// wired to USB, so without this the host sees a plain OK and the change looks
+// like it did nothing -- or worse, the caller keeps driving with the old value.
+// A follower's MCU and motor both run on 24 V: cutting 24 V is the whole power
+// cycle, and pulling USB alone resets nothing.
+void warn_needs_power_cycle(const char* what) {
+    logger()->warn(
+        "Motor::{}: stored; takes effect after a power cycle -- unplug the 24 V "
+        "power cable for ~2 s and plug it back (USB may stay in). "
+        "device.heartbeat().uptime_ms restarting near 0 confirms it.", what);
+}
+
 }  // namespace
 
 Motor::Motor(bus::Transport& transport) : t_(transport) {}
@@ -164,9 +177,10 @@ void Motor::set_model(uint8_t model_id, std::chrono::milliseconds timeout) {
     send_or_throw(t_, protocol::Cmd::SetMotorModel, {model_id}, "set_model",
                   timeout);
     logger()->warn(
-        "Motor::set_model: wrote model id {} to flash -- POWER CYCLE the "
-        "gripper before driving it. The MIT ranges in use are still the ones "
-        "chosen at boot.", static_cast<unsigned>(model_id));
+        "Motor::set_model: wrote model id {} to flash; the MIT ranges in use are "
+        "still the ones chosen at boot -- do not drive the motor until it has "
+        "been power-cycled.", static_cast<unsigned>(model_id));
+    warn_needs_power_cycle("set_model");
 }
 
 protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {
@@ -282,6 +296,7 @@ uint8_t Motor::get_can_id() {
 
 void Motor::set_can_id(uint8_t can_id) {
     send_or_throw(t_, protocol::Cmd::MotorSetCanId, {can_id}, "set_can_id");
+    warn_needs_power_cycle("set_can_id");
 }
 
 // 3000 ms rather than the transport default: both of these were measured
@@ -297,6 +312,10 @@ void Motor::switch_protocol(protocol::MotorProtocol p) {
     send_or_throw(t_, protocol::Cmd::MotorSwitchProtocol,
                   {static_cast<uint8_t>(p)}, "switch_protocol",
                   kProtocolCmdTimeout);
+    // The motor applies a protocol switch only when it powers up again (RobStride
+    // manual); already being on the target makes this a no-op, but the host
+    // cannot tell cheaply -- get_protocol() itself probes the bus.
+    warn_needs_power_cycle("switch_protocol");
 }
 
 protocol::MotorProtocol Motor::get_protocol() {
@@ -352,6 +371,7 @@ void Motor::set_startup_limit_torque(float torque_nm) {
     std::memcpy(req.data(), &torque_nm, 4);  // little-endian host == wire
     send_or_throw(t_, protocol::Cmd::MotorSetStartupLimitTorque, req,
                   "set_startup_limit_torque");
+    warn_needs_power_cycle("set_startup_limit_torque");
 }
 
 float Motor::get_startup_limit_torque() {

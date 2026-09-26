@@ -124,6 +124,8 @@ public:
     // Make SetSn store something other than what was sent, so the SDK's
     // read-back check has something to catch.
     void set_corrupt_sn_writes(bool on) { corrupt_sn_writes_.store(on); }
+    // What 0x59 reports: a model recorded in flash, or the compile-time default.
+    void set_model_from_flash(bool on) { model_from_flash_.store(on); }
     std::string stored_sn() const {
         std::lock_guard<std::mutex> lk(mu_);
         return sn_;
@@ -237,6 +239,21 @@ private:
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
                 return;
             }
+            case tp::Cmd::MotorSetStartupLimitTorque:
+            case tp::Cmd::MotorSetCanId:
+            case tp::Cmd::MotorSwitchProtocol:
+            case tp::Cmd::SetMotorModel:
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
+            case tp::Cmd::GetMotorModel: {
+                // motor_model_t, 20 B. from_flash is the only field the SDK's
+                // open-time check reads.
+                std::vector<uint8_t> out(20, 0);
+                std::memcpy(out.data() + 1, "EL05", 4);
+                out[9] = model_from_flash_.load() ? 1 : 0;
+                pty_.send_response(f.seq, f.cmd, out);
+                return;
+            }
             case tp::Cmd::MotorGetStartupLimitTorque: {
                 const float limit = 6.0f;
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&limit, sizeof(limit)));
@@ -282,6 +299,7 @@ private:
     std::atomic<unsigned> submits_{0};
     std::atomic<bool> spec_supported_{true};
     std::atomic<bool> corrupt_sn_writes_{false};
+    std::atomic<bool> model_from_flash_{true};
     std::atomic<uint8_t> dev_type_{0xFF};
     std::string sn_ = "TCGU01A28Z0001s";
     mutable std::mutex mu_;

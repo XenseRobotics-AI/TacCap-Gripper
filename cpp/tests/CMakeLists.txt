@@ -12,6 +12,7 @@ add_executable(taccap_unit_tests
     test_codec_motor_can_xfer.cpp
     test_motor_ota.cpp
     test_device_pty.cpp
+    test_power_cycle_warnings_pty.cpp
     test_fisheye_undistort.cpp
     test_calibration_pty.cpp
     test_ota_retry_pty.cpp

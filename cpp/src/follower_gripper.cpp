@@ -179,6 +179,25 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         }
     }
 
+    // A follower running on the compile-time DEFAULT motor model is quantising
+    // every MIT frame against that model's ranges on an assumption. If the
+    // motor is the other model nothing errors -- torque is off by a constant
+    // factor (EL05 +/-6 vs RS00 +/-14 N*m). Firmware >= 1.2.10 records the model
+    // by itself the first time the motor boots on the private protocol (a new
+    // motor always does), so this fires on units that never passed that point.
+    // Firmware without 0x59 (< 1.2.7) NACKs; that is not worth a warning here.
+    try {
+        const auto m = motor_.get_model(std::chrono::milliseconds{300});
+        if (!m.from_flash) {
+            const std::string name(m.name, ::strnlen(m.name, sizeof(m.name)));
+            logger()->warn(
+                "FollowerGripper: motor model is the firmware's compile-time default "
+                "({}), not a recorded one -- the torque/velocity ranges are assumed. "
+                "If the motor is not a {}, record it: motor.set_model(0=EL05, 1=RS00), "
+                "then cut 24 V for ~2 s (USB may stay in).", name, name);
+        }
+    } catch (...) {}
+
     // The wrist camera is off by default — an external camera service owns the
     // wrist UVC V4L2 device. Only open it when explicitly asked AND a device
     // path is provided.
