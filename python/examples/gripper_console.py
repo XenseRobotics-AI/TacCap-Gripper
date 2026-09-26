@@ -5,13 +5,14 @@
 原版控制台直接调 `motor.submit_impedance()`。那是**电机原语**:拼一帧 MIT 丢上
 总线,没有误差钳位、没有力矩天花板、没有堵转保护 —— 主机侧的保护一层都不在它
 的路径上(见 cpp/src/components/motor.cpp)。kp=20 顶住硬物体再把目标压到全闭,
-kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被电流拉垮:松手
+kp x 位置误差一路涨到电机自己的 0x700B 上限(该型号的 t_max:EL05 6 Nm /
+RS00 14 Nm),24 V 母线被电流拉垮:松手
 掉件,状态位打出 EN|FAULT|UNDER_VOLT,此后无力矩,必须重新上电。
 
 这一版把控制交给 SDK 的两个控制器,并把固件侧的运动安全包络一起配好。
 
     --mode impedance       ImpedanceController —— 误差钳位 + 力矩天花板 + 堵转保持
-    --mode force-position  ForcePositionController —— 接触判定后转纯力矩保持
+    --mode force-position  ForcePositionController —— 全程一条有界力矩控制律,饱和即接触
 
 三层的分工见 docs/CONTROL_LAYERING.md。要记住的一条:**固件包络是唯一在 MIT
 路径上、谁都绕不过的一层**,而它出厂默认不启用(GripperConfig.reserved 全 0)。
@@ -25,7 +26,7 @@ kp x 位置误差一路涨到电机自己的 0x700B 上限(6 Nm),24 V 母线被�
 用法
     python python/examples/gripper_console.py --show-envelope
     python python/examples/gripper_console.py --set-envelope
-    python python/examples/gripper_console.py --mode force-position --grasp-torque 1.2
+    python python/examples/gripper_console.py --mode force-position --grasp-torque 0.8
 
 按键
     j / k   — 目标开度 + / -(一个 --step;归一化 0..1,0=闭合 1=张开)
@@ -203,7 +204,10 @@ class ImpedanceBackend:
 
 
 class ForcePositionBackend:
-    """ForcePositionController:接触判定后 kp=kd=0 的纯 tau_ff 保持。"""
+    """ForcePositionController:全程一条有界力矩控制律。
+
+    误差钳位在 grasp_torque_nm,饱和即接触,没有单独的接触判定。
+    """
 
     label = "FORCE-POSITION"
 
@@ -211,14 +215,14 @@ class ForcePositionBackend:
         # 同上:grasp / hold / motion / close_speed 全部按设备的电机推出来。
         cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
         if args.grasp_torque is not None:
-            cfg.grasp_torque_nm = args.grasp_torque  # 保持力矩 = 夹持力
+            cfg.grasp_torque_nm = args.grasp_torque  # 力矩预算 = 夹持力
         # 闭合速度与 grasp **是独立的**。曾经有过 grasp/close_speed 的耦合规则
         # (行程阻尼增益当年就是这个比值),现在斜坡自己调速、预算拆分定增益,
         # 所以慢就只是慢 —— 见 force_position_controller.cpp 的 validate_config。
         if args.close_speed is not None:
             cfg.close_speed_radps = args.close_speed
         # hold/motion 上限也来自电机(EL05 1.8/6.0,RS00 5.0/14.0)。
-        # 接触判定常数与位置增益不再是可配项:它们是固件常量的镜像和实测值,
+        # 位置增益不是可配项(接触判定常数已随状态机一起删掉):它们是实测值,
         # 对这台夹爪只有一个正确答案。--kp/--kd 仍然喂 ImpedanceBackend。
         self.ctl = ForcePositionController(g, cfg)
         self.cfg = cfg
@@ -371,9 +375,9 @@ def main() -> int:
         type=float,
         default=None,
         dest="grasp_torque",
-        help="接触后的纯前馈保持力矩 Nm = 夹持力。默认取电机自报的**连续堵转额定**"
-        "(EL05 1.10 / RS00 3.60)—— 被挡住的爪子会无限期坐在这个力矩上,"
-        "没有任何东西给它计时",
+        help="力矩预算 Nm = 夹持力(误差钳位的上限,被挡住时饱和在这里)。默认取电机"
+        "自报的**连续堵转额定**(EL05 1.10 / RS00 3.60),不能超过它 —— 超过时 "
+        "start() 直接拒绝。被挡住的爪子会无限期坐在这个力矩上,没有任何东西给它计时",
     )
     ap.add_argument(
         "--close-speed",
@@ -395,7 +399,8 @@ def main() -> int:
         "--set-envelope",
         action="store_true",
         help="按设备自报的电机额定修好包络后继续。**写 MCU flash**,掉电保持;"
-        "已经正确就什么都不写。绝不放宽 —— 特意收紧过的设备保持原值",
+        "已经正确就什么都不写。设备报了规格时 cont/peak 严格等于额定,偏低也修;"
+        "只有规格未知时才保留更严的原值",
     )
     args = ap.parse_args()
 

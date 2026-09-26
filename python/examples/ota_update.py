@@ -49,7 +49,7 @@ Usage:
     # matching the image's CRC32 -- by CONTENT, not by filename, which anyone
     # can rename. Pass --target-version only to override that, or to tag an
     # image the manifest does not know.
-    python python/examples/ota_update.py master --target-version 1.2.4
+    python python/examples/ota_update.py master --target-version 1.2.5
 
     # Just probe — don't flash anything
     python python/examples/ota_update.py --get-status right

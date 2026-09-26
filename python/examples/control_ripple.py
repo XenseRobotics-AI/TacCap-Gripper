@@ -10,7 +10,9 @@ impedance_control.py / force_position_control.py 验的是「到位」和「到�
 
     相对速度纹波 = σ(|v|) / 均值(|v|)     行进段,掐掉加减速两头
     峰峰         = max(|v|) - min(|v|)
-    均速/命令    = 均值(|v|) / close_speed_radps
+    均速/命令    = 均值(|v|) / 命令速度
+                   ForcePosition:config 实际的 close_speed_radps
+                   Impedance:设计接近速度 预算/kd(它没有斜坡速度)
     极限环频率   = 去均值后的过零次数 / 2 / 时长
     逆向帧       = 速度方向与行进方向相反的帧数(区分**脉动**与**振动**)
 
@@ -154,7 +156,12 @@ def main() -> int:
     ap.add_argument(
         "--controller", choices=("force-position", "impedance", "both"), default="both"
     )
-    ap.add_argument("--close-speed", type=float, default=0.5, help="行进速度 rad/s")
+    ap.add_argument(
+        "--close-speed",
+        type=float,
+        default=None,
+        help="ForcePosition 斜坡速度 rad/s,默认 for_spec 的 1.1;阻抗不用它",
+    )
     args = ap.parse_args()
 
     log.set_level("warn")
@@ -171,13 +178,17 @@ def main() -> int:
 
     bad = 0
     if args.controller in ("force-position", "both"):
+        fp_cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
+        if args.close_speed is not None:
+            fp_cfg.close_speed_radps = args.close_speed
 
         def mk_fp():
-            cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
-            cfg.close_speed_radps = args.close_speed
-            return ForcePositionController(g, cfg)
+            return ForcePositionController(g, fp_cfg)
 
-        bad += run("ForcePositionController", mk_fp, args.close_speed, g, args.rounds)
+        # 分母取 config 里实际生效的斜坡速度,不给 --close-speed 时就是 for_spec 的值。
+        bad += run(
+            "ForcePositionController", mk_fp, fp_cfg.close_speed_radps, g, args.rounds
+        )
 
     if args.controller in ("impedance", "both"):
         imp_cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
