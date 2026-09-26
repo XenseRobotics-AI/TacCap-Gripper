@@ -82,6 +82,10 @@ not required to use this SDK.
   See [docs/CALIBRATION.md](docs/CALIBRATION.md).
 - **`Diagnostics`** — the firmware's own UART counters, which tell a frame the
   MCU never sent from one lost on the way.
+- **Motor model and motor OTA** (follower) — `Motor.get_model` / `set_model`
+  record which RobStride motor is installed (firmware 1.2.7+),
+  `Motor.can_ext_xfer` relays extended CAN frames to it (1.2.8+), and
+  `MotorOtaSession` uses that relay to flash the motor's own firmware.
 - **OTA** and zero-config discovery by firmware-burned SN.
 
 Visuotactile (OG) capture lives at the Python level via the `xensesdk` wheel —
@@ -100,7 +104,7 @@ than warns, because older firmware lacks stall protection on the control path
 and puts normalized 0.0 somewhere other than the closed stop.
 `Config::allow_outdated_firmware=True` inspects such a device without driving
 it. Leaders are not gated. The motor inside has a floor of its own; see
-[Motor firmware](#motor-firmware-10504-or-newer).
+[RobStride motor firmware](#robstride-motor-firmware).
 
 **Flashable images ship in [`firmware/`](firmware/)** — the firmware source
 does not. Pick the image by the gripper's role, which is the last character of
@@ -121,25 +125,32 @@ it. The bank-swap reboot is a soft reset that leaves the device looking healthy
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.4 and the follower 1.2.6; neither is behind the other, and
+leader is 1.2.5 and the follower 1.2.9; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
-follower numbers. A leader in the field may also report 1.2.5 or 1.2.6 from a
-period when the roles were forced onto one number; that is the same code as
-1.2.4, so flashing the current leader image lowers the number it reports, which
-nothing refuses and nothing should read as a downgrade.
+follower numbers. Leader 1.2.5 behaves exactly like 1.2.4: its only change is in
+storage code shared with the follower. A leader in the field may also report
+1.2.6 from a period when the roles were forced onto one number; that is the same
+code as 1.2.4, so flashing the current leader image lowers the number it
+reports, which nothing refuses and nothing should read as a downgrade. On the
+follower, 1.2.7 added the motor model record, 1.2.8 the CAN extended-frame relay
+used by motor OTA, and 1.2.9 makes the motor ranges and limits follow the
+recorded model.
 
 [`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
 the rest of the flashing detail.
 
-### Motor firmware: 1.0.5.0.4 or newer
+### RobStride motor firmware
 
-This is the RobStride EL05 **inside** the follower, not the gripper MCU, and the
-SDK does **not** enforce it: reading the motor's version needs follower firmware
-1.2.6+ (`motor.motor_version()`, command `0x58`) and has so far only been
-confirmed to answer under the private protocol, so a startup check has nothing
-reliable to stand on. It is a documented requirement.
+This is the RobStride motor **inside** the follower — an EL05 or an RS00 — not
+the gripper MCU, and the SDK does **not** enforce a motor version: reading it
+needs follower firmware 1.2.6+ (`motor.motor_version()`, command `0x58`), and
+under the MIT protocol the motor was measured not to answer extended frames at
+all, so the version is readable only under the private protocol and a startup
+check has nothing reliable to stand on.
 
+**EL05: 1.0.5.0.4 or newer.** This floor is EL05-only — RS00 motor firmware is
+numbered 0.0.3.x. It is a documented requirement.
 Measured before and after upgrading the same unit: on 1.0.5.0.2 the velocity
 feedback read as a constant that did not track motion, with 117% motion ripple;
 on 1.0.5.0.4 the same unit behaved normally. Because it is the same device
@@ -148,15 +159,27 @@ proven, and the corrupted velocity feedback is the part worth remembering:
 `snapshot().observation.velocity` and anything derived from it goes wrong while
 looking merely odd rather than broken.
 
-Motor firmware can only be updated with the vendor's own upper-computer tool and
-USB-CAN adapter, with the motor detached from the gripper; the protocol is not
-public. It is not something you can script on a bench, so confirming it when a
-gripper arrives is cheaper than debugging it later.
+**Flashing the motor over the gripper's USB-C.** Follower firmware 1.2.8+
+relays the motor's own OTA through the MCU, so the motor stays mounted:
+
+```bash
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+```
+
+(`MotorOtaSession` from code.) The motor must be on the **private** protocol
+first — `motor.switch_protocol(MotorProtocol.Private)`, then unplug USB and
+24 V together. RobStride's OTA protocol does **no model check**, so
+`preflight()` refuses an image whose model does not match the model recorded on
+the gripper. Afterwards the motor restarts on MIT, so its version is readable
+only after switching to private again. A gripper OTA also switches the motor
+back to MIT, so flash the gripper first and the motor second. Measured on an
+RS00 unit: 0.0.3.22 → 0.0.3.32 removed the motion jitter, leaving
+`ForcePositionController` ripple around 5% at 1.1 rad/s.
 
 ## Install
 
 ```bash
-mamba env create -f environment.yml && mamba activate xense-taccap
+mamba env create -f environment.yml && mamba activate taccap
 uv pip install -e . --no-build-isolation
 python -c "import xense.taccap as t; print(t.__version__)"
 ```
@@ -196,7 +219,7 @@ Prerequisites, device permissions, C++-only builds, rebuild/clean and the
 
 ## Usage
 
-The twelve scripts in `python/examples/` are the fastest way to learn this SDK:
+The thirteen scripts in `python/examples/` are the fastest way to learn this SDK:
 each is the smallest program that exercises one capability, and they are also
 the tools we bring hardware up with. Run them first, then write your own against
 the same calls.
@@ -245,6 +268,14 @@ Step 3 before step 4 is the load-bearing order — see
 [The motion-safety envelope](#the-motion-safety-envelope) for what it protects
 against and why the default is off.
 
+**A follower with an RS00 motor** needs one extra step before step 3: the
+firmware falls back to EL05 ranges until the model is recorded. Run
+`g.motor.set_model(1)` once (0 = EL05, 1 = RS00) and power-cycle. A device
+upgraded from follower firmware 1.2.8 or earlier also keeps its stored `0x700B`
+startup torque limit of 6.0; raise it with
+`g.motor.set_startup_limit_torque(14.0)` and power-cycle again. Details in
+[`firmware/README.md`](firmware/README.md).
+
 ### By task
 
 **Control.** Both controllers take the same two non-blocking calls,
@@ -282,6 +313,7 @@ python python/examples/leader_normalized_position.py left
 
 ```bash
 python python/examples/ota_update.py slave left   # then unplug USB + power together
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # the motor itself; private protocol
 ```
 
 ### What each one does to the device
@@ -294,6 +326,7 @@ Check this column before running anything on a rig that matters.
 | **Moves the motor** | `impedance_control`, `force_position_control`, `control_and_read`, `control_ripple`, `gripper_console` |
 | **Writes flash** | `calibrate`, `fisheye_cal set-*`, `--set-envelope` on `impedance_control` / `gripper_console` |
 | **Flashes firmware** | `ota_update` — destructive; afterwards unplug USB and power together, then reconnect |
+| **Flashes motor firmware** | `motor_ota_update` — flashes the RobStride motor's own firmware; needs the motor on the private protocol and follower firmware 1.2.8+ |
 
 ### Two shared modules, not runnable
 
@@ -346,7 +379,8 @@ import xense.taccap as t
 eps = t.find_follower()                       # or t.find_left() / t.find_right()
 g = t.FollowerGripper(eps.mcu_device)
 
-c = t.ForcePositionController(g)              # grasping: bounded torque
+cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())   # this device's motor
+c = t.ForcePositionController(g, cfg)         # grasping: bounded torque
 g.motor.clear_fault()
 c.start()                                     # START BEFORE ENABLE — start()
 g.motor.enable()                              # validates the motor's stored limit
@@ -362,10 +396,15 @@ finally:
 ```
 
 Two calls are the whole interface: `set_target(0..1)` and `snapshot()`, both
-non-blocking, safe to stream every frame. Swap in `t.ImpedanceController(g)` —
+non-blocking, safe to stream every frame. Swap in
+`t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))` —
 same two calls — when you want to *follow a position* rather than grasp.
-`with t.ForcePositionController(g) as c:` does the `start()` / `stop()` pair for
-you.
+`with t.ForcePositionController(g, cfg) as c:` does the `start()` / `stop()`
+pair for you.
+
+Always build the config with `for_spec()`. A bare default config carries EL05
+numbers: on an RS00 it caps the grip at 1.1 of the 3.6 N·m available, and once
+the RS00's `0x700B` limit is 14 `ForcePositionController.start()` raises.
 
 Before driving a follower for the first time, write the firmware motion-safety
 envelope once; it is off out of the box. See
@@ -529,7 +568,7 @@ g.motor.enable()                 # required before anything moves
 # Motion goes through a controller. The raw `submit_*` primitives are exposed
 # too, but they write a control frame straight to the wire with no error clamp
 # and no torque ceiling — the firmware envelope is then your only protection.
-c = t.ImpedanceController(g)     # defaults are the tuned values
+c = t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))
 c.start()                        # seeds the target with the current position
 c.set_target(0.35)               # normalized [0,1], 0 = closed
 s = c.snapshot()                 # state + observation + command, non-blocking
@@ -555,7 +594,8 @@ Your policy only touches `set_target(0..1)` and `snapshot()`, both non-blocking
 (no GIL fights, no status polling).
 
 ```python
-c = t.ImpedanceController(g)              # t.ImpedanceConfig() to tune kp/kd/budget
+cfg = t.ImpedanceConfig.for_spec(g.motor.get_spec())   # tune kp/kd/budget on cfg
+c = t.ImpedanceController(g, cfg)
 c.start()                                 # seeds target = current pos (no jump)
 try:
     while running:
@@ -569,7 +609,8 @@ finally:
 ```
 
 A blocked jaw is not a fault here: the error clamp saturates at
-`max_position_torque_nm` (default 1.1 Nm, the EL05's continuous stall rating)
+`max_position_torque_nm` (from `for_spec()`: the device's continuous stall
+rating, 1.1 Nm on an EL05, 3.6 on an RS00)
 and holds there. Contact needs no detecting; saturation is what it looks like.
 
 **`ForcePositionController`** — the one for **grasping**. It takes the grip
@@ -577,7 +618,7 @@ force with each command (`set_target(p, grasp_torque_nm)`) and reports
 `holding`, so a blocked jaw settles at exactly the force you asked for.
 
 ```python
-fp = t.ForcePositionController(g)         # defaults are the tuned values
+fp = t.ForcePositionController(g, t.ForcePositionConfig.for_spec(g.motor.get_spec()))
 fp.start()
 try:
     fp.set_target(0.0)                    # close; 0 = closed, 1 = open
@@ -594,10 +635,10 @@ finally:
 | | default | what it is |
 |---|---|---|
 | `grasp_torque_nm` | **the device's continuous stall rating** | the grip force. Free travel does not use it; a blocked jaw settles here. 1.1 N·m on an EL05, 3.6 on an RS00 — take it from `ForcePositionConfig.for_spec(g.motor.get_spec())` rather than hard-coding it |
-| `close_speed_radps` | **0.5 rad/s** | travel speed |
+| `close_speed_radps` | **1.1 rad/s** via `for_spec()` (the bare struct says 0.5) | travel speed |
 
 ```python
-cfg = t.ForcePositionConfig()
+cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())
 cfg.grasp_torque_nm = 0.4        # gentler grip
 fp = t.ForcePositionController(g, cfg)
 ```
@@ -612,14 +653,15 @@ as far ahead of the jaw as the force budget allows and the jaw is not following 
 that is what gripping *is*. `snapshot().arrived` means it reached the commanded
 position. Nothing else needs interpreting.
 
-> **How hard, and for how long.** 1.1 Nm is the EL05's continuous stall rating.
+> **How hard, and for how long.** 1.1 Nm is the EL05's continuous stall rating
+> (RS00: 3.6); the thermal figures below were measured on an EL05 only.
 > Measured on a real workpiece at 24 V: a 600 s hold took the winding 36 → 70 °C
 > with the rate decaying 8 → 1 °C/min, which fits a plateau near 75 °C, about
 > 15 °C under the firmware's temperature wall — no fault, no link loss, no drift.
 > Grips of seconds to minutes are comfortably inside that. For a hold measured in
 > *tens of minutes*, or a warm cabinet, drop the force: 0.6 Nm settles flat at
-> 49 °C. Above the device's continuous envelope the firmware derates rather than
-> failing, and `start()` warns you.
+> 49 °C. `start()` refuses (raises `ValueError`) a grasp torque above the
+> device's continuous stall rating.
 
 **LEDs and power-on auto-calibration (V1.9):**
 
@@ -650,8 +692,8 @@ and derives the record:
 
 | Field | Value | Meaning |
 |---|---|---|
-| `peak_torque_nm` | the motor's **rated** torque (1.8 N·m on an EL05) | Transient ceiling during motion, applied as a position-error clamp. **It also sets the approach speed**, roughly `peak/kd` |
-| `cont_torque_nm` | the motor's continuous **stall** rating (1.1 N·m) | What a blocked jaw may hold indefinitely, and the floor of the I²t derate. Not the rated torque — that is the *rotating* rating, and a gripper's main duty cycle is the blocked hold |
+| `peak_torque_nm` | the motor's **rated** torque (1.8 N·m on an EL05, 5.0 on an RS00) | Transient ceiling during motion, applied as a position-error clamp. **It also sets the approach speed**, roughly `peak/kd` |
+| `cont_torque_nm` | the motor's continuous **stall** rating (1.1 N·m on an EL05, 3.6 on an RS00) | What a blocked jaw may hold indefinitely, and the floor of the I²t derate. Not the rated torque — that is the *rotating* rating, and a gripper's main duty cycle is the blocked hold |
 | `temp_derate_start_c` | 0 → firmware 90 °C | Where the thermal derate begins |
 | `temp_wall_c` | 0 → firmware 100 °C | Temperature wall; above it only 0.30 N·m remains |
 
@@ -660,8 +702,11 @@ down to the stall rating and says so only on a UART that is not wired to USB,
 while a read-back returns flash. A unit on our bench stored `cont=1.800` and ran
 at `1.100` for weeks. `audit_envelope()` reports `stored`, `effective` and
 `recommended` separately; `effective` is `None` when the firmware enforces
-nothing at all. `ensure_envelope()` repairs it, writes only when needed, and
-never widens a record someone deliberately tightened.
+nothing at all. `ensure_envelope()` repairs it and writes only when needed. When
+the device reports its spec it sets `cont` to the stall rating and `peak` to the
+rated torque exactly, lowering or raising whatever is stored
+(`GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC`); only on a device that cannot report its
+spec does it keep a stored record that is stricter than the recommendation.
 
 The envelope lives in the `GripperConfig` record (commands `0x66`/`0x67`, **no
 protocol change**), survives power loss, and is written once per device. It is
@@ -758,7 +803,8 @@ taccap-gripper/
 ├── cpp/
 │   ├── include/taccap/        # Public C++ headers
 │   ├── src/                   # SDK implementation (protocol, bus, components, ...)
-│   ├── examples/              # C++ example programs (leader_demo)
+│   ├── examples/              # C++ example programs (leader_demo, follower_status,
+│   │                          #   follower_impedance, follower_force_position)
 │   └── tests/                 # gtest unit tests
 ├── python/
 │   ├── bindings/              # pybind11 module sources

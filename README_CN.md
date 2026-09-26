@@ -70,6 +70,9 @@ FDCAN 转发给 RobStride 电机。
   参见 [docs/CALIBRATION.md](docs/CALIBRATION.md)。
 - **`Diagnostics`** —— 固件自己的 UART 计数器,能把「MCU 根本没发出去的帧」和
   「发出去却在路上丢了的帧」区分开。
+- **电机型号与电机 OTA**(从爪)—— `Motor.get_model` / `set_model` 记录装的是哪款
+  RobStride 电机(固件 1.2.7+),`Motor.can_ext_xfer` 把扩展 CAN 帧转发给电机
+  (1.2.8+),`MotorOtaSession` 借这条转发通道刷电机自己的固件。
 - **OTA**,以及按固件烧录 SN 的零配置设备发现。
 
 视触觉(OG)采集在 Python 层通过 `xensesdk` wheel 完成 —— `xense.taccap` 只暴露
@@ -87,7 +90,7 @@ FDCAN 转发给 RobStride 电机。
 给个警告,因为旧固件在控制通路上没有堵转保护,而且会把归一化的 0.0 放在闭合
 限位以外的地方。`Config::allow_outdated_firmware=True` 可以在不驱动的前提下
 查看这类设备。主爪不设这个门槛。里面的电机自己还有一条下限,见
-[电机固件](#电机固件-10504-或更新版本)。
+[RobStride 电机固件](#robstride-电机固件)。
 
 **可刷写的固件镜像放在 [`firmware/`](firmware/)** —— 固件源码不在。按夹爪的
 角色选镜像,角色是固件 SN 的最后一个字符(`m` 主 / `s` 从),而不是看它装在
@@ -104,22 +107,27 @@ python python/examples/ota_update.py --all         # 所有已连接的夹爪
 回去 —— 它们供的是不同的电域,只拔一根会让板子的另一半继续带电,复位不了。
 bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却在悄悄丢状态帧。
 
-**主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.4、从爪是 1.2.6,
+**主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.5、从爪是 1.2.9,
 谁也不比谁旧;一对夹爪的两半 `gripper.firmware_version` 读出不同的数是正常的。
-**只在同一个角色内部比较版本号** —— 上面那些门槛都是从爪的数。另外,现场的主爪
-还可能报 1.2.5 或 1.2.6,那是两个角色曾被强行同号的那段时期留下的,和 1.2.4 是
-同一份代码;所以刷当前的主爪镜像会让它报的数变小,这既不会被拒绝,也不应该被
-当成降级。
+**只在同一个角色内部比较版本号** —— 上面那些门槛都是从爪的数。主爪 1.2.5 的行为
+和 1.2.4 完全一样,唯一的改动在主从共享的存储代码里。另外,现场的主爪还可能报
+1.2.6,那是两个角色曾被强行同号的那段时期留下的,和 1.2.4 是同一份代码;所以刷
+当前的主爪镜像会让它报的数变小,这既不会被拒绝,也不应该被当成降级。从爪这边,
+1.2.7 加了电机型号记录,1.2.8 加了电机 OTA 用的 CAN 扩展帧转发,1.2.9 让电机的
+量程和限值跟随记录下来的型号。
 
 [`firmware/README.md`](firmware/README.md) 里有镜像对照表、CRC32 值,以及其余的
 刷写细节。
 
-### 电机固件 1.0.5.0.4 或更新版本
+### RobStride 电机固件
 
-这说的是从爪**内部**那台 RobStride EL05,不是夹爪的 MCU,而且 SDK **不会**
-强制检查它:读电机版本需要从爪固件 1.2.6+(`motor.motor_version()`,命令
-`0x58`),而且到目前为止只在私有协议下证实能应答,所以开机检查没有可靠的
-立足点。这是一条写在文档里的要求。
+这说的是从爪**内部**那台 RobStride 电机 —— EL05 或 RS00 —— 不是夹爪的 MCU,
+而且 SDK **不会**强制检查电机版本:读电机版本需要从爪固件 1.2.6+
+(`motor.motor_version()`,命令 `0x58`),而实测 MIT 协议下电机根本不应答扩展帧,
+所以版本只能在私有协议下读到,开机检查没有可靠的立足点。
+
+**EL05:1.0.5.0.4 或更新版本。** 这条下限只针对 EL05 —— RS00 的电机固件编号是
+0.0.3.x。这是一条写在文档里的要求。
 
 同一台设备升级前后的实测:在 1.0.5.0.2 上,速度反馈读出来是一个不跟随运动的
 常值,运动纹波 117%;换到 1.0.5.0.4,同一台设备表现正常。因为这是同一台设备的
@@ -127,14 +135,24 @@ bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却�
 破坏这件事:`snapshot().observation.velocity` 以及一切由它派生的量都会出错,
 而表面上只是看着有点怪,不像坏掉。
 
-电机固件只能用厂商自己的上位机工具加 USB-CAN 适配器升级,而且要把电机从夹爪上
-拆下来;协议未公开。这件事没法在工位上脚本化,所以夹爪到手时就确认一遍,比事后
-去排查便宜得多。
+**经夹爪的 USB-C 刷电机固件。** 从爪固件 1.2.8+ 会经 MCU 转发电机自己的 OTA,
+电机不用拆:
+
+```bash
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+```
+
+(在代码里用 `MotorOtaSession`。)电机必须先切到**私有**协议 ——
+`motor.switch_protocol(MotorProtocol.Private)`,然后同时拔掉 USB 和 24V 再插回。
+RobStride 的 OTA 协议**不校验型号**,所以 `preflight()` 会拒绝型号与夹爪上记录的
+型号不一致的镜像。刷完后电机重启回 MIT,要再切回私有才能读版本。夹爪 OTA 也会
+把电机切回 MIT,所以先刷夹爪、再刷电机。在一台 RS00 上实测:0.0.3.22 → 0.0.3.32
+消除了运动抖动,`ForcePositionController` 在 1.1 rad/s 下的纹波约 5%。
 
 ## 安装
 
 ```bash
-mamba env create -f environment.yml && mamba activate xense-taccap
+mamba env create -f environment.yml && mamba activate taccap
 uv pip install -e . --no-build-isolation
 python -c "import xense.taccap as t; print(t.__version__)"
 ```
@@ -171,7 +189,7 @@ pre-commit install
 
 ## 用法
 
-`python/examples/` 下的十二个脚本是上手本 SDK 最快的路径:每一个都是把某一项
+`python/examples/` 下的十三个脚本是上手本 SDK 最快的路径:每一个都是把某一项
 能力跑通的最小程序,同时也是我们自己做硬件 bring-up 用的工具。先把它们跑一遍,
 再照着同样的调用写你自己的程序。
 
@@ -217,6 +235,12 @@ python python/examples/force_position_control.py left --grasp-torque 1.1
 第 3 步要排在第 4 步之前,这个顺序是承重的 —— 它防的是什么、以及默认为什么是关的,
 见[运动安全包络](#运动安全包络)。
 
+**装 RS00 电机的从爪**在第 3 步之前还要多一步:型号没记录之前,固件按 EL05 的量程
+回退。执行一次 `g.motor.set_model(1)`(0 = EL05,1 = RS00)并断电重启。从 1.2.8
+或更早的从爪固件升级上来的设备,还会保留原来存的 `0x700B` 启动力矩限值 6.0;用
+`g.motor.set_startup_limit_torque(14.0)` 调上去,再断电重启一次。细节见
+[`firmware/README.md`](firmware/README.md)。
+
 ### 按任务分
 
 **控制。** 两个控制器都只用同样两个非阻塞调用 —— `set_target(0..1)` 和
@@ -254,6 +278,7 @@ python python/examples/leader_normalized_position.py left
 
 ```bash
 python python/examples/ota_update.py slave left   # 之后要同时拔掉 USB 和电源
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本身;需私有协议
 ```
 
 ### 每个脚本对设备做了什么
@@ -266,6 +291,7 @@ python python/examples/ota_update.py slave left   # 之后要同时拔掉 USB �
 | **会让电机动** | `impedance_control`、`force_position_control`、`control_and_read`、`control_ripple`、`gripper_console` |
 | **会写 flash** | `calibrate`、`fisheye_cal set-*`、`impedance_control` / `gripper_console` 上的 `--set-envelope` |
 | **会刷固件** | `ota_update` —— 破坏性操作;之后要同时拔掉 USB 和电源,再一起插回去 |
+| **会刷电机固件** | `motor_ota_update` —— 刷 RobStride 电机自己的固件;需要电机在私有协议下、从爪固件 1.2.8+ |
 
 ### 两个共享模块,不能直接运行
 
@@ -315,7 +341,8 @@ import xense.taccap as t
 eps = t.find_follower()                       # 或 t.find_left() / t.find_right()
 g = t.FollowerGripper(eps.mcu_device)
 
-c = t.ForcePositionController(g)              # 抓取:力矩有上限
+cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())   # 按本机电机取值
+c = t.ForcePositionController(g, cfg)         # 抓取:力矩有上限
 g.motor.clear_fault()
 c.start()                                     # 必须先 START 再 ENABLE —— start()
 g.motor.enable()                              # 会校验电机里存着的限值
@@ -331,9 +358,14 @@ finally:
 ```
 
 整个接口就两个调用:`set_target(0..1)` 和 `snapshot()`,都是非阻塞的,每帧都调
-也没问题。想*跟随位置*而不是抓取时,换成 `t.ImpedanceController(g)` 即可 ——
-还是这两个调用。`with t.ForcePositionController(g) as c:` 会替你配好 `start()` /
-`stop()` 这一对。
+也没问题。想*跟随位置*而不是抓取时,换成
+`t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))` 即可 ——
+还是这两个调用。`with t.ForcePositionController(g, cfg) as c:` 会替你配好
+`start()` / `stop()` 这一对。
+
+配置一律用 `for_spec()` 构造。裸的默认配置带的是 EL05 的数:在 RS00 上它把夹持力
+卡在 3.6 N·m 里的 1.1,而一旦 RS00 的 `0x700B` 限值是 14,
+`ForcePositionController.start()` 会直接抛异常。
 
 第一次驱动一台从爪之前,先把固件的运动安全包络写一次;它出厂是关的。见
 [运动安全包络](#运动安全包络)和[从爪控制](#从爪控制mit-力位混合)。
@@ -485,7 +517,7 @@ g.motor.enable()                 # 任何动作之前都必须先做
 
 # 运动要走控制器。原始的 `submit_*` 原语也是暴露的,但它们会把控制帧直接写到
 # 线上,没有误差钳位,也没有力矩上限 —— 这时固件包络就是你唯一的保护。
-c = t.ImpedanceController(g)     # 默认值就是调好的那一套
+c = t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))
 c.start()                        # 用当前位置给目标打底
 c.set_target(0.35)               # 归一化 [0,1],0 = 闭合
 s = c.snapshot()                 # 状态 + 观测 + 指令,非阻塞
@@ -493,8 +525,7 @@ c.stop()
 ```
 
 **归一化位置** —— 用 `[0, 1]`(0 = 闭合,1 = 张开)代替原始弧度。要求夹爪已经
-标定过(`GripperConfig` 为 Valid),否则抛异常。原始弧度的电机控制在 Python 侧
-不可达 —— 请用上面的控制器。
+标定过(`GripperConfig` 为 Valid),否则抛异常。
 
 ```python
 print(g.position())                       # -> 0.97   (接近张开)
@@ -511,7 +542,8 @@ Python 了,参数也确实是弧度,但主机侧不对它们做任何钳位,见�
 非阻塞的(不抢 GIL,也不轮询状态)。
 
 ```python
-c = t.ImpedanceController(g)              # 用 t.ImpedanceConfig() 调 kp/kd/预算
+cfg = t.ImpedanceConfig.for_spec(g.motor.get_spec())   # 在 cfg 上调 kp/kd/预算
+c = t.ImpedanceController(g, cfg)
 c.start()                                 # 目标先置为当前位置(不会突跳)
 try:
     while running:
@@ -524,15 +556,15 @@ finally:
     c.stop()                              # 力矩置零,然后让电机保持失能
 ```
 
-夹爪被挡住在这里不算故障:误差钳位会在 `max_position_torque_nm`(默认 1.1 Nm,
-即 EL05 的连续堵转额定)上饱和并保持住。接触不需要检测;饱和就是接触的样子。
+夹爪被挡住在这里不算故障:误差钳位会在 `max_position_torque_nm`(`for_spec()`
+取设备的连续堵转额定,EL05 上 1.1 Nm,RS00 上 3.6)上饱和并保持住。接触不需要检测;饱和就是接触的样子。
 
 **`ForcePositionController`** —— 用来**抓取**的那一个。它在每条命令里带上夹持力
 (`set_target(p, grasp_torque_nm)`),并报告 `holding`,所以被挡住的夹爪会稳定在
 你要求的那个力上。
 
 ```python
-fp = t.ForcePositionController(g)         # 默认值就是调好的那一套
+fp = t.ForcePositionController(g, t.ForcePositionConfig.for_spec(g.motor.get_spec()))
 fp.start()
 try:
     fp.set_target(0.0)                    # 闭合;0 = 闭合,1 = 张开
@@ -549,10 +581,10 @@ finally:
 | | 默认值 | 它是什么 |
 |---|---|---|
 | `grasp_torque_nm` | **设备自报的连续堵转额定** | 夹持力。空行程不用它;被挡住的夹爪会稳定在这个值上。EL05 上 1.1 Nm,RS00 上 3.6 —— 用 `ForcePositionConfig.for_spec(g.motor.get_spec())` 取,别写死 |
-| `close_speed_radps` | **0.5 rad/s** | 行进速度 |
+| `close_speed_radps` | **1.1 rad/s**,经 `for_spec()`(裸结构体默认 0.5) | 行进速度 |
 
 ```python
-cfg = t.ForcePositionConfig()
+cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())
 cfg.grasp_torque_nm = 0.4        # 更轻柔的夹持
 fp = t.ForcePositionController(g, cfg)
 ```
@@ -565,13 +597,13 @@ fp = t.ForcePositionController(g, cfg)
 允许的范围内尽可能跑到夹爪前面去了,而夹爪没跟上 —— 夹住*本来就是*这么回事。
 `snapshot().arrived` 的意思是它到达了指令位置。除此之外没有别的需要解读。
 
-> **能夹多紧,能夹多久。** 1.1 Nm 是 EL05 的连续堵转额定。在 24 V 下对着真实
-> 工件实测:一次 600 s 的持续夹持把绕组温度从 36 °C 带到 70 °C,升温速率从
+> **能夹多紧,能夹多久。** 1.1 Nm 是 EL05 的连续堵转额定(RS00:3.6);下面的
+> 温升数据只在 EL05 上测过。在 24 V 下对着真实工件实测:一次 600 s 的持续夹持把绕组温度从 36 °C 带到 70 °C,升温速率从
 > 8 °C/min 衰减到 1 °C/min,拟合下来平台在 75 °C 附近,比固件的温度墙低约
 > 15 °C —— 没有故障,没有掉链接,没有漂移。几秒到几分钟的夹持完全在这个范围
 > 之内。如果要按*几十分钟*计的长时间夹持,或者机柜偏热,就把力降下来:0.6 Nm
-> 会平稳停在 49 °C。超出设备的连续包络之后,固件是降额而不是报错,并且
-> `start()` 会给你警告。
+> 会平稳停在 49 °C。夹持力矩超过设备的连续堵转额定时,`start()` 会直接拒绝
+> (抛 `ValueError`)。
 
 **LED 与上电自动标定(V1.9):**
 
@@ -600,8 +632,8 @@ python python/examples/impedance_control.py right --set-envelope    # 修复,写
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `peak_torque_nm` | 电机的**额定**力矩(EL05 为 1.8 N·m) | 运动瞬态上限,以位置误差钳位的形式生效。**它同时决定接近速度**,大致是 `peak/kd` |
-| `cont_torque_nm` | 电机的连续**堵转**额定(1.1 N·m) | 被挡住的爪子可以无限期维持的力矩,也是 I²t 降额的下限。**不是**额定力矩 —— 那是*旋转*额定,而夹爪的主工况就是堵住不放 |
+| `peak_torque_nm` | 电机的**额定**力矩(EL05 为 1.8 N·m,RS00 为 5.0) | 运动瞬态上限,以位置误差钳位的形式生效。**它同时决定接近速度**,大致是 `peak/kd` |
+| `cont_torque_nm` | 电机的连续**堵转**额定(EL05 为 1.1 N·m,RS00 为 3.6) | 被挡住的爪子可以无限期维持的力矩,也是 I²t 降额的下限。**不是**额定力矩 —— 那是*旋转*额定,而夹爪的主工况就是堵住不放 |
 | `temp_derate_start_c` | 0 → 固件取 90 °C | 热降额从哪里开始 |
 | `temp_wall_c` | 0 → 固件取 100 °C | 温度墙;超过之后只剩 0.30 N·m |
 
@@ -609,7 +641,9 @@ python python/examples/impedance_control.py right --set-envelope    # 修复,写
 USB 的 UART 上,读回来的则是 flash。我们台架上有一台存着 `cont=1.800`、按 `1.100`
 跑了几周。`audit_envelope()` 把 `stored` / `effective` / `recommended` 分开报,
 `effective` 为 `None` 表示固件什么都不执行;`ensure_envelope()` 负责修,只在需要时
-写,并且**绝不放宽**特意收紧过的记录。
+写。设备能报出规格时,它把 `cont` 设成堵转额定、`peak` 设成额定力矩,严格相等,
+存的值偏低也改、偏高也改(`GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC`);只有在报不出规格
+的设备上,才保留比推荐值更严的记录。
 
 包络存在 `GripperConfig` 记录里(命令 `0x66`/`0x67`,**不改协议**),断电不丢,
 每台设备写一次即可。它在固件的 MIT 分支里强制执行 —— 那是每条运动命令都必须
@@ -699,7 +733,8 @@ taccap-gripper/
 ├── cpp/
 │   ├── include/taccap/        # 公开的 C++ 头文件
 │   ├── src/                   # SDK 实现(协议、总线、组件等)
-│   ├── examples/              # C++ 示例程序(leader_demo)
+│   ├── examples/              # C++ 示例程序(leader_demo、follower_status、
+│   │                          #   follower_impedance、follower_force_position)
 │   └── tests/                 # gtest 单元测试
 ├── python/
 │   ├── bindings/              # pybind11 模块源码
