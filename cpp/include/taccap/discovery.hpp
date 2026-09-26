@@ -99,6 +99,11 @@ struct GripperEndpoints {
     Role        role = Role::Unknown;     // leader/follower from the SN patch
                                           // suffix (m/s); Unknown if SN is legacy
                                           // / empty / unparsable
+    // The port is held by another handle (this process or another), so it could
+    // not be probed: side/role/firmware_sn are Unknown/empty BECAUSE of that,
+    // not because the board lacks an SN. Ports are opened exclusively, so a
+    // scan while a gripper is open reports it here instead of stealing bytes.
+    bool        in_use = false;
 };
 
 // Lower-level scan helper (testable / inspectable).

@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 
@@ -70,6 +71,32 @@ SerialBus::SerialBus(const Config& cfg) : cfg_(cfg) {
         throw IoError(cfg_.device + " is not a tty", err);
     }
 
+    // ONE OWNER PER PORT. Two handles on the same CDC port split its byte stream
+    // between them: each reader gets half of every frame and both see CRC
+    // errors, timeouts and "lost" ACKs that look like a link fault. The usual
+    // culprit is a scan_grippers() run while a gripper is open -- in the same
+    // GUI, or from a second terminal.
+    //
+    // flock() refuses a second SDK handle, in this process or another (the lock
+    // belongs to the open file description, so a second open() here conflicts
+    // too). TIOCEXCL then makes the kernel refuse any further open() of the
+    // tty, which also covers tools that never heard of the lock (minicom,
+    // screen, a stray pyserial). Root bypasses TIOCEXCL; flock still holds.
+    if (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+        const int err = errno;
+        ::close(fd_);
+        fd_ = -1;
+        throw IoError("SerialBus: " + cfg_.device +
+                      " is already open (another gripper handle or process owns it)",
+                      err == EWOULDBLOCK ? EBUSY : err);
+    }
+    if (::ioctl(fd_, TIOCEXCL) != 0) {
+        const int err = errno;
+        ::close(fd_);
+        fd_ = -1;
+        throw IoError("SerialBus: TIOCEXCL on " + cfg_.device, err);
+    }
+
     try {
         apply_termios_();
     } catch (...) {
@@ -98,6 +125,12 @@ SerialBus& SerialBus::operator=(SerialBus&& other) noexcept {
 
 void SerialBus::close_() {
     if (fd_ >= 0) {
+        // TIOCEXCL outlives this fd: the kernel clears it only when the LAST
+        // descriptor on the tty closes. If anything else holds the port
+        // (ModemManager probing a fresh ttyACM, a monitor in another shell),
+        // the flag would stay set and refuse our own next open with EBUSY.
+        // Clear it explicitly; the flock goes with the fd.
+        (void)::ioctl(fd_, TIOCNXCL);
         ::close(fd_);
         fd_ = -1;
     }

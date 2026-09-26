@@ -133,6 +133,7 @@ std::vector<GripperEndpoints> scan_all() {
         // because both probes are best-effort (old firmware may not answer).
         std::string fw_sn;
         std::optional<Side> dev_side;   // from GetDevType (authoritative)
+        bool in_use = false;
         try {
             bus::Transport::Config cfg{};
             cfg.serial.device           = mcu.device;
@@ -183,9 +184,14 @@ std::vector<GripperEndpoints> scan_all() {
                     }
                 } catch (...) { /* timed out — retry while the link warms up */ }
             }
+        } catch (const IoError& e) {
+            // Ports are opened exclusively. EBUSY means a gripper is already
+            // open on it -- report that rather than an unidentified board.
+            if (e.errno_value() == EBUSY) {
+                in_use = true;
+            }
         } catch (...) {
-            // Transport open failed (port in use, etc.) — fall back to the
-            // CH343 chip-SN parity below.
+            // Any other open/probe failure: side and role stay Unknown.
         }
 
         const auto parsed = parse_serial(fw_sn);
@@ -198,6 +204,7 @@ std::vector<GripperEndpoints> scan_all() {
         e.mcu_serial  = mcu.serial_number;
         e.firmware_sn = std::move(fw_sn);
         e.role        = parsed.role;
+        e.in_use      = in_use;
         out.push_back(std::move(e));
     }
     return out;
