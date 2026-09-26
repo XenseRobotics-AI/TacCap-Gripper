@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-27
+
+Documentation and build hygiene; no API or behaviour change.
+
 ### Changed
 
 - **Power-cycling a follower means cutting 24 V only; the USB cable can stay
