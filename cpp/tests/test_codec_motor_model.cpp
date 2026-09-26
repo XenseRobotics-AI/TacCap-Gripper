@@ -14,6 +14,7 @@
 // (motor_model_t). scripts/check_protocol_drift.py compares the two structs by
 // real compiled sizeof; this file pins the field offsets that sizeof cannot see.
 
+#include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <taccap/protocol/commands.hpp>
@@ -89,4 +90,16 @@ TEST(MotorModelCodec, AnUnprovisionedDeviceSaysSo) {
     std::memcpy(&m, b.data(), sizeof(m));
     EXPECT_EQ(m.from_flash, 0u);
     EXPECT_EQ(m.id, 0u) << "EL05 keeps id 0; ids are persisted and never reused";
+}
+
+// Follower 1.2.10 turned reserved[0] into `autodetected`. Byte 18, right after
+// v_max -- if it slid, the flag would read garbage from the padding byte.
+TEST(MotorModelCodec, AutodetectedSitsAtByte18) {
+    EXPECT_EQ(offsetof(tp::MotorModel, autodetected), 18u);
+    std::vector<uint8_t> b(tp::MOTOR_MODEL_SIZE, 0);
+    b[18] = 1;
+    tp::MotorModel m{};
+    std::memcpy(&m, b.data(), sizeof(m));
+    EXPECT_EQ(m.autodetected, 1u);
+    EXPECT_EQ(m.reserved, 0u);
 }

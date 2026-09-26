@@ -530,12 +530,19 @@ void bind_motor(py::module_& m) {
                       "MIT torque range currently in force, N*m. EL05 6.0, RS00 14.0.")
         .def_readonly("v_max_rad_s", &protocol::MotorModel::v_max_rad_s,
                       "MIT velocity range currently in force, rad/s. EL05 50.0, RS00 33.0.")
+        .def_readonly("autodetected", &protocol::MotorModel::autodetected,
+                      "1 when THIS boot identified the motor from its firmware version\n"
+                      "line (EL05 1.0.5.x / RS00 0.0.3.x) and wrote this record -- which\n"
+                      "happens when the motor is on the private protocol at boot, as a\n"
+                      "new motor is. Follower firmware 1.2.10+; always 0 before.")
         .def("__repr__", [](const protocol::MotorModel& s) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),
                 "MotorModel(%s, id=%u, %s, t_max=%.1fNm, v_max=%.1frad/s)",
                 std::string(s.name, ::strnlen(s.name, sizeof(s.name))).c_str(),
-                (unsigned)s.id, s.from_flash ? "from flash" : "COMPILE-TIME DEFAULT",
+                (unsigned)s.id,
+                s.autodetected ? "AUTO-DETECTED this boot"
+                               : (s.from_flash ? "from flash" : "COMPILE-TIME DEFAULT"),
                 (double)s.t_max_nm, (double)s.v_max_rad_s);
             return std::string(buf);
         });

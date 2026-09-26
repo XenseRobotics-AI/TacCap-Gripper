@@ -375,7 +375,12 @@ struct __attribute__((packed)) MotorModel {
     uint8_t  from_flash;     // 1 = stored on this device, 0 = compile-time default
     float    t_max_nm;       // MIT torque range currently in force
     float    v_max_rad_s;    // MIT velocity range currently in force
-    uint8_t  reserved[2];
+    // 1 = on THIS boot the follower read the motor's firmware version under the
+    // private protocol, recognised its line (EL05 1.0.5.x / RS00 0.0.3.x) and
+    // wrote this record (follower firmware 1.2.10). Was reserved[0]; older
+    // firmware always sends 0.
+    uint8_t  autodetected;
+    uint8_t  reserved;
 };
 
 struct __attribute__((packed)) HomeDiagReport {
