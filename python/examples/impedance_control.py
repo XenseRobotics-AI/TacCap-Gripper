@@ -84,7 +84,7 @@ def main() -> int:
         type=float,
         default=None,
         help="阻抗阻尼 Nm·s/rad。**同时决定接近速度**(≈ 预算/kd)。默认由电机推出:"
-        "预算 / MOTOR_APPROACH_SPEED_RADPS,EL05 上 0.55、RS00 上 1.80,两边都是 2 rad/s",
+        "预算 / MOTOR_APPROACH_SPEED_RADPS,EL05 上 1.00、RS00 上 3.27,两边都是 1.1 rad/s",
     )
     ap.add_argument(
         "--show-envelope", action="store_true", help="打印包络(存的/生效的)后退出"

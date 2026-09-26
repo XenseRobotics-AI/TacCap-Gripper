@@ -180,14 +180,19 @@ def main() -> int:
         bad += run("ForcePositionController", mk_fp, args.close_speed, g, args.rounds)
 
     if args.controller in ("impedance", "both"):
+        imp_cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
 
         def mk_imp():
-            cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
-            return ImpedanceController(g, cfg)
+            return ImpedanceController(g, imp_cfg)
 
-        # 阻抗没有「命令速度」这个量:接近速度由 peak/kd 决定。用实测均速自比,
-        # 所以 ratio 一列对它没有意义。
-        bad += run("ImpedanceController", mk_imp, args.close_speed, g, args.rounds)
+        # 阻抗没有「命令速度」:位置误差被钳在 预算/kp 以内,驱动力矩封顶在预算,
+        # 爪子加速到阻尼 kd·v 与它平衡为止 —— 设计接近速度就是 预算/kd。拿它当
+        # 分母,「均速/命令」才有意义。
+        #
+        # 曾经拿 --close-speed 当分母,那是 ForcePosition 的斜坡速度,阻抗根本没用
+        # 它:RS00 上因此报出 187%,看着像超速,实际是设计值 1.1 rad/s 的 ~87%。
+        imp_speed = imp_cfg.max_position_torque_nm / imp_cfg.kd
+        bad += run("ImpedanceController", mk_imp, imp_speed, g, args.rounds)
 
     print("\n基线(docs/CONTROL_REFACTOR.md §1.2,重构前,10 轮):")
     print("    闭合 纹波 37%  峰峰 0.59  12-13Hz  均速/命令 77%")

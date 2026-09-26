@@ -332,7 +332,7 @@ def main() -> int:
         type=float,
         default=None,
         help="阻尼 Nm·s/rad。**同时决定接近速度**(≈ 预算/kd)。默认由电机推出,"
-        "让接近速度落在 2 rad/s",
+        "让接近速度落在 1.1 rad/s(MOTOR_APPROACH_SPEED_RADPS)",
     )
     ap.add_argument(
         "--hz",
@@ -380,7 +380,7 @@ def main() -> int:
         type=float,
         default=None,
         dest="close_speed",
-        help="闭合速度 rad/s,默认 2.0(MOTOR_APPROACH_SPEED_RADPS)。它与 "
+        help="闭合速度 rad/s,默认 1.1(MOTOR_APPROACH_SPEED_RADPS)。它与 "
         "--grasp-torque **是独立的** —— 曾经有过 grasp/close_speed 的耦合规则,"
         "因为行程阻尼增益当年就是这个比值;现在斜坡自己调速、预算拆分定增益,"
         "所以慢就只是慢",

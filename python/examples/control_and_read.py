@@ -46,7 +46,12 @@ def main() -> int:
     _target.add_target_argument(ap)
     ap.add_argument("--read-hz", type=float, default=10.0, help="读状态的频率")
     ap.add_argument("--seconds", type=float, default=8.0, help="总时长")
-    ap.add_argument("--grasp-torque", type=float, default=1.1, help="力矩预算 Nm")
+    ap.add_argument(
+        "--grasp-torque",
+        type=float,
+        default=None,
+        help="力矩预算 Nm。默认取电机的连续堵转额定(EL05 1.1 / RS00 3.6),不能超过它",
+    )
     args = ap.parse_args()
 
     log.set_level("warn")
@@ -55,7 +60,8 @@ def main() -> int:
 
     # 按设备实际装的电机取默认值 —— EL05 和 RS00 的持续夹持差 3.3 倍
     cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
-    cfg.grasp_torque_nm = args.grasp_torque
+    if args.grasp_torque is not None:
+        cfg.grasp_torque_nm = args.grasp_torque
     c = ForcePositionController(g, cfg)
     c.start()
 

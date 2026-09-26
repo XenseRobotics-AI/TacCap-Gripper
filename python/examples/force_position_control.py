@@ -107,10 +107,16 @@ def main() -> int:
     ap.add_argument(
         "--grasp-torque",
         type=float,
-        default=1.1,
-        help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值",
+        default=None,
+        help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值。默认取电机的"
+        "连续堵转额定(EL05 1.1 / RS00 3.6),不能超过它",
     )
-    ap.add_argument("--close-speed", type=float, default=0.5, help="闭合速度 rad/s")
+    ap.add_argument(
+        "--close-speed",
+        type=float,
+        default=None,
+        help="闭合速度 rad/s。默认 MOTOR_APPROACH_SPEED_RADPS(1.1)",
+    )
     ap.add_argument(
         "--targets",
         default="1.0,0.5,0.0,0.5,1.0",
@@ -146,12 +152,16 @@ def main() -> int:
 
     # 按设备实际装的电机取默认值(grasp / hold / motion / close_speed 全部跟着走)
     cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
-    cfg.grasp_torque_nm = args.grasp_torque  # 接触后的纯前馈保持力矩 = 夹持力
-    # 闭合/张开速度。与上一项不独立:阻尼增益是 grasp/close_speed(上限 5),低于
-    # grasp/5 会被 validate_config() 拒掉,否则夹持力会悄悄低于设定值。
-    cfg.close_speed_radps = args.close_speed
-    # 其余四项走默认:hold=1.8(额定,无限期保持上限)、motion=6.0(峰值,瞬态)、
-    # status_timeout_ms=350(流断 → FAULT + 零力矩)、motor_stream_hz=100。
+    if args.grasp_torque is not None:
+        cfg.grasp_torque_nm = args.grasp_torque  # 被挡住时停在这个值 = 夹持力
+    if args.close_speed is not None:
+        cfg.close_speed_radps = args.close_speed
+    # 其余走 for_spec:hold = 旋转额定、motion = 力矩量程(EL05 1.8/6.0,
+    # RS00 5.0/14.0),status_timeout_ms=350(流断 → FAULT + 零力矩)、motor_stream_hz=100。
+    print(
+        f"[config] grasp={cfg.grasp_torque_nm:.2f}Nm close_speed={cfg.close_speed_radps:.2f}rad/s "
+        f"hold={cfg.hold_torque_limit_nm:.2f}Nm motion={cfg.motion_torque_limit_nm:.2f}Nm"
+    )
 
     c = ForcePositionController(g, cfg)
     failures = 0
