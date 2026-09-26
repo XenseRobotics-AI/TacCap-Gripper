@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-27
+
+Closes the gaps a test tool hit when it moved from its own protocol code onto
+this SDK: everything below used to need `g.transport.send_cmd()`.
+
+### Changed
+
+- **Serial ports are opened exclusively.** A second handle on the same port —
+  another `FollowerGripper`/`LeaderGripper`, or `scan_grippers()` while one is
+  open, in this process or another — now fails with `IoError` (`EBUSY`)
+  instead of silently splitting the port's byte stream, which showed up as CRC
+  errors and lost ACKs that read like a link fault. `flock` refuses other SDK
+  handles; `TIOCEXCL` also refuses non-SDK tools (minicom, screen). If your
+  code opened a gripper and then scanned, scan first or reuse the handle.
+- `scan_grippers()` reports a held port with **`in_use = True`** (and empty
+  SN / Unknown side for that reason) instead of an unidentified board.
+
+### Added
+
+- **`gripper.device`** (`Device`, both roles): `heartbeat()` (uptime +
+  version, Cmd 0x01), `reset()` (0x03), `get_sn()` / `get_device_type()`
+  (0x04 / 0x06), and the factory operations `set_sn()` / `set_device_type()`
+  (0x05 / 0x07), which refuse bad input before the wire and read back to
+  confirm. **`gripper.firmware_sn`**: the SN read at open.
+- **`Motor.set_position / set_velocity / set_torque / set_impedance`** in
+  Python — the ACKed twins of `submit_*`, for single steps and latency tests.
+- **`MotorStatusSample.raw`**: the whole decoded frame as `MotorStatusExt`
+  (monitor flags, fault/status/stop timestamps, stop fault code, raw CAN
+  evidence) from the status stream, without polling `read_status_ext()`.
+- **`IMU.start_mag_calibration()` / `stop_mag_calibration()`** (Cmd 0x26
+  payload 1 / 2, leader only).
+- Python `Cmd` enum gains the values it was missing: `Ws2812Set`,
+  `Ws2812Effect`, `MotorGetPrivateParam`, `MotorSetPrivateParam`,
+  `GetUartStats`, `SetLogConfig`, `GetMotorModel`, `SetMotorModel`,
+  `SetGripperAutoCalConfig`, `GetGripperAutoCalConfig`.
+
+### Fixed
+
+- Examples read controller states with `.name` instead of parsing `str()`,
+  whose spelling depends on the pybind11 version the extension was built with
+  (on some builds `force_position_control.py` never matched a terminal state
+  and timed out every step).
+
 ## [0.3.2] - 2026-09-26
 
 Follower firmware **1.2.9** is what this release is for: it lets an RS00
