@@ -568,8 +568,11 @@ void ForcePositionController::start() {
             "ForcePositionController: stored motor startup torque limit is " +
             std::to_string(device_limit) + " Nm, but motion_torque_limit_nm is " +
             std::to_string(cfg_.motion_torque_limit_nm) +
-            " Nm; call set_startup_limit_torque(), power-cycle the gripper, "
-            "and verify the value before enabling motion");
+            " Nm. Usually the config is for another motor: the bare "
+            "ForcePositionConfig() carries the EL05's 6.0, while an RS00 stores "
+            "14. Build it with ForcePositionConfig::for_spec(motor.get_spec()). "
+            "If the config is right, lower the stored limit with "
+            "set_startup_limit_torque() and power-cycle before enabling motion");
     }
     if (device_limit + 1e-4f < cfg_.grasp_torque_nm) {
         logger()->warn(
