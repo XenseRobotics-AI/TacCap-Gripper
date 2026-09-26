@@ -1,10 +1,10 @@
 # 示例脚本
 
-`python/examples/` 下 12 个可运行脚本的参考手册:每个脚本做什么、对设备做什么、
+`python/examples/` 下 13 个可运行脚本的参考手册:每个脚本做什么、对设备做什么、
 以及力位混合控制器的完整调参说明。
 
 **想先跑起来看** README 的
-[Examples](../README.md#examples) —— 那里是按顺序的上手路径(扫描 → 读状态 →
+[Bringing up a gripper, in order](../README.md#bringing-up-a-gripper-in-order) —— 那里是按顺序的上手路径(扫描 → 读状态 →
 配包络 → 试运动 → 夹持)。这里是逐脚本的细节。
 
 C++ 示例默认构建进 `build/cpp/examples/`。它们到 2026-09-22 之前一直是关的,
@@ -14,7 +14,7 @@ C++ 示例默认构建进 `build/cpp/examples/`。它们到 2026-09-22 之前一
 **刻意不提供电机原语的示例。** `submit_position` / `submit_velocity` /
 `submit_torque` / `submit_impedance` 是裸 MIT 帧,不经过主机侧的误差钳位、力矩
 天花板和堵转保护 —— 直接拿它们顶硬物体,`kp x 位置误差` 会一路涨到电机自己的
-0x700B 上限(6 Nm),24 V 母线被电流拉垮、打出 `EN|FAULT|UNDER_VOLT`,此后无力矩、
+0x700B 上限(电机型号的 `t_max`:EL05 6 Nm / RS00 14 Nm),24 V 母线被电流拉垮、打出 `EN|FAULT|UNDER_VOLT`,此后无力矩、
 必须重新上电。要控制就用下面两个控制器。
 
 ## 选谁:统一用 `left` / `right`
@@ -97,6 +97,7 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
 | `ota_update.py` | **刷固件** — 刷完 USB 与电源同时拔插 | 固件 OTA:带进度条,刷完探一次状态。**错镜像会让 MCU 起不来。** |
+| `motor_ota_update.py` | **刷电机固件** — 刷完 USB 与电源同时拔插 | 经从爪 USB-C 刷 RobStride 电机模组自己的程序(`MotorOtaSession`,每帧经 `can_ext_xfer` 0x5B 转发)。需要从爪固件 >= 1.2.8、电机在**私有协议**下(切协议要断 24V);RobStride 协议不校验型号,脚本先核对本机记录的型号与镜像一致。刷完电机回到 MIT。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪再刷电机。|
 
 ### C++ 示例
 
@@ -151,7 +152,8 @@ python python/examples/impedance_control.py right --set-envelope
 > **控制器的力矩参数也按电机走。** `ImpedanceConfig.for_spec()` /
 > `ForcePositionConfig.for_spec()` 从 `motor.get_spec()` 推默认值,所有例子默认
 > 用它。连带的一条:**接近速度是 `预算/kd`**,所以 `kd` 也由预算推出,目标
-> 2 rad/s —— 只提夹持力不提 kd,爪子会夹得更紧**也撞得更快**。
+> 1.1 rad/s(EL05 kd = 1.0,RS00 约 3.27)—— 只提夹持力不提 kd,爪子会夹得更紧
+> **也撞得更快**。
 
 **这些值没有命令行参数,这是有意的。** 包络该填什么不是使用者要回答的问题:设备
 自己知道它装的电机额定多少,而固件无论写进去什么都按那个额定钳。SDK 读 `0x56` 把
@@ -159,8 +161,8 @@ python python/examples/impedance_control.py right --set-envelope
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `peak_torque_nm` | 电机**额定**力矩(EL05 = 1.8 Nm) | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
-| `cont_torque_nm` | 电机连续**堵转**额定(1.1 Nm) | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。不是额定力矩:那是*旋转*额定 |
+| `peak_torque_nm` | 电机**额定**力矩(EL05 = 1.8 Nm,RS00 = 5.0 Nm) | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
+| `cont_torque_nm` | 电机连续**堵转**额定(EL05 1.1 Nm,RS00 3.6 Nm) | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。不是额定力矩:那是*旋转*额定 |
 | `temp_derate_start_c` | 0 → 固件 90 °C | 温度降额起点 |
 | `temp_wall_c` | 0 → 固件 100 °C | 温度墙,之上只留 0.30 Nm |
 
@@ -177,51 +179,59 @@ python python/examples/impedance_control.py right --set-envelope
 `effective` 显示为"固件什么都不执行"时,位置误差钳位、I²t、温度墙**一条都没有**
 —— 不是"保护弱一点"。
 
-包络**不是** `start()` 的前提 —— `start()` 只校验设备持久化的 0x700B 启动上限
-(必须 <= `motion_torque_limit_nm`)。包络没开照样启动,只是长时间保持没有 I²t
+包络**不是** `start()` 的前提 —— `start()` 校验的是设备持久化的 0x700B 启动上限
+(必须 <= `motion_torque_limit_nm`)和设备额定(见下)。包络没开照样启动,只是长时间保持没有 I²t
 和温度墙兜底。
 
 ### 1. 启动
 
 ```bash
 python python/examples/gripper_console.py right --mode force-position
-python python/examples/gripper_console.py right --mode force-position --grasp-torque 1.2
+python python/examples/gripper_console.py right --mode force-position --grasp-torque 0.8
 python python/examples/gripper_console.py right --mode force-position \
-       --grasp-torque 1.2 --close-speed 0.5
+       --grasp-torque 0.8 --close-speed 0.5
 
 # 非交互版本:同一个控制器,跑一遍固定 target 序列
-python python/examples/force_position_control.py right --grasp-torque 1.4
+python python/examples/force_position_control.py right --grasp-torque 0.8
 ```
 
 ### 2. 命令行参数
 
 | 开关 | 映射到 | 默认 | 说明 |
 |---|---|---|---|
-| `--grasp-torque` | `grasp_torque_nm` | 1.1 | **力矩预算,就是夹持力设定值。**自由行程用不到,被挡住时停在这个值。上限 `hold_torque_limit_nm` |
-| `--close-speed` | `close_speed_radps` | 0.5 | 闭合速度 rad/s |
+| `--grasp-torque` | `grasp_torque_nm` | 设备连续堵转额定(`for_spec`:EL05 1.1 / RS00 3.6) | **力矩预算,就是夹持力设定值。**自由行程用不到,被挡住时停在这个值。上限是设备的连续堵转额定 |
+| `--close-speed` | `close_speed_radps` | 1.1(`for_spec`,`MOTOR_APPROACH_SPEED_RADPS`) | 闭合速度 rad/s |
 | `--step` | — | 0.05 | `j`/`k` 步进量,归一化 0..1 |
 
 `--kp` / `--kd` 只喂 `--mode impedance`(`ImpedanceController`)。force-position 模式的
 位置增益不再可配 —— 见下。
 
-`--grasp-torque` 的硬上限是 **1.8 Nm**(`hold_torque_limit_nm`,即电机额定力矩),
-超了 `validate_config()` 直接抛 `invalid_argument`。但那只是上限:**持续保持超过
-包络的 `cont_torque_nm` 会被 I²t 降额拉回来**,而 `cont` 就是电机的连续堵转额定
-(EL05 = 1.1 Nm)。所以默认包络下,长期夹持实际可用的就是 **1.1 Nm** —— 设更大的
-数不会让夹得更紧,只会让请求值和实际保持值对不上。
+`--grasp-torque` 的硬上限是设备的**连续堵转额定**(EL05 1.1 Nm,RS00 3.6 Nm),
+超了 `start()` 对照 `motor.get_spec()` 直接抛 `invalid_argument` —— 所以 EL05 上
+1.2、1.4 这类值会被拒,RS00 上最多到 3.6。这个界和包络的 `cont_torque_nm` 是同一
+个数:持续保持超过它本来就会被 I²t 降额拉回来,设更大的数不会让夹得更紧,只会让
+请求值和实际保持值对不上。
 
 ### 3. `ForcePositionConfig` 完整字段(API 用户)
 
-一共 6 个,**真正需要按任务标定的只有前两个**:
+一共 7 个,**真正需要按任务标定的只有前两个**。用
+`ForcePositionConfig.for_spec(motor.get_spec())` 构造,下表「for_spec」一列是它按
+设备给的值;裸构造 `ForcePositionConfig()` 拿的是编译期的 EL05 兜底值,
+`close_speed_radps` 是 0.5。
 
-| 字段 | 默认 | 说明 |
+| 字段 | for_spec(EL05 / RS00) | 说明 |
 |---|---|---|
-| `grasp_torque_nm` | 1.1 | 力矩预算,**就是夹持力**;EL05 连续堵转额定,600s 实测平台 ≈75℃ |
-| `close_speed_radps` | 0.5 | 闭合速度 |
-| `hold_torque_limit_nm` | 1.8 | 无限期保持上限 = 电机**额定**力矩,硬校验 (0, 1.8] |
-| `motion_torque_limit_nm` | 6.0 | 运动瞬态上限 = 电机**峰值**力矩,硬校验 (0, 6.0] |
+| `grasp_torque_nm` | 1.1 / 3.6 | 力矩预算,**就是夹持力**;= 连续堵转额定。EL05 上 600s 实测平台 ≈75℃ |
+| `close_speed_radps` | 1.1 / 1.1 | 闭合斜坡速度 rad/s |
+| `hold_torque_limit_nm` | 1.8 / 5.0 | 无限期保持上限 = 电机**额定**力矩 |
+| `motion_torque_limit_nm` | 6.0 / 14.0 | 运动瞬态上限 = 电机**力矩量程** `t_max` |
+| `close_preload_nm` | 0.25 / 0.25 | 只在闭合端点叠加的前馈,把爪子坐实在机械止点;不随电机推导,不得超过 `grasp_torque_nm` |
 | `status_timeout_ms` | 350 | 状态流超时 → 零命令 + `FAULT` |
 | `motor_stream_hz` | 100 | 状态流速率 |
+
+构造时只做合理性检查(力矩类 (0, 20] N·m、`grasp <= hold <= motion`);对照设备
+的检查在 `start()`:`hold_torque_limit_nm` 超过额定、`motion_torque_limit_nm` 超过
+`t_max`、`grasp_torque_nm` 超过连续堵转额定,都直接抛异常。
 
 前两个现在是**独立的**。2026-09 之前有一条耦合规则(闭合阻尼增益曾经就是
 `grasp_torque_nm / close_speed_radps`,所以速度太低会让增益饱和、夹持力悄悄变软),
@@ -229,8 +239,8 @@ python python/examples/force_position_control.py right --grasp-torque 1.4
 
 #### 不再可配的字段
 
-位置增益(`position_kp`、`position_kd`)、预算劈分比例
-(`travel_damping_fraction`)与到位半径(`arrival_eps_rad`)是在这台硬件上实测
+位置增益(`position_kp`、`position_kd`)、行进段阻尼(`travel_kd`)与到位半径
+(`arrival_eps_rad`)是在这台硬件上实测
 出来的,对这台夹爪只有一个正确答案,所以留在 C++ 侧的
 `detail::ForcePositionTuning`,只有单元测试构造得到。
 
@@ -284,7 +294,7 @@ I²t 与温度墙降额。`dev` 是设备持久化的 0x700B,`start()` 会校验
 
 | 键 | 力位混合下的行为 |
 |---|---|
-| `j` / `k` / `c` | `set_target()` —— 低于当前开度走接触感知路径,高于则有界张开 |
+| `j` / `k` / `c` | `set_target()` —— 开合两个方向是同一条有界力矩控制律;被挡住时停在夹持预算上(饱和即接触,没有单独的接触判定) |
 | `o` | `release()` —— 有界速度阻尼张开,不是位置阶跃 |
 | `h` | `hold_position()` —— 取消运动/夹持,停在当前位置 |
 | `f` | `motor.clear_fault()` **然后** `reset()` 退出 `FAULT` 态(顺序是硬性的) |

@@ -42,9 +42,9 @@ mamba activate taccap
 mamba env update -f environment.yml -n <your-env>
 ```
 
-This installs gcc-14, the C++ deps, Python 3.12, pybind11,
-scikit-build-core, numpy, pyserial, opencv-python==4.12.0.88 and
-rerun-sdk in one shot. After activation you should see:
+This installs gcc-14, the C++ deps (libopencv 4.12, spdlog, gtest), Python
+3.12, pybind11, scikit-build-core, numpy, pytest, pre-commit, uv,
+opencv-python==4.12.0.88 and ruff in one shot. After activation you should see:
 
 ```bash
 which cmake     # → .../envs/taccap/bin/cmake
@@ -132,7 +132,7 @@ build/
 └── cpp/tests/...                # gtest binaries; run via `ctest`
 ```
 
-CMake options (top-level `CMakeLists.txt:19-21`):
+CMake options (top-level `CMakeLists.txt:48-54`):
 
 | Option                  | Default | Effect                                          |
 | ----------------------- | ------- | ----------------------------------------------- |
@@ -146,7 +146,7 @@ CMake options (top-level `CMakeLists.txt:19-21`):
 # Python — note `env -u PYTHONPATH`, see the note below
 env -u PYTHONPATH python -c "import xense.taccap as t; print(t.hello()); print(t.__version__)"
 # → taccap-gripper OK; version <version>
-# → <version>          # both lines match python/xense/taccap/_version.py
+# → <version>          # both come from _taccap_native, i.e. [project].version in pyproject.toml
 
 # Python tests (hardware-free cases always run; IMU cases skip without a gripper)
 env -u PYTHONPATH pytest python/tests

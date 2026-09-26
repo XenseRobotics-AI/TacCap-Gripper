@@ -32,8 +32,10 @@ What's in them:
   command enum + POD payload layouts. The SDK's
   `cpp/include/taccap/protocol/{commands.hpp,payloads.hpp}` mirror these
   1:1 with `static_assert(sizeof(...) == ...)` size checks. Currently
-  mirrored from branch `hw_v1.1.0` @ `81835a6` (command set V2.2 plus the
-  0x54 / 0x55 diagnostic pair).
+  mirrored through command `0x5B` (protocol doc V2.6: V2.2 plus the
+  0x54 / 0x55 diagnostic pair, 0x56–0x58 motor spec / homing diagnostics /
+  motor version, 0x59 / 0x5A motor model, 0x5B CAN extended-frame relay);
+  `scripts/check_protocol_drift.py` is green against firmware `07ab9bb`.
 - `tc-gu-01/App/protocol/PROTOCOL_SPEC.md` + `tc-gu-01/docs/PROTOCOL.md` —
   the human-readable spec, including the §10 offset table for the 72-byte
   extended motor status that `test_codec_v22.cpp` is transcribed from.
@@ -76,13 +78,14 @@ inactive bank and uses the STM32H5 bank swap, so one build serves both banks.
 ```bash
 python python/examples/ota_update.py \
     third_party/firmware/tc-gu-01/build/master/tc-gu-01-master.bin \
-    left --target-version 1.2.4
+    left --target-version 1.2.5
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.4 and the follower 1.2.6, and neither is "behind" the other. They
-were briefly forced onto one number; that was dropped on 2026-09-24, so a leader
-in the field may still report 1.2.5 or 1.2.6 from that period. Those are the
+leader is 1.2.5 and the follower 1.2.9, and neither is "behind" the other. Leader
+1.2.5 behaves exactly like 1.2.4: its only change is in the shared `storage.c`.
+The roles were briefly forced onto one number; that was dropped on 2026-09-24,
+so a leader in the field may still report 1.2.6 from that period. That is the
 same code as 1.2.4, which is why flashing the current leader image onto one
 lowers the number it reports. Nothing in the OTA path compares versions
 (`--target-version` is informational and defaults to the manifest's), so the
@@ -131,9 +134,9 @@ Notes:
 
 - **`make` succeeding does not mean it will flash.** The linker script declares
   the full 2048K, but OTA caps a single bank at 456 KB — check
-  `ls -l build/*/tc-gu-01-*.bin` (builds at `bf0a06e` with
-  `arm-none-eabi-gcc 13.2.1`: master ~118 KB, slave ~156 KB, i.e. 25% / 33% of
-  the cap). Sizes vary by several hundred bytes across toolchains and by a few
+  `ls -l build/*/tc-gu-01-*.bin` (builds at `07ab9bb` with
+  `arm-none-eabi-gcc 13.2.1`: master 118,220 B, slave 165,056 B, i.e. 25% / 35%
+  of the cap). Sizes vary by several hundred bytes across toolchains and by a few
   hundred between firmware revisions, so treat these as approximate — the check
   that matters is that the `.bin` fits under 456 KB.
 - Flash the artifact matching the *role*, not the side. A gripper's role is the
@@ -143,3 +146,29 @@ Notes:
 - `Cmd::GetVersion` returns the **compiled-in** constant, not the OTA bank
   metadata, so `--target-version` is bookkeeping only — the version you read
   back afterwards is proof of what actually got flashed.
+
+### Motor firmware (RobStride) over USB-C
+
+The motor module runs its own firmware, separate from the gripper's. It can be
+flashed through the follower's USB-C port — no RobStride USB-CAN adapter, no
+removing the motor — with `python/examples/motor_ota_update.py`, built on
+`MotorOtaSession` (`cpp/include/taccap/motor_ota.hpp`). Every CAN frame is
+relayed by the follower MCU through `Motor.can_ext_xfer` (`0x5B`).
+
+```bash
+python python/examples/motor_ota_update.py ~/Downloads/rs00-0.0.3.32.bin TCGU01A28Z0086s
+```
+
+- **Follower firmware >= 1.2.8** (the `0x5B` relay).
+- **The motor must be on the PRIVATE protocol.** Under MIT the motor does not
+  answer extended frames (measured). Switch with
+  `motor.switch_protocol(MotorProtocol.Private)`, then power-cycle — the 24 V
+  supply included; an MCU restart does not switch the motor.
+- **RobStride's OTA protocol does not check the model** — an RS00 image is
+  accepted by an EL05 motor. `preflight()` checks the image against the motor
+  model recorded on the gripper (`motor.get_model()`), so record it first.
+- **Gripper OTA first, motor OTA second.** A gripper OTA switches the motor back
+  to MIT.
+- After the update the motor restarts on **MIT**, so its version cannot be read
+  right away (the version frame needs the private protocol). Power-cycle; to
+  confirm the version, switch to private, power-cycle, then `motor.motor_version()`.

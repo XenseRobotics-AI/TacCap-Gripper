@@ -13,10 +13,13 @@ scope here. The follower gripper's motor stack is
 rather than a policy.
 
 **Protocol tracked:** wire framing **V1.8** (the body between HEAD and TAIL
-is byte-stuffed; CRC over the unstuffed HEAD..PAYLOAD) + command set **V2.1**
-(V1.7 motor / CAN-id / gripper-config plus motor_status_t /
-motor_impedance_ctrl_t growth; V1.9 WS2812 + private motor params; V2.0/V2.1
-fisheye-camera and leader-encoder-max calibration). Discovery is MCU-only;
+is byte-stuffed; CRC over the unstuffed HEAD..PAYLOAD) + command set through
+**0x5B** (protocol doc **V2.6**: V1.7 motor / CAN-id / gripper-config plus
+motor_status_t / motor_impedance_ctrl_t growth; V1.9 WS2812 + private motor
+params; V2.0/V2.1 fisheye-camera and leader-encoder-max calibration; V2.2
+startup limit torque and motor fault / extended status; then 0x56 motor spec,
+0x57 homing diagnostics, 0x58 motor firmware version, 0x59/0x5A motor model,
+0x5B CAN extended-frame relay). Discovery is MCU-only;
 cameras are owned by an external camera service. Side/role come from the
 firmware SN (`parse_serial`) with a GetDevType fallback.
 
@@ -86,6 +89,10 @@ for the single-threaded OTA flow, which is the only user.
 │   read_once()    read_once()       read() (sync)     read_status()    │
 │   on_data(cb)    on_data(cb)       start(callback)   read_status_ext()│
 │                                    stop()            fault_report()   │
+│                                                      get_spec()       │
+│                                                      get_/set_model() │
+│                                                      motor_version()  │
+│                                                      can_ext_xfer()   │
 │   ImuSample      EncoderSample     set_undistorter() enable()/disable()│
 │   - mcu_ts_us    - mcu_ts_us                                          │
 │   - accel_mps2   - position_rad    CameraFrame       MotorStatus      │
@@ -191,6 +198,8 @@ taccap-gripper/
 │   │   │   │                                          (fisheye, encoder max)
 │   │   │   ├── motor.hpp / .cpp                  L3  FDCAN motor: status,
 │   │   │   │                                          diagnostics, params
+│   │   │   ├── diagnostics.hpp / .cpp            L3  firmware UART counters,
+│   │   │   │                                          log control
 │   │   │   ├── led.hpp / .cpp                    L3  indicator LED
 │   │   │   ├── key.hpp / .cpp                    L3  on-gripper button
 │   │   │   └── sensor_errors.hpp / .cpp          L3  decoded fault words
@@ -199,6 +208,8 @@ taccap-gripper/
 │   │   ├── impedance_controller.hpp              L4  position tracking
 │   │   ├── force_position_controller.hpp         L4  bounded-force grasp
 │   │   ├── ota.hpp                               L4  firmware update
+│   │   ├── motor_ota.hpp                         L4  MotorOtaSession: motor
+│   │   │                                          firmware over USB-C
 │   │   ├── discovery.hpp                         L4 (helper) zero-config
 │   │   ├── leader_gripper.hpp                    L4  aggregate object
 │   │   └── follower_gripper.hpp                  L4  aggregate object
@@ -208,7 +219,7 @@ taccap-gripper/
 │   ├── examples/
 │   │   └── leader_demo.cpp                       5-second multistream on
 │   │                                              real hardware
-│   └── tests/                                    21 gtest files — codec per
+│   └── tests/                                    32 gtest files — codec per
 │                                                  command set (V1.6/1.7/2.1/
 │                                                  2.2), CRC, framing, byte
 │                                                  stuffing, PTY-based fake
@@ -223,19 +234,19 @@ taccap-gripper/
 │   │   ├── module.cpp                            pybind11 entry point
 │   │   │                                          (enums, Frame, Transport,
 │   │   │                                          SerialBus, codec helpers)
-│   │   ├── components.cpp                        (ImuSample/EncoderSample
-│   │   │                                          with numpy fields, IMU/
-│   │   │                                          Encoder/Camera/Motor/
-│   │   │                                          Calibration/Led/Key,
-│   │   │                                          FisheyeUndistorter,
-│   │   │                                          Leader/FollowerGripper,
-│   │   │                                          discovery)
+│   │   ├── bind_*.cpp                            one file per area: sensors,
+│   │   │                                          ota, gripper_types,
+│   │   │                                          calibration, motor, camera,
+│   │   │                                          gripper, control
+│   │   ├── components.cpp                        only the registration order
+│   │   │                                          of the bind_* calls
 │   │   └── log.cpp                               logging controls
 │   ├── examples/                                 calibrate.py, fisheye_cal.py,
-│   │                                              OTA, MIT control, V4L2 probes
+│   │                                              gripper + motor OTA, controllers
 │   └── xense/taccap/                             PEP 420 namespace package
-│       ├── __init__.py                           re-exports the C-extension
-│       └── _version.py
+│       └── __init__.py                           re-exports the C-extension;
+│                                                  __version__ comes from
+│                                                  _taccap_native
 │
 ├── firmware/                                     shipped leader + follower
 │                                                  images + manifest.json
@@ -385,7 +396,8 @@ does.
                                           clamped at grasp_torque_nm -- a
                                           blocked jaw settles at that force
                                           (saturation is contact)
-                         (motion <= 6 Nm peak; force hold <= 1.8 Nm rated)
+        (limits from the device spec via for_spec(): motion <= t_max, hold <=
+         rated, grasp <= stall -- EL05 6 / 1.8 / 1.1, RS00 14 / 5.0 / 3.6 Nm)
 ```
 
 ---
@@ -514,9 +526,9 @@ Lifetime contract:
 
 ```
 build-time:
-   conda-forge:  cmake, ninja, gcc-14, libopencv 4.12, eigen, openssl,
-                 zlib, nlohmann_json, gtest, pybind11, scikit-build-core,
-                 numpy, pyserial
+   conda-forge:  cmake, ninja, gcc-14, libopencv 4.12, spdlog 1.14,
+                 gtest, pybind11, scikit-build-core, numpy
+                 (environment.yml; plus pytest, pre-commit, uv for dev)
    pip:          opencv-python==4.12.0.88   (single source for cv2 in
                                                python land — pinned across
                                                XenseRobotics SDKs)
@@ -557,7 +569,7 @@ streams and no cameras — and assemble its own data-flow on top.
 
 ## 9. Verified end-to-end (real hardware)
 
-The unit suite is 263 gtest cases across 21 files, PTY-based fake-firmware
+The unit suite is ~400 gtest cases across 32 files, PTY-based fake-firmware
 tests included; it runs on any host, with no gripper attached. What follows is
 a hardware run, which is a different claim.
 

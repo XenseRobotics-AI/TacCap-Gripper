@@ -191,18 +191,21 @@ submits in phase with the motor-status stream, and your policy touches only two
 non-blocking calls:
 
 ```python
-cfg = t.ImpedanceConfig()
+cfg = t.ImpedanceConfig.for_spec(f.motor.get_spec())   # defaults for the motor this device has
+# The values for_spec() gives on an EL05 (RS00 in brackets):
 cfg.kp = 20.0                      # stiffness Nm/rad: error-to-torque ratio, how stiff it feels
-cfg.kd = 1.0                       # damping Nm·s/rad: suppresses oscillation, and sets approach speed (below)
+cfg.kd = 1.0                       # damping Nm·s/rad: suppresses oscillation, and sets approach speed (below).
+                                   #   for_spec: budget / 1.1 rad/s  (RS00 ≈ 3.27)
 cfg.feedforward_torque = 0.0       # constant feed-forward Nm on top of the PD. For gravity/preload; normally 0
 cfg.max_position_torque_nm = 1.1   # error clamp Nm (this is the protection): the commanded target is held
                                    #   within ±(1.1/kp)=0.055 rad of the measured position, and the approach
                                    #   speed is thereby fixed at about 1.1/kd = 1.1 rad/s. A blocked jaw
-                                   #   saturates here and holds
+                                   #   saturates here and holds. for_spec: the stall rating (RS00 3.6)
 cfg.rated_torque_nm = 1.8          # torque ceiling Nm (the backstop), acting on the "measured" torque, not on
                                    #   the command. Once pressed against it, pure feed-forward frames with
                                    #   kp=kd=0 go out instead, pinned at the budget.
-                                   #   Must be higher than max_position_torque_nm + |feed-forward|
+                                   #   Must be higher than max_position_torque_nm + |feed-forward|. (RS00 5.0)
+cfg.peak_torque_nm = 6.0           # the motor's torque range t_max; measured feedback above it → FAULT (RS00 14.0)
 cfg.status_timeout_ms = 350        # status stream gone this long → FAULT + zero torque + observation invalid
 cfg.motor_stream_hz = 100          # status-stream rate Hz; submission locks to this phase, one per frame
 
@@ -226,7 +229,7 @@ After `start()`, do **not** call `start_streaming()` yourself or register a
 `motor.on_status()` callback — the controller owns the status stream and the control
 path exclusively, and every observation comes from `snapshot()`.
 
-#### What each of the seven fields controls
+#### What each of the eight fields controls
 
 | Field | Default | What it controls |
 |---|---|---|
@@ -234,13 +237,19 @@ path exclusively, and every observation comes from `snapshot()`.
 | `kd` | 1.0 Nm·s/rad | Damping. Suppresses oscillation, and also sets the approach speed (below) |
 | `feedforward_torque` | 0.0 Nm | A constant feed-forward torque added on top of the PD. For cancelling gravity or preload; normally left at 0 |
 | `max_position_torque_nm` | 1.1 Nm | **Error clamp** — this is the protection. The commanded target is confined to within ±(that value / `kp`) of the measured position |
-| `rated_torque_nm` | 1.8 Nm | **Torque ceiling**, the backstop. It acts on the **measured** torque, not on the commanded value |
+| `rated_torque_nm` | 1.8 Nm | **Torque ceiling**, the backstop. It acts on the **measured** torque, not on the commanded value. Also bounds `\|feedforward_torque\|` |
+| `peak_torque_nm` | 6.0 Nm | The motor's torque range (`t_max`). A **measured** torque above it is treated as an implausible reading and faults the controller |
 | `status_timeout_ms` | 350 ms | Status stream gone this long → `FAULT` + zero torque + observation marked invalid |
 | `motor_stream_hz` | 100 | Status-stream rate. Submission locks to this phase, one submit per frame |
 
+The defaults in the table are the compiled-in **EL05** fallbacks. Build the config with
+`ImpedanceConfig.for_spec(f.motor.get_spec())` instead, which takes
+`max_position_torque_nm` / `rated_torque_nm` / `peak_torque_nm` from the device's own
+ratings (EL05 1.1 / 1.8 / 6.0, RS00 3.6 / 5.0 / 14.0) and sets `kd` to budget / 1.1 rad/s.
+
 The ones you actually tune per task are the first two plus `max_position_torque_nm`.
-The last two are transport parameters, and `rated_torque_nm` normally just sits at the
-motor's rated value.
+The last two are transport parameters, and `rated_torque_nm` / `peak_torque_nm` normally
+just sit at the motor's ratings.
 
 **These two layers of protection are different things — don't conflate them.**
 
@@ -266,7 +275,8 @@ motor's rated value.
   unit, at one temperature, under one load. **The ceiling does not care about that
   ratio.**
 
-`rated_torque_nm` is capped at **1.8 Nm (rated) rather than 6.0 Nm (peak)**, because
+`rated_torque_nm` is capped at **the device's rated torque (EL05 1.8 Nm, RS00 5.0 Nm)
+rather than its peak**, checked against the device in `start()`, because
 the hold it produces is **indefinite** — nothing puts a clock on it. For a long hold
 above the rated value the main risk is not heat: the motor's undervoltage protection
 is fast, and a sustained high current collapses the 24 V rail and takes USB down with
@@ -282,7 +292,7 @@ nothing like a torque fault.
 |---|---|
 | `TRACKING` | Following normally. A blocked jaw whose error clamp has saturated at the budget is still in this state |
 | `TORQUE_CAPPED` | Measured torque has hit the ceiling; pure feed-forward frames are going out |
-| `FAULT` | Status stream lost / motor fault bit / submit failed. Zero torque; needs `reset()` |
+| `FAULT` | Status stream lost / motor fault bit / submit failed / measured torque above `peak_torque_nm`. Zero torque; needs `reset()` |
 
 **There is no `STALLED`.** The stall guard was removed: it clamped the effective
 target to wherever the jaw had stopped, which zeroed the error and collapsed the
@@ -391,16 +401,20 @@ margins picked by hand:
 
 - `motion_torque_limit_nm`: the **instantaneous** torque ceiling for the velocity
   damping and the PD term during closing, opening and position holding, at most
-  **6.0 Nm** — the motor's **peak torque**. A feedback torque above it drops the
-  controller into a zero-torque fault state. 6.0 Nm is also the firmware's default and maximum for the
-  `0x700B` startup limit (`storage.c`,
-  `STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM`), so the default config agrees with a
-  factory device.
-- `hold_torque_limit_nm`: the ceiling on the **long-term** hold torque, at most
-  **1.8 Nm** — the motor's **rated (nominal) torque**. Neither `grasp_torque_nm`
-  nor a target torque passed in at runtime may exceed it. Note that it clamps
-  **nothing** in the current control law: it only bounds `grasp_torque_nm` and
-  warns when that exceeds the motor's actual rating.
+  the motor model's **torque range `t_max`** (EL05 6.0 Nm, RS00 14.0 Nm). A feedback
+  torque above it drops the controller into a zero-torque fault state. Since follower
+  1.2.9 the model's `t_max` is also the firmware's default and maximum for the `0x700B`
+  startup limit (a value stored by older firmware is kept), so a config built with
+  `ForcePositionConfig.for_spec(f.motor.get_spec())` agrees with a factory device.
+- `hold_torque_limit_nm`: the ceiling on the **long-term** hold torque, at most the
+  device's **rated (nominal) torque** (EL05 1.8 Nm, RS00 5.0 Nm). Neither
+  `grasp_torque_nm` nor a target torque passed in at runtime may exceed it. Note that
+  it clamps **nothing** in the current control law: it only bounds `grasp_torque_nm`.
+
+The constructor only sanity-checks these at (0, 20] N·m. `start()` checks them against
+the device and **raises** when `hold_torque_limit_nm` exceeds the rated torque,
+`motion_torque_limit_nm` exceeds `t_max`, or `grasp_torque_nm` exceeds the continuous
+stall rating (EL05 1.1, RS00 3.6).
 
 `start()` reads the V2.2 persisted `0x700B limit_torque` and requires the device's
 value to be no higher than the configured motion ceiling. What is persisted here is
@@ -410,7 +424,7 @@ so that the MCU writes the value into the motor's runtime parameter 0x700B at bo
 
 ```python
 f = t.FollowerGripper.open()
-f.motor.set_startup_limit_torque(6.0)   # writes MCU flash; configure once
+f.motor.set_startup_limit_torque(f.motor.get_model().t_max_nm)   # the model's t_max; writes MCU flash; configure once
 print(f.motor.get_startup_limit_torque())
 # exit here and replug the gripper; do not carry straight on into motion on this power cycle
 ```
@@ -418,18 +432,19 @@ print(f.motor.get_startup_limit_torque())
 After the restart, use the controller:
 
 ```python
-cfg = t.ForcePositionConfig()
-cfg.grasp_torque_nm = 0.35         # torque budget, Nm — the grip force setpoint; a
-                                   #   blocked jaw settles here
-cfg.close_speed_radps = 0.5        # close/open speed rad/s. Not independent of the above: the damping gain is
-                                   #   grasp/close_speed (capped at 5), and anything below grasp/5 is rejected
-cfg.hold_torque_limit_nm = 1.8     # indefinite-hold ceiling = motor rated torque, validated (0, 1.8]
-cfg.motion_torque_limit_nm = 6.0   # motion transient ceiling = motor peak torque, validated (0, 6.0]
-cfg.status_timeout_ms = 350        # status stream gone this long → FAULT + zero torque + observation invalid
-cfg.motor_stream_hz = 100          # status-stream rate Hz; the confirm-frame count derives from it and the firmware's 30 ms
-
 f = t.FollowerGripper.open()
 f.motor.clear_fault()
+
+cfg = t.ForcePositionConfig.for_spec(f.motor.get_spec())   # ratings of the installed motor
+cfg.grasp_torque_nm = 0.35         # torque budget, Nm — the grip force setpoint; a
+                                   #   blocked jaw settles here. for_spec: the stall rating (EL05 1.1 / RS00 3.6)
+cfg.close_speed_radps = 1.1        # close/open ramp speed rad/s (for_spec: 1.1)
+# for_spec also sets (EL05 / RS00):
+#   hold_torque_limit_nm   = rated torque   1.8 / 5.0  — indefinite-hold ceiling
+#   motion_torque_limit_nm = t_max          6.0 / 14.0 — motion transient ceiling
+#   close_preload_nm       = 0.25                       — seating force at the closed stop
+cfg.status_timeout_ms = 350        # status stream gone this long → FAULT + zero torque + observation invalid
+cfg.motor_stream_hz = 100          # status-stream rate Hz; submission locks to this phase
 grasp = t.ForcePositionController(f, cfg)
 grasp.start()                 # validates the device limit first; does not close on its own yet
 f.motor.enable()
@@ -456,15 +471,16 @@ python python/examples/impedance_control.py --show-envelope
 python python/examples/impedance_control.py --set-envelope
 ```
 
-Note: 6 Nm is the motor's peak, and it only allows **instantaneous** torque of that
-magnitude during the motion phase; it does not raise the gripper mechanism's safe
-rating to 6 Nm. If the mechanism itself cannot take an instantaneous load above
-1.8 Nm, lower `motion_torque_limit_nm` and the device's `0x700B` together. All the
-software can guarantee is that the commanded torque during the hold does not exceed
-`grasp_torque_nm`, whose own ceiling is 1.8 Nm.
+Note: `t_max` (EL05 6 Nm, RS00 14 Nm) is the motor's peak, and it only allows
+**instantaneous** torque of that magnitude during the motion phase; it does not raise
+the gripper mechanism's safe rating to it. If the mechanism itself cannot take an
+instantaneous load above the rated torque (EL05 1.8, RS00 5.0 Nm), lower
+`motion_torque_limit_nm` and the device's `0x700B` together. All the software can
+guarantee is that the commanded torque during the hold does not exceed
+`grasp_torque_nm`, whose own ceiling is the device's continuous stall rating.
 
-This controller needs follower firmware ≥ 1.1.2 (which supports reading the V2.2
-startup torque limit), and a follower whose open/close travel has been calibrated.
+`FollowerGripper` refuses to open a follower below firmware 1.2.5, and this controller
+needs a follower whose open/close travel has been calibrated.
 While it runs it owns motor control and the status stream exclusively — do not use
 `ImpedanceController` concurrently, and do not send other motion commands directly.
 
@@ -475,21 +491,23 @@ status frame, inside the window the MCU is known to be idle: measured, 6000 subm
 6000 frames : 0 lost, while free-running at 100 Hz under the same conditions lost
 156–308 frames per run. Do not treat 500 Hz as a budget to spend.
 
-**There is no low-level path any more.** The raw motor primitives
-(`motor.set_impedance` / `submit_impedance` / `set_position` / `set_velocity` /
-`set_torque`, and the normalized wrapper `FollowerGripper.set_position`) are **no
-longer exposed to Python**. All of them drop a control frame straight onto the bus: no
-error clamp, no torque ceiling. Go through `ImpedanceController` or
-`ForcePositionController`. The C++ side keeps these methods; the two controllers use
-them internally.
+**The low-level path carries no protection.** The raw no-ACK primitives
+`motor.submit_impedance` / `submit_position` / `submit_velocity` / `submit_torque` are
+exposed to Python; the ACK'd `set_impedance` / `set_position` / `set_velocity` /
+`set_torque` and the normalized wrapper `FollowerGripper.set_position` are C++ only.
+All of them drop a control frame straight onto the bus: no error clamp, no torque
+ceiling. Go through `ImpedanceController` or `ForcePositionController`, which use them
+internally; if you do call `submit_*`, poll `motor.control_stats()` for what the
+firmware dropped.
 
 **Feedback rate**: the motor's `actual_*` telemetry is only ~50–100 Hz, so read
 observations through `observation()` / `snapshot()` and do not poll with
 `read_status()` — above ~100 Hz it holds back the firmware's own refresh, and during
 control the ACK round-trip corrupts telemetry frames.
 
-> For **grip force**, use `ForcePositionController`: after contact is decided,
-> `kp=kd=0` and `grasp_torque_nm` is the hold torque itself. The `max_torque` of
+> For **grip force**, use `ForcePositionController`: its single control law clamps the
+> PD request at `grasp_torque_nm`, so a blocked jaw holds exactly that torque — no
+> contact detection, saturation is contact. The `max_torque` of
 > position mode is not a tight force ceiling, and using it as a grip force will crush
 > a soft object.
 

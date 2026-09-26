@@ -168,16 +168,20 @@ f.motor.clear_fault()
 转发)就用它。C++ 后台线程按电机状态流的相位提交,你的策略只碰两个非阻塞调用:
 
 ```python
-cfg = t.ImpedanceConfig()
+cfg = t.ImpedanceConfig.for_spec(f.motor.get_spec())   # 按本机电机取默认值
+# 下面是 for_spec() 在 EL05 上给出的值(括号里是 RS00):
 cfg.kp = 20.0                      # 刚度 Nm/rad:位置误差换成力矩的比例,手感硬不硬
-cfg.kd = 1.0                       # 阻尼 Nm·s/rad:抑振,并决定接近速度(见下)
+cfg.kd = 1.0                       # 阻尼 Nm·s/rad:抑振,并决定接近速度(见下)。
+                                   #   for_spec:预算 / 1.1 rad/s(RS00 ≈ 3.27)
 cfg.feedforward_torque = 0.0       # 恒定前馈 Nm,叠在 PD 上。抵消重力/预载用,平时 0
 cfg.max_position_torque_nm = 1.1   # 误差钳位 Nm(就是保护):命令目标限制在实测位置
                                    #   ±(1.1/kp)=0.055 rad 内,并把接近速度定在
-                                   #   约 1.1/kd = 1.1 rad/s。被挡住时饱和在这里并保持
+                                   #   约 1.1/kd = 1.1 rad/s。被挡住时饱和在这里并保持。
+                                   #   for_spec:堵转额定(RS00 3.6)
 cfg.rated_torque_nm = 1.8          # 力矩天花板 Nm(兜底),作用在“实测”力矩上,不是命令值。
                                    #   顶住后改发 kp=kd=0 的纯前馈帧,钉在预算上。
-                                   #   须高于 max_position_torque_nm + |前馈|
+                                   #   须高于 max_position_torque_nm + |前馈|(RS00 5.0)
+cfg.peak_torque_nm = 6.0           # 电机力矩量程 t_max;实测反馈超过它 → FAULT(RS00 14.0)
 cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
 cfg.motor_stream_hz = 100          # 状态流速率 Hz;提交锁在这个相位,一帧一提交
 
@@ -199,7 +203,7 @@ finally:
 `start()` 之后**不要**再自己 `start_streaming()` 或注册 `motor.on_status()` ——
 控制器独占状态流与控制路径,观测一律从 `snapshot()` 取。
 
-#### 七个字段分别控制什么
+#### 八个字段分别控制什么
 
 | 字段 | 默认 | 控制什么 |
 |---|---|---|
@@ -207,12 +211,18 @@ finally:
 | `kd` | 1.0 Nm·s/rad | 阻尼。抑制振荡,同时决定接近速度(见下) |
 | `feedforward_torque` | 0.0 Nm | 恒定前馈力矩,叠加在 PD 之上。抵消重力/预载用,平时留 0 |
 | `max_position_torque_nm` | 1.1 Nm | **误差钳位**,就是保护。命令目标被限制在实测位置 ±(该值/`kp`) 内 |
-| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,兜底。作用在**实测**力矩上,不是命令值 |
+| `rated_torque_nm` | 1.8 Nm | **力矩天花板**,兜底。作用在**实测**力矩上,不是命令值;同时也是 `\|feedforward_torque\|` 的上界 |
+| `peak_torque_nm` | 6.0 Nm | 电机力矩量程(`t_max`)。**实测**力矩超过它按不可信读数处理,控制器进 FAULT |
 | `status_timeout_ms` | 350 ms | 状态流断这么久 → `FAULT` + 零力矩 + 观测置 invalid |
 | `motor_stream_hz` | 100 | 状态流速率。提交锁在这个相位上,一帧一提交 |
 
+表里的默认值是编译进来的 **EL05** 兜底值。应当用
+`ImpedanceConfig.for_spec(f.motor.get_spec())` 构造,它从设备自报的额定取
+`max_position_torque_nm` / `rated_torque_nm` / `peak_torque_nm`(EL05 1.1 / 1.8 / 6.0,
+RS00 3.6 / 5.0 / 14.0),并把 `kd` 设为 预算 / 1.1 rad/s。
+
 真正要按任务调的是前两个加 `max_position_torque_nm`;后两个是传输参数,
-`rated_torque_nm` 一般就放在电机额定值上。
+`rated_torque_nm` / `peak_torque_nm` 一般就放在电机额定值上。
 
 **这两层保护是不同的东西,别混。**
 
@@ -231,7 +241,8 @@ finally:
 - 为什么两层都要:钳位管的是命令值,而 1.1.5 实测堵转时反馈只有命令的约 0.59
   —— 那个比例是一台机、一个温度、一个负载测出来的。**天花板不关心这个比例。**
 
-`rated_torque_nm` 上限卡在 **1.8 Nm(额定)而不是 6.0 Nm(峰值)**,因为它产生的
+`rated_torque_nm` 上限卡在 **设备额定力矩(EL05 1.8 Nm、RS00 5.0 Nm)而不是峰值**,
+由 `start()` 对照设备检查,因为它产生的
 保持是**无限期**的,没有任何东西给它计时。超过额定值长期保持,主要风险不是热:
 电机欠压保护很快,持续大电流会把 24 V 拉垮并把 USB 一起带走 —— 到主机这边表现为
 `SerialBus::write: Input/output error`,完全不像力矩故障。
@@ -245,7 +256,7 @@ finally:
 |---|---|
 | `TRACKING` | 正常跟随。被挡住、误差钳位饱和在预算上,也还是这个状态 |
 | `TORQUE_CAPPED` | 实测力矩顶到天花板,正在发纯前馈帧 |
-| `FAULT` | 状态流断 / 电机故障位 / 提交失败。零力矩,需 `reset()` |
+| `FAULT` | 状态流断 / 电机故障位 / 提交失败 / 实测力矩超过 `peak_torque_nm`。零力矩,需 `reset()` |
 
 **没有 `STALLED`。** 失速守卫已删除:它把有效目标钳到爪子停住的位置,误差归零,
 力矩随之塌掉 —— 实测接触后 60 ms 在 0.35 Nm 松手。要判断是不是被挡住,看
@@ -329,14 +340,17 @@ command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 随手取的安全裕度:
 
 - `motion_torque_limit_nm`:闭合/张开/位置保持过程中的速度阻尼和 PD **瞬时**力矩
-  上限,最大 **6.0 Nm** —— 电机的**峰值力矩**;反馈力矩超过它会进入零力矩故障状态。
-  6.0 Nm 同时也是固件对 `0x700B` 启动上限的默认值和最大值
-  (`storage.c` `STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM`),所以默认配置和
-  出厂设备是一致的。
-- `hold_torque_limit_nm`:**长期**保持力矩的上限,最大 **1.8 Nm** —— 电机的
-  **额定(标称)力矩**;`grasp_torque_nm` 和运行时传入的目标力矩都不能超过它。
-  注意它在当前控制律里**不钳任何输出**:只用来校验 grasp 的上界,并在超过电机
-  实际额定值时告警。
+  上限,最大为电机型号的**力矩量程 `t_max`**(EL05 6.0 Nm、RS00 14.0 Nm);反馈力矩
+  超过它会进入零力矩故障状态。从从爪固件 1.2.9 起,型号的 `t_max` 同时也是固件对
+  `0x700B` 启动上限的默认值和最大值(旧固件存下的值保留不动),所以用
+  `ForcePositionConfig.for_spec(f.motor.get_spec())` 构造的配置和出厂设备是一致的。
+- `hold_torque_limit_nm`:**长期**保持力矩的上限,最大为设备的**额定(标称)力矩**
+  (EL05 1.8 Nm、RS00 5.0 Nm);`grasp_torque_nm` 和运行时传入的目标力矩都不能超过它。
+  注意它在当前控制律里**不钳任何输出**:只用来校验 grasp 的上界。
+
+构造时只做 (0, 20] N·m 的合理性检查。`start()` 对照设备检查,`hold_torque_limit_nm`
+超过额定力矩、`motion_torque_limit_nm` 超过 `t_max`、或 `grasp_torque_nm` 超过持续
+堵转额定(EL05 1.1、RS00 3.6)时直接**抛异常**。
 
 `start()` 会读取 V2.2 的持久化 `0x700B limit_torque`,并要求设备值不高于配置的
 运动上限。这里持久化的是**夹爪 MCU Flash 中的启动配置**,不是电机自身 Flash。
@@ -345,7 +359,7 @@ command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 
 ```python
 f = t.FollowerGripper.open()
-f.motor.set_startup_limit_torque(6.0)   # 写 MCU Flash,只需配置一次
+f.motor.set_startup_limit_torque(f.motor.get_model().t_max_nm)   # 型号的 t_max;写 MCU Flash,只需配置一次
 print(f.motor.get_startup_limit_torque())
 # 此处退出并拔插夹爪;不要在同一次上电中直接继续运动
 ```
@@ -353,17 +367,19 @@ print(f.motor.get_startup_limit_torque())
 重启后使用控制器:
 
 ```python
-cfg = t.ForcePositionConfig()
-cfg.grasp_torque_nm = 0.35         # 力矩预算 Nm —— 就是夹持力设定值,被挡住时停在这里
-cfg.close_speed_radps = 0.5        # 闭合/张开速度 rad/s。与上一项不独立:阻尼增益是
-                                   #   grasp/close_speed(上限 5),低于 grasp/5 会被拒
-cfg.hold_torque_limit_nm = 1.8     # 无限期保持上限 = 电机额定力矩,校验 (0, 1.8]
-cfg.motion_torque_limit_nm = 6.0   # 运动瞬态上限 = 电机峰值力矩,校验 (0, 6.0]
-cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
-cfg.motor_stream_hz = 100          # 状态流速率 Hz;确认帧数由它和固件 30 ms 推导
-
 f = t.FollowerGripper.open()
 f.motor.clear_fault()
+
+cfg = t.ForcePositionConfig.for_spec(f.motor.get_spec())   # 本机电机的额定
+cfg.grasp_torque_nm = 0.35         # 力矩预算 Nm —— 就是夹持力设定值,被挡住时停在这里。
+                                   #   for_spec:堵转额定(EL05 1.1 / RS00 3.6)
+cfg.close_speed_radps = 1.1        # 闭合/张开斜坡速度 rad/s(for_spec:1.1)
+# for_spec 还会设置(EL05 / RS00):
+#   hold_torque_limit_nm   = 额定力矩  1.8 / 5.0  —— 无限期保持上限
+#   motion_torque_limit_nm = t_max     6.0 / 14.0 —— 运动瞬态上限
+#   close_preload_nm       = 0.25                  —— 闭合止点的压紧力
+cfg.status_timeout_ms = 350        # 状态流断这么久 → FAULT + 零力矩 + 观测置 invalid
+cfg.motor_stream_hz = 100          # 状态流速率 Hz;提交锁在这个相位
 grasp = t.ForcePositionController(f, cfg)
 grasp.start()                 # 先验证设备上限,尚不主动闭合
 f.motor.enable()
@@ -390,13 +406,13 @@ python python/examples/impedance_control.py --show-envelope
 python python/examples/impedance_control.py --set-envelope
 ```
 
-注意:6 Nm 是电机峰值、只允许运动阶段的**瞬时**力矩到这个量级,并不把夹爪机构的
-安全额定值提高到 6 Nm。如果机构本身不能承受高于 1.8 Nm 的瞬时负载,应把
-`motion_torque_limit_nm` 和设备 `0x700B` 一并设低;软件只能保证保持阶段的命令
-力矩不超过 `grasp_torque_nm`(其上界 1.8 Nm)。
+注意:`t_max`(EL05 6 Nm、RS00 14 Nm)是电机峰值、只允许运动阶段的**瞬时**力矩到
+这个量级,并不把夹爪机构的安全额定值提高到这个数。如果机构本身不能承受高于额定力矩
+(EL05 1.8、RS00 5.0 Nm)的瞬时负载,应把 `motion_torque_limit_nm` 和设备 `0x700B`
+一并设低;软件只能保证保持阶段的命令力矩不超过 `grasp_torque_nm`(其上界是设备的
+持续堵转额定)。
 
-该控制器需要 follower 固件 ≥ 1.1.2(支持 V2.2 启动力矩上限读取),并且从爪
-开合行程已经标定。运行期间它独占电机控制与状态流,不要并发使用 `ImpedanceController`
+`FollowerGripper` 拒绝打开固件低于 1.2.5 的从爪;该控制器还要求从爪开合行程已经标定。运行期间它独占电机控制与状态流,不要并发使用 `ImpedanceController`
 或直接发送其他运动命令。
 
 **相位为什么重要**:主机帧只要在 MCU 发送期间落地,就会让它丢掉正在发的那一帧,
@@ -404,11 +420,13 @@ python python/examples/impedance_control.py --set-envelope
 是每收到一帧状态提交一次,落在 MCU 已知空闲的窗口里,实测 6000 提交 : 6000 帧 :
 0 丢失;同一条件下自由跑 100 Hz 每轮丢 156–308 帧。别把 500 Hz 当预算花。
 
-**没有低层写法了。** 裸电机原语(`motor.set_impedance` / `submit_impedance` /
-`set_position` / `set_velocity` / `set_torque`,以及归一化包装
-`FollowerGripper.set_position`)**不再暴露给 Python**。它们都是把控制帧直接丢上
-总线:没有误差钳位、没有力矩天花板。走 `ImpedanceController` 或
-`ForcePositionController`。C++ 侧保留这些方法,两个控制器内部在用。
+**低层写法没有任何保护。** 不带 ACK 的裸原语 `motor.submit_impedance` /
+`submit_position` / `submit_velocity` / `submit_torque` 暴露给了 Python;带 ACK 的
+`set_impedance` / `set_position` / `set_velocity` / `set_torque` 以及归一化包装
+`FollowerGripper.set_position` 只在 C++ 侧。它们都是把控制帧直接丢上总线:没有误差
+钳位、没有力矩天花板。走 `ImpedanceController` 或 `ForcePositionController`(两个
+控制器内部就在用它们);真要直接调 `submit_*`,用 `motor.control_stats()` 查固件丢了
+什么。
 
 **反馈频率**:电机 `actual_*` 遥测只有 ~50–100 Hz,读观测请走
 `observation()` / `snapshot()`,别用 `read_status()` 轮询 —— 超过 ~100 Hz 会拖住
