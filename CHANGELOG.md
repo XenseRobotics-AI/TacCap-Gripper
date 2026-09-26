@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FollowerGripper.close()` / `LeaderGripper.close()`** (and `.closed`):
+  release the gripper now — stop the stream, join the link's threads and
+  **close the serial port**, so it can be opened again by this or another
+  process. Idempotent; commands afterwards raise `IoError`. Also
+  `Transport.close()` / `.is_open`.
+
+### Fixed
+
+- **The `with` block now releases the port.** `__exit__` used to call
+  `transport().stop()`, which joins the threads but keeps the port open and
+  exclusively locked until the object is garbage-collected — so any lingering
+  reference (a worker thread, a GUI model) kept the next scan reporting the
+  port `in_use`. tc-gu-01-pc hit this on disconnect/reconnect. `__exit__` now
+  calls `close()`.
+
 ## [0.3.5] - 2026-09-27
 
 ### Firmware

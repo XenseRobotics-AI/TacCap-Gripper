@@ -137,8 +137,9 @@ void bind_gripper(py::module_& m) {
         "asked for -- the wrist camera. There is no motor on leader hardware; that\n"
         "is FollowerGripper.\n\n"
         "The constructor opens the MCU serial device and holds it for the object's\n"
-        "lifetime. Use it as a context manager: __exit__ drops the reader thread\n"
-        "and its callbacks, which otherwise live until interpreter shutdown.\n\n"
+        "lifetime -- exclusively. Use it as a context manager, or call close():\n"
+        "either stops the threads and RELEASES THE PORT; otherwise the port stays\n"
+        "locked until the object is garbage-collected.\n\n"
         "    with LeaderGripper.open() as g:\n"
         "        g.start_streaming(imu_hz=100, encoder_hz=100)\n"
         "        print(g.encoder.read_once())")
@@ -307,15 +308,27 @@ void bind_gripper(py::module_& m) {
         .def("__enter__", [](LeaderGripper& g) -> LeaderGripper& { return g; },
              "Returns the gripper unchanged -- the link is already open by the time\n"
              "you hold the object.")
+        .def("close", [](LeaderGripper& g) {
+            py::gil_scoped_release gil;
+            g.close();
+        }, "Release the gripper now: stop the stream, join the link's threads and\n"
+           "CLOSE THE SERIAL PORT, so it can be opened again -- by this process or\n"
+           "another. Idempotent; afterwards every command raises IoError.\n\n"
+           "Without it the port is freed only when the object is garbage-collected,\n"
+           "which any lingering reference (a thread, a callback, a GUI model)\n"
+           "postpones -- and until then scan_grippers() reports the port in_use.\n"
+           "transport.stop() alone does NOT release the port.")
+        .def_property_readonly("closed", &LeaderGripper::is_closed,
+            "True once close() (or the end of a `with` block) released the port.")
         .def("__exit__",  [](LeaderGripper& g, py::object, py::object, py::object) {
             py::gil_scoped_release gil;
-            g.stop_streaming();
-            // Also tear the link down, so callbacks and the reader thread are
-            // gone by the end of the `with` block rather than lingering until
-            // interpreter shutdown. Leaving them alive is what let a late DATA
-            // frame call into a finalized interpreter.
-            g.transport().stop();
-        }, "Stop the stream and tear the link down, including on an exception.");
+            // close(), not just transport().stop(): the `with` block's promise is
+            // that the gripper is released at its end. stop() joined the threads
+            // (so no late DATA frame can call into a finalized interpreter) but
+            // kept the port open and exclusively locked.
+            g.close();
+        }, "close() -- stop the stream, tear the link down and release the port,\n"
+           "including on an exception.");
 
     // ---- FollowerGripper ------------------------------------------------
     // ---- FirmwareVersion -------------------------------------------------
@@ -342,9 +355,10 @@ void bind_gripper(py::module_& m) {
     py::class_<FollowerGripper>(m, "FollowerGripper",
         "One TacCap-Gripper follower (robot-side executor).\n\n"
         "The leader's sensor surface plus a Motor driving the FDCAN-attached\n"
-        "actuator. The constructor holds the MCU serial device for the object's\n"
-        "lifetime; use it as a context manager so the reader thread goes away at\n"
-        "the end of the block rather than at interpreter shutdown.\n\n"
+        "actuator. The constructor holds the MCU serial device -- exclusively --\n"
+        "for the object's lifetime. Use it as a context manager, or call close():\n"
+        "either stops the threads and RELEASES THE PORT; otherwise the port stays\n"
+        "locked until the object is garbage-collected.\n\n"
         "Follower firmware older than 1.2.5 is REFUSED with ProtocolError. That\n"
         "is a follower-line version: the two roles number independently, so a\n"
         "leader's version is not comparable with it. Below 1.1.6 the firmware\n"
@@ -667,13 +681,25 @@ void bind_gripper(py::module_& m) {
         .def("__enter__", [](FollowerGripper& g) -> FollowerGripper& { return g; },
              "Returns the gripper unchanged -- the link is already open by the time\n"
              "you hold the object.")
+        .def("close", [](FollowerGripper& g) {
+            py::gil_scoped_release gil;
+            g.close();
+        }, "Release the gripper now: stop the stream, join the link's threads and\n"
+           "CLOSE THE SERIAL PORT, so it can be opened again -- by this process or\n"
+           "another. Idempotent; afterwards every command raises IoError. Does not\n"
+           "disable the motor -- stop the controller first (its stop() disables).\n\n"
+           "Without it the port is freed only when the object is garbage-collected,\n"
+           "which any lingering reference (a thread, a callback, a GUI model)\n"
+           "postpones -- and until then scan_grippers() reports the port in_use.\n"
+           "transport.stop() alone does NOT release the port.")
+        .def_property_readonly("closed", &FollowerGripper::is_closed,
+            "True once close() (or the end of a `with` block) released the port.")
         .def("__exit__",  [](FollowerGripper& g, py::object, py::object, py::object) {
             py::gil_scoped_release gil;
-            g.stop_streaming();
-            // See LeaderGripper::__exit__ — drop the reader thread and its
-            // callbacks here rather than at interpreter shutdown.
-            g.transport().stop();
-        }, "Stop the stream and tear the link down, including on an exception.\n\n"
+            // See LeaderGripper::__exit__ -- close(), which also releases the port.
+            g.close();
+        }, "close() -- stop the stream, tear the link down and release the port,\n"
+           "including on an exception.\n\n"
            "It does not disable the motor -- a controller's stop() does that.");
 }
 

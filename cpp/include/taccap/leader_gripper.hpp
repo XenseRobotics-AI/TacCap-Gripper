@@ -158,6 +158,21 @@ public:
     OtaSession&     ota()            noexcept { return ota_; }            // V1.3
     bus::Transport& transport()      noexcept { return t_; }
 
+    // Release the gripper NOW: stop the stream (best effort), stop the wrist
+    // camera if one was opened, join the link's threads and close the serial
+    // port -- so it can be opened again, by this process or another.
+    //
+    // Without it the port is released only when the object is destroyed, and a
+    // Python caller does not control that: any lingering reference (a worker
+    // thread, a callback, a GUI model) keeps the port exclusively locked, and
+    // the next scan reports it in_use. transport().stop() alone is NOT enough:
+    // it joins the threads but keeps the port open.
+    //
+    // Idempotent. Afterwards every command fails with IoError; open a new
+    // object to talk to the gripper again. Does not disable the motor.
+    void close() noexcept;
+    bool is_closed() const noexcept { return !t_.is_open(); }
+
     // ---- Normalized gripper position (0 = closed, 1 = open) ----------------
     // Mirror of the FollowerGripper surface, built on the leader's encoder-max
     // calibration (Cmd::EncoderMaxCal 0x2C) instead of a follower

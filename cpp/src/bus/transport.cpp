@@ -39,6 +39,11 @@ Transport::~Transport() {
     stop();
 }
 
+void Transport::close() noexcept {
+    stop();              // workers joined first: nothing is reading the fd any more
+    serial_.close();
+}
+
 // ---- public API -----------------------------------------------------------
 
 protocol::ErrorCode ack_error_code(const AckResponse& ack) noexcept {

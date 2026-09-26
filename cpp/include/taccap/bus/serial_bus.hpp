@@ -52,6 +52,11 @@ public:
     void flush_output();
 
     bool is_open() const noexcept { return fd_ >= 0; }
+
+    // Release the device: drops the exclusive lock and closes the fd, so the
+    // port can be opened again (by this process or another). Idempotent. Any
+    // read/write afterwards throws IoError(EBADF).
+    void close() noexcept { close_(); }
     const Config& config() const noexcept { return cfg_; }
 
     // Best-effort enumeration of likely TacCap serial endpoints. Today we

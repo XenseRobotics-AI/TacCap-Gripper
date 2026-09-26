@@ -113,3 +113,40 @@ TEST(ExclusiveOpen, ThePortIsFreeAgainOnceTheHandleCloses) {
     { auto first = open_follower(pty); }
     EXPECT_NO_THROW({ auto again = open_follower(pty); });
 }
+
+// close() is the only way to free the port while the object is still alive --
+// which in Python is whenever anything else holds a reference to it.
+TEST(ExclusiveOpen, CloseReleasesThePortWhileTheObjectIsStillAlive) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto first = open_follower(pty);
+    EXPECT_FALSE(first->is_closed());
+    first->close();
+    EXPECT_TRUE(first->is_closed());
+    EXPECT_NO_THROW({ auto again = open_follower(pty); })
+        << "the port must be free again with the first object still alive";
+}
+
+TEST(ExclusiveOpen, CloseIsIdempotentAndCommandsFailAfterwards) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    g->close();
+    EXPECT_NO_THROW(g->close());
+    EXPECT_THROW(g->device().heartbeat(), tx::IoError);
+}
+
+// transport().stop() alone joins the threads but keeps the port: that is the
+// trap a GUI fell into, and why close() exists.
+TEST(ExclusiveOpen, TransportStopAloneKeepsThePort) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto first = open_follower(pty);
+    first->transport().stop();
+    EXPECT_THROW({ auto again = open_follower(pty); }, tx::IoError);
+    first->close();
+    EXPECT_NO_THROW({ auto again = open_follower(pty); });
+}

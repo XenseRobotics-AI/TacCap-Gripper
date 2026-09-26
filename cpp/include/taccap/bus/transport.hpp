@@ -221,6 +221,13 @@ public:
     // those frames are counted into Stats::queue_dropped.
     void stop() noexcept;
 
+    // stop(), then release the serial port so it can be opened again. stop()
+    // alone joins the workers but KEEPS the port open and exclusively locked
+    // until this object is destroyed -- which in Python means until the last
+    // reference goes away. Idempotent; a stopped transport rejects commands.
+    void close() noexcept;
+    bool is_open() const noexcept { return serial_.is_open(); }
+
     Stats stats() const noexcept;
 
     const Config& config() const noexcept { return cfg_; }

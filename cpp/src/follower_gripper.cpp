@@ -220,6 +220,18 @@ FollowerGripper::~FollowerGripper() {
     try { stop_streaming(); } catch (...) {}
 }
 
+void FollowerGripper::close() noexcept {
+    if (!t_.is_open()) return;
+    if (t_.is_running()) {
+        try { stop_streaming(); } catch (...) {}
+    }
+    if (wrist_) {
+        try { wrist_->stop(); } catch (...) {}
+    }
+    t_.close();
+    logger()->info("FollowerGripper: closed {}", cfg_.mcu_device);
+}
+
 std::unique_ptr<FollowerGripper> FollowerGripper::open() {
     // Discovery is MCU-only; cameras are owned externally and stay off
     // (open_cameras defaults to false). A caller that still wants this

@@ -430,7 +430,16 @@ PYBIND11_MODULE(_taccap_native, m) {
              [](tb::Transport& t) {
                  py::gil_scoped_release gil;
                  t.stop();
-             })
+             },
+             "Join the reader/dispatcher threads. Does NOT release the serial port --\n"
+             "use close(), or the gripper's close().")
+        .def("close",
+             [](tb::Transport& t) {
+                 py::gil_scoped_release gil;
+                 t.close();
+             },
+             "stop(), then close the serial port so it can be opened again.")
+        .def_property_readonly("is_open", &tb::Transport::is_open)
         .def_property_readonly("is_running", &tb::Transport::is_running)
         .def_property_readonly("stats",      &tb::Transport::stats)
         .def_property_readonly("device", [](const tb::Transport& t) {
