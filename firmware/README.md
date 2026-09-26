@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.5.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.6 | 118,220 B | `0x885b8706` |
-| `tc-gu-01-slave-1.2.9.bin` | follower (SN ends **`s`**) | **1.2.9** | V2.6 + 运动安全包络 | 165,056 B | `0xc69f7015` |
+| `tc-gu-01-slave-1.2.10.bin` | follower (SN ends **`s`**) | **1.2.10** | V2.7 + 运动安全包络 | 165,664 B | `0xcb69dfbd` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -30,20 +30,28 @@ binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped o
 shared code bumps both roles**, and only a change confined to one role's own
 sources bumps that role alone.
 
-The leader is at 1.2.5 while the follower is at 1.2.9 for that reason: 1.2.7 and
-1.2.8 touched only follower code, and 1.2.9 changed the shared `storage.c`, which
-is what moved the leader from 1.2.4 to 1.2.5 — with no change in its behaviour.
+The leader is at 1.2.5 while the follower is at 1.2.10 for that reason: 1.2.7,
+1.2.8 and 1.2.10 touched only follower code, and 1.2.9 changed the shared
+`storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
+in its behaviour.
 
-## Follower: record the motor model once
+## Follower: the motor model
 
-The follower image is built with the **EL05** as its compile-time *fallback*
-motor. The model that actually counts is recorded per device in MCU flash,
-because the motor cannot report it and every MIT frame is quantised against the
-model's torque and velocity ranges — the wrong model is not an error, it is a
-constant factor on every frame (EL05 ±6 N·m vs RS00 ±14 N·m).
+Every MIT frame is quantised against the motor model's torque and velocity
+ranges, so the wrong model is not an error — it is a constant factor on every
+frame (EL05 ±6 N·m vs RS00 ±14 N·m). The model is recorded per device in MCU
+flash; the image's compile-time *fallback* is the **EL05**.
 
-A follower built around an **RS00** therefore needs its model written once, then
-a power cycle:
+**Since 1.2.10 the record fills itself in.** When the motor is on the private
+protocol at boot — which a new motor is, since RobStride ships them that way — the
+firmware reads the motor's firmware version and maps its raw bytes to a model
+(`{10,5,…}` = EL05, which RobStride writes `1.0.5.x`; `{0,0,3,…}` = RS00),
+records it, and switches the motor to MIT. So a new or replaced motor needs
+nothing. `g.motor.get_model().autodetected == 1` on the boot that did it.
+
+A unit that was already on MIT before 1.2.10 never passes that point. If
+`get_model()` reports the compile-time default on one (the SDK warns when it opens
+such a follower), write it once and cut 24 V for ~2 s:
 
 ```python
 g.motor.set_model(1)          # 0 = EL05, 1 = RS00

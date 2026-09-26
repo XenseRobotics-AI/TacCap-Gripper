@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.5 and the follower 1.2.9; neither is behind the other, and
+leader is 1.2.5 and the follower 1.2.10; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. Leader 1.2.5 behaves exactly like 1.2.4: its only change is in
@@ -135,8 +135,9 @@ storage code shared with the follower. A leader in the field may also report
 code as 1.2.4, so flashing the current leader image lowers the number it
 reports, which nothing refuses and nothing should read as a downgrade. On the
 follower, 1.2.7 added the motor model record, 1.2.8 the CAN extended-frame relay
-used by motor OTA, and 1.2.9 makes the motor ranges and limits follow the
-recorded model.
+used by motor OTA, 1.2.9 makes the motor ranges and limits follow the
+recorded model, and 1.2.10 records the model by itself from the motor's
+firmware version the first time a new motor boots.
 
 [`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
 the rest of the flashing detail.
@@ -269,12 +270,15 @@ Step 3 before step 4 is the load-bearing order — see
 [The motion-safety envelope](#the-motion-safety-envelope) for what it protects
 against and why the default is off.
 
-**A follower with an RS00 motor** needs one extra step before step 3: the
-firmware falls back to EL05 ranges until the model is recorded. Run
-`g.motor.set_model(1)` once (0 = EL05, 1 = RS00) and power-cycle. A device
-upgraded from follower firmware 1.2.8 or earlier also keeps its stored `0x700B`
-startup torque limit of 6.0; raise it with
-`g.motor.set_startup_limit_torque(14.0)` and power-cycle again. Details in
+**The motor model** (EL05 or RS00) is recorded by the follower itself since
+firmware 1.2.10: a new motor boots on the private protocol, and on that boot the
+firmware reads the motor's firmware version, records the model and switches the
+motor to MIT. Check with `g.motor.get_model()`. A unit that was already on MIT
+before 1.2.10 keeps whatever was recorded; if it reports the compile-time
+default (the SDK warns on open), run `g.motor.set_model(1)` once (0 = EL05,
+1 = RS00) and cut 24 V for ~2 s. An RS00 upgraded from follower firmware 1.2.8
+or earlier also keeps its stored `0x700B` startup torque limit of 6.0; raise it
+with `g.motor.set_startup_limit_torque(14.0)` and cut 24 V again. Details in
 [`firmware/README.md`](firmware/README.md).
 
 ### By task
