@@ -376,7 +376,8 @@ struct __attribute__((packed)) MotorModel {
     float    t_max_nm;       // MIT torque range currently in force
     float    v_max_rad_s;    // MIT velocity range currently in force
     // 1 = on THIS boot the follower read the motor's firmware version under the
-    // private protocol, recognised its line (EL05 1.0.5.x / RS00 0.0.3.x) and
+    // private protocol, recognised its line by raw bytes (EL05 {10,5,..} --
+    // RobStride writes it 1.0.5.x, splitting the 10 -- RS00 {0,0,3,..}) and
     // wrote this record (follower firmware 1.2.10). Was reserved[0]; older
     // firmware always sends 0.
     uint8_t  autodetected;
