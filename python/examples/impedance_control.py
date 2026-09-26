@@ -65,10 +65,10 @@ def settle(c: ImpedanceController, budget: float = 3.0):
             time.sleep(0.05)
             s2 = c.snapshot()
             if s2.observation.valid and abs(s2.observation.velocity) < 0.02:
-                return str(s2.state).split(".")[-1], s2, time.perf_counter() - t0
+                return s2.state.name, s2, time.perf_counter() - t0
         time.sleep(0.01)
     s = c.snapshot()
-    return str(s.state).split(".")[-1], s, time.perf_counter() - t0
+    return s.state.name, s, time.perf_counter() - t0
 
 
 def main() -> int:

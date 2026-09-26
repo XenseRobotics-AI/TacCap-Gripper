@@ -191,7 +191,7 @@ class ImpedanceBackend:
         s = self._snap
         if s is None:
             return ""
-        name = str(s.state).split(".")[-1]
+        name = s.state.name
         cap = "ON" if s.torque_capped else "-"
         out = (
             f"state={name:16s} cmd={s.commanded_torque_nm:5.3f}Nm  "
@@ -245,7 +245,7 @@ class ForcePositionBackend:
         s = self._snap
         if s is None:
             return ""
-        name = str(s.state).split(".")[-1]
+        name = s.state.name
         out = (
             f"state={name:16s} hold={'Y' if s.holding else 'N'} "
             f"arr={'Y' if s.arrived else 'N'}  "

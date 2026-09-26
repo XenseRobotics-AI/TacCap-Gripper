@@ -91,12 +91,12 @@ def settle(c: ForcePositionController, budget: float = 8.0):
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < budget:
         s = c.snapshot()
-        name = str(s.state).split(".")[-1]
+        name = s.state.name
         if name in TERMINAL:
             return name, s, time.perf_counter() - t0
         time.sleep(0.01)
     s = c.snapshot()
-    return str(s.state).split(".")[-1], s, time.perf_counter() - t0
+    return s.state.name, s, time.perf_counter() - t0
 
 
 def main() -> int:
@@ -176,7 +176,7 @@ def main() -> int:
         print(f"[band] 行程 {travel:.4f} rad,到位 |误差| <= {band:.4f}(归一化)")
 
         for target in targets:
-            before = str(c.snapshot().state).split(".")[-1]
+            before = c.snapshot().state.name
             c.set_target(target)
             if not await_command(c, target):
                 print(f"  target={target:.2f} -> FAIL  控制器没有接下这个目标")

@@ -97,7 +97,7 @@ def main() -> int:
                 print(
                     f"  {time.perf_counter() - t0:5.1f} {tgt:5.2f} {o.position:7.4f} "
                     f"{o.torque:+8.4f} {s.commanded_torque_nm:7.4f} "
-                    f"{o.age_ms:5.0f}ms {str(s.state).split('.')[-1]:>17} "
+                    f"{o.age_ms:5.0f}ms {s.state.name:>17} "
                     f"{str(s.arrived):>5}"
                 )
                 time.sleep(interval)
