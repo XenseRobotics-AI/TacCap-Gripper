@@ -52,28 +52,36 @@ target_include_directories(_taccap_native BEFORE PRIVATE
 
 target_link_libraries(_taccap_native PRIVATE taccap_core)
 
-# In-tree development build: place the .so next to the Python sources so
-# `pip install -e .` and direct `python -c 'import xense.taccap'` from the
-# repo root both work. scikit-build-core also picks this up via the install()
-# rules below for wheel builds.
 set_target_properties(_taccap_native PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap
     # Find libtaccap_core.so in dev (build dir) and in the installed wheel
     # ($ORIGIN = the directory the .so is loaded from).
     BUILD_RPATH "$<TARGET_FILE_DIR:taccap_core>"
     INSTALL_RPATH "$ORIGIN"
 )
 
-# Also drop libtaccap_core.so beside the Python ext during development so
-# editable installs can find it without LD_LIBRARY_PATH.
-add_custom_command(TARGET _taccap_native POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:taccap_core>
-            ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap/$<TARGET_FILE_NAME:taccap_core>
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-            $<TARGET_FILE_NAME:taccap_core>
-            ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap/$<TARGET_SONAME_FILE_NAME:taccap_core>
-    VERBATIM)
+# In-tree development build ONLY: place the .so (and libtaccap_core.so) next to
+# the Python sources, so `python -c 'import xense.taccap'` from python/ and the
+# pytest conftest (which puts python/ first on sys.path) test what
+# `cmake --build build` just produced.
+#
+# NOT under scikit-build (pip install, editable or not). Those builds ship the
+# extension through the install() rules below; writing into the source tree as
+# well let ANY install -- from any conda env, any build dir -- overwrite the
+# checkout's .so with one linked against that other env's libraries. It
+# happened: a second tool's `pip install` (build dir in /tmp) replaced the .so
+# this checkout's tests load with one whose RPATH pointed into its own env.
+if(NOT SKBUILD)
+    set_target_properties(_taccap_native PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap)
+    add_custom_command(TARGET _taccap_native POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:taccap_core>
+                ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap/$<TARGET_FILE_NAME:taccap_core>
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                $<TARGET_FILE_NAME:taccap_core>
+                ${CMAKE_CURRENT_SOURCE_DIR}/xense/taccap/$<TARGET_SONAME_FILE_NAME:taccap_core>
+        VERBATIM)
+endif()
 
 # Wheel: ship _taccap_native + libtaccap_core.so together.
 install(TARGETS _taccap_native taccap_core

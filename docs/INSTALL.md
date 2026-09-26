@@ -92,16 +92,36 @@ pybind11 is header-only, so whatever copy is present at build time is compiled
 into the extension; this codebase is version-sensitive there, which is what
 `python/tests/test_numpy_views.py` guards.
 
-What ends up where (editable build):
+What ends up where: `pip install` (editable or not) installs
+`_taccap_native.cpython-312-x86_64-linux-gnu.so` and `libtaccap_core.so.<version>`
+side by side into the env's `site-packages/xense/taccap/`. The extension's rpath
+is `$ORIGIN` plus the env's `lib/`, so `import xense.taccap` works **without
+`LD_LIBRARY_PATH`** — and you should not set it (see *PyQt* below).
 
-```
-python/xense/taccap/
-├── _taccap_native.cpython-312-x86_64-linux-gnu.so   # pybind11 module
-└── libtaccap_core.so.<version>  (+ .so.0 symlink)   # SDK core
-```
+An editable install redirects the Python sources to this checkout but still
+serves the extension from `site-packages`, so after a C++ or bindings change,
+reinstall. `pip` builds never write into the checkout; only a plain
+`cmake --build build` does, placing the two `.so` files in
+`python/xense/taccap/` for the test suite (`python/tests/conftest.py` loads
+those). They are gitignored.
 
-These two are co-located on purpose — the rpath is set to `$ORIGIN`,
-so loading `xense.taccap` just works without `LD_LIBRARY_PATH`.
+#### PyQt6 in the same process
+
+Two traps, both from the same cause — the PyQt6 wheel bundles its own Qt, and
+conda's libraries in the env's `lib/` are newer than the system's:
+
+- **Do not set `LD_LIBRARY_PATH=$CONDA_PREFIX/lib`.** It makes conda's
+  `libQt6DBus` shadow the wheel's Qt, and `import PyQt6.QtGui` fails with
+  `undefined symbol: ..._QtPrivate_6_...`. This SDK does not need it.
+- **Import `xense.taccap` before `PyQt6`.** The other way round, PyQt's Qt pulls
+  in the system's older glib first, and then `_taccap_native` (via OpenCV's
+  videoio) needs a newer glib symbol:
+  `libgobject-2.0.so.0: undefined symbol: g_string_copy`.
+
+```python
+from xense import taccap        # first
+from PyQt6 import QtGui, QtWidgets
+```
 
 Build artefacts for editable installs land under `build/{wheel_tag}/`
 (see `[tool.scikit-build] build-dir` in `pyproject.toml`). Delete that
