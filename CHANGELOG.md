@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-26
+
+Follower firmware **1.2.9** is what this release is for: it lets an RS00
+follower use the motor it was fitted with, and the SDK now holds every torque
+bound to the motor's own ratings. **The sustained grip is the motor's
+continuous stall rating — RS00 3.6 N·m, EL05 1.1 N·m — and nothing above it
+starts.** The motor itself can now be reflashed over the gripper's USB-C.
+
+### Firmware
+
+- Shipped images are now **leader 1.2.5 / follower 1.2.9** (`firmware/`).
+  Follower 1.2.7 records the motor model (`get_model` / `set_model`), 1.2.8
+  adds the CAN extended-frame relay used by motor OTA, 1.2.9 takes every motor
+  range and limit from the installed model — they were the EL05's
+  ±6 N·m / ±50 rad/s / ±11 A for every motor, which silently capped an RS00 at
+  6 of its 14 N·m. Leader 1.2.5 behaves like 1.2.4.
+- **RS00 followers:** record the model once with `motor.set_model(1)` and
+  power-cycle; a unit upgraded from ≤ 1.2.8 keeps its stored 0x700B limit
+  (6.0) until `motor.set_startup_limit_torque(14.0)` and a power cycle. See
+  `firmware/README.md`.
+
 ### Changed
 
 - **`ensure_envelope()` now sets cont/peak to exactly the device's ratings** —
@@ -26,6 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implausible-feedback fault and the feed-forward bound now come from the
   device (rated / t_max) instead of the EL05's 1.8 / 6.0 compiled in, which on
   an RS00 faulted a legitimate back-driven reading above 6 N·m.
+
+### Fixed
+
+- `ForcePositionController.start()`, refusing a config whose motion limit is
+  below the device's stored 0x700B limit, now points at `for_spec()` first: the
+  usual cause is a bare `ForcePositionConfig()` (EL05 6.0) on an RS00 storing
+  14, and the old message steered users toward lowering the RS00's limit.
+- Examples no longer override `for_spec()` with EL05 numbers: `--grasp-torque`
+  defaulted to 1.1 in `control_and_read.py` / `force_position_control.py`, and
+  `control_ripple.py` reported Impedance speed against ForcePosition's ramp
+  speed (RS00 showed 187% — it is ~87% of its own design speed, budget/kd).
 
 ### Added
 
