@@ -99,10 +99,24 @@ constexpr uint32_t ContAboveStallRating = 1u << 5;
 // so it is not a hole and nothing should be widened to open the band.
 constexpr uint32_t PeakNotAboveCont = 1u << 6;
 
+// The device's spec is known and the record does not match it: cont is not
+// the motor's STALL rating or peak is not its ROTATING rating. Either way.
+//
+// BELOW is the case this exists for. cont is the sustained grip the gripper
+// is specified to deliver -- 3.6 N*m on an RS00, 1.1 on an EL05 -- and a
+// follower carrying an EL05-era record on an RS00 held its grip to 1.1 N*m
+// indefinitely while auditing clean: the old rule kept any value stricter
+// than the recommendation as "a deliberate tightening". With the spec read
+// from the device there is nothing to guess, so the record follows it.
+//
+// Set only when the device reported both ratings. On compiled-in fallbacks
+// the SDK does not know the real numbers and must not raise anything.
+constexpr uint32_t NotAtSpec = 1u << 7;
+
 // What ensure_envelope() will rewrite. PeakNotAboveCont is deliberately absent.
 constexpr uint32_t RepairMask = NotWritten | NotEnforced | LayoutMismatch |
                                 PeakUnlimited | ContUnlimited |
-                                ContAboveStallRating;
+                                ContAboveStallRating | NotAtSpec;
 
 }  // namespace GripperEnvelopeIssue
 
@@ -120,10 +134,10 @@ struct EnvelopeAudit {
 
     uint32_t issues = GripperEnvelopeIssue::None;
 
-    // Two flags, not one. The firmware's table gives EL05 a stall rating but
-    // leaves it zero for every RS0x while still giving them real rated torque,
-    // so a single flag would read "from device" on an RS00 whose cont silently
-    // came from the compiled-in EL05 number.
+    // Two flags, not one. The firmware's table gives EL05 and RS00 a stall
+    // rating but leaves it zero for RS01..RS06 while still giving them a real
+    // rated torque, so a single flag would read "from device" on a model whose
+    // cont silently came from the compiled-in EL05 number.
     bool peak_from_device = false;
     bool cont_from_device = false;
 

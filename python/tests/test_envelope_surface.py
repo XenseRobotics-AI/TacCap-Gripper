@@ -44,12 +44,14 @@ ISSUE_NAMES = [
     "GRIPPER_ENVELOPE_ISSUE_PEAK_UNLIMITED",
     "GRIPPER_ENVELOPE_ISSUE_CONT_UNLIMITED",
     "GRIPPER_ENVELOPE_ISSUE_CONT_ABOVE_STALL_RATING",
+    "GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC",
     "GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT",
 ]
 
-# Repairable == "the firmware ignores this record or it misreports what is
-# enforced". PEAK_NOT_ABOVE_CONT is deliberately excluded: it means the stored
-# envelope is TIGHTER than recommended, which is a choice, not a hole.
+# Repairable == "the firmware ignores this record, it misreports what is
+# enforced, or it does not match the device's own ratings". PEAK_NOT_ABOVE_CONT
+# is deliberately excluded: on its own it is advisory. (With the device's spec
+# known, a record like that is also NOT_AT_SPEC and gets repaired for that.)
 REPAIRABLE = ISSUE_NAMES[:-1]
 
 
@@ -81,8 +83,8 @@ def test_repair_mask_is_exactly_the_repairable_bits():
     for name in REPAIRABLE:
         expected |= getattr(t, name)
     assert t.GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK == expected
-    # The advisory bit must stay out of it, or ensure_envelope() would start
-    # widening records someone deliberately tightened.
+    # The advisory bit must stay out of it: it fires on spec-less devices too,
+    # where the SDK must not widen a record on the strength of a fallback.
     assert not (
         t.GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK
         & t.GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT

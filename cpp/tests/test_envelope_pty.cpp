@@ -117,7 +117,7 @@ TEST(EnvelopePty, ARecordStoringMoreThanIsEnforcedIsRepairedDownwards) {
     EXPECT_TRUE(g->audit_envelope().ok());
 }
 
-TEST(EnvelopePty, ATighterRecordIsLeftAloneExceptForItsFlags) {
+TEST(EnvelopePty, ATighterRecordIsRaisedToTheDeviceSpec) {
     Pty pty;
     ASSERT_GE(pty.master(), 0);
     FakeFollower fw(pty);
@@ -132,11 +132,14 @@ TEST(EnvelopePty, ATighterRecordIsLeftAloneExceptForItsFlags) {
     auto g = open_follower(pty);
     ASSERT_TRUE(g->ensure_envelope().wrote);
 
+    // The fake reports a spec, so the record follows it: cont is the sustained
+    // grip the motor is specified for, not whatever was stored before.
     const auto stored = fw.stored_envelope();
-    EXPECT_FLOAT_EQ(stored.cont_torque_nm, 0.6f)
-        << "ensure_envelope() raised a deliberately tightened grip";
-    EXPECT_FLOAT_EQ(stored.peak_torque_nm, 1.5f);
+    const auto rec = tx::detail::recommend_envelope(g->motor().get_spec());
+    EXPECT_FLOAT_EQ(stored.cont_torque_nm, rec.cont_torque_nm);
+    EXPECT_FLOAT_EQ(stored.peak_torque_nm, rec.peak_torque_nm);
     EXPECT_EQ(stored.flags, kCurrentFlags);
+    EXPECT_TRUE(g->audit_envelope().ok());
 }
 
 TEST(EnvelopePty, ADeviceThatCannotAnswerTheSpecStillGetsAnEnvelope) {

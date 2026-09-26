@@ -51,13 +51,25 @@ tp::MotorSpec el05() {
     return s;
 }
 
-// RS00: real rated torque, NO stall rating in the firmware's table. This is
-// not hypothetical -- every RS0x row carries stall_cont_torque_nm == 0.
+// The firmware's RS00 row: rated 5.0, stall 3.6 (the manual's stall-overload
+// curve, the same row as the EL05's 1.1).
 tp::MotorSpec rs00() {
     tp::MotorSpec s{};
     std::strncpy(s.name, "RS00", sizeof(s.name));
     s.t_max_nm             = 14.0f;
     s.rated_torque_nm      = 5.0f;
+    s.stall_cont_torque_nm = 3.6f;
+    return s;
+}
+
+// A model with a real rated torque but NO stall rating. Not hypothetical: the
+// RS01..RS06 rows still carry stall_cont_torque_nm == 0, and the RS00 row did
+// until its manual was read.
+tp::MotorSpec rs01() {
+    tp::MotorSpec s{};
+    std::strncpy(s.name, "RS01", sizeof(s.name));
+    s.t_max_nm             = 17.0f;
+    s.rated_torque_nm      = 6.0f;
     s.stall_cont_torque_nm = 0.0f;
     return s;
 }
@@ -113,13 +125,13 @@ TEST(EnvelopeRecommend, FallsBackToCompiledConstantsWithNoSpec) {
     EXPECT_FLOAT_EQ(r.cont_torque_nm, MOTOR_STALL_CONT_TORQUE_NM);
 }
 
-TEST(EnvelopeRecommend, TakesPeakFromAnRs00ButNotCont) {
+TEST(EnvelopeRecommend, TakesPeakFromAModelWithoutAStallRatingButNotCont) {
     // The mix the two from_device flags exist for: rated is real, the stall
     // rating is absent, so cont silently comes from the EL05 fallback.
-    const auto a = audit_envelope(record(0.0f, 0.0f, 0), rs00());
+    const auto a = audit_envelope(record(0.0f, 0.0f, 0), rs01());
     EXPECT_TRUE(a.peak_from_device);
     EXPECT_FALSE(a.cont_from_device);
-    EXPECT_FLOAT_EQ(a.recommended.peak_torque_nm, 5.0f);
+    EXPECT_FLOAT_EQ(a.recommended.peak_torque_nm, 6.0f);
     EXPECT_FLOAT_EQ(a.recommended.cont_torque_nm, MOTOR_STALL_CONT_TORQUE_NM);
     EXPECT_NE(a.detail.find("stall rating"), std::string::npos)
         << "the fallback must say so: " << a.detail;
@@ -206,12 +218,30 @@ TEST(EnvelopeAuditValues, ZeroContMeansNoSustainedCeiling) {
                 Issue::ContUnlimited);
 }
 
-TEST(EnvelopeAuditValues, ADeliberatelyTighterEnvelopeIsNotAFault) {
+// With the spec read from the device, a record below it is the fault this
+// flag exists for: it holds the grip under what the motor sustains forever.
+TEST(EnvelopeAuditValues, ARecordBelowTheDeviceSpecNeedsAWrite) {
     const auto a = audit_envelope(record(0.6f, 1.5f), el05());
-    EXPECT_TRUE(a.ok()) << a.detail;
-    EXPECT_FALSE(a.needs_write());
+    EXPECT_TRUE(a.issues & Issue::NotAtSpec) << a.detail;
+    EXPECT_TRUE(a.needs_write());
     ASSERT_TRUE(a.effective.has_value());
-    EXPECT_FLOAT_EQ(a.effective->cont_torque_nm, 0.6f);
+    EXPECT_FLOAT_EQ(a.effective->cont_torque_nm, 0.6f)
+        << "still what the firmware enforces today";
+}
+
+// The field case: an EL05-era record left on an RS00.
+TEST(EnvelopeAuditValues, AnEl05RecordOnAnRs00IsNotAtSpec) {
+    const auto a = audit_envelope(record(1.1f, 1.8f), rs00());
+    EXPECT_TRUE(a.issues & Issue::NotAtSpec) << a.detail;
+    EXPECT_TRUE(a.needs_write());
+}
+
+// Without a spec the recommendation is a compiled-in guess; a tighter record
+// is not second-guessed on the strength of it.
+TEST(EnvelopeAuditValues, WithoutASpecATighterEnvelopeIsNotAFault) {
+    const auto a = audit_envelope(record(0.6f, 1.5f), std::nullopt);
+    EXPECT_FALSE(a.issues & Issue::NotAtSpec);
+    EXPECT_FALSE(a.needs_write());
 }
 
 TEST(EnvelopeAuditValues, TheRecommendationAuditsClean) {
@@ -219,7 +249,8 @@ TEST(EnvelopeAuditValues, TheRecommendationAuditsClean) {
 }
 
 TEST(EnvelopeAuditValues, PeakNotAboveContIsReportedButNotRepaired) {
-    const auto a = audit_envelope(record(1.1f, 1.1f), el05());
+    // No spec: with one, peak 1.1 is off the EL05's 1.8 and NotAtSpec repairs it.
+    const auto a = audit_envelope(record(1.1f, 1.1f), std::nullopt);
     EXPECT_TRUE(a.issues & Issue::PeakNotAboveCont);
     EXPECT_FALSE(a.needs_write()) << "tighter than recommended is not a hole";
     EXPECT_FALSE(a.ok());
@@ -227,17 +258,29 @@ TEST(EnvelopeAuditValues, PeakNotAboveContIsReportedButNotRepaired) {
 
 // ---- repair_envelope --------------------------------------------------------
 
-TEST(EnvelopeRepair, NeverWidensADeliberatelyTighterRecord) {
-    // Only the missing Enforce bit is repaired. Raising 0.6 to 1.1 would
-    // quietly undo an operator's tightening for a delicate task.
+TEST(EnvelopeRepair, WithoutASpecNeverWidensATighterRecord) {
+    // Only the missing Enforce bit is repaired: the recommendation is a
+    // compiled-in guess, not this motor's rating.
     const auto a = audit_envelope(
         record(0.6f, 1.5f, tp::GripperEnvelopeFlag::Valid |
                                tp::GripperEnvelopeFlag::LayoutBits),
-        el05());
+        std::nullopt);
     const auto r = repair_envelope(a);
     EXPECT_FLOAT_EQ(r.cont_torque_nm, 0.6f);
     EXPECT_FLOAT_EQ(r.peak_torque_nm, 1.5f);
     EXPECT_EQ(r.flags, kCurrentFlags);
+}
+
+// THE REQUIREMENT: sustained grip is the stall rating exactly -- 3.6 N*m on an
+// RS00, 1.1 on an EL05 -- whatever the record held before.
+TEST(EnvelopeRepair, WithTheSpecContAndPeakFollowItExactly) {
+    auto r = repair_envelope(audit_envelope(record(1.1f, 1.8f), rs00()));
+    EXPECT_FLOAT_EQ(r.cont_torque_nm, 3.6f);
+    EXPECT_FLOAT_EQ(r.peak_torque_nm, 5.0f);
+
+    r = repair_envelope(audit_envelope(record(0.6f, 1.5f), el05()));
+    EXPECT_FLOAT_EQ(r.cont_torque_nm, 1.1f);
+    EXPECT_FLOAT_EQ(r.peak_torque_nm, 1.8f);
 }
 
 TEST(EnvelopeRepair, ReplacesBothInventedNumbersOnTheBenchRecord) {

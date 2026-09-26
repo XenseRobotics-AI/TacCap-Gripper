@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -407,6 +408,23 @@ EnvelopeAudit audit_envelope(const protocol::GripperEnvelope& stored,
                  "firmware enforces " + fmt(spec->stall_cont_torque_nm) +
                  " Nm and logs that on a UART not wired to USB");
     }
+    if (a.cont_from_device && a.peak_from_device) {
+        constexpr float kTol = 1e-3f;
+        const bool cont_off =
+            std::abs(stored.cont_torque_nm - a.recommended.cont_torque_nm) > kTol;
+        const bool peak_off =
+            std::abs(stored.peak_torque_nm - a.recommended.peak_torque_nm) > kTol;
+        if (cont_off || peak_off) {
+            a.issues |= GripperEnvelopeIssue::NotAtSpec;
+            note(a.detail,
+                 "stored cont/peak " + fmt(stored.cont_torque_nm) + "/" +
+                     fmt(stored.peak_torque_nm) + " Nm, the " + a.motor_model +
+                     " is rated " + fmt(a.recommended.cont_torque_nm) + "/" +
+                     fmt(a.recommended.peak_torque_nm) +
+                     " Nm (stall/rotating) -- a lower cont holds the grip "
+                     "below what the motor sustains indefinitely");
+        }
+    }
     if (stored.cont_torque_nm > 0.0f &&
         stored.peak_torque_nm <= stored.cont_torque_nm) {
         a.issues |= GripperEnvelopeIssue::PeakNotAboveCont;
@@ -428,10 +446,19 @@ protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit) {
     const bool untrustworthy =
         (audit.issues & (GripperEnvelopeIssue::NotWritten |
                          GripperEnvelopeIssue::LayoutMismatch)) != 0;
+    // With both ratings read from the device the recommendation IS the spec,
+    // and cont/peak follow it exactly -- see GripperEnvelopeIssue::NotAtSpec.
+    const bool spec_known = audit.cont_from_device && audit.peak_from_device;
     if (!untrustworthy) {
-        // The layout is current, so a stored value that is already STRICTER
-        // than the recommendation is a deliberate choice and is kept. Raising
-        // it would quietly undo an operator's tightening for a delicate task.
+        // Temperatures carry over verbatim, 0 included -- 0 is "firmware
+        // default", a valid choice, not a missing value.
+        out.temp_derate_start_c = stored.temp_derate_start_c;
+        out.temp_wall_c         = stored.temp_wall_c;
+    }
+    if (!untrustworthy && !spec_known) {
+        // The recommendation is this SDK's compiled-in guess, so a stored value
+        // that is already STRICTER than it is kept rather than raised on the
+        // strength of a number nobody measured on this motor.
         if (stored.cont_torque_nm > 0.0f &&
             stored.cont_torque_nm <= rec.cont_torque_nm) {
             out.cont_torque_nm = stored.cont_torque_nm;
@@ -440,10 +467,6 @@ protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit) {
             stored.peak_torque_nm <= rec.peak_torque_nm) {
             out.peak_torque_nm = stored.peak_torque_nm;
         }
-        // Temperatures carry over verbatim, 0 included -- 0 is "firmware
-        // default", a valid choice, not a missing value.
-        out.temp_derate_start_c = stored.temp_derate_start_c;
-        out.temp_wall_c         = stored.temp_wall_c;
 
         // A carried-over peak must not collapse the I2t band.
         if (out.peak_torque_nm <= out.cont_torque_nm) {

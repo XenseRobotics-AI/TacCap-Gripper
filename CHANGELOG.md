@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ensure_envelope()` now sets cont/peak to exactly the device's ratings** —
+  cont = the motor's continuous stall rating (RS00 3.6 N·m, EL05 1.1), peak =
+  its rotating rating — whenever the device reports both. A record *below* the
+  spec is flagged `GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC` and raised. Previously a
+  stricter record was kept as "a deliberate tightening", so an RS00 carrying an
+  EL05-era envelope held its grip at 1.1 N·m indefinitely while auditing clean.
+  Without a spec the old rule still applies.
+
 ### Added
 
 - **`Motor.can_ext_xfer()`** — send one 29-bit extended frame onto the motor's

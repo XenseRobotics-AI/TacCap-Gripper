@@ -226,6 +226,7 @@ void bind_gripper_types(py::module_& m) {
         Issue::ContAboveStallRating;
     envmod.attr("GRIPPER_ENVELOPE_ISSUE_PEAK_NOT_ABOVE_CONT") =
         Issue::PeakNotAboveCont;
+    envmod.attr("GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC") = Issue::NotAtSpec;
     envmod.attr("GRIPPER_ENVELOPE_ISSUE_REPAIR_MASK") = Issue::RepairMask;
 
     py::class_<xense::taccap::EnvelopeAudit>(m, "EnvelopeAudit",
