@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-27
+
+### Firmware
+
+- Shipped follower image is now **1.2.10** (leader unchanged at 1.2.5).
+  **The follower identifies its motor model by itself**: when the motor is on
+  the private protocol at boot — a new motor always is — the firmware reads the
+  motor's firmware version and maps its raw bytes to a model (`{10,5,…}` =
+  EL05, which RobStride writes `1.0.5.x`; `{0,0,3,…}` = RS00), records it and
+  applies it before the 0x700B limit. So a new or replaced motor needs no
+  `set_model()`. Verified on both models by deliberately recording the wrong
+  one: the private-protocol boot corrected it. Units already on MIT before
+  1.2.10 keep their record.
+
+### Added
+
+- **`MotorModel.autodetected`** — 1 on the boot that identified the model
+  (was a reserved byte; older firmware sends 0).
+- **Warnings for writes that need a power cycle.** `switch_protocol`,
+  `set_startup_limit_torque`, `set_can_id` and `set_model` now each log a warn
+  after success: stored; takes effect after unplugging the 24 V power cable for
+  ~2 s (USB may stay in). The firmware reports this only on a UART that is not
+  wired to USB, so these used to look like they did nothing.
+- `FollowerGripper` warns on open when the motor model is the firmware's
+  compile-time default rather than a recorded one — the ranges in use are then
+  an assumption.
+
 ## [0.3.4] - 2026-09-27
 
 Documentation and build hygiene; no API or behaviour change.
