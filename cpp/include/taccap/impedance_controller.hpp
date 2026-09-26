@@ -120,8 +120,9 @@ enum class ImpedanceState : uint8_t {
     Fault,
 };
 
-// Seven fields. The gains and the error clamp are what a task actually tunes;
-// rated_torque_nm is the motor's own rating; two describe the transport. The
+// Eight fields. The gains and the error clamp are what a task actually tunes;
+// rated_torque_nm and peak_torque_nm are the motor's own ratings; two describe
+// the transport. The
 // measured ceiling constants live in detail::ImpedanceTuning, which only
 // the tests construct -- the same split ForcePositionConfig uses, and for the
 // same reason: there is one right answer for this hardware.
@@ -164,6 +165,11 @@ struct ImpedanceConfig {
     // stay out of the operating band, and on a correctly configured device
     // (cont == the stall rating == the budget) such a warning fires every time.
     float rated_torque_nm = MOTOR_RATED_TORQUE_NM;
+    // The motor's torque RANGE (t_max). Measured feedback beyond it is not a
+    // torque the motor can produce, so it faults the controller as a corrupt
+    // or misdecoded reading. Per device: it was the EL05's 6.0 compiled in,
+    // which on an RS00 (range 14) faulted a legitimate back-driven reading.
+    float peak_torque_nm = MOTOR_PEAK_TORQUE_NM;
     unsigned status_timeout_ms = 350;      // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
 
@@ -181,6 +187,8 @@ struct ImpedanceConfig {
     //   max_position_torque_nm = the motor's CONTINUOUS STALL rating. A blocked
     //     jaw sits on this budget forever and nothing times it out.
     //   rated_torque_nm = the motor's ROTATING rating, which is the backstop.
+    //     It also bounds feedforward_torque.
+    //   peak_torque_nm = the motor's torque range, the implausible-reading fault.
     //     It must stay above the budget or a normal grasp trips it and position
     //     control is lost while holding the object.
     //   kd = budget / MOTOR_APPROACH_SPEED_RADPS. The approach speed is

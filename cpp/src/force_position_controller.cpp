@@ -643,14 +643,6 @@ void ForcePositionController::start() {
                 "exceeds the installed {} rated torque {:.2f} Nm",
                 cfg_.hold_torque_limit_nm, model, spec.rated_torque_nm);
         }
-        if (spec.stall_cont_torque_nm > 0.0f &&
-            cfg_.grasp_torque_nm > spec.stall_cont_torque_nm + 1e-4f) {
-            logger()->warn(
-                "ForcePositionController: grasp {:.2f} Nm is above the {} "
-                "continuous stall rating {:.2f} Nm -- an indefinite hold will "
-                "heat past what this motor can sustain",
-                cfg_.grasp_torque_nm, model, spec.stall_cont_torque_nm);
-        }
         logger()->info("ForcePositionController: motor {} rated={:.2f} peak={:.2f} "
                        "cont_stall={:.2f} Nm",
                        model, spec.rated_torque_nm, spec.t_max_nm,
@@ -707,6 +699,22 @@ void ForcePositionController::start() {
                 std::to_string(cfg_.motion_torque_limit_nm) + " Nm exceeds the " +
                 model + "'s torque range " + std::to_string(peak) + " Nm");
         }
+        // THE GRIP IS BOUNDED BY THE STALL RATING -- 3.6 N*m on an RS00, 1.1 on
+        // an EL05. A blocked jaw holds grasp_torque_nm with nothing timing it
+        // out; above the stall rating the firmware's I2t and temperature wall
+        // derate it (the hold silently weakens), and past them the rail browns
+        // out. Fatal rather than the warning it used to be: this is the one
+        // number that decides whether the gripper can run all day.
+        const float stall = spec.stall_cont_torque_nm;
+        if (std::isfinite(stall) && stall > 0.0f &&
+            cfg_.grasp_torque_nm > stall + 1e-4f) {
+            throw std::invalid_argument(
+                "ForcePositionConfig.grasp_torque_nm " +
+                std::to_string(cfg_.grasp_torque_nm) + " Nm exceeds the " + model +
+                "'s continuous stall rating " + std::to_string(stall) +
+                " Nm, which a blocked jaw holds indefinitely. Build the config "
+                "with ForcePositionConfig::for_spec().");
+        }
     } catch (const std::invalid_argument&) {
         throw;
     } catch (const std::exception& e) {
@@ -728,19 +736,13 @@ void ForcePositionController::start() {
                     "indefinite -- it will be derated, so the actual grip will "
                     "not be what was asked for",
                     cfg_.grasp_torque_nm, cont);
-            } else if (cfg_.grasp_torque_nm > cont * 0.9f &&
-                       cfg_.grasp_torque_nm > ForcePositionConfig{}.grasp_torque_nm) {
-                // Only when the caller asked for MORE than the default. The
-                // default IS the continuous rating, so testing the 90% band
-                // alone would fire on every default-configured session and
-                // teach people to tune warnings out.
-                logger()->warn(
-                    "ForcePositionController: grasp torque {:.3f} Nm is within "
-                    "10% of the continuous envelope {:.3f} Nm. A long hold at "
-                    "this level has browned out the 24 V rail and dropped the "
-                    "USB link; leave headroom if the grasp is load-bearing",
-                    cfg_.grasp_torque_nm, cont);
             }
+            // No "within 10% of cont" warning any more. The grip is DESIGNED to
+            // sit exactly on cont -- both are the motor's stall rating (RS00
+            // 3.6, EL05 1.1), and start() refuses a grasp above that rating --
+            // so the band fired on every for_spec() session. The brown-out it
+            // cited was a 1.5 N*m hold against an inflated cont of 1.6 on an
+            // EL05, which the stall-rating bound now makes unconfigurable.
         }
         if (!audit.ok()) {
             logger()->warn(

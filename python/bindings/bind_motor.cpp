@@ -814,8 +814,11 @@ void bind_motor(py::module_& m) {
            "Persist the power-on limit torque, N*m, in MCU flash.\n\n"
            "It changes nothing now: the firmware writes this value to the motor's\n"
            "0x700B limit_torque on every boot, so it takes effect at the next\n"
-           "power-on. The firmware's own default and maximum are both 6.0 N*m and a\n"
-           "value outside 0..6.0 NACKs InvalidParam.\n\n"
+           "power-on. Default and maximum are the installed motor's torque range\n"
+           "t_max (EL05 6.0, RS00 14.0; follower firmware >= 1.2.9 -- older firmware\n"
+           "fixed both at 6.0 for every model). A value outside 0..t_max NACKs\n"
+           "InvalidParam. A device that stored a value keeps it; only a device that\n"
+           "never stored one takes the model default.\n\n"
            "Unlike set_private_param(0x700B, ...) this works under MIT as well as\n"
            "Private. Blocks for the ACK; raises ProtocolError on NACK -- SysBusy while\n"
            "the firmware's control task is running.")

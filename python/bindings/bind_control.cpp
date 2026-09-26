@@ -99,8 +99,13 @@ void bind_control(py::module_& m) {
         .def_readwrite("rated_torque_nm",   &ImpedanceConfig::rated_torque_nm,
                        "Backstop on MEASURED torque, N*m -- not the grip. Above it the\n"
                        "controller commands kp=kd=0 and holds the budget. Must exceed\n"
-                       "max_position_torque_nm; capped at MOTOR_RATED_TORQUE_NM because the\n"
-                       "hold is indefinite. 0 disables it.")
+                       "max_position_torque_nm; capped at the device's rated torque (checked\n"
+                       "in start()) because the hold is indefinite. Also bounds\n"
+                       "feedforward_torque. 0 disables it.")
+        .def_readwrite("peak_torque_nm",    &ImpedanceConfig::peak_torque_nm,
+                       "The motor's torque range (t_max), N*m. Measured feedback beyond\n"
+                       "it faults the controller as an implausible reading. for_spec()\n"
+                       "takes it from the device: EL05 6.0, RS00 14.0.")
         .def_readwrite("status_timeout_ms", &ImpedanceConfig::status_timeout_ms,
                        "A status stream older than this faults the controller and commands\n"
                        "zero torque.")

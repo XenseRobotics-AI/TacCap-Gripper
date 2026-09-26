@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stricter record was kept as "a deliberate tightening", so an RS00 carrying an
   EL05-era envelope held its grip at 1.1 N·m indefinitely while auditing clean.
   Without a spec the old rule still applies.
+- **Controllers refuse a grip above the motor's continuous stall rating.**
+  `ForcePositionController` (grasp) and `ImpedanceController` (budget) now
+  raise at `start()` when the torque a blocked jaw would hold indefinitely
+  exceeds the device's stall rating (RS00 3.6 N·m, EL05 1.1); it used to be a
+  warning. The "grasp within 10% of the envelope" warning is gone: the grip is
+  designed to sit exactly on the stall rating, so it fired on every session.
+- **`ImpedanceConfig.peak_torque_nm`** (new, from `for_spec()`): the
+  implausible-feedback fault and the feed-forward bound now come from the
+  device (rated / t_max) instead of the EL05's 1.8 / 6.0 compiled in, which on
+  an RS00 faulted a legitimate back-driven reading above 6 N·m.
 
 ### Added
 

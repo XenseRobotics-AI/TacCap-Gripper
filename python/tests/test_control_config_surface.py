@@ -144,8 +144,8 @@ def test_force_position_states_cover_the_machine():
 # ---- ImpedanceController -------------------------------------------------
 
 # The supervised sibling of ForcePositionController. Same split: the gains and
-# the error clamp are what a task tunes, rated_torque_nm is the motor's own
-# rating, two describe the transport. The measured ceiling constants live
+# the error clamp are what a task tunes, rated_torque_nm and peak_torque_nm are
+# the motor's own ratings, two describe the transport. The measured ceiling constants live
 # in detail::ImpedanceTuning and are deliberately unreachable from Python.
 IMPEDANCE_FIELDS = {
     "kp": 20.0,
@@ -156,6 +156,9 @@ IMPEDANCE_FIELDS = {
     # 无限期保持的力矩。曾是 1.5 —— 那是还指望失速守卫来终止保持的时候。
     "max_position_torque_nm": 1.1,
     "rated_torque_nm": 1.8,
+    # EL05 的力矩量程。实测力矩超过它就判故障(读数不可能是真的);for_spec()
+    # 从设备取,RS00 是 14。曾写死 6.0 在 policy 里,RS00 上会误判被反拖的读数。
+    "peak_torque_nm": 6.0,
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
 }
@@ -177,7 +180,7 @@ IMPEDANCE_INTERNAL = [
 ]
 
 
-def test_impedance_config_has_exactly_the_seven_fields():
+def test_impedance_config_has_exactly_the_eight_fields():
     assert _public_fields(t.ImpedanceConfig()) == set(IMPEDANCE_FIELDS)
 
 

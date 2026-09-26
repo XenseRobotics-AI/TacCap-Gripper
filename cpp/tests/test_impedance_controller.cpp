@@ -329,6 +329,36 @@ TEST(ImpedanceConfigValidation, ForSpecDerivesBudgetCeilingAndDampingTogether) {
         << "the RS00 was fitted to grip harder; that must reach the config";
 }
 
+TEST(ImpedanceConfigValidation, ForSpecTakesTheTorqueRangeFromTheDevice) {
+    // The implausible-reading fault used to be the EL05's 6.0 compiled in; on
+    // an RS00 (range 14) it faulted a legitimate back-driven reading.
+    xense::taccap::protocol::MotorSpec rs00{};
+    rs00.t_max_nm             = 14.0f;
+    rs00.rated_torque_nm      = 5.0f;
+    rs00.stall_cont_torque_nm = 3.6f;
+    const auto cfg = xense::taccap::ImpedanceConfig::for_spec(rs00);
+    EXPECT_FLOAT_EQ(cfg.peak_torque_nm, 14.0f);
+
+    ImpedancePolicy p(map(), cfg);
+    auto s = sample(0.5f);
+    s.actual_torque = 8.0f;   // above the EL05's 6.0, inside the RS00's 14
+    p.reset(s);
+    p.step(s, std::chrono::steady_clock::now());
+    EXPECT_NE(p.state(), xense::taccap::ImpedanceState::Fault) << p.fault_reason();
+}
+
+TEST(ImpedanceConfigValidation, FeedforwardIsBoundedByTheConfigsRatedTorque) {
+    // Not by the EL05's 1.8: on an RS00 config (rated 5.0, budget 3.6) an ff
+    // of 1.2 is inside both the rating and the backstop margin.
+    ImpedanceConfig cfg;
+    cfg.rated_torque_nm        = 5.0f;
+    cfg.max_position_torque_nm = 3.6f;
+    cfg.feedforward_torque     = 1.2f;
+    EXPECT_NO_THROW(ImpedancePolicy(map(), cfg));
+    cfg.feedforward_torque     = 5.1f;
+    EXPECT_THROW(ImpedancePolicy(map(), cfg), std::invalid_argument);
+}
+
 TEST(ImpedanceConfigValidation, ForSpecFallsBackPerFieldNotPerSpec) {
     // An RS0x row carries a real rated torque but no stall rating. One
     // all-or-nothing flag would pair an RS00 rating with an EL05 budget.

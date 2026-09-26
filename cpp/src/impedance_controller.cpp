@@ -22,10 +22,18 @@ void validate_config(const ImpedanceConfig& cfg) {
     if (!finite(cfg.kd) || cfg.kd < 0.0f) {
         throw std::invalid_argument("ImpedanceConfig.kd must be >= 0");
     }
+    // Bounded by THIS config's rated torque, which for_spec() takes from the
+    // device -- not the EL05's 1.8 compiled in.
     if (!finite(cfg.feedforward_torque) ||
-        std::abs(cfg.feedforward_torque) > MOTOR_RATED_TORQUE_NM) {
+        std::abs(cfg.feedforward_torque) > cfg.rated_torque_nm) {
         throw std::invalid_argument(
-            "ImpedanceConfig.feedforward_torque must be within +/-1.8 Nm");
+            "ImpedanceConfig.feedforward_torque must be within +/-rated_torque_nm (" +
+            std::to_string(cfg.rated_torque_nm) + " Nm)");
+    }
+    if (!finite(cfg.peak_torque_nm) || cfg.peak_torque_nm <= 0.0f ||
+        cfg.peak_torque_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
+        throw std::invalid_argument(
+            "ImpedanceConfig.peak_torque_nm must be in (0, 20]");
     }
     if (!finite(cfg.max_position_torque_nm) || cfg.max_position_torque_nm < 0.0f ||
         cfg.max_position_torque_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
@@ -248,8 +256,8 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::step(
         fail("non-finite motor status");
     } else if (has_serious_fault(sample.status)) {
         fail("motor status reports a fault");
-    } else if (std::abs(sample.actual_torque) > MOTOR_PEAK_TORQUE_NM + 1e-4f) {
-        fail("measured torque exceeded the motor peak rating");
+    } else if (std::abs(sample.actual_torque) > cfg_.peak_torque_nm + 1e-4f) {
+        fail("measured torque exceeded the motor's torque range");
     }
 
     if (state_ == ImpedanceState::Fault || state_ == ImpedanceState::Idle) {
@@ -284,7 +292,7 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::step(
 
     const float predicted =
         kp_ * (raw - sample.actual_pos) + kd_ * (0.0f - sample.actual_vel) + ff_;
-    commanded_torque_nm_ = std::min(MOTOR_PEAK_TORQUE_NM, std::abs(predicted));
+    commanded_torque_nm_ = std::min(cfg_.peak_torque_nm, std::abs(predicted));
     return {raw, kp_, kd_, ff_, 0.0f};
 }
 
@@ -308,6 +316,7 @@ ImpedanceConfig ImpedanceConfig::for_spec(const protocol::MotorSpec& spec) {
     cfg.max_position_torque_nm =
         spec_or(spec.stall_cont_torque_nm, MOTOR_STALL_CONT_TORQUE_NM);
     cfg.rated_torque_nm = spec_or(spec.rated_torque_nm, MOTOR_RATED_TORQUE_NM);
+    cfg.peak_torque_nm = spec_or(spec.t_max_nm, MOTOR_PEAK_TORQUE_NM);
 
     // The backstop has to sit above the budget, or it fires inside the
     // operating band and position control is lost mid-grasp. If a model ever
@@ -393,6 +402,27 @@ void ImpedanceController::start() {
                 "'s rated torque " + std::to_string(rated) +
                 " Nm; the hold it produces is indefinite. Build the config with "
                 "ImpedanceConfig::for_spec().");
+        }
+        // The budget is what a blocked jaw holds indefinitely, so it is bounded
+        // by the motor's continuous STALL rating -- 3.6 N*m on an RS00, 1.1 on
+        // an EL05. Same rule, same reason as ForcePositionController.
+        const float stall = spec.stall_cont_torque_nm;
+        if (std::isfinite(stall) && stall > 0.0f &&
+            cfg_.max_position_torque_nm > stall + 1e-4f) {
+            throw std::invalid_argument(
+                "ImpedanceConfig.max_position_torque_nm " +
+                std::to_string(cfg_.max_position_torque_nm) + " Nm exceeds the " +
+                model + "'s continuous stall rating " + std::to_string(stall) +
+                " Nm, which a blocked jaw holds indefinitely. Build the config "
+                "with ImpedanceConfig::for_spec().");
+        }
+        const float range = spec.t_max_nm;
+        if (std::isfinite(range) && range > 0.0f &&
+            cfg_.peak_torque_nm > range + 1e-4f) {
+            throw std::invalid_argument(
+                "ImpedanceConfig.peak_torque_nm " + std::to_string(cfg_.peak_torque_nm) +
+                " Nm exceeds the " + model + "'s torque range " +
+                std::to_string(range) + " Nm");
         }
         // Approach speed is budget/kd. Raising the budget without raising kd
         // raises the speed with it, straight towards the regime where a loose
@@ -572,9 +602,10 @@ void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque
     }
     if (!std::isfinite(kp) || kp < 0.0f || !std::isfinite(kd) || kd < 0.0f ||
         !std::isfinite(feedforward_torque) ||
-        std::abs(feedforward_torque) > MOTOR_RATED_TORQUE_NM) {
+        std::abs(feedforward_torque) > cfg_.rated_torque_nm) {
         throw std::invalid_argument(
-            "gains require kp >= 0, kd >= 0 and |feedforward| <= 1.8 Nm");
+            "gains require kp >= 0, kd >= 0 and |feedforward| <= rated_torque_nm (" +
+            std::to_string(cfg_.rated_torque_nm) + " Nm)");
     }
     policy_->set_gains(kp, kd, feedforward_torque);
     command_woke_ = true;

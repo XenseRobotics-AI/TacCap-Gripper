@@ -23,9 +23,11 @@ namespace xense::taccap {
 
 // The EduLite05's two torque ratings. Every ceiling in this SDK is one of these
 // rather than an invented margin: RATED is what the motor may hold
-// indefinitely, PEAK what it may draw transiently. 6.0 Nm is also the
-// firmware's own default AND maximum for the persisted 0x700B startup limit
-// (storage.c STORAGE_MOTOR_LIMIT_TORQUE_{DEFAULT,MAX}_NM).
+// indefinitely, PEAK what it may draw transiently. These are FALLBACKS for a
+// device that cannot report its spec: every controller builds its limits from
+// Motor::get_spec() via for_spec(). The persisted 0x700B startup limit is the
+// installed model's t_max by default and at most (follower firmware >= 1.2.9;
+// before that it was this EL05 6.0 for every model).
 //
 // Holding above RATED is not primarily a thermal risk: the motor's undervoltage
 // protection is prompt, and a sustained draw can brown out the 24 V rail and
