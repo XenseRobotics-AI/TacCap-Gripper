@@ -122,11 +122,12 @@ Measured on the same unit, same firmware, same cable, 60-second runs:
 ~2 s, and plug it back in**; the USB cable can stay connected. The follower's
 MCU and motor run on 24 V, so cutting it restarts both — while pulling only USB
 leaves the MCU running on 24 V and resets nothing. Measured on an EL05 follower:
-three 24 V-only cycles each restarted the MCU, and after an OTA plus one such
-cycle a 60 s status stream lost 0 of 6000 frames. A **leader** has no 24 V
+cutting 24 V drops the whole on-board USB hub (serial bridge included) within
+0.3 s and restarts the MCU — 15 of 15 cycles, from the quickest tap to 10 s off —
+and after an OTA plus one such cycle a 60 s status stream lost 0 of 6000 frames. A **leader** has no 24 V
 rail: unplug and replug its USB. To confirm the cycle really happened,
-`gripper.device.heartbeat().uptime_ms` restarts near 0. Do not go by the `/dev/serial/by-id/` timestamp: a
-24 V-only cycle restarts the MCU without always re-enumerating USB.
+`gripper.device.heartbeat().uptime_ms` restarts near 0. The `/dev/serial/by-id/`
+timestamp usually moves too, but uptime is the direct evidence that the MCU restarted.
 
 ## How OTA works, briefly
 
