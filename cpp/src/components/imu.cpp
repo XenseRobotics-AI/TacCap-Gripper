@@ -79,6 +79,22 @@ IMU::SubId IMU::on_data(Callback cb) {
 
 void IMU::off(SubId id) { t_.unsubscribe(id); }
 
+void IMU::start_mag_calibration(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::SetImuMagCal, {0x01}, timeout);
+    if (ack.is_nack) {
+        throw ProtocolError(std::string("IMU::start_mag_calibration NACK: ") +
+                            protocol::to_string(ack.error_code));
+    }
+}
+
+void IMU::stop_mag_calibration(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::SetImuMagCal, {0x02}, timeout);
+    if (ack.is_nack) {
+        throw ProtocolError(std::string("IMU::stop_mag_calibration NACK: ") +
+                            protocol::to_string(ack.error_code));
+    }
+}
+
 void IMU::set_mag_calibration(const std::array<float, 3>& hard_iron,
                               const std::array<float, 9>& soft_iron_row_major,
                               std::chrono::milliseconds timeout) {

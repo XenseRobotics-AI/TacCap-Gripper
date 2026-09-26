@@ -34,6 +34,7 @@
 #include <taccap/bus/transport.hpp>
 #include <taccap/components/calibration.hpp>
 #include <taccap/components/diagnostics.hpp>
+#include <taccap/components/device.hpp>
 #include <taccap/components/camera.hpp>
 #include <taccap/components/encoder.hpp>
 #include <taccap/components/imu.hpp>
@@ -398,6 +399,9 @@ public:
     // Fisheye camera calibration works on the follower too; the encoder-max
     // methods are leader-only and NACK with InvalidCmd here.
     Calibration&    calibration()    noexcept { return cal_; }            // V2.0
+    // Heartbeat, reset, SN and device type -- the MCU-level commands both roles
+    // answer. The SN/device-type setters are factory operations; see device.hpp.
+    Device&         device()         noexcept { return dev_; }
     OtaSession&     ota()            noexcept { return ota_; }            // V1.3
     // The firmware version reported at open(), or nullopt when the MCU did not
     // answer GetVersion. Read once during open rather than on demand: the
@@ -410,6 +414,10 @@ public:
     std::optional<protocol::FirmwareVersion> firmware_version() const noexcept {
         return fw_version_;
     }
+    // The SN read at open(), empty when the MCU did not answer GetSn or none is
+    // burned. Same reasoning as firmware_version(): read once, it cannot change
+    // while the port is held. device().get_sn() asks again.
+    const std::string& firmware_sn() const noexcept { return fw_sn_; }
 
     bus::Transport& transport()      noexcept { return t_; }
 
@@ -447,6 +455,7 @@ public:
 
 private:
     std::optional<protocol::FirmwareVersion> fw_version_{};
+    std::string                     fw_sn_;
 
     // Dereference an optional component, or throw a clear IoError naming the
     // Config field the caller must set (with open_cameras=true) to enable it.
@@ -475,6 +484,7 @@ private:
     SensorErrors                    errors_;    // V1.6
     Diagnostics    diag_;
     Calibration                     cal_;       // V2.0
+    Device                          dev_;
     OtaSession                      ota_;       // V1.3
     std::unique_ptr<Camera>         wrist_;
     bool                            streaming_ = false;

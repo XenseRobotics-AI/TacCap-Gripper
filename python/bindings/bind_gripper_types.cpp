@@ -445,6 +445,71 @@ void bind_gripper_types(py::module_& m) {
                 p.stall_hold_ms, p.startup_delay_ms);
             return std::string(buf);
         });
+
+    // ---- Device: heartbeat / reset / SN / device type (v0.3.3) -----------
+    py::enum_<protocol::DeviceType>(m, "DeviceType",
+        "The LEFT/RIGHT byte burned into flash (Cmd 0x06/0x07). Discovery prefers\n"
+        "the SN's sequence digit and only falls back to this.")
+        .value("LEFT",    protocol::DeviceType::Left)
+        .value("RIGHT",   protocol::DeviceType::Right)
+        .value("UNKNOWN", protocol::DeviceType::Unknown);
+
+    py::class_<Heartbeat>(m, "Heartbeat",
+        "Reply to Device.heartbeat(): MCU uptime and firmware version.")
+        .def_readonly("uptime_ms", &Heartbeat::uptime_ms,
+                      "MCU tick since boot, ms. Going backwards between two calls means\n"
+                      "the MCU rebooted in between. Wraps at ~49.7 days.")
+        .def_readonly("version",   &Heartbeat::version,
+                      "The same FirmwareVersion GetVersion returns.")
+        .def("__repr__", [](const Heartbeat& h) {
+            char buf[80];
+            std::snprintf(buf, sizeof(buf), "Heartbeat(uptime=%.3fs, version=%u.%u.%u.%u)",
+                          h.uptime_ms / 1000.0, h.version.major, h.version.minor,
+                          h.version.patch, h.version.build);
+            return std::string(buf);
+        });
+
+    py::class_<Device>(m, "Device",
+        "MCU-level commands every gripper answers, reached as gripper.device.\n\n"
+        "set_sn() and set_device_type() are FACTORY operations: discovery derives\n"
+        "the side from the SN's sequence digit and the role (leader/follower) from\n"
+        "its m/s suffix, and ota_update.py picks the firmware image by that suffix.\n"
+        "A wrong SN swaps left and right or sends the wrong role's firmware, which\n"
+        "bricks the MCU. Both setters read back and raise if the value did not land.")
+        .def("heartbeat", [](Device& d, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            return d.heartbeat(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500,
+           "Cmd 0x01. Liveness probe: uptime and firmware version. Side-effect-free.")
+        .def("reset", [](Device& d, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            d.reset(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500,
+           "Cmd 0x03. Reboots the MCU after ACKing; every later command on this\n"
+           "gripper times out -- close it and re-open once USB re-enumerates (1-3 s).\n"
+           "A SOFT reset: the USB bridge and the motor stay powered. Not a power cycle.")
+        .def("get_sn", [](Device& d, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            return d.get_sn(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500,
+           "Cmd 0x04. The burned SN, '' when none is.")
+        .def("set_sn", [](Device& d, const std::string& sn, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            d.set_sn(sn, std::chrono::milliseconds(timeout_ms));
+        }, py::arg("sn"), py::arg("timeout_ms") = 1000,
+           "Cmd 0x05. FACTORY OPERATION -- see the class docstring. 1..16 characters;\n"
+           "reads back and raises ProtocolError on a mismatch.")
+        .def("get_device_type", [](Device& d, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            return d.get_device_type(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500,
+           "Cmd 0x06. DeviceType.LEFT / RIGHT, or UNKNOWN when unset.")
+        .def("set_device_type", [](Device& d, protocol::DeviceType t, unsigned timeout_ms) {
+            py::gil_scoped_release g;
+            d.set_device_type(t, std::chrono::milliseconds(timeout_ms));
+        }, py::arg("device_type"), py::arg("timeout_ms") = 1000,
+           "Cmd 0x07. FACTORY OPERATION. LEFT or RIGHT only; reads back and raises on\n"
+           "a mismatch.");
 }
 
 }  // namespace xense::taccap::python

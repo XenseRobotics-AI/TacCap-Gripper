@@ -16,6 +16,7 @@ add_library(taccap_core SHARED
     src/components/calibration.cpp
     src/components/sensor_errors.cpp
     src/components/diagnostics.cpp
+    src/components/device.cpp
     src/discovery.cpp
     src/leader_gripper.cpp
     src/follower_gripper.cpp

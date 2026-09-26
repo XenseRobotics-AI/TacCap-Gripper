@@ -159,7 +159,26 @@ void bind_sensors(py::module_& m) {
             "hard_iron is 3 floats of bias in uT; soft_iron_row_major is the 3x3\n"
             "correction matrix flattened ROW-major into 9 floats, the layout the\n"
             "firmware stores after MotionCal. Blocks for the ACK with the GIL\n"
-            "released; raises ProtocolError on NACK.");
+            "released; raises ProtocolError on NACK. Also ends a session begun with\n"
+            "start_mag_calibration(): the firmware stops its stream and clears the\n"
+            "flag itself.")
+        .def("start_mag_calibration", [](IMU& self, unsigned timeout_ms) {
+            py::gil_scoped_release gil;
+            self.start_mag_calibration(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500u,
+            "Begin a magnetometer calibration session (Cmd 0x26, payload 1). Leader\n"
+            "firmware only; a follower raises ProtocolError(InvalidCmd).\n\n"
+            "The firmware STARTS AN IMU STREAM BY ITSELF so raw samples reach\n"
+            "on_data() while the gripper is rotated; the gripper's own\n"
+            "start_streaming() state does not know about it. Finish with\n"
+            "set_mag_calibration(), or abandon with stop_mag_calibration().")
+        .def("stop_mag_calibration", [](IMU& self, unsigned timeout_ms) {
+            py::gil_scoped_release gil;
+            self.stop_mag_calibration(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 500u,
+            "Abandon a magnetometer calibration session (Cmd 0x26, payload 2): stops\n"
+            "the stream the firmware started and clears the flag. Not needed after\n"
+            "set_mag_calibration(), which does both.");
 
     // ---- KeySample + Key (V1.4) ----------------------------------------
     py::class_<KeySample>(m, "KeySample",

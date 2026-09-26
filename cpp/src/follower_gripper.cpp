@@ -57,6 +57,7 @@ FollowerGripper::FollowerGripper(const Config& cfg)
       errors_(t_),
       diag_(t_),
       cal_(t_),
+      dev_(t_),
       ota_(t_) {
     // Mirror LeaderGripper: drain leftover DATA, then probe firmware
     // version + SN once at construction time so the log shows what the
@@ -83,8 +84,9 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         auto ack = t_.send_cmd(protocol::Cmd::GetSn, {},
                                std::chrono::milliseconds(500));
         if (!ack.is_nack && !ack.data.empty()) {
-            fw_sn_str = protocol::decode_sn(ack.data.data(),
+            fw_sn_    = protocol::decode_sn(ack.data.data(),
                                             ack.data.size());
+            fw_sn_str = fw_sn_;
         }
     } catch (...) {}
 

@@ -435,6 +435,14 @@ void bind_motor(py::module_& m) {
                       "Live motor fault word, a bit mask raised by the motor itself.")
         .def_readonly("latched_fault_code", &MotorStatusSample::latched_fault_code,
                       "OR of every motor fault bit seen since power-on.")
+        .def_readonly("raw",                &MotorStatusSample::raw,
+                      "The whole decoded frame as a MotorStatusExt: monitor_flags, the\n"
+                      "fault / status / stop timestamps, stop_fault_code and the raw CAN\n"
+                      "evidence (fault_can_id / dlc / data), without polling\n"
+                      "read_status_ext() -- which collides with a running controller.\n"
+                      "Fields the frame did not carry are zero: the stream sends the\n"
+                      "59-byte layout, so the 72-byte tail reads 0 there. Check\n"
+                      "monitor_version first.")
         .def("__repr__", [](const MotorStatusSample& s) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),
@@ -618,6 +626,35 @@ void bind_motor(py::module_& m) {
         //     T2 失能。裸命令不豁免这条。
         //
         // 需要误差钳位、力矩天花板和堵转处理的调用方,仍应该用控制器。
+        // 带 ACK 的版本(v0.3.3):每条命令等固件应答,拿得到 NACK。比 submit_*
+        // 慢一个往返,适合单步命令和测延迟,不适合 100Hz 控制环。和 submit_*
+        // 一样绕过控制器的误差钳位与力矩天花板,只受固件包络和 0x700B 约束。
+        .def("set_position", [](Motor& self, float pos, float max_vel, float max_torque) {
+            py::gil_scoped_release g;
+            self.set_position(pos, max_vel, max_torque);
+        }, py::arg("target_pos_rad"), py::arg("max_vel_radps"), py::arg("max_torque_nm"),
+           "Position command (Cmd 0x40), blocks for the ACK and raises ProtocolError\n"
+           "on NACK. One round trip slower than submit_position -- for single steps\n"
+           "and latency tests, not a control loop. Bypasses the controllers' error\n"
+           "clamp and torque ceiling; bounded by the firmware envelope and 0x700B.")
+        .def("set_velocity", [](Motor& self, float vel, float max_torque, float acc) {
+            py::gil_scoped_release g;
+            self.set_velocity(vel, max_torque, acc);
+        }, py::arg("target_vel_radps"), py::arg("max_torque_nm"), py::arg("profile_acc_radps2"),
+           "Velocity command (Cmd 0x41) with ACK. See set_position for the caveats.")
+        .def("set_torque", [](Motor& self, float torque, float max_vel) {
+            py::gil_scoped_release g;
+            self.set_torque(torque, max_vel);
+        }, py::arg("target_torque_nm"), py::arg("max_vel_radps"),
+           "Torque command (Cmd 0x42) with ACK. See set_position for the caveats.")
+        .def("set_impedance", [](Motor& self, float pos, float kp, float kd,
+                                 float tau_ff, float vel_ff) {
+            py::gil_scoped_release g;
+            self.set_impedance(pos, kp, kd, tau_ff, vel_ff);
+        }, py::arg("target_pos_rad"), py::arg("kp_nm_per_rad"), py::arg("kd_nm_s_per_rad"),
+           py::arg("feedforward_torque_nm"), py::arg("feedforward_vel_radps") = 0.0f,
+           "MIT impedance command (Cmd 0x43) with ACK -- the acknowledged twin of\n"
+           "submit_impedance. See set_position for the caveats.")
         .def("submit_impedance", [](Motor& self, float target_pos_rad, float kp,
                                     float kd, float feedforward_torque_nm,
                                     float feedforward_vel_radps) {

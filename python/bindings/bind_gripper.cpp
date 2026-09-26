@@ -89,13 +89,19 @@ void bind_gripper(py::module_& m) {
                       "'TCGU01A24Z0002m'. Empty when the firmware did not answer -- too\n"
                       "old for GetSn, or the SN was never burned. `side` and `role` come\n"
                       "from this string.")
+        .def_readonly("in_use",               &discovery::GripperEndpoints::in_use,
+                      "True when the port is already held by an open gripper (in this\n"
+                      "process or another) and so could not be probed -- side, role and\n"
+                      "firmware_sn are Unknown/empty for THAT reason. Ports are opened\n"
+                      "exclusively; scan before opening, or reuse the gripper you hold.")
         .def("__repr__", [](const discovery::GripperEndpoints& e) {
             return std::string("GripperEndpoints(side=") +
                    discovery::to_string(e.side) +
                    ", role=" + discovery::to_string(e.role) +
                    ", mcu=" + e.mcu_device +
                    " ch343_sn=" + e.mcu_serial +
-                   " fw_sn=" + e.firmware_sn + ")";
+                   " fw_sn=" + e.firmware_sn +
+                   (e.in_use ? " IN USE" : "") + ")";
         });
     m.def("scan_grippers",  &discovery::scan_all,
           "Enumerate every gripper currently plugged in.\n\n"
@@ -238,6 +244,13 @@ void bind_gripper(py::module_& m) {
         .def_property_readonly("diagnostics", [](LeaderGripper& g) -> Diagnostics&    { return g.diagnostics(); }, py::return_value_policy::reference_internal,
                                "Firmware UART counters and log control. Counters need firmware 1.1.3,\n"
                                "log control 1.1.4; older firmware NACKs InvalidCmd as a ProtocolError.")
+        .def_property_readonly("device",        [](LeaderGripper& g) -> Device&         { return g.device(); },        py::return_value_policy::reference_internal,
+                               "MCU-level commands: heartbeat, reset, SN and device type. The SN /\n"
+                               "device-type setters are FACTORY operations -- see Device.")
+        .def_property_readonly("firmware_sn",
+            [](const LeaderGripper& g) { return g.firmware_sn(); },
+            "SN read at open(), '' when the MCU did not answer or none is burned.\n"
+            "device.get_sn() asks again.")
         .def_property_readonly("firmware_version",
             [](const LeaderGripper& g) { return g.firmware_version(); },
             "Firmware version read at open(), or None if the MCU did not answer.")
@@ -397,6 +410,13 @@ void bind_gripper(py::module_& m) {
              "ProtocolError with the upgrade instructions; a version that could not\n"
              "be read only logs a warning. allow_outdated_firmware=True skips the\n"
              "check entirely.")
+        .def_property_readonly("device",        [](FollowerGripper& g) -> Device&         { return g.device(); },        py::return_value_policy::reference_internal,
+                               "MCU-level commands: heartbeat, reset, SN and device type. The SN /\n"
+                               "device-type setters are FACTORY operations -- see Device.")
+        .def_property_readonly("firmware_sn",
+            [](const FollowerGripper& g) { return g.firmware_sn(); },
+            "SN read at open(), '' when the MCU did not answer or none is burned.\n"
+            "device.get_sn() asks again.")
         .def_property_readonly("firmware_version",
             [](const FollowerGripper& g) -> py::object {
                 auto v = g.firmware_version();

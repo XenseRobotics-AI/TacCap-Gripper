@@ -64,6 +64,22 @@ public:
                              const std::array<float, 9>& soft_iron_row_major,
                              std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
+    // Magnetometer calibration session (Cmd 0x26 with a 1-byte payload; leader
+    // firmware only -- a follower NACKs InvalidCmd).
+    //
+    // start: the firmware flags calibration and STARTS AN IMU STREAM ON ITS OWN
+    //   (separate mode, IMU only, rate code 5) so the host can collect raw
+    //   magnetometer samples through on_data() while the gripper is rotated.
+    //   It does not go through start_streaming(), so the gripper's own
+    //   streaming state does not know about it.
+    // stop:  stops that stream and clears the flag, discarding the session.
+    //
+    // Finish a session by fitting hard/soft iron on the host and calling
+    // set_mag_calibration(): the firmware applies it, persists it, stops the
+    // stream and clears the flag itself -- no stop needed after that.
+    void start_mag_calibration(std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+    void stop_mag_calibration(std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+
     // Decode a wire-format ImuData payload into an ImuSample. Public so
     // tests (and curious users) can exercise the unit conversion.
     static ImuSample decode(const std::uint8_t* payload, std::size_t len);

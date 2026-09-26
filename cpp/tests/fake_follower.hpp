@@ -13,6 +13,7 @@
 #include <taccap/follower_gripper.hpp>
 #include <taccap/protocol/codec.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -120,6 +121,14 @@ public:
     // Firmware older than 1.1.6.26 has no 0x56.
     void set_spec_supported(bool on) { spec_supported_.store(on); }
 
+    // Make SetSn store something other than what was sent, so the SDK's
+    // read-back check has something to catch.
+    void set_corrupt_sn_writes(bool on) { corrupt_sn_writes_.store(on); }
+    std::string stored_sn() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return sn_;
+    }
+
 private:
     void run_() {
         auto next_status = std::chrono::steady_clock::now();
@@ -144,9 +153,46 @@ private:
                 return;
             }
             case tp::Cmd::GetSn: {
-                const std::string sn = "TCGU01A28Z0001s";
-                pty_.send_response(f.seq, f.cmd,
-                                   std::vector<uint8_t>(sn.begin(), sn.end()));
+                std::vector<uint8_t> out(17, 0);   // sn_info_t: 16 chars + NUL
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    std::memcpy(out.data(), sn_.data(), std::min<size_t>(sn_.size(), 16));
+                }
+                pty_.send_response(f.seq, f.cmd, out);
+                return;
+            }
+            case tp::Cmd::SetSn: {
+                std::string sn(f.payload.begin(), f.payload.end());
+                sn = sn.substr(0, sn.find('\0'));
+                if (corrupt_sn_writes_.load() && !sn.empty()) sn.back() = '?';
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    sn_ = sn;
+                }
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
+            }
+            case tp::Cmd::GetDevType: {
+                pty_.send_response(f.seq, f.cmd, {dev_type_.load()});
+                return;
+            }
+            case tp::Cmd::SetDevType: {
+                // Firmware: LEFT(0) / RIGHT(1) only, anything else InvalidParam.
+                if (f.payload.size() != 1 || f.payload[0] > 1) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
+                    return;
+                }
+                dev_type_.store(f.payload[0]);
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
+            }
+            case tp::Cmd::Heartbeat: {
+                // uptime_ms (u32 LE) + the four version bytes, as the firmware sends.
+                std::vector<uint8_t> out(8, 0);
+                const uint32_t up = 123456u;
+                std::memcpy(out.data(), &up, 4);
+                out[4] = fw_major_; out[5] = fw_minor_; out[6] = fw_patch_; out[7] = 0;
+                pty_.send_response(f.seq, f.cmd, out);
                 return;
             }
             case tp::Cmd::GetGripperConfig: {
@@ -235,6 +281,9 @@ private:
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
     std::atomic<bool> spec_supported_{true};
+    std::atomic<bool> corrupt_sn_writes_{false};
+    std::atomic<uint8_t> dev_type_{0xFF};
+    std::string sn_ = "TCGU01A28Z0001s";
     mutable std::mutex mu_;
     tp::MotorStatus status_{};
     std::optional<tp::MotorImpedanceCtrl> last_submit_;

@@ -171,6 +171,10 @@ MotorVersion = (
 )  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
 # 电机 CAN 扩展帧透传的结果 (Cmd 0x5B, 需固件 >= 1.2.8)
 MotorCanXferResp = _taccap_native.MotorCanXferResp
+# MCU 级命令:心跳 / 复位 / SN / 设备类型(gripper.device,v0.3.3)
+Device = _taccap_native.Device
+Heartbeat = _taccap_native.Heartbeat
+DeviceType = _taccap_native.DeviceType
 # 电机固件升级(刷 RobStride 电机本身,不是夹爪 MCU),经 0x5B 透传
 MotorOtaSession = _taccap_native.MotorOtaSession
 MotorStopReason = _taccap_native.MotorStopReason  # V2.2
@@ -305,6 +309,9 @@ __all__ = [
     "MotorFaultReport",
     "MotorVersion",
     "MotorCanXferResp",
+    "Device",
+    "Heartbeat",
+    "DeviceType",
     "MotorOtaSession",
     "MotorModel",
     "HomeDiagReport",

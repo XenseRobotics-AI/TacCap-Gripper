@@ -24,6 +24,7 @@
 
 #include <taccap/components/calibration.hpp>
 #include <taccap/components/diagnostics.hpp>
+#include <taccap/components/device.hpp>
 #include <taccap/components/imu.hpp>
 #include <taccap/components/encoder.hpp>
 #include <taccap/components/camera.hpp>
