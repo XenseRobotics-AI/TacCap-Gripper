@@ -141,12 +141,89 @@ TEST(ForcePositionPolicy, BlockedWithinOneLeadOfTheTargetStillPushesTheBudget) {
         EXPECT_FALSE(p.arrived());
         EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
 
-        // Once pushed through to the target it is a plain arrival again.
-        t += std::chrono::milliseconds(10);
-        p.step(sample(map.to_rad(0.0f)), t);
-        EXPECT_TRUE(p.arrived());
-        EXPECT_FALSE(p.holding());
     }
+}
+
+// A compliant object pushed INTO the arrival band must keep the grip. Before the
+// latch, 0015s on a notebook alternated between a budget push (-0.013 rad, out
+// of the band) and a ~0.4 Nm arrival hold (-0.0098, in it) every ~150 ms, with
+// the ramp re-seeding to a zero command on every exit.
+TEST(ForcePositionPolicy, AGraspPushedIntoTheArrivalBandDoesNotChatter) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float out = 0.013f, in = 0.0098f;
+    ASSERT_GT(out, tune.arrival_eps_rad);
+    ASSERT_LT(in, tune.arrival_eps_rad);
+    p.reset(sample(out), t);
+    p.set_target(sample(out), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(out), t);
+    for (int i = 0; i < 30; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(out), t);
+    }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    for (int i = 0; i < 60; ++i) {
+        t += std::chrono::milliseconds(10);
+        const float pos = (i / 5) % 2 ? in : out;
+        const auto c = p.step(sample(pos), t);
+        EXPECT_EQ(p.state(), ForcePositionState::HoldingForce) << "frame " << i;
+        EXPECT_FALSE(p.arrived());
+        EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f) << "frame " << i;
+        EXPECT_NEAR(tune.position_kp * (c.target_pos - pos) + c.target_torque,
+                    -cfg.grasp_torque_nm, 1e-3f);
+    }
+}
+
+// The object is taken away: the jaw runs through the target and past it. The
+// latch lets go, and the ordinary hold brings the jaw back onto the target.
+TEST(ForcePositionPolicy, PassingTheTargetReleasesTheGraspLatch) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float target = 0.5f, blocked = 0.52f;
+    p.reset(sample(blocked), t);
+    p.set_target(sample(blocked), target, cfg.grasp_torque_nm, t);
+    p.step(sample(blocked), t);
+    for (int i = 0; i < 30; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(blocked), t);
+    }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+
+    t += std::chrono::milliseconds(10);
+    const float past = target - 2.0f * tune.arrival_eps_rad;
+    const auto c = p.step(sample(past), t);
+    EXPECT_FALSE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::Opening) << "pulled back toward the target";
+    EXPECT_GT(tune.position_kp * (c.target_pos - past) + c.target_torque, 0.0f);
+
+    t += std::chrono::milliseconds(10);
+    p.step(sample(target), t);
+    EXPECT_TRUE(p.arrived());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+}
+
+// A new target is a new approach: the latch does not follow the jaw to it.
+TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.02f), t);
+    p.set_target(sample(0.02f), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(0.02f), t);
+    for (int i = 0; i < 30; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(0.02f), t);
+    }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    p.set_target(sample(0.02f), 0.02f, cfg.grasp_torque_nm, t);
+    t += std::chrono::milliseconds(10);
+    p.step(sample(0.02f), t);
+    EXPECT_TRUE(p.arrived());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
 }
 
 // The top-up is for a jaw at rest. One still moving through that band on its

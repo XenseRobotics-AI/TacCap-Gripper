@@ -201,6 +201,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     holding_ = false;
     arrived_ = true;
     ramp_valid_ = false;
+    grasp_latched_ = false;
     fault_reason_.clear();
 }
 
@@ -209,6 +210,7 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     state_started_ = now;
     target_position_ = 1.0f;
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
+    grasp_latched_ = false;
 }
 
 // Commands only move the setpoint. There is no motion state to disturb and no
@@ -225,6 +227,7 @@ void ForcePositionPolicy::set_target(
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
     if (std::abs(target_position - target_position_) > 1e-4f) {
         state_started_ = now;
+        grasp_latched_ = false;     // a new target is a new approach
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
@@ -235,6 +238,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     target_position_ = map_.to_position(sample.actual_pos);
     hold_raw_ = sample.actual_pos;
     ramp_valid_ = false;
+    grasp_latched_ = false;
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
@@ -248,6 +252,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     commanded_torque_nm_ = 0.0f;
     holding_ = false;
     ramp_valid_ = false;
+    grasp_latched_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -441,15 +446,31 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // the controller sat in Closing indefinitely. A thin object in that band
     // was likewise gripped at a fraction of the budget. Top the command up to
     // the budget with feed-forward so the grip is the same wherever contact
-    // happens; the total stays exactly on the budget, as at a pinned ramp.
-    blocked_short_ = std::abs(ramp_raw_ - target_raw) <= kEpsilon &&
-                     std::abs(error) > tune_.arrival_eps_rad &&
-                     std::abs(sample.actual_vel) <=
-                         cfg_.close_speed_radps * kHoldingVelRatio;
+    // happens; the total sits exactly on the budget, as at a pinned ramp.
+    //
+    // LATCHED, because the object is compliant. Topped up to the budget a
+    // notebook compressed into the arrival band; the arrival hold then asked
+    // for ~0.4 Nm, the notebook sprang back out, and the two alternated every
+    // ~150 ms with the measured torque swinging 0.65-1.15 Nm (0015s,
+    // 2026-09-27). So once the jaw has stopped short, the push stays on until
+    // the target changes or the jaw passes the target -- the latter meaning
+    // whatever blocked it is gone, and the ordinary hold takes over.
+    const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
+    const bool parked = std::abs(ramp_raw_ - target_raw) <= kEpsilon;
+    const float short_by = dir * (target_raw - sample.actual_pos);
+    if (parked && short_by > tune_.arrival_eps_rad &&
+        std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio) {
+        grasp_latched_ = true;
+        grasp_dir_ = dir;
+    }
+    if (grasp_latched_ && short_by < -tune_.arrival_eps_rad) {
+        grasp_latched_ = false;
+    }
+    blocked_short_ = parked && grasp_latched_;
     float tau_ff = 0.0f;
     if (blocked_short_) {
-        const float top_up = std::max(0.0f, budget - std::abs(predicted));
-        tau_ff = (error > 0.0f) ? top_up : -top_up;
+        // Exactly the budget in the push direction, whatever the PD asks for.
+        tau_ff = dir * budget - predicted;
     }
     // Report the honest prediction, bounded only by the motion limit. Clamping
     // it to the grasp budget would hide the damping term's legitimate excursions.
@@ -482,7 +503,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float open_position = map_.to_position(sample.actual_pos);
 
     hold_raw_ = sample.actual_pos;          // where the jaw actually is
-    arrived_ = std::abs(to_target) <= tune_.arrival_eps_rad;
+    // A latched grasp is not an arrival, even inside the band: see travel_track_.
+    arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
     protocol::MotorImpedanceCtrl cmd;
     blocked_short_ = false;
@@ -491,7 +513,10 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
                              close_preload_signed_());
     } else {
-        const float dir = (to_target > 0.0f) ? 1.0f : -1.0f;
+        // A latched push keeps its direction even once the jaw is fractionally
+        // past the target; flipping it there would push the object back out.
+        const float dir = grasp_latched_ ? grasp_dir_
+                        : (to_target > 0.0f) ? 1.0f : -1.0f;
         cmd = travel_track_(sample, target_raw, dir * cfg_.close_speed_radps,
                             grasp_torque_nm_, now);
     }

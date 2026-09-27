@@ -314,9 +314,15 @@ private:
     float commanded_torque_nm_ = 0.0f;
     bool  holding_ = false;
     bool  arrived_ = false;
-    // Ramp parked on the target, jaw at rest short of it: travel_track_ has
-    // topped the command up to the budget. See the definition.
+    // Ramp parked on the target with a grasp latched: travel_track_ has topped
+    // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
+    // Set when the jaw comes to rest short of a parked ramp; held until the
+    // target changes or the jaw passes the target (the object is gone). While
+    // set, arrival is not reported, so a compliant object pushed into the
+    // arrival band does not drop the grip to a position hold and spring back.
+    bool  grasp_latched_ = false;
+    float grasp_dir_ = 0.0f;         // raw direction of the latched push
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
