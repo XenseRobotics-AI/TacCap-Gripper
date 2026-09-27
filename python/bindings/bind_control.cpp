@@ -372,9 +372,10 @@ void bind_control(py::module_& m) {
            "Returns even if the device vanished mid-run.")
         .def("release", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.release();
-        }, "Open toward 1.0 under bounded velocity damping.\n\n"
-           "Preferred over set_target(1.0) for letting go: a position step would open\n"
-           "as fast as the budget allows, this bounds the speed instead.")
+        }, "Open toward 1.0: set_target(1.0) with the grasp budget reset to the\n"
+           "configured grasp_torque_nm.\n\n"
+           "The jaw follows the same ramp at close_speed_radps as any other move; it\n"
+           "does not open faster than that. Clears a latched grasp.")
         .def("set_target", [](ForcePositionController& c, float position,
                                const std::optional<float>& grasp_torque_nm) {
             py::gil_scoped_release g;
@@ -382,7 +383,8 @@ void bind_control(py::module_& m) {
             else                 c.set_target(position);
         }, py::arg("position"), py::arg("grasp_torque_nm") = std::nullopt,
            "Set the normalized target, 0 = closed, 1 = open, optionally overriding the\n"
-           "grasp budget (N*m) for this move.\n\n"
+           "grasp budget (N*m) for this move. The override must not exceed the motor's\n"
+           "continuous stall rating (ValueError), the same bound start() applies.\n\n"
            "Non-blocking, and it only moves the setpoint: there is no motion state to\n"
            "disturb, so streaming a target every frame is fine. Only valid while running.")
         .def("hold_position", [](ForcePositionController& c) {

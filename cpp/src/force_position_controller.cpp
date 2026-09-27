@@ -610,6 +610,7 @@ void ForcePositionController::start() {
     if (running()) return;
     validate_config_();
     map_ = g_.position_map();
+    float stall_limit_nm = 0.0f;     // filled from the spec below, if readable
 
     const float device_limit = g_.motor().get_startup_limit_torque();
     if (!std::isfinite(device_limit) || device_limit <= 0.0f ||
@@ -759,6 +760,7 @@ void ForcePositionController::start() {
         // out. Fatal rather than the warning it used to be: this is the one
         // number that decides whether the gripper can run all day.
         const float stall = spec.stall_cont_torque_nm;
+        if (std::isfinite(stall) && stall > 0.0f) { stall_limit_nm = stall; }
         if (std::isfinite(stall) && stall > 0.0f &&
             cfg_.grasp_torque_nm > stall + 1e-4f) {
             throw std::invalid_argument(
@@ -831,6 +833,7 @@ void ForcePositionController::start() {
         stop_requested_ = false;
         step_requested_ = true;
         device_limit_nm_ = device_limit;
+        stall_limit_nm_ = stall_limit_nm;
     }
 
     sub_ = g_.motor().on_status(
@@ -961,6 +964,16 @@ void ForcePositionController::set_target(float position, float grasp_torque_nm) 
         throw std::logic_error("ForcePositionController::set_target called before start");
     }
     validate_target(cfg_, position, grasp_torque_nm);
+    // The same bound start() puts on cfg.grasp_torque_nm. Without it a runtime
+    // override was checked only against hold_torque_limit_nm (the RATED torque),
+    // so a caller could hold a blocked jaw above the stall rating indefinitely.
+    if (stall_limit_nm_ > 0.0f && grasp_torque_nm > stall_limit_nm_ + 1e-4f) {
+        throw std::invalid_argument(
+            "grasp torque " + std::to_string(grasp_torque_nm) +
+            " Nm exceeds the motor's continuous stall rating " +
+            std::to_string(stall_limit_nm_) +
+            " Nm, which a blocked jaw holds indefinitely");
+    }
     pending_ = PendingCommand::SetTarget;
     pending_position_ = position;
     pending_grasp_torque_nm_ = grasp_torque_nm;

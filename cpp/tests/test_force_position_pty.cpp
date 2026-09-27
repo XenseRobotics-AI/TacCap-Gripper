@@ -16,6 +16,7 @@
 #include <taccap/protocol/codec.hpp>
 
 #include <atomic>
+#include <stdexcept>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -367,4 +368,20 @@ TEST(ForcePositionControllerPty, StopReturnsAfterTheDeviceDisappears) {
     EXPECT_LT(took.count(), 3000)
         << "stop() took " << took.count() << " ms with the device gone";
     EXPECT_FALSE(c.running());
+}
+
+// The stall rating bounds a RUNTIME grasp override too, not only the config
+// start() sees. set_target(p, grasp) used to check against the rated torque
+// alone, so a blocked jaw could be held above the stall rating indefinitely.
+TEST(ForcePositionControllerPty, SetTargetRefusesAGraspAboveTheStallRating) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);             // EL05 spec: stall_cont 1.1 N*m
+    auto g = open_follower(pty);
+    tx::ForcePositionController c(*g);
+    c.start();
+    EXPECT_NO_THROW(c.set_target(0.0f, 1.1f));
+    EXPECT_NO_THROW(c.set_target(0.0f, 0.5f));
+    EXPECT_THROW(c.set_target(0.0f, 1.2f), std::invalid_argument);
+    c.stop();
 }

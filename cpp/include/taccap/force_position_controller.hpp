@@ -348,7 +348,7 @@ public:
     void stop();
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
-    void release();        // open toward 1.0 with bounded velocity damping
+    void release();        // set_target(1.0) at the configured grasp budget
     // Immediately move toward a normalized target. A lower target uses the
     // contact-aware grasp path; a higher target uses bounded opening motion.
     void set_target(float position);
@@ -397,6 +397,9 @@ private:
     GripperObservation observation_{};
     std::unique_ptr<detail::ForcePositionPolicy> policy_;
     float device_limit_nm_ = 0.0f;
+    // The installed motor's continuous stall rating, read at start(); 0 when
+    // the spec was unreadable. set_target() holds a runtime grasp to it.
+    float stall_limit_nm_ = 0.0f;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
