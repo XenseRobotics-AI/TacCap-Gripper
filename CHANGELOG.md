@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Both controllers ignore status frames that arrive after `stop()` has begun.
+  `stop()` unsubscribes only after the zero frame and the disable ACK, and a
+  frame landing in that window marked the stopped controller's observation
+  valid again. This was the intermittent
+  `ImpedanceControllerPty.StopCommandsZeroTorque` failure (about 1 run in 5
+  under CPU load; 0 in 500 after the fix).
+
 ### Changed
 
 - `GripperObservation.position` is documented as clamped to [0, 1]: a jaw

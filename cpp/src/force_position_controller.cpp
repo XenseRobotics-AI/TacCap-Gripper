@@ -944,6 +944,12 @@ void ForcePositionController::on_status_(const MotorStatusSample& sample) {
     const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lk(mu_);
+        // stop() unsubscribes only AFTER the zero frame and the disable ACK, so
+        // frames keep arriving for a few ms after it has retired the
+        // observation. Taking them would mark a stopped controller's
+        // observation valid again -- ImpedanceControllerPty.StopCommandsZeroTorque
+        // caught it roughly one run in five under CPU load.
+        if (stop_requested_) return;
         latest_ = sample;
         latest_time_ = now;
         have_sample_ = true;
