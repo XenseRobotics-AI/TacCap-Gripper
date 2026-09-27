@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-27
+
+### Fixed
+
+- **The 0.3.7 grasp latch survives a streamed target.** It cleared on any
+  target change above 1e-4, so a teleoperated follower -- which streams the
+  leader's position every frame -- dropped the latch each frame and a compliant
+  object chattered again. It now clears only when the target moves by more than
+  `arrival_eps_rad`.
+- **While latched the setpoint is pinned on the target with no velocity
+  feed-forward.** A ramp chasing a jittering target carried `kd * ramp_vel`,
+  which the top-up cancelled against the velocity measured a frame earlier, not
+  the one the motor applied it against: gripping a notebook on 0015s with the
+  target stepping 2–4 mrad per frame, the command read 1.1 Nm and the motor
+  delivered a steady 0.85. Now 1.14–1.17 Nm at every jitter level tried.
+
 ## [0.3.7] - 2026-09-27
 
 ### Fixed
