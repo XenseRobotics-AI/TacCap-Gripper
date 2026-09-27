@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-27
+
+### Fixed
+
+- **`ForcePositionController` now grips with the full budget when the jaw is
+  blocked within one lead of its target.** Between `arrival_eps_rad` and
+  `grasp_torque_nm / position_kp` short of the target the ramp has nothing left
+  to lead with, so the jaw got only `kp * error` and was reported neither
+  arrived nor holding: 0015s (EL05) sat in `CLOSING` at -0.022 rad with 0.5 Nm
+  when closing to 0.0, because its finger pads meet ~36 mrad early and need
+  ~1.0 Nm to compress to the calibrated zero; a thin object in that band was
+  likewise gripped at a fraction of the budget. The command is now topped up to
+  the budget with feed-forward and reported as `HOLDING_FORCE`.
+- **That grip is latched**, so a compliant object pressed into the arrival band
+  no longer drops to a ~0.4 Nm position hold, springs back out and repeats
+  (measured ~150 ms cycles, 0.65–1.15 Nm). The latch clears on a new target or
+  when the jaw passes the target (the object was removed). Measured on a
+  notebook: EL05 1.14–1.18 Nm, RS00 3.27–3.40 Nm, steady `HOLDING_FORCE`.
+- `ForcePositionController.stop()` / `ImpedanceController.stop()` are
+  idempotent and skip the motor disable when the gripper is already closed. The
+  destructor's second `stop()` after a `with FollowerGripper(...)` block used to
+  log a misleading `motor disable on stop failed: send_cmd on stopped
+  transport`; the motor had in fact been disabled.
+- **`ForcePositionController.set_target(p, grasp_torque_nm)` now refuses a
+  grasp above the motor's continuous stall rating** (`ValueError`), the same
+  bound `start()` puts on the config. It was checked only against
+  `hold_torque_limit_nm` (the rated torque), so a runtime override could hold a
+  blocked jaw above the stall rating indefinitely.
+- `ForcePositionController.release()` docstring: it opens along the normal
+  ramp at `close_speed_radps` (it is `set_target(1.0)` at the configured
+  budget); the old text claimed it opened as fast as the budget allows.
+
 ## [0.3.6] - 2026-09-27
 
 ### Added
