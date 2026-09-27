@@ -206,6 +206,39 @@ TEST(ForcePositionPolicy, PassingTheTargetReleasesTheGraspLatch) {
     EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
 }
 
+// A streamed target that jitters inside the arrival band keeps the grasp. The
+// teleop follower sends the leader's position every frame; if each tiny change
+// cleared the latch, a compliant object would chatter exactly as before.
+TEST(ForcePositionPolicy, AJitteringStreamedTargetKeepsTheGraspLatched) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float out = 0.013f, in = 0.0098f;
+    p.reset(sample(out), t);
+    p.set_target(sample(out), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(out), t);
+    for (int i = 0; i < 30; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(out), t);
+    }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    for (int i = 0; i < 60; ++i) {
+        t += std::chrono::milliseconds(10);
+        const float jitter = (i % 3) * 0.002f;          // < arrival_eps_rad
+        ASSERT_LT(jitter, tune.arrival_eps_rad);
+        p.set_target(sample(out), jitter, cfg.grasp_torque_nm, t);
+        const float pos = (i / 5) % 2 ? in : out;
+        const auto c = p.step(sample(pos), t);
+        EXPECT_EQ(p.state(), ForcePositionState::HoldingForce) << "frame " << i;
+        EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f) << "frame " << i;
+        // Pinned on the target with no velocity feed-forward: nothing for the
+        // motor's own velocity to disagree with (0015s delivered 0.85 of 1.1).
+        EXPECT_FLOAT_EQ(c.target_pos, jitter) << "frame " << i;
+        EXPECT_FLOAT_EQ(c.vel, 0.0f) << "frame " << i;
+    }
+}
+
 // A new target is a new approach: the latch does not follow the jaw to it.
 TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
     ForcePositionConfig cfg;

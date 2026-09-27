@@ -227,7 +227,14 @@ void ForcePositionPolicy::set_target(
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
     if (std::abs(target_position - target_position_) > 1e-4f) {
         state_started_ = now;
-        grasp_latched_ = false;     // a new target is a new approach
+    }
+    // A new target is a new approach -- but only a real one. A teleoperated
+    // follower streams the leader's position at 100 Hz, and that jitters by far
+    // less than the arrival band; clearing on every change would drop the latch
+    // each frame and bring back exactly the chatter it exists to prevent.
+    if (std::abs(map_.to_rad(target_position) - map_.to_rad(target_position_)) >
+        tune_.arrival_eps_rad) {
+        grasp_latched_ = false;
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
@@ -456,7 +463,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // the target changes or the jaw passes the target -- the latter meaning
     // whatever blocked it is gone, and the ordinary hold takes over.
     const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
-    const bool parked = std::abs(ramp_raw_ - target_raw) <= kEpsilon;
+    const float ramp_gap = std::abs(ramp_raw_ - target_raw);
+    const bool parked = ramp_gap <= kEpsilon;
     const float short_by = dir * (target_raw - sample.actual_pos);
     if (parked && short_by > tune_.arrival_eps_rad &&
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio) {
@@ -466,17 +474,33 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     if (grasp_latched_ && short_by < -tune_.arrival_eps_rad) {
         grasp_latched_ = false;
     }
-    blocked_short_ = parked && grasp_latched_;
-    float tau_ff = 0.0f;
+    // Once latched, "parked" tolerates a ramp still catching up with a target
+    // that jittered by less than the arrival band -- which is all a streamed
+    // target does while the latch survives (see set_target).
+    blocked_short_ = grasp_latched_ && ramp_gap <= tune_.arrival_eps_rad;
     if (blocked_short_) {
-        // Exactly the budget in the push direction, whatever the PD asks for.
-        tau_ff = dir * budget - predicted;
+        // PIN THE SETPOINT ON THE TARGET AND DROP THE VELOCITY FEED-FORWARD.
+        // Exactly the budget in the push direction, whatever the PD asks for --
+        // and the PD must then ask for as little as possible that the motor
+        // can disagree with. A ramp chasing a jittering streamed target carries
+        // a ramp velocity of a few tenths of a rad/s, and kd times that, which
+        // tau_ff cancels only against the velocity WE measured a frame ago, not
+        // the one the motor applies it against. Measured on 0015s gripping a
+        // notebook with the target stepping 2-4 mrad per frame: the command
+        // said 1.1 Nm, the motor delivered a steady 0.85. Pinned, the frame is
+        // kp*(target - pos) - kd*vel + tau_ff, and the jaw is at rest.
+        ramp_raw_ = target_raw;
+        const float pinned = tune_.position_kp * (target_raw - sample.actual_pos)
+                           - kd * sample.actual_vel;
+        const float tau_ff = dir * budget - pinned;
+        commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm,
+                                        std::abs(pinned + tau_ff));
+        return {ramp_raw_, tune_.position_kp, kd, tau_ff, 0.0f};
     }
     // Report the honest prediction, bounded only by the motion limit. Clamping
     // it to the grasp budget would hide the damping term's legitimate excursions.
-    commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm,
-                                    std::abs(predicted + tau_ff));
-    return {ramp_raw_, tune_.position_kp, kd, tau_ff, ramp_vel};
+    commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm, std::abs(predicted));
+    return {ramp_raw_, tune_.position_kp, kd, 0.0f, ramp_vel};
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
