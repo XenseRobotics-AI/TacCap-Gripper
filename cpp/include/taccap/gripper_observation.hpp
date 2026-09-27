@@ -20,7 +20,10 @@ namespace xense::taccap {
 // Latest gripper observation, refreshed from the motor-status stream.
 struct GripperObservation {
     bool     valid    = false;   // false until the first status frame arrives
-    float    position = 0.0f;    // [0,1] normalized open amount (0=closed,1=open)
+    // [0,1] normalized open amount (0=closed,1=open). CLAMPED: a jaw pressed
+    // past the calibrated closed point, or overshooting full open, still reads
+    // 0 or 1. raw_pos is unclamped; see the Python docstring for the mapping.
+    float    position = 0.0f;
     // Velocity and torque are in the GRIP frame: **positive means closing**, so
     // a grasp reads as a positive torque. Same on every device -- the mounting
     // direction is taken out by GripperPosition::to_grip_frame().

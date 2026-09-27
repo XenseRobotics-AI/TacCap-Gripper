@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `GripperObservation.position` is documented as clamped to [0, 1]: a jaw
+  pressed past the calibrated closed point or overshooting full open still
+  reads 0 or 1. The docstring shows the unclamped mapping from `raw_pos`.
+- `examples/control_ripple.py` detects "stopped" under ImpedanceController by
+  position range (<= 0.0015 rad over 0.3 s) instead of `|velocity| < 0.02`.
+  MIT status frames carry ~±0.07 rad/s of velocity quantization noise at rest,
+  so the old test almost never held and every step waited out its full
+  timeout. Reported by the tc-gu-01-pc DVT test.
+
 ## [0.3.8] - 2026-09-27
 
 ### Fixed

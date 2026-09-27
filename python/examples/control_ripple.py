@@ -74,6 +74,11 @@ def summarize(seg, commanded: float) -> dict:
     }
 
 
+# 「停住了」的判据:这段时间内原始位置的极差不超过这么多。
+STILL_WINDOW_S = 0.3
+STILL_RANGE_RAD = 0.0015
+
+
 def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
     rows: list = []
     sub = gripper.motor.on_status(
@@ -99,8 +104,15 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
         a = getattr(s, "arrived", None)
         if a is not None:
             return a
-        # 阻抗控制器没有 arrived,用「速度落下来」代替。
-        return s.observation.valid and abs(s.observation.velocity) < 0.02
+        # 阻抗控制器没有 arrived,用「位置不动了」代替,不用速度:MIT 状态帧的
+        # 速度在电机停住时有约 ±0.07 rad/s 的量化噪声,|v| < 0.02 几乎从不成立,
+        # 每一步都要白等满 budget(0086s 上由 DVT 测试发现)。位置一格约
+        # 0.00038 rad,0.3 s 内极差 <= 0.0015 rad 就是约 4 格。
+        now = time.perf_counter()
+        win = [r[1] for r in rows[-60:] if now - r[0] <= STILL_WINDOW_S]
+        if len(win) < 20:
+            return False
+        return max(win) - min(win) <= STILL_RANGE_RAD
 
     per_dir: dict[str, list] = {"闭合": [], "张开": []}
     try:

@@ -21,7 +21,13 @@ void bind_control(py::module_& m) {
         .def_readonly("valid",    &GripperObservation::valid,
                       "False until the first frame arrives, and again once the stream goes stale.")
         .def_readonly("position", &GripperObservation::position,
-                      "Normalized opening, 0 = closed, 1 = open. Needs a calibrated gripper.")
+                      "Normalized opening, 0 = closed, 1 = open. Needs a calibrated gripper.\n\n"
+                      "**钳位在 [0, 1]**:爪子越过标定端点(比如软垫压过零点、全开时过冲)\n"
+                      "时这里仍读 0 或 1,越界量看不到。要看就用 raw_pos 自己换算,\n"
+                      "得到不钳位的开合弧度(0 = 标定闭合点,越过它为负)::\n\n"
+                      "    m = gripper.position_map\n"
+                      "    opening = obs.raw_pos * (-1 if m.reverse else 1) - m.min_open_rad\n"
+                      "    normalized = opening / (m.max_open_rad - m.min_open_rad)  # 可 <0 或 >1")
         .def_readonly("velocity", &GripperObservation::velocity,
                       "rad/s,**正 = 闭合**。\n\n"
                       "这是夹爪坐标系,不是电机坐标系 —— 电机装配方向已经被消掉,\n"
@@ -36,7 +42,8 @@ void bind_control(py::module_& m) {
                       "和 velocity 同一个坐标系。要的是请求值而不是实测值的话,\n"
                       "读 snapshot 的 commanded_torque_nm(那是幅值)。")
         .def_readonly("raw_pos",  &GripperObservation::raw_pos,
-                      "Motor angle in radians, before the normalized position map.")
+                      "Motor angle in radians, before the normalized position map. Not clamped:\n"
+                      "the only place an excursion past the calibrated ends shows (see position).")
         .def_readonly("status",   &GripperObservation::status,
                       "Motor status word; see protocol.MotorStatusBit.")
         .def_readonly("motor_temp_c", &GripperObservation::motor_temp_c, "Motor temperature, C.")
