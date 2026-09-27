@@ -5,49 +5,21 @@
 // host learns these things: the firmware logs them on UART7, which is not wired
 // to USB, and the commands themselves just ACK OK.
 
+#include "capture_log.hpp"
 #include "fake_follower.hpp"
 
 #include <taccap/follower_gripper.hpp>
 #include <taccap/log.hpp>
 
 #include <gtest/gtest.h>
-#include <spdlog/sinks/ringbuffer_sink.h>
 
-#include <algorithm>
-#include <memory>
-#include <string>
-#include <vector>
 
 namespace tp = xense::taccap::protocol;
 using taccap_test::FakeFollower;
 using taccap_test::Pty;
 using taccap_test::open_follower;
 
-namespace {
-
-// Attach a ring-buffer sink to the SDK's singleton logger for one test.
-class CaptureLog {
-public:
-    CaptureLog() : sink_(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
-        sink_->set_level(spdlog::level::warn);
-        xense::taccap::logger()->sinks().push_back(sink_);
-    }
-    ~CaptureLog() {
-        auto& s = xense::taccap::logger()->sinks();
-        s.erase(std::remove(s.begin(), s.end(), sink_), s.end());
-    }
-    std::vector<std::string> lines() { return sink_->last_formatted(); }
-    size_t count(const std::string& needle) {
-        auto v = lines();
-        return static_cast<size_t>(std::count_if(v.begin(), v.end(), [&](const std::string& l) {
-            return l.find(needle) != std::string::npos;
-        }));
-    }
-private:
-    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> sink_;
-};
-
-}  // namespace
+using taccap_test::CaptureLog;
 
 TEST(PowerCycleWarnings, EveryStoredAdminWriteSaysCut24V) {
     Pty pty;

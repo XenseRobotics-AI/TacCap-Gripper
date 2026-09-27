@@ -314,6 +314,9 @@ private:
     float commanded_torque_nm_ = 0.0f;
     bool  holding_ = false;
     bool  arrived_ = false;
+    // Ramp parked on the target, jaw at rest short of it: travel_track_ has
+    // topped the command up to the budget. See the definition.
+    bool  blocked_short_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
@@ -394,6 +397,9 @@ private:
     Motor::SubId sub_ = 0;
     bool sub_active_ = false;
     bool stream_ours_ = false;
+    // stop() has already run since the last start(): a second stop() (the
+    // destructor after an explicit one) has nothing left to undo.
+    bool stopped_ = false;
 };
 
 const char* to_string(ForcePositionState state) noexcept;

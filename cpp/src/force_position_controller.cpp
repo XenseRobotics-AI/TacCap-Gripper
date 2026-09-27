@@ -429,12 +429,33 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
 
     const float vel_err = ramp_vel - sample.actual_vel;
     const float error = ramp_raw_ - sample.actual_pos;
+    const float predicted = tune_.position_kp * error + kd * vel_err;
+
+    // BLOCKED SHORT OF THE TARGET, WITHIN ONE LEAD OF IT. The ramp cannot run
+    // ahead of a target it has already reached, so a jaw stopped between
+    // arrival_eps and max_lead short of the target gets only kp*error -- less
+    // than the budget, and not "holding" either, because the lead never fills.
+    // Measured on 0015s (EL05, 2026-09-27): closing to 0.0 the fingers meet
+    // ~36 mrad early and the pad compresses, needing ~1.0 Nm to reach the
+    // calibrated zero; kp*error gave 0.5 Nm, the jaw parked at -0.022 rad and
+    // the controller sat in Closing indefinitely. A thin object in that band
+    // was likewise gripped at a fraction of the budget. Top the command up to
+    // the budget with feed-forward so the grip is the same wherever contact
+    // happens; the total stays exactly on the budget, as at a pinned ramp.
+    blocked_short_ = std::abs(ramp_raw_ - target_raw) <= kEpsilon &&
+                     std::abs(error) > tune_.arrival_eps_rad &&
+                     std::abs(sample.actual_vel) <=
+                         cfg_.close_speed_radps * kHoldingVelRatio;
+    float tau_ff = 0.0f;
+    if (blocked_short_) {
+        const float top_up = std::max(0.0f, budget - std::abs(predicted));
+        tau_ff = (error > 0.0f) ? top_up : -top_up;
+    }
     // Report the honest prediction, bounded only by the motion limit. Clamping
     // it to the grasp budget would hide the damping term's legitimate excursions.
-    commanded_torque_nm_ = std::min(
-        cfg_.motion_torque_limit_nm,
-        std::abs(tune_.position_kp * error + kd * vel_err));
-    return {ramp_raw_, tune_.position_kp, kd, 0.0f, ramp_vel};
+    commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm,
+                                    std::abs(predicted + tau_ff));
+    return {ramp_raw_, tune_.position_kp, kd, tau_ff, ramp_vel};
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
@@ -464,6 +485,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     arrived_ = std::abs(to_target) <= tune_.arrival_eps_rad;
 
     protocol::MotorImpedanceCtrl cmd;
+    blocked_short_ = false;
     if (arrived_) {
         ramp_valid_ = false;                // next move restarts the ramp here
         cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
@@ -482,10 +504,13 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // measured torque, which never reaches the command at stall.
     const float max_lead = grasp_torque_nm_ / tune_.position_kp;
     const float lead = std::abs(ramp_raw_ - sample.actual_pos);
-    holding_ = !arrived_ && ramp_valid_ && max_lead > kEpsilon &&
-               lead >= max_lead * kHoldingLeadRatio &&
-               std::abs(sample.actual_vel) <=
-                   cfg_.close_speed_radps * kHoldingVelRatio;
+    // blocked_short_ is the same observation where the lead cannot fill: the
+    // ramp is parked on the target and the budget is being applied anyway.
+    holding_ = !arrived_ && ramp_valid_ &&
+               (blocked_short_ ||
+                (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
+                 std::abs(sample.actual_vel) <=
+                     cfg_.close_speed_radps * kHoldingVelRatio));
 
     state_ = holding_            ? ForcePositionState::HoldingForce
            : arrived_            ? ForcePositionState::HoldingPosition
@@ -794,6 +819,7 @@ void ForcePositionController::start() {
         throw;
     }
 
+    stopped_ = false;
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run_(); });
     cv_.notify_one();
@@ -805,6 +831,7 @@ void ForcePositionController::start() {
 }
 
 void ForcePositionController::stop() {
+    if (stopped_) return;
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_requested_ = true;
@@ -842,15 +869,23 @@ void ForcePositionController::stop() {
     // Disabling is also the honest end state: once this controller is stopped
     // nothing is regulating the jaw, so holding it energized only invites the
     // watchdog to make that decision for us.
-    try { g_.motor().disable(); }
-    catch (const std::exception& e) {
-        logger()->warn("ForcePositionController: motor disable on stop failed: {}", e.what());
+    // A closed gripper has no port to disable through -- and closing it
+    // already stopped the stream the motor was being driven by.
+    if (g_.is_closed()) {
+        logger()->debug("ForcePositionController: gripper already closed; "
+                        "skipping motor disable on stop");
+    } else {
+        try { g_.motor().disable(); }
+        catch (const std::exception& e) {
+            logger()->warn("ForcePositionController: motor disable on stop failed: {}", e.what());
+        }
     }
     if (sub_active_) {
         g_.motor().off(sub_);
         sub_active_ = false;
     }
     stop_motor_stream_();
+    stopped_ = true;
 }
 
 void ForcePositionController::on_status_(const MotorStatusSample& sample) {

@@ -80,6 +80,7 @@ public:
         return last_submit_;
     }
     unsigned submit_count() const { return submits_.load(); }
+    unsigned disable_count() const { return disables_.load(); }
 
     // ---- Persisted gripper config / motor spec -----------------------------
     // config_writes() is what pins "the second ensure_envelope() does not
@@ -239,6 +240,10 @@ private:
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
                 return;
             }
+            case tp::Cmd::MotorDisable:
+                ++disables_;
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
             case tp::Cmd::MotorSetStartupLimitTorque:
             case tp::Cmd::MotorSetCanId:
             case tp::Cmd::MotorSwitchProtocol:
@@ -297,6 +302,7 @@ private:
     std::atomic<bool> streaming_{false};
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
+    std::atomic<unsigned> disables_{0};
     std::atomic<bool> spec_supported_{true};
     std::atomic<bool> corrupt_sn_writes_{false};
     std::atomic<bool> model_from_flash_{true};

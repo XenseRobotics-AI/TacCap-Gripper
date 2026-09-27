@@ -19,6 +19,7 @@ using xense::taccap::GripperPosition;
 using xense::taccap::MotorStatusSample;
 using xense::taccap::detail::ForcePositionPolicy;
 using xense::taccap::detail::ForcePositionTuning;
+using protocol_cmd_t = xense::taccap::protocol::MotorImpedanceCtrl;
 
 MotorStatusSample sample(float pos, float vel = 0.0f, float torque = 0.0f,
                          uint16_t status = 0) {
@@ -100,6 +101,72 @@ TEST(ForcePositionPolicy, BlockedTravelPushesExactlyTheGraspTorque) {
     EXPECT_NEAR(0.8f - last.target_pos,
                 error_limit_for(tune, cfg.grasp_torque_nm), 3e-3f);
     EXPECT_NEAR(last.vel, 0.0f, 3e-2f);
+}
+
+// A jaw blocked SHORT of the target but within one lead of it. The ramp parks
+// on the target, so the lead can never fill and kp*error alone is less than the
+// budget -- the band where 0015s sat in Closing at 0.5 of a 1.1 Nm budget with
+// its fingers compressing ~20 mrad short of zero. The command is topped up to
+// the budget with feed-forward, and that is reported as a grasp.
+TEST(ForcePositionPolicy, BlockedWithinOneLeadOfTheTargetStillPushesTheBudget) {
+    for (const bool reverse : {false, true}) {
+        SCOPED_TRACE(reverse ? "reversed map" : "plain map");
+        ForcePositionConfig cfg;
+        const ForcePositionTuning tune;
+        const auto map = GripperPosition::from_travel(1.0f, 0.0f, reverse);
+        ForcePositionPolicy p(map, cfg);
+        const float close_dir = reverse ? 1.0f : -1.0f;
+        // Short of the closed target by more than arrival_eps, less than the lead.
+        const float short_by = 0.022f;
+        ASSERT_GT(short_by, tune.arrival_eps_rad);
+        ASSERT_LT(short_by, error_limit_for(tune, cfg.grasp_torque_nm));
+        const float pos = map.to_rad(0.0f) - close_dir * short_by;
+
+        auto t = std::chrono::steady_clock::now();
+        p.reset(sample(pos), t);
+        p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+        protocol_cmd_t last = p.step(sample(pos), t);
+        for (int i = 0; i < 20; ++i) {
+            t += std::chrono::milliseconds(10);
+            last = p.step(sample(pos), t);   // jaw does not move
+            EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-4f);
+        }
+        EXPECT_FLOAT_EQ(last.target_pos, map.to_rad(0.0f));   // ramp parked
+        EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+        const float total = tune.position_kp * (last.target_pos - pos) +
+                            last.target_torque;
+        EXPECT_NEAR(total, close_dir * cfg.grasp_torque_nm, 1e-3f);
+        EXPECT_GT(last.target_torque * close_dir, 0.0f) << "top-up pushes closed";
+        EXPECT_TRUE(p.holding());
+        EXPECT_FALSE(p.arrived());
+        EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+
+        // Once pushed through to the target it is a plain arrival again.
+        t += std::chrono::milliseconds(10);
+        p.step(sample(map.to_rad(0.0f)), t);
+        EXPECT_TRUE(p.arrived());
+        EXPECT_FALSE(p.holding());
+    }
+}
+
+// The top-up is for a jaw at rest. One still moving through that band on its
+// way in is left to the ramp, or every approach would end in a budget shove.
+TEST(ForcePositionPolicy, NoTopUpWhileTheJawIsStillMoving) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float pos = 0.022f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(pos, -cfg.close_speed_radps), t);
+    protocol_cmd_t last{};
+    for (int i = 0; i < 10; ++i) {
+        t += std::chrono::milliseconds(10);
+        last = p.step(sample(pos, -cfg.close_speed_radps), t);
+    }
+    EXPECT_FLOAT_EQ(last.target_torque, 0.0f);
+    EXPECT_FALSE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::Closing);
 }
 
 // Free travel costs what friction costs, not what the budget allows. The ramp

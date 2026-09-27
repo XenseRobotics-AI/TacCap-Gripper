@@ -509,6 +509,7 @@ void ImpedanceController::start() {
         throw;
     }
 
+    stopped_ = false;
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run_(); });
     cv_.notify_one();
@@ -520,6 +521,7 @@ void ImpedanceController::start() {
 }
 
 void ImpedanceController::stop() {
+    if (stopped_) return;
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_requested_ = true;
@@ -547,15 +549,21 @@ void ImpedanceController::stop() {
     // T1 within 300 ms and switches the run mode out from under the next
     // session. Full rationale and the measurement in
     // ForcePositionController::stop().
-    try { g_.motor().disable(); }
-    catch (const std::exception& e) {
-        logger()->warn("ImpedanceController: motor disable on stop failed: {}", e.what());
+    if (g_.is_closed()) {
+        logger()->debug("ImpedanceController: gripper already closed; "
+                        "skipping motor disable on stop");
+    } else {
+        try { g_.motor().disable(); }
+        catch (const std::exception& e) {
+            logger()->warn("ImpedanceController: motor disable on stop failed: {}", e.what());
+        }
     }
     if (sub_active_) {
         g_.motor().off(sub_);
         sub_active_ = false;
     }
     stop_motor_stream_();
+    stopped_ = true;
 }
 
 void ImpedanceController::on_status_(const MotorStatusSample& sample) {

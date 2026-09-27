@@ -329,6 +329,8 @@ private:
     Motor::SubId sub_ = 0;
     bool sub_active_ = false;
     bool stream_ours_ = false;
+    // See ForcePositionController::stopped_.
+    bool stopped_ = false;
 };
 
 const char* to_string(ImpedanceState state) noexcept;
