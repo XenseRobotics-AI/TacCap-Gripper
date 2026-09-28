@@ -3,7 +3,7 @@
     "master": {
       "file": "tc-gu-01-master-1.2.6.bin",
       "version": "1.2.6",
-      "source_commit": "070e3ab",
+      "source_commit": "ca1f335",
       "size_bytes": 118300,
       "crc32": "0x350393b5",
       "sn_suffix": "m",
@@ -13,16 +13,16 @@
       "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.11.bin",
-      "version": "1.2.11",
-      "source_commit": "070e3ab",
-      "size_bytes": 165756,
-      "crc32": "0xec9feb13",
+      "file": "tc-gu-01-slave-1.2.12.bin",
+      "version": "1.2.12",
+      "source_commit": "ca1f335",
+      "size_bytes": 166796,
+      "crc32": "0x6f2e94f4",
       "sn_suffix": "s",
       "protocol": "V2.7 + 运动安全包络",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Fixes the command channel going permanently silent: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception. The status stream kept flowing, every command went unanswered, and 300 ms later the host-timeout safe hold dropped the grip to 0.35 N*m (fingers pushed open); measured on 0086s after ~3 min of a 3 N*m ForcePosition hold. Reception is now restarted, GET_UART_STATS reports rx_errors / rx_rearms (rx_rearms > 0 means it happened and recovered), and a host-timeout disable keeps stop_reason HOST_TIMEOUT. Also carries 1.2.10 (motor model autodetected from the motor's firmware version line on a private-protocol boot), 1.2.9 (ranges follow the model) and 1.2.8 (0x5B CAN relay for motor OTA). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
+      "note": "Model-dependent defaults now follow the motor model: auto-calibration stall torque (EL05 0.5 / RS00 1.8 N*m, was 0.35 for all -- too little to move an RS00, so calibration stopped short and could record the open direction backwards), default open direction (EL05 reverse, RS00 not), and a motion envelope enforced when none is stored (cont = stall rating, peak = t_max, temperature wall 90/100 C; was no limit at all). When the model record changes, 0x700B, the calibration torque and the direction are reset to the new model's defaults; a stored calibration torque still at the old 0.35 migrates on boot. A gripper OTA no longer refuses when the motor is not on the bus. Carries 1.2.11 (control-UART receive restarted after an overrun). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
   }
 }
