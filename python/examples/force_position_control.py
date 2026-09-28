@@ -35,6 +35,9 @@ HOLDING_POSITION,不会进 HoldingForce,除非真的被挡住。)
 
     报告 holding 时,爪子必须明显**没到**命令位置。
 
+闭合端点(目标 0.0)除外:止点与指垫本身会挡住爪子,在那里报 holding 是按预算
+夹紧,是正常终态。
+
 holding 是观测量:命令用满了力矩预算而爪子仍然没在走。在命令位置上报 holding
 意味着预算被一次本该到位的移动用满了,那是标定或映射出了问题。
 
@@ -66,6 +69,8 @@ TERMINAL = ("HOLDING_FORCE", "HOLDING_POSITION", "FAULT")
 # 这里放宽一点再用来判定,免得测量噪声把通过的步骤报成失败。
 ARRIVAL_BAND_RAD = 0.010
 ARRIVAL_SLACK = 2.5
+# 与 SDK 的 kClosedEndpointEps 一致:归一化目标不大于它就是闭合端点。
+CLOSED_ENDPOINT = 1e-3
 
 
 def await_command(
@@ -214,7 +219,14 @@ def main() -> int:
             # 这条是核心:holding 只有在爪子被挡在命令位置**之外**时才成立。
             # 到位了还报 holding,说明一次本该到位的移动把力矩预算用满了 ——
             # 标定或归一化映射出了问题。
-            if s.holding and err <= band:
+            # 闭合端例外(SDK 0.3.7 起):目标 0.0 就是机械止点,止点和指垫本身
+            # 就会挡住爪子 —— 闭合到底被挡住、按预算夹紧,HOLDING_FORCE 是正常
+            # 终态,和到位一样。0094s(RS00)实测:爪子在止点前 ~12mrad 碰到指垫,
+            # 控制器补到预算、报 HOLDING_FORCE,0.2 秒内压到止点(3.2Nm)。旧的
+            # 判法把它当成"到位还报 holding"判失败,与控制器的设计矛盾。
+            if s.holding and target <= CLOSED_ENDPOINT:
+                print(f"    ok    闭合端被止点/指垫挡住,按预算夹紧(err {err:.4f})")
+            elif s.holding and err <= band:
                 print(
                     "    FAIL  在命令位置上报 holding —— 一次本该到位的移动"
                     "用满了力矩预算"
