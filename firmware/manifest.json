@@ -1,16 +1,16 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.5.bin",
-      "version": "1.2.5",
-      "source_commit": "07ab9bb",
-      "size_bytes": 118220,
-      "crc32": "0x885b8706",
+      "file": "tc-gu-01-master-1.2.6.bin",
+      "version": "1.2.6",
+      "source_commit": "070e3ab",
+      "size_bytes": 118300,
+      "crc32": "0x350393b5",
       "sn_suffix": "m",
       "protocol": "V2.6",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Leader line. Same behaviour as 1.2.4: the only change is in the shared storage.c, which no longer writes a factory default for the follower's 0x700B startup torque limit (the follower now takes it from the motor model). The leader never reads that field, but the binary changed, so it gets its own number rather than two leaders reporting 1.2.4 on different images. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
+      "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
       "file": "tc-gu-01-slave-1.2.11.bin",

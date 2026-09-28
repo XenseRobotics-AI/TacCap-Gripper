@@ -6,7 +6,7 @@ of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master-1.2.5.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.6 | 118,220 B | `0x885b8706` |
+| `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
 | `tc-gu-01-slave-1.2.11.bin` | follower (SN ends **`s`**) | **1.2.11** | V2.7 + 运动安全包络 | 165,756 B | `0xec9feb13` |
 
 Only the current release is kept here. Older images come from this directory's
@@ -30,7 +30,12 @@ binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped o
 shared code bumps both roles**, and only a change confined to one role's own
 sources bumps that role alone.
 
-The leader is at 1.2.5 while the follower is at 1.2.11 for that reason: 1.2.7,
+**A leader reporting 1.2.6 may be the old aligned-number image** (same code as
+1.2.4, no receive fix) rather than the shipped one. The number collides; reflash
+this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
+docs/FIRMWARE.md.
+
+The leader is at 1.2.6 while the follower is at 1.2.11 for that reason: 1.2.7,
 1.2.8 and 1.2.10 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
@@ -44,8 +49,9 @@ about 3 minutes of a 3 N·m ForcePosition hold; gone on 1.2.11. Reception is now
 restarted, `g.diagnostics.uart_stats()` reports `rx_errors` / `rx_rearms`
 (`rx_rearms > 0` means it happened and was recovered), and a host-timeout
 disable keeps `stop_reason == HostTimeout`. The receive path is shared, so the
-firmware repo also carries **leader 1.2.6** with the same fix; it is not shipped
-here yet because it has not been run on a leader.
+leader got the same fix as **1.2.6**, verified on 0115m and 0116m: 15 minutes
+each of a 100 Hz stream plus a 100 Hz acknowledged command, ~87,000 commands, no
+failures.
 
 ## Follower: the motor model
 
@@ -118,7 +124,7 @@ The manifest's CRC32 is the same value `ota_update.py` prints and sends in
 ```bash
 python -c "
 from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.5.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
 # -> 0x885b8706
 ```
 

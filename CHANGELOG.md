@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Shipped leader image is now **1.2.6**: the same control-UART receive fix as
+  follower 1.2.11, in the shared receive path. Verified on 0115m and 0116m.
+
 ## [0.3.9] - 2026-09-28
 
 ### Added
