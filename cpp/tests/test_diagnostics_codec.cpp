@@ -21,11 +21,11 @@ namespace {
 namespace tp = xense::taccap::protocol;
 
 TEST(DiagnosticsCodec, PayloadSizesMatchFirmware) {
-    EXPECT_EQ(sizeof(tp::UartStats), 36u);
+    EXPECT_EQ(sizeof(tp::UartStats), 44u);
     EXPECT_EQ(sizeof(tp::LogConfig), 2u);
 }
 
-TEST(DiagnosticsCodec, DecodesTheFull36Bytepacket) {
+TEST(DiagnosticsCodec, DecodesThe36BytePacket) {
     tp::UartStats in{};
     in.tx_bytes_ok     = 246417;
     in.tx_calls_ok     = 6013;
@@ -38,8 +38,8 @@ TEST(DiagnosticsCodec, DecodesTheFull36Bytepacket) {
     in.rb_free         = 8191;
     in.log_dropped     = 7500;
 
-    std::vector<uint8_t> wire(sizeof(in));
-    std::memcpy(wire.data(), &in, sizeof(in));
+    std::vector<uint8_t> wire(36);
+    std::memcpy(wire.data(), &in, wire.size());
 
     const auto out = tp::decode_uart_stats(wire.data(), wire.size());
     EXPECT_EQ(out.tx_bytes_ok, in.tx_bytes_ok);
@@ -60,7 +60,9 @@ TEST(DiagnosticsCodec, AcceptsThe32ByteFirmware113Packet) {
     in.rb_free        = 8191;
     in.log_dropped    = 0xDEADBEEF;   // must NOT survive: it is not on the wire
 
-    std::vector<uint8_t> wire(sizeof(in) - sizeof(uint32_t));
+    in.rx_errors      = 0xDEADBEEF;
+    in.rx_rearms      = 0xDEADBEEF;
+    std::vector<uint8_t> wire(32);
     std::memcpy(wire.data(), &in, wire.size());
 
     const auto out = tp::decode_uart_stats(wire.data(), wire.size());
@@ -68,6 +70,22 @@ TEST(DiagnosticsCodec, AcceptsThe32ByteFirmware113Packet) {
     EXPECT_EQ(out.debug_tx_bytes, 71703u);
     EXPECT_EQ(out.rb_free, 8191u);
     EXPECT_EQ(out.log_dropped, 0u) << "the tail must be zero-filled, not garbage";
+    EXPECT_EQ(out.rx_errors, 0u);
+    EXPECT_EQ(out.rx_rearms, 0u);
+}
+
+// Follower 1.2.11 / leader 1.2.6: the receive-stall counters on the tail.
+TEST(DiagnosticsCodec, DecodesThe44BytePacketWithReceiveCounters) {
+    tp::UartStats in{};
+    in.rx_bytes  = 123456;
+    in.rx_errors = 3;
+    in.rx_rearms = 2;
+    std::vector<uint8_t> wire(44);
+    std::memcpy(wire.data(), &in, wire.size());
+    const auto out = tp::decode_uart_stats(wire.data(), wire.size());
+    EXPECT_EQ(out.rx_bytes, 123456u);
+    EXPECT_EQ(out.rx_errors, 3u);
+    EXPECT_EQ(out.rx_rearms, 2u);
 }
 
 TEST(DiagnosticsCodec, RejectsAnythingShorterThanTheOldPacket) {

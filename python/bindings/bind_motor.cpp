@@ -55,6 +55,14 @@ void bind_motor(py::module_& m) {
         .def_readonly("tx_fail_other",   &protocol::UartStats::tx_fail_other,
                       "Control-port send failures that were not timeouts.")
         .def_readonly("rx_bytes",        &protocol::UartStats::rx_bytes)
+        .def_readonly("rx_errors",       &protocol::UartStats::rx_errors,
+                      "Control-port UART receive errors (overrun / framing / noise).\n"
+                      "Follower >= 1.2.11, leader >= 1.2.6; 0 on older firmware.")
+        .def_readonly("rx_rearms",       &protocol::UartStats::rx_rearms,
+                      "Times the firmware found control-port receive stopped and restarted\n"
+                      "it. Nonzero means the event that, up to follower 1.2.10, silenced\n"
+                      "every command for good while the status stream kept flowing.\n"
+                      "Follower >= 1.2.11, leader >= 1.2.6; 0 on older firmware.")
         .def_readonly("rx_overflow",     &protocol::UartStats::rx_overflow,
                       "Bytes dropped because the control-port ring buffer was full -- the\n"
                       "firmware's command task could not keep up with the host.")

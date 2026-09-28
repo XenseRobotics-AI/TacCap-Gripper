@@ -751,6 +751,11 @@ struct UartStats {
     uint16_t rb_used;           // control port ring buffer occupancy
     uint16_t rb_free;           // control port ring buffer headroom
     uint32_t log_dropped;       // whole log lines dropped (0 on fw < 1.1.4)
+    // fw follower 1.2.11 / leader 1.2.6. 0 on older firmware (shorter reply).
+    uint32_t rx_errors;         // control port: UART receive error callbacks
+    uint32_t rx_rearms;         // control port: receive restarted after it stopped.
+                                // Nonzero means the stall that, up to 1.2.10,
+                                // silenced the command channel for good.
 };
 
 // ---- Log configuration (fw 1.1.4 — Cmd::SetLogConfig 0x55) ----------------
@@ -1157,7 +1162,7 @@ static_assert(sizeof(MotorFaultReport)   == 64);  // V2.2 motor_fault_report_t
 static_assert(sizeof(MotorPrivateParam)  == 8);   // V1.9+ private-param GET resp
 static_assert(sizeof(GripperConfig)      == 32);  // V1.7 gripper_config_t
 static_assert(sizeof(MotorControlStats)  == 48);  // V1.7 motor_control_stats
-static_assert(sizeof(UartStats)          == 36);  // fw 1.1.3 uart_stats_packet_t
+static_assert(sizeof(UartStats)          == 44);  // fw uart_stats_packet_t, 1.2.11 / 1.2.6
 static_assert(sizeof(LogConfig)          == 2);   // fw 1.1.4 log_config_payload_t
 static_assert(sizeof(GripperAutoCalConfig) == 32); // V1.9 gripper_auto_cal_config_t
 static_assert(sizeof(GripperAutoCalStallParam)   == 10);  // V2.2 partial 0x68 write

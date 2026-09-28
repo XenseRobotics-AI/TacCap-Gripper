@@ -221,10 +221,14 @@ MotorControlStats decode_motor_control_stats(const uint8_t* data, std::size_t le
 // Accept either and zero-fill the tail, so one SDK build works against both
 // without the caller having to branch on firmware_version().
 UartStats decode_uart_stats(const uint8_t* data, std::size_t len) {
-    constexpr std::size_t kWithoutLogDropped = sizeof(UartStats) - sizeof(uint32_t);
-    if (data == nullptr || len < kWithoutLogDropped) {
+    // Every firmware so far: 32 B (1.1.3 .. 1.2.10 / leader 1.2.5), 44 B from
+    // follower 1.2.11 / leader 1.2.6 (log_dropped placeholder + rx_errors +
+    // rx_rearms). Missing tail fields read 0. Pinned, not derived from sizeof:
+    // deriving it rejected every older firmware the moment the struct grew.
+    constexpr std::size_t kOldestPacket = 32;
+    if (data == nullptr || len < kOldestPacket) {
         throw ProtocolError(
-            "decode UartStats: expected >= " + std::to_string(kWithoutLogDropped) +
+            "decode UartStats: expected >= " + std::to_string(kOldestPacket) +
             " bytes, got " + std::to_string(len));
     }
     UartStats out{};

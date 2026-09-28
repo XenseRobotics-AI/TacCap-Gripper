@@ -91,6 +91,9 @@ STRUCT_MAP = {
     "sensor_error_report_t": "SensorErrorReport",
     "ota_start_t": "OtaStart",
     "ota_status_t": "OtaStatus",
+    # 0x54. Was 32 B on the wire against a 36 B SDK struct until 1.2.11 --
+    # tolerated by the decoder, invisible here because it was not listed.
+    "uart_stats_packet_t": "UartStats",
 }
 
 # Firmware structs whose WIRE size is not sizeof(): the firmware declares a
