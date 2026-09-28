@@ -12,6 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shipped leader image is now **1.2.6**: the same control-UART receive fix as
   follower 1.2.11, in the shared receive path. Verified on 0115m and 0116m.
 
+### Added
+
+- `MotorModel.default_envelope` and `EnvelopeAudit.firmware_default`: follower
+  1.2.12 enforces its model's default envelope (cont = stall rating, peak =
+  t_max, temperature wall 90/100 C) when none is stored; the audit reports that
+  as `effective`, and the controllers log it at info instead of warning that
+  the device is unprotected.
+
+### Fixed
+
+- `examples/force_position_control.py` no longer fails a close to the endpoint
+  (target 0.0) that ends in `HOLDING_FORCE`. Since 0.3.7 a jaw blocked by the
+  stop / finger pads short of 0.0 is gripped at the budget and reported as
+  holding -- the correct terminal state there. On 0094s (RS00) the pads meet
+  ~12 mrad early and the controller pushes to the stop within 0.2 s; the
+  example judged its first terminal frame as "holding at the commanded
+  position". Mid-stroke targets keep the check. Reported by factorytool.
+
+
 ## [0.3.9] - 2026-09-28
 
 ### Added
