@@ -15,7 +15,7 @@
     "slave": {
       "file": "tc-gu-01-slave-1.2.11.bin",
       "version": "1.2.11",
-      "source_commit": "f9b27ea",
+      "source_commit": "070e3ab",
       "size_bytes": 165756,
       "crc32": "0xec9feb13",
       "sn_suffix": "s",
