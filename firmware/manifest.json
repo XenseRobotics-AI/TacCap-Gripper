@@ -13,16 +13,16 @@
       "note": "Leader line. Same behaviour as 1.2.4: the only change is in the shared storage.c, which no longer writes a factory default for the follower's 0x700B startup torque limit (the follower now takes it from the motor model). The leader never reads that field, but the binary changed, so it gets its own number rather than two leaders reporting 1.2.4 on different images. AFTER FLASHING, unplug the USB cable and the power cable at the same time, then reconnect both."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.10.bin",
-      "version": "1.2.10",
-      "source_commit": "f488496",
-      "size_bytes": 165664,
-      "crc32": "0xcb69dfbd",
+      "file": "tc-gu-01-slave-1.2.11.bin",
+      "version": "1.2.11",
+      "source_commit": "f9b27ea",
+      "size_bytes": 165756,
+      "crc32": "0xec9feb13",
       "sn_suffix": "s",
       "protocol": "V2.7 + 运动安全包络",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Identifies the motor model by itself: whenever the motor is on the private protocol at boot -- which a new motor is, since RobStride ships them that way -- the firmware reads the motor's firmware version and maps its raw bytes to a model ({10,5,...} = EL05, written 1.0.5.x; {0,0,3,...} = RS00), writes it to flash if it differs from the record, and applies it before the 0x700B limit. That boot then switches the motor to MIT, so a new or replaced motor needs no set_model(). Units already on MIT keep their record. Also carries 1.2.7 (model record), 1.2.8 (0x5B CAN relay for motor OTA) and 1.2.9 (ranges and limits follow the model). A device upgraded from <= 1.2.8 keeps its stored 0x700B value; on an RS00 raise it with motor.set_startup_limit_torque(14.0). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
+      "note": "Fixes the command channel going permanently silent: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception. The status stream kept flowing, every command went unanswered, and 300 ms later the host-timeout safe hold dropped the grip to 0.35 N*m (fingers pushed open); measured on 0086s after ~3 min of a 3 N*m ForcePosition hold. Reception is now restarted, GET_UART_STATS reports rx_errors / rx_rearms (rx_rearms > 0 means it happened and recovered), and a host-timeout disable keeps stop_reason HOST_TIMEOUT. Also carries 1.2.10 (motor model autodetected from the motor's firmware version line on a private-protocol boot), 1.2.9 (ranges follow the model) and 1.2.8 (0x5B CAN relay for motor OTA). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
   }
 }

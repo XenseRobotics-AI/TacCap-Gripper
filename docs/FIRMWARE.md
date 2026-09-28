@@ -82,7 +82,7 @@ python python/examples/ota_update.py \
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.5 and the follower 1.2.10, and neither is "behind" the other. Leader
+leader is 1.2.5 and the follower 1.2.11, and neither is "behind" the other. Leader
 1.2.5 behaves exactly like 1.2.4: its only change is in the shared `storage.c`.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24,
 so a leader in the field may still report 1.2.6 from that period. That is the

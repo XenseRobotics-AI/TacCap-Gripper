@@ -7,17 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- Both controllers ignore status frames that arrive after `stop()` has begun.
-  `stop()` unsubscribes only after the zero frame and the disable ACK, and a
-  frame landing in that window marked the stopped controller's observation
-  valid again. This was the intermittent
-  `ImpedanceControllerPty.StopCommandsZeroTorque` failure (about 1 run in 5
-  under CPU load; 0 in 500 after the fix).
+- `UartStats.rx_errors` / `rx_rearms` (follower >= 1.2.11, leader >= 1.2.6; 0 on
+  older firmware). `rx_rearms > 0` means the control UART stopped receiving and
+  the firmware restarted it -- the event that, up to follower 1.2.10, silenced
+  every command for good while the status stream kept flowing.
 
 ### Changed
 
+- Shipped follower image is now **1.2.11**: fixes the command channel going
+  permanently silent after one UART overrun (0086s, ~3 min into a 3 N·m
+  ForcePosition hold: the host-timeout safe hold dropped the grip to 0.35 N·m and
+  the fingers were pushed open). The shipped leader image stays 1.2.5.
+- `decode_uart_stats` accepts anything from 32 bytes up; its minimum was derived
+  from `sizeof(UartStats)` and would have rejected every older firmware once the
+  struct grew. `check_protocol_drift.py` now covers `uart_stats_packet_t`.
 - `GripperObservation.position` is documented as clamped to [0, 1]: a jaw
   pressed past the calibrated closed point or overshooting full open still
   reads 0 or 1. The docstring shows the unclamped mapping from `raw_pos`.
@@ -26,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MIT status frames carry ~±0.07 rad/s of velocity quantization noise at rest,
   so the old test almost never held and every step waited out its full
   timeout. Reported by the tc-gu-01-pc DVT test.
+
+### Fixed
+
+- Both controllers ignore status frames that arrive after `stop()` has begun.
+  `stop()` unsubscribes only after the zero frame and the disable ACK, and a
+  frame landing in that window marked the stopped controller's observation
+  valid again. This was the intermittent
+  `ImpedanceControllerPty.StopCommandsZeroTorque` failure (about 1 run in 5
+  under CPU load; 0 in 500 after the fix).
 
 ## [0.3.8] - 2026-09-27
 

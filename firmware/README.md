@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.5.bin` | leader (SN ends **`m`**) | **1.2.5** | V2.6 | 118,220 B | `0x885b8706` |
-| `tc-gu-01-slave-1.2.10.bin` | follower (SN ends **`s`**) | **1.2.10** | V2.7 + 运动安全包络 | 165,664 B | `0xcb69dfbd` |
+| `tc-gu-01-slave-1.2.11.bin` | follower (SN ends **`s`**) | **1.2.11** | V2.7 + 运动安全包络 | 165,756 B | `0xec9feb13` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -30,10 +30,22 @@ binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped o
 shared code bumps both roles**, and only a change confined to one role's own
 sources bumps that role alone.
 
-The leader is at 1.2.5 while the follower is at 1.2.10 for that reason: 1.2.7,
+The leader is at 1.2.5 while the follower is at 1.2.11 for that reason: 1.2.7,
 1.2.8 and 1.2.10 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
+
+**Follower 1.2.11 fixes a command channel that could go silent for good.** The
+control UART (3 Mbaud, one interrupt per byte) stopped receiving after a single
+overrun, because the error callback never restarted reception: the status
+stream kept flowing, every command went unanswered, and 300 ms later the
+host-timeout safe hold dropped the grip to 0.35 N·m. Measured on 0086s after
+about 3 minutes of a 3 N·m ForcePosition hold; gone on 1.2.11. Reception is now
+restarted, `g.diagnostics.uart_stats()` reports `rx_errors` / `rx_rearms`
+(`rx_rearms > 0` means it happened and was recovered), and a host-timeout
+disable keeps `stop_reason == HostTimeout`. The receive path is shared, so the
+firmware repo also carries **leader 1.2.6** with the same fix; it is not shipped
+here yet because it has not been run on a leader.
 
 ## Follower: the motor model
 
