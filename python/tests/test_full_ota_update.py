@@ -31,27 +31,68 @@ class FakeEndpoint:
 
 
 def test_usb_reconnect_with_continuous_uptime_is_not_a_restart():
-    detector = mod._RestartDetector(100_000, 0.0)
-    assert not detector.observe(110_000, 10.0)
-    assert not detector.observe(111_000, 11.0)
+    detector = mod._RestartDetector(100_000)
+    assert not detector.observe(110_000)
+    assert not detector.observe(111_000)
 
 
 def test_clock_reset_detected_even_without_observed_port_disappearance():
-    detector = mod._RestartDetector(100_000, 0.0)
-    assert not detector.observe(1000, 10.0)
-    assert detector.observe(2000, 11.0)
+    detector = mod._RestartDetector(100_000)
+    assert not detector.observe(1000)
+    assert detector.observe(2000)
 
 
-def test_early_boot_restart_can_have_higher_uptime_than_baseline():
-    detector = mod._RestartDetector(1000, 0.0)
-    assert not detector.observe(3000, 10.0)
-    assert detector.observe(4000, 11.0)
+def test_early_boot_without_observed_rollback_cannot_prove_restart():
+    detector = mod._RestartDetector(1000)
+    assert not detector.observe(3000)
+    assert not detector.observe(4000)
 
 
 def test_uptime_wrap_is_not_a_restart():
-    detector = mod._RestartDetector((1 << 32) - 1000, 0.0)
-    assert not detector.observe(1000, 2.0)
-    assert not detector.observe(2000, 3.0)
+    detector = mod._RestartDetector((1 << 32) - 1000)
+    assert not detector.observe(1000)
+    assert not detector.observe(2000)
+
+
+@pytest.mark.parametrize(
+    ("baseline", "samples"),
+    [
+        (84691, (84750, 85000, 85445)),
+        (1051, (1100, 1600, 2057)),
+        (4717, (4800, 5100, 5438)),
+    ],
+)
+def test_reported_slow_uptime_sequence_does_not_confirm_restart(baseline, samples):
+    detector = mod._RestartDetector(baseline)
+    # Log baselines/endpoints are real; intermediate samples model slow ticks.
+    for uptime in samples:
+        assert not detector.observe(uptime)
+
+
+def test_frozen_clock_does_not_confirm_restart():
+    detector = mod._RestartDetector(84691)
+    for _ in range(10):
+        assert not detector.observe(84691)
+
+
+def test_single_stale_low_sample_does_not_confirm_restart():
+    detector = mod._RestartDetector(84691)
+    assert not detector.observe(1000)
+    assert not detector.observe(85445)
+    assert not detector.observe(86000)
+
+
+def test_repeated_low_sample_does_not_confirm_restart():
+    detector = mod._RestartDetector(84691)
+    assert not detector.observe(1000)
+    assert not detector.observe(1000)
+
+
+def test_later_rollback_uses_last_observed_uptime():
+    detector = mod._RestartDetector(1000)
+    assert not detector.observe(10_000)
+    assert not detector.observe(500)
+    assert detector.observe(1500)
 
 
 def test_follower_same_version_skips_unless_reflash_requested():
@@ -159,7 +200,7 @@ def test_scanner_errors_do_not_count_as_power_loss(monkeypatch, fake_clock):
     monkeypatch.setattr(
         mod,
         "_read_uptime",
-        lambda *_: (100_000 + int(fake_clock[0] * 1000), fake_clock[0]),
+        lambda *_: 100_000 + int(fake_clock[0] * 1000),
     )
     scans = [RuntimeError("busy")] * 10 + [ep] * 20
 
@@ -211,7 +252,7 @@ def test_summary_distinguishes_actual_flash_from_skip(capsys, flashed):
 
 def test_power_cycle_wait_accepts_reset_without_disappearance(monkeypatch, fake_clock):
     ep = Mock()
-    samples = iter([(100_000, 0.0), (1000, 10.0), (2000, 11.0)])
+    samples = iter([100_000, 1000, 2000])
     monkeypatch.setattr(mod, "_wait_ready", lambda *_: ep)
     monkeypatch.setattr(mod, "_scan_for", lambda *_: ep)
     monkeypatch.setattr(mod, "_read_uptime", lambda *_: next(samples))
@@ -225,7 +266,7 @@ def test_power_cycle_wait_rejects_usb_only_reconnect(monkeypatch, fake_clock):
     monkeypatch.setattr(
         mod,
         "_read_uptime",
-        lambda *_: (100_000 + int(fake_clock[0] * 1000), fake_clock[0]),
+        lambda *_: 100_000 + int(fake_clock[0] * 1000),
     )
     with pytest.raises(RuntimeError, match="仅拔 USB"):
         mod._wait_power_cycle(("SN", "USB"), 8.0, "test")

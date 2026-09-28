@@ -98,17 +98,23 @@ def _apply_direction(cfg, direction: str) -> bool:
 class _RestartDetector:
     """Observe MCU clock reset, not physical proof of a 24 V power cycle."""
 
-    def __init__(self, uptime_ms: int, sampled_at: float) -> None:
+    def __init__(self, uptime_ms: int) -> None:
         self.uptime_ms = uptime_ms
-        self.sampled_at = sampled_at
-        self.matches = 0
+        self.reset_from = None
 
-    def observe(self, uptime_ms: int, sampled_at: float) -> bool:
-        expected = self.uptime_ms + (sampled_at - self.sampled_at) * 1000.0
-        # Modulo handles the 32-bit uptime wrap without calling it a reboot.
-        lag = (expected - uptime_ms) % (1 << 32)
-        self.matches = self.matches + 1 if 1000.0 < lag < (1 << 31) else 0
-        return self.matches >= 2
+    def observe(self, uptime_ms: int) -> bool:
+        previous = self.uptime_ms
+        self.uptime_ms = uptime_ms
+        # Never compare HAL ticks to host wall time: ticks may advance slowly
+        # or pause. Require an observed rollback, then an advancing low reading.
+        if self.reset_from is not None:
+            if previous < uptime_ms < self.reset_from - 1000:
+                return True
+            self.reset_from = None
+        forward_delta = (uptime_ms - previous) % (1 << 32)
+        if uptime_ms + 1000 < previous and forward_delta > (1 << 31):
+            self.reset_from = previous
+        return False
 
 
 def _identity(ep) -> tuple[str, str]:
@@ -150,17 +156,14 @@ def _read_uptime(ep, identity):
     with LeaderGripper(mcu_device=ep.mcu_device) as gripper:
         if gripper.device.get_sn() != identity[0]:
             raise RuntimeError("心跳检查时设备 SN 已变化，拒绝继续")
-        started = time.monotonic()
-        uptime_ms = int(gripper.device.heartbeat().uptime_ms)
-        sampled_at = (started + time.monotonic()) / 2.0
-        return uptime_ms, sampled_at
+        return int(gripper.device.heartbeat().uptime_ms)
 
 
 def _wait_power_cycle(identity, timeout_s: float, reason: str):
     firmware_sn, _mcu_serial = identity
     ep = _wait_ready(identity, timeout_s, "the follower before power cycling")
-    before, sampled_at = _read_uptime(ep, identity)
-    detector = _RestartDetector(before, sampled_at)
+    before = _read_uptime(ep, identity)
+    detector = _RestartDetector(before)
     print()
     print(f"[需要断电] {reason}")
     print("  现在拔掉这只从爪的 24 V，保持至少 2 秒，再插回。")
@@ -173,21 +176,22 @@ def _wait_power_cycle(identity, timeout_s: float, reason: str):
         try:
             ep = _scan_for(identity)
             if ep is not None:
-                current, sampled_at = _read_uptime(ep, identity)
-                if detector.observe(current, sampled_at):
+                current = _read_uptime(ep, identity)
+                if detector.observe(current):
                     print(f"  {firmware_sn} MCU 重启已确认，uptime={current} ms。")
                     return ep
             else:
-                detector.matches = 0
+                detector.reset_from = None
         except Exception as exc:  # an unplug can interrupt an in-flight probe
             last_error = exc
-            detector.matches = 0
+            detector.reset_from = None
         time.sleep(1.0)
 
     detail = f"; last scan error: {last_error}" if last_error is not None else ""
     raise RuntimeError(
         f"未确认 {firmware_sn} MCU 重启 ({timeout_s:.0f}s)。"
-        f"请断开整只从爪的 24 V，仅拔 USB 不会通过检查{detail}"
+        f"未读到可靠的 uptime 回退；基线={before} ms，最后={detector.uptime_ms} ms。"
+        f"请按提示断开整只从爪的 24 V，再接回；仅拔 USB 不够{detail}"
     )
 
 

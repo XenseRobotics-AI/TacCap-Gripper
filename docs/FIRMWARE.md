@@ -176,10 +176,13 @@ python python/examples/full_ota_update.py \
 
 The command cannot operate the physical 24 V supply. At each required hard
 restart it tells the operator to cut 24 V for at least two seconds and waits
-for that exact firmware SN **and** CH343 serial to report a restarted MCU
-uptime in two consecutive heartbeats. It compares uptime with elapsed host time,
-so it can detect a restart without observing the port disappear. USB reconnects
-with continuous MCU uptime, scan errors and 32-bit uptime wrap do not count.
+for that exact firmware SN **and** CH343 serial to report an actual MCU uptime
+rollback of more than one second, followed by an advancing reading still below
+the pre-reset value. It does not compare MCU ticks to the host clock: slow or
+paused ticks are not evidence of reboot. USB reconnects with continuous uptime,
+scan errors and normal 32-bit uptime wrap do not count. If no rollback is
+observed (including an ambiguous very-early-boot cycle), the check times out
+rather than assuming a reset happened.
 A heartbeat confirms an MCU restart, not physical removal of 24 V: a soft reset
 also restarts uptime. The operator must cut the 24 V supply as instructed.
 After reconnect,
