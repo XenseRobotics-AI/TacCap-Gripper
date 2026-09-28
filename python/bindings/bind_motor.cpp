@@ -544,6 +544,11 @@ void bind_motor(py::module_& m) {
                       "wrote this record -- which\n"
                       "happens when the motor is on the private protocol at boot, as a\n"
                       "new motor is. Follower firmware 1.2.10+; always 0 before.")
+        .def_readonly("default_envelope", &protocol::MotorModel::default_envelope,
+                      "1 when no valid motion envelope is stored and the follower is\n"
+                      "enforcing its model's default instead (cont = stall rating, peak =\n"
+                      "t_max, temperature wall 90/100 C). Follower firmware 1.2.12+;\n"
+                      "always 0 before, where an unwritten envelope meant no limit.")
         .def("__repr__", [](const protocol::MotorModel& s) {
             char buf[160];
             std::snprintf(buf, sizeof(buf),

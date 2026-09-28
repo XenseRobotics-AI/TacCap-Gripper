@@ -466,10 +466,18 @@ void ImpedanceController::start() {
                 budget, audit.effective->cont_torque_nm);
         }
         if (!audit.ok()) {
-            logger()->warn(
-                "ImpedanceController: motion envelope: {}. Repair it with "
-                "FollowerGripper::ensure_envelope() (writes MCU flash).",
-                audit.detail);
+            if (audit.firmware_default) {
+                logger()->info(
+                    "ImpedanceController: no envelope stored; the follower enforces its "
+                    "model default (cont={:.2f}Nm peak={:.2f}Nm, temperature "
+                    "wall 90/100C). ensure_envelope() writes an explicit record.",
+                    audit.effective->cont_torque_nm, audit.effective->peak_torque_nm);
+            } else {
+                logger()->warn(
+                    "ImpedanceController: motion envelope: {}. Repair it with "
+                    "FollowerGripper::ensure_envelope() (writes MCU flash).",
+                    audit.detail);
+            }
         }
     } catch (const std::exception& e) {
         logger()->debug("ImpedanceController: envelope unavailable ({})", e.what());

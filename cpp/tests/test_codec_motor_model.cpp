@@ -101,5 +101,16 @@ TEST(MotorModelCodec, AutodetectedSitsAtByte18) {
     tp::MotorModel m{};
     std::memcpy(&m, b.data(), sizeof(m));
     EXPECT_EQ(m.autodetected, 1u);
-    EXPECT_EQ(m.reserved, 0u);
+    EXPECT_EQ(m.default_envelope, 0u);
+}
+
+// Follower 1.2.12 turned the last reserved byte into `default_envelope`.
+TEST(MotorModelCodec, DefaultEnvelopeSitsAtByte19) {
+    EXPECT_EQ(offsetof(tp::MotorModel, default_envelope), 19u);
+    std::vector<uint8_t> b(tp::MOTOR_MODEL_SIZE, 0);
+    b[19] = 1;
+    tp::MotorModel m{};
+    std::memcpy(&m, b.data(), sizeof(m));
+    EXPECT_EQ(m.default_envelope, 1u);
+    EXPECT_EQ(m.autodetected, 0u);
 }

@@ -147,6 +147,13 @@ struct EnvelopeAudit {
     std::string motor_model;  // "EL05"; empty when the spec could not be read
     std::string detail;       // one human-readable line per issue
 
+    // Follower 1.2.12+: nothing usable is stored, but the firmware enforces its
+    // model's default instead of nothing (effective then holds that default).
+    // The issue bits still say the record is unwritten -- it is -- so ok() stays
+    // false and ensure_envelope() still writes an explicit record; what changes
+    // is that the device is NOT unprotected meanwhile.
+    bool firmware_default = false;
+
     bool ok() const noexcept { return issues == GripperEnvelopeIssue::None; }
     bool needs_write() const noexcept {
         return (issues & GripperEnvelopeIssue::RepairMask) != 0;

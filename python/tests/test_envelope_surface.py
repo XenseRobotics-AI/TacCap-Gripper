@@ -26,6 +26,7 @@ AUDIT_FIELDS = {
     "stored",
     "recommended",
     "effective",
+    "firmware_default",
     "issues",
     "peak_from_device",
     "cont_from_device",

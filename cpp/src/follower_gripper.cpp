@@ -575,6 +575,23 @@ EnvelopeAudit FollowerGripper::audit_envelope(std::chrono::milliseconds timeout)
     }
 
     EnvelopeAudit a = detail::audit_envelope(stored, spec);
+    if (!a.effective) {
+        try {
+            if (motor().get_model(timeout).default_envelope != 0 && spec) {
+                protocol::GripperEnvelope d{};
+                d.cont_torque_nm = spec->stall_cont_torque_nm;
+                d.peak_torque_nm = spec->t_max_nm;
+                d.flags = static_cast<uint16_t>(
+                    protocol::GripperEnvelopeFlag::Valid |
+                    protocol::GripperEnvelopeFlag::Enforce |
+                    protocol::GripperEnvelopeFlag::LayoutBits);
+                a.effective = d;
+                a.firmware_default = true;
+            }
+        } catch (const std::exception&) {
+            // 0x59 unreadable: report what the record says, as before.
+        }
+    }
     if (!spec_error.empty()) {
         a.detail += a.detail.empty() ? "" : "; ";
         a.detail += "spec read failed: " + spec_error;

@@ -257,6 +257,9 @@ void bind_gripper_types(py::module_& m) {
         .def_readonly("effective", &xense::taccap::EnvelopeAudit::effective,
                       "What the firmware enforces right now, or None when it enforces\n"
                       "nothing at all. Compare against THIS, not against `stored`.")
+        .def_readonly("firmware_default", &xense::taccap::EnvelopeAudit::firmware_default,
+                      "True when nothing usable is stored but the follower (1.2.12+) is\n"
+                      "enforcing its model default; effective then holds that default.")
         .def_readonly("issues", &xense::taccap::EnvelopeAudit::issues,
                       "Bitmask of GRIPPER_ENVELOPE_ISSUE_* constants.")
         .def_readonly("peak_from_device",

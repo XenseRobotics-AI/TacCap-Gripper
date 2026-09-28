@@ -824,12 +824,20 @@ void ForcePositionController::start() {
             // EL05, which the stall-rating bound now makes unconfigurable.
         }
         if (!audit.ok()) {
-            logger()->warn(
-                "ForcePositionController: motion envelope: {}. An indefinite "
-                "force hold has no protection below this host until it is "
-                "repaired -- FollowerGripper::ensure_envelope() (writes MCU "
-                "flash).",
-                audit.detail);
+            if (audit.firmware_default) {
+                logger()->info(
+                    "ForcePositionController: no envelope stored; the follower enforces its "
+                    "model default (cont={:.2f}Nm peak={:.2f}Nm, temperature "
+                    "wall 90/100C). ensure_envelope() writes an explicit record.",
+                    audit.effective->cont_torque_nm, audit.effective->peak_torque_nm);
+            } else {
+                logger()->warn(
+                    "ForcePositionController: motion envelope: {}. An indefinite "
+                    "force hold has no protection below this host until it is "
+                    "repaired -- FollowerGripper::ensure_envelope() (writes MCU "
+                    "flash).",
+                    audit.detail);
+            }
         }
     } catch (const std::exception& e) {
         logger()->debug("ForcePositionController: envelope unavailable ({})",

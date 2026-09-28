@@ -381,7 +381,10 @@ struct __attribute__((packed)) MotorModel {
     // wrote this record (follower firmware 1.2.10). Was reserved[0]; older
     // firmware always sends 0.
     uint8_t  autodetected;
-    uint8_t  reserved;
+    // 1 = no valid envelope is stored, so the follower is enforcing its
+    // model's default (cont = stall rating, peak = t_max, temperature wall at
+    // the firmware's 90/100 C). Follower 1.2.12; was reserved, 0 before.
+    uint8_t  default_envelope;
 };
 
 struct __attribute__((packed)) HomeDiagReport {
