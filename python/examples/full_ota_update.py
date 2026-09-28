@@ -95,21 +95,25 @@ def _apply_direction(cfg, direction: str) -> bool:
 
 
 class _PowerCycleDetector:
-    """Reject a transient scan miss; accept two down then two ready samples."""
+    """Observe sustained absence, not proof that the 24 V rail was removed."""
 
     def __init__(self) -> None:
         self.down_samples = 0
+        self.down_since = None
         self.up_samples = 0
         self.saw_down = False
 
     def observe(self, ready: bool) -> bool:
         if not ready:
+            if self.down_since is None:
+                self.down_since = time.monotonic()
             self.up_samples = 0
             self.down_samples += 1
-            if self.down_samples >= 2:
+            if self.down_samples >= 2 and time.monotonic() - self.down_since >= 2.0:
                 self.saw_down = True
             return False
         self.down_samples = 0
+        self.down_since = None
         if not self.saw_down:
             return False
         self.up_samples += 1
@@ -170,16 +174,44 @@ def _wait_power_cycle(identity, timeout_s: float, reason: str):
                 print(f"  {firmware_sn} 已重新连接。")
                 return ep
             if detector.saw_down and not down_reported:
-                print("  已检测到 24 V 断开，等待重新上电……", flush=True)
+                print("  目标设备持续未响应；重连后还需校验协议和配置。", flush=True)
                 down_reported = True
         except Exception as exc:  # an unplug can interrupt an in-flight probe
             last_error = exc
-            detector.observe(False)
+            # A scanner failure is not evidence of a power interruption.
+            detector = _PowerCycleDetector()
+            down_reported = False
         time.sleep(0.25)
 
     detail = f"; last scan error: {last_error}" if last_error is not None else ""
     raise RuntimeError(
         f"等待 {firmware_sn} 完成 24 V 断电重启超时 ({timeout_s:.0f}s){detail}"
+    )
+
+
+def _wait_motor_protocol(motor, expected, timeout_s: float = 20.0):
+    """Allow boot-time discovery to settle; never resend a switch or bypass OTA checks."""
+    deadline = time.monotonic() + timeout_s
+    consecutive = 0
+    last = None
+    last_error = None
+    print(f"[协议校验] 等待 {expected} 连续两次读回一致……", flush=True)
+    while time.monotonic() < deadline:
+        try:
+            last = motor.get_protocol()
+            last_error = None
+            consecutive = consecutive + 1 if last == expected else 0
+            if consecutive >= 2:
+                return last
+        except Exception as exc:
+            last_error = exc
+            consecutive = 0
+        time.sleep(0.5)
+    detail = f"; last error={last_error}" if last_error is not None else ""
+    raise RuntimeError(
+        f"等待电机协议 {expected} 稳定超时，最后读回 {last}{detail}。"
+        "停止后续步骤；确认断开的是 24 V（仅拔 USB 不够），"
+        "保持至少 2 秒，再重新运行。若仍失败，保留日志排查协议切换。"
     )
 
 
@@ -241,7 +273,7 @@ def _confirm_plan(
     if initial.get("detail_error"):
         print(f"  old-fw detail    : {initial['detail_error']}")
     print()
-    print("过程会刷写 MCU 与电机，并要求多次手动断开 24 V。")
+    print("过程按需刷写 MCU 与电机；版本相同默认跳过。需要时请手动断开 24 V。")
     if args.yes or args.dry_run:
         return
     try:
@@ -273,8 +305,7 @@ def _ensure_mit_before_follower_ota(identity, timeout_s: float):
             mcu_device=ep.mcu_device,
             allow_outdated_firmware=True,
         ) as gripper:
-            if gripper.motor.get_protocol() != MotorProtocol.Mit:
-                raise RuntimeError("断电重启后电机仍不是 MIT，拒绝开始 MCU OTA")
+            _wait_motor_protocol(gripper.motor, MotorProtocol.Mit)
             gripper.motor.clear_fault()
             gripper.motor.disable()
 
@@ -354,7 +385,7 @@ def _configure_motor_ota_boot(gripper, model_name: str, direction: str):
 
 def _verify_private_boot(ep, model_name: str):
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
-        protocol = gripper.motor.get_protocol()
+        protocol = _wait_motor_protocol(gripper.motor, MotorProtocol.Private)
         model = gripper.motor.get_model()
         limit = gripper.motor.get_startup_limit_torque()
         print("[Private 预检]")
@@ -420,7 +451,8 @@ def _flash_motor(
         )
 
         if before and image_version and before == image_version and not reflash:
-            print("  result       : already current; motor flash skipped")
+            print(f"  result       : 电机读回已是 {before}，本次未刷写")
+            print("                 如需同版本重刷，使用 --reflash-motor")
             return False, before
 
         started = time.monotonic()
@@ -450,8 +482,7 @@ def _verify_motor_version_after_flash(
         identity, timeout_s, "应用电机 OTA 后的 Private 协议并校验版本"
     )
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
-        if gripper.motor.get_protocol() != MotorProtocol.Private:
-            raise RuntimeError("电机 OTA 后无法进入 Private 读取版本")
+        _wait_motor_protocol(gripper.motor, MotorProtocol.Private)
         actual = motor_ota_update.read_version(gripper.motor, 20.0)
         print(f"[电机版本校验] {actual or 'no answer'}")
         if expected_version and actual != expected_version:
@@ -473,6 +504,7 @@ def _switch_back_to_mit(identity, timeout_s: float):
 
 def _final_validation(ep, model_name: str, direction: str, min_travel: float):
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+        protocol = _wait_motor_protocol(gripper.motor, MotorProtocol.Mit)
         deadline = time.monotonic() + 45.0
         home = gripper.home_diag()
         while home.flags & 0x01:
@@ -481,7 +513,6 @@ def _final_validation(ep, model_name: str, direction: str, min_travel: float):
             time.sleep(0.5)
             home = gripper.home_diag()
 
-        protocol = gripper.motor.get_protocol()
         model = gripper.motor.get_model()
         limit = gripper.motor.get_startup_limit_torque()
         cfg = gripper.get_gripper_config()
@@ -531,7 +562,16 @@ def _final_validation(ep, model_name: str, direction: str, min_travel: float):
             raise RuntimeError("final validation failed:\n  - " + "\n  - ".join(errors))
 
         print(f"  position        : {gripper.position():.4f}")
-        print("\n升级完成：从爪 MCU 与电机固件已处理，电机已回到 MIT。")
+        return _version_text(_version_tuple(gripper.firmware_version))
+
+
+def _print_result(follower_version, flashed_follower, motor_version, flashed_motor):
+    print("\n=== 本次执行结果 ===")
+    follower_action = "已刷写并校验" if flashed_follower else "版本相同，未刷写"
+    motor_action = "已刷写并校验" if flashed_motor else "版本相同，未刷写"
+    print(f"  从爪 MCU : {follower_version} — {follower_action}")
+    print(f"  电机固件 : {motor_version or '未读到版本'} — {motor_action}")
+    print("  电机已回到 MIT，标定检查通过。")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -671,6 +711,7 @@ def run(args) -> int:
         no_progress=args.no_progress,
     )
 
+    actual_motor = before_motor
     if flashed_motor:
         actual_motor = _verify_motor_version_after_flash(
             identity,
@@ -680,7 +721,10 @@ def run(args) -> int:
         print(f"[电机 OTA] {before_motor or '?'} -> {actual_motor or '?'}")
 
     ep = _switch_back_to_mit(identity, args.power_cycle_timeout)
-    _final_validation(ep, motor_model, args.direction, args.min_travel_rad)
+    actual_follower = _final_validation(
+        ep, motor_model, args.direction, args.min_travel_rad
+    )
+    _print_result(actual_follower, flash_follower, actual_motor, flashed_motor)
     return 0
 
 

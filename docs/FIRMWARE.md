@@ -176,8 +176,19 @@ python python/examples/full_ota_update.py \
 
 The command cannot operate the physical 24 V supply. At each required hard
 restart it tells the operator to cut 24 V for at least two seconds and waits
-until that exact firmware SN **and** CH343 serial disappear and return. It does
-not continue on a transient scan miss or a different plugged-in gripper.
+until that exact firmware SN **and** CH343 serial are absent for at least two
+seconds and then return in two consecutive scans. Scan errors do not count as
+power loss. Discovery cannot prove that 24 V was removed (unplugging USB looks
+similar); the operator must cut the 24 V supply as instructed. After reconnect,
+the script waits up to 20 seconds for two consecutive target-protocol readings
+before proceeding; it never bypasses the motor OTA preflight.
+
+Matching firmware versions are skipped by default. The motor version is read
+from the motor under PRIVATE, not inferred from the image filename. The final
+summary reports whether each image was actually flashed or skipped. Use
+`--reflash-motor` or `--reflash-follower` only when intentionally rewriting the
+same version.
+
 `--direction` defaults to `keep`, because software cannot infer which physical
 stop is open; use `positive` or `negative` only after observing the mechanism.
 The final check rejects a suspiciously short calibration (default `< 0.8 rad`,
