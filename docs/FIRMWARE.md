@@ -164,6 +164,28 @@ removing the motor — with `python/examples/motor_ota_update.py`, built on
 `MotorOtaSession` (`cpp/include/taccap/motor_ota.hpp`). Every CAN frame is
 relayed by the follower MCU through `Motor.can_ext_xfer` (`0x5B`).
 
+For a follower that needs **both** images, use the combined state-machine
+wrapper. It performs the MCU-first ordering, model/startup-limit checks,
+MIT/PRIVATE round trips, motor-version readback, and the final homing check in
+one process:
+
+```bash
+python python/examples/full_ota_update.py \
+    ~/Downloads/rs00-0.0.3.32.bin TCGU01A28Z0086s
+```
+
+The command cannot operate the physical 24 V supply. At each required hard
+restart it tells the operator to cut 24 V for at least two seconds and waits
+until that exact firmware SN **and** CH343 serial disappear and return. It does
+not continue on a transient scan miss or a different plugged-in gripper.
+`--direction` defaults to `keep`, because software cannot infer which physical
+stop is open; use `positive` or `negative` only after observing the mechanism.
+The final check rejects a suspiciously short calibration (default `< 0.8 rad`,
+configurable with `--min-travel-rad`).
+
+The two lower-level tools remain available when only one image needs flashing
+or when debugging a failed stage:
+
 ```bash
 python python/examples/motor_ota_update.py ~/Downloads/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
