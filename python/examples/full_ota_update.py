@@ -13,7 +13,7 @@ OTA examples are run by hand:
 6. switch back to MIT, power-cycle, and validate the final auto-calibration.
 
 It cannot switch the 24 V rail itself.  At every required cycle it prints one
-instruction and waits for the selected device to disappear and return; no
+instruction and waits for the selected MCU's uptime to restart; no
 second shell command is needed.
 
 Typical RS00 invocation::
@@ -44,6 +44,7 @@ from xense.taccap import (  # noqa: E402
     LeaderGripper,
     MotorOtaSession,
     MotorProtocol,
+    ProtocolError,
     log,
 )
 
@@ -94,30 +95,20 @@ def _apply_direction(cfg, direction: str) -> bool:
     return int(cfg.flags) != before
 
 
-class _PowerCycleDetector:
-    """Observe sustained absence, not proof that the 24 V rail was removed."""
+class _RestartDetector:
+    """Observe MCU clock reset, not physical proof of a 24 V power cycle."""
 
-    def __init__(self) -> None:
-        self.down_samples = 0
-        self.down_since = None
-        self.up_samples = 0
-        self.saw_down = False
+    def __init__(self, uptime_ms: int, sampled_at: float) -> None:
+        self.uptime_ms = uptime_ms
+        self.sampled_at = sampled_at
+        self.matches = 0
 
-    def observe(self, ready: bool) -> bool:
-        if not ready:
-            if self.down_since is None:
-                self.down_since = time.monotonic()
-            self.up_samples = 0
-            self.down_samples += 1
-            if self.down_samples >= 2 and time.monotonic() - self.down_since >= 2.0:
-                self.saw_down = True
-            return False
-        self.down_samples = 0
-        self.down_since = None
-        if not self.saw_down:
-            return False
-        self.up_samples += 1
-        return self.up_samples >= 2
+    def observe(self, uptime_ms: int, sampled_at: float) -> bool:
+        expected = self.uptime_ms + (sampled_at - self.sampled_at) * 1000.0
+        # Modulo handles the 32-bit uptime wrap without calling it a reboot.
+        lag = (expected - uptime_ms) % (1 << 32)
+        self.matches = self.matches + 1 if 1000.0 < lag < (1 << 31) else 0
+        return self.matches >= 2
 
 
 def _identity(ep) -> tuple[str, str]:
@@ -155,37 +146,48 @@ def _wait_ready(identity, timeout_s: float, what: str):
     raise RuntimeError(f"timed out waiting for {what}{detail}")
 
 
+def _read_uptime(ep, identity):
+    with LeaderGripper(mcu_device=ep.mcu_device) as gripper:
+        if gripper.device.get_sn() != identity[0]:
+            raise RuntimeError("心跳检查时设备 SN 已变化，拒绝继续")
+        started = time.monotonic()
+        uptime_ms = int(gripper.device.heartbeat().uptime_ms)
+        sampled_at = (started + time.monotonic()) / 2.0
+        return uptime_ms, sampled_at
+
+
 def _wait_power_cycle(identity, timeout_s: float, reason: str):
     firmware_sn, _mcu_serial = identity
+    ep = _wait_ready(identity, timeout_s, "the follower before power cycling")
+    before, sampled_at = _read_uptime(ep, identity)
+    detector = _RestartDetector(before, sampled_at)
     print()
     print(f"[需要断电] {reason}")
     print("  现在拔掉这只从爪的 24 V，保持至少 2 秒，再插回。")
-    print("  USB 可以保持连接；脚本正在自动等待设备掉线并重新出现。", flush=True)
+    print("  USB 保持连接；仅拔 USB 不算断电。", flush=True)
+    print(f"  MCU uptime 基线 {before} ms；等待心跳确认 MCU 重新计时。", flush=True)
 
-    detector = _PowerCycleDetector()
     deadline = time.monotonic() + timeout_s
-    down_reported = False
     last_error = None
     while time.monotonic() < deadline:
         try:
             ep = _scan_for(identity)
-            ready = ep is not None
-            if detector.observe(ready):
-                print(f"  {firmware_sn} 已重新连接。")
-                return ep
-            if detector.saw_down and not down_reported:
-                print("  目标设备持续未响应；重连后还需校验协议和配置。", flush=True)
-                down_reported = True
+            if ep is not None:
+                current, sampled_at = _read_uptime(ep, identity)
+                if detector.observe(current, sampled_at):
+                    print(f"  {firmware_sn} MCU 重启已确认，uptime={current} ms。")
+                    return ep
+            else:
+                detector.matches = 0
         except Exception as exc:  # an unplug can interrupt an in-flight probe
             last_error = exc
-            # A scanner failure is not evidence of a power interruption.
-            detector = _PowerCycleDetector()
-            down_reported = False
-        time.sleep(0.25)
+            detector.matches = 0
+        time.sleep(1.0)
 
     detail = f"; last scan error: {last_error}" if last_error is not None else ""
     raise RuntimeError(
-        f"等待 {firmware_sn} 完成 24 V 断电重启超时 ({timeout_s:.0f}s){detail}"
+        f"未确认 {firmware_sn} MCU 重启 ({timeout_s:.0f}s)。"
+        f"请断开整只从爪的 24 V，仅拔 USB 不会通过检查{detail}"
     )
 
 
@@ -212,6 +214,52 @@ def _wait_motor_protocol(motor, expected, timeout_s: float = 20.0):
         f"等待电机协议 {expected} 稳定超时，最后读回 {last}{detail}。"
         "停止后续步骤；确认断开的是 24 V（仅拔 USB 不够），"
         "保持至少 2 秒，再重新运行。若仍失败，保留日志排查协议切换。"
+    )
+
+
+def _admin_call(gripper, name, operation, timeout_s: float = 45.0):
+    """Wait for homing; retry only explicit SysBusy rejection of this command."""
+    deadline = time.monotonic() + timeout_s
+    last_detail = ""
+    announced = False
+    while time.monotonic() < deadline:
+        try:
+            # Old followers may not expose HomeDiag. Their command NACK
+            # remains authoritative; do not require new diagnostics for MCU OTA.
+            if _version_tuple(gripper.firmware_version) >= MIN_MOTOR_OTA_FOLLOWER:
+                home = gripper.home_diag()
+                if home.flags & 0x01:
+                    last_detail = str(home)
+                    if not announced:
+                        print(f"[等待标定] {name}: {home}", flush=True)
+                        announced = True
+                    time.sleep(0.5)
+                    continue
+            return operation()
+        except ProtocolError as exc:
+            if not str(exc).endswith("NACK: SysBusy"):
+                raise RuntimeError(f"{name} 失败: {exc}") from exc
+            last_detail = str(exc)
+            if not announced:
+                print(f"[等待设备空闲] {name}: {exc}", flush=True)
+                announced = True
+            time.sleep(0.5)
+    raise RuntimeError(
+        f"{name} 等待设备空闲超时: {last_detail}；"
+        "停止后续升级，请检查标定状态及是否有其他控制程序运行。"
+    )
+
+
+def _prepare_motor_admin(gripper):
+    _admin_call(gripper, "清除电机故障", gripper.motor.clear_fault)
+    _admin_call(gripper, "电机失能", gripper.motor.disable)
+
+
+def _switch_protocol(gripper, protocol):
+    _admin_call(
+        gripper,
+        f"切换电机协议到 {protocol}",
+        lambda: gripper.motor.switch_protocol(protocol),
     )
 
 
@@ -292,11 +340,10 @@ def _ensure_mit_before_follower_ota(identity, timeout_s: float):
         allow_outdated_firmware=True,
     ) as gripper:
         protocol = gripper.motor.get_protocol()
-        gripper.motor.clear_fault()
-        gripper.motor.disable()
+        _prepare_motor_admin(gripper)
         if protocol != MotorProtocol.Mit:
             print(f"[准备 MCU OTA] 电机协议 {protocol} -> MIT")
-            gripper.motor.switch_protocol(MotorProtocol.Mit)
+            _switch_protocol(gripper, MotorProtocol.Mit)
             changed = True
     if changed:
         _wait_power_cycle(identity, timeout_s, "让 MIT 协议在 MCU OTA 前生效")
@@ -306,8 +353,7 @@ def _ensure_mit_before_follower_ota(identity, timeout_s: float):
             allow_outdated_firmware=True,
         ) as gripper:
             _wait_motor_protocol(gripper.motor, MotorProtocol.Mit)
-            gripper.motor.clear_fault()
-            gripper.motor.disable()
+            _prepare_motor_admin(gripper)
 
 
 def _flash_follower(ep, image_path: str, no_progress: bool) -> None:
@@ -358,27 +404,32 @@ def _wait_follower_version(identity, expected, timeout_s: float):
 def _configure_motor_ota_boot(gripper, model_name: str, direction: str):
     changes = []
     motor = gripper.motor
-    motor.clear_fault()
-    motor.disable()
+    _prepare_motor_admin(gripper)
 
     model = motor.get_model()
     if model.name != model_name or not model.from_flash:
-        motor.set_model(MODEL_IDS[model_name])
+        _admin_call(
+            gripper, "设置电机型号", lambda: motor.set_model(MODEL_IDS[model_name])
+        )
         changes.append(f"model={model_name}")
 
     desired_limit = MODEL_STARTUP_LIMITS[model_name]
-    current_limit = motor.get_startup_limit_torque()
+    current_limit = _admin_call(gripper, "读取启动限矩", motor.get_startup_limit_torque)
     if abs(current_limit - desired_limit) > 0.01:
-        motor.set_startup_limit_torque(desired_limit)
+        _admin_call(
+            gripper,
+            "设置启动限矩",
+            lambda: motor.set_startup_limit_torque(desired_limit),
+        )
         changes.append(f"startup_limit={desired_limit:.1f}Nm")
 
-    cfg = gripper.get_gripper_config()
+    cfg = _admin_call(gripper, "读取行程配置", gripper.get_gripper_config)
     if _apply_direction(cfg, direction):
-        gripper.set_gripper_config(cfg)
+        _admin_call(gripper, "设置行程方向", lambda: gripper.set_gripper_config(cfg))
         changes.append(f"direction={direction}")
 
     if motor.get_protocol() != MotorProtocol.Private:
-        motor.switch_protocol(MotorProtocol.Private)
+        _switch_protocol(gripper, MotorProtocol.Private)
         changes.append("protocol=Private")
     return changes
 
@@ -473,10 +524,9 @@ def _verify_motor_version_after_flash(
     time.sleep(3.0)
     ep = _wait_ready(identity, timeout_s, "the follower after motor OTA")
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
-        gripper.motor.clear_fault()
-        gripper.motor.disable()
+        _prepare_motor_admin(gripper)
         if gripper.motor.get_protocol() != MotorProtocol.Private:
-            gripper.motor.switch_protocol(MotorProtocol.Private)
+            _switch_protocol(gripper, MotorProtocol.Private)
 
     ep = _wait_power_cycle(
         identity, timeout_s, "应用电机 OTA 后的 Private 协议并校验版本"
@@ -495,10 +545,9 @@ def _verify_motor_version_after_flash(
 def _switch_back_to_mit(identity, timeout_s: float):
     ep = _wait_ready(identity, timeout_s, "the follower before final MIT switch")
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
-        gripper.motor.clear_fault()
-        gripper.motor.disable()
+        _prepare_motor_admin(gripper)
         if gripper.motor.get_protocol() != MotorProtocol.Mit:
-            gripper.motor.switch_protocol(MotorProtocol.Mit)
+            _switch_protocol(gripper, MotorProtocol.Mit)
     return _wait_power_cycle(identity, timeout_s, "切回 MIT 并执行最终自动标定")
 
 

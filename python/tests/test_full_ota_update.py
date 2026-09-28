@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -29,25 +30,28 @@ class FakeEndpoint:
         self.mcu_serial = mcu_serial
 
 
-def test_power_cycle_requires_sustained_down_and_stable_up_samples(monkeypatch):
-    now = [0.0]
-    monkeypatch.setattr(mod.time, "monotonic", lambda: now[0])
-    detector = mod._PowerCycleDetector()
+def test_usb_reconnect_with_continuous_uptime_is_not_a_restart():
+    detector = mod._RestartDetector(100_000, 0.0)
+    assert not detector.observe(110_000, 10.0)
+    assert not detector.observe(111_000, 11.0)
 
-    assert not detector.observe(True)
-    assert not detector.observe(False)  # one scan miss is not a power cycle
-    assert not detector.observe(True)
-    assert not detector.saw_down
 
-    assert not detector.observe(False)
-    now[0] = 0.5
-    assert not detector.observe(False)
-    assert not detector.saw_down
-    now[0] = 2.0
-    assert not detector.observe(False)
-    assert detector.saw_down
-    assert not detector.observe(True)
-    assert detector.observe(True)
+def test_clock_reset_detected_even_without_observed_port_disappearance():
+    detector = mod._RestartDetector(100_000, 0.0)
+    assert not detector.observe(1000, 10.0)
+    assert detector.observe(2000, 11.0)
+
+
+def test_early_boot_restart_can_have_higher_uptime_than_baseline():
+    detector = mod._RestartDetector(1000, 0.0)
+    assert not detector.observe(3000, 10.0)
+    assert detector.observe(4000, 11.0)
+
+
+def test_uptime_wrap_is_not_a_restart():
+    detector = mod._RestartDetector((1 << 32) - 1000, 0.0)
+    assert not detector.observe(1000, 2.0)
+    assert not detector.observe(2000, 3.0)
 
 
 def test_follower_same_version_skips_unless_reflash_requested():
@@ -151,6 +155,12 @@ def test_private_preflight_stops_before_model_checks_if_protocol_never_changes(
 
 def test_scanner_errors_do_not_count_as_power_loss(monkeypatch, fake_clock):
     ep = Mock()
+    monkeypatch.setattr(mod, "_wait_ready", lambda *_: ep)
+    monkeypatch.setattr(
+        mod,
+        "_read_uptime",
+        lambda *_: (100_000 + int(fake_clock[0] * 1000), fake_clock[0]),
+    )
     scans = [RuntimeError("busy")] * 10 + [ep] * 20
 
     def scan(_identity):
@@ -160,7 +170,7 @@ def test_scanner_errors_do_not_count_as_power_loss(monkeypatch, fake_clock):
         return item
 
     monkeypatch.setattr(mod, "_scan_for", scan)
-    with pytest.raises(RuntimeError, match="断电重启超时"):
+    with pytest.raises(RuntimeError, match="未确认.*MCU 重启"):
         mod._wait_power_cycle(("SN", "USB"), 5.0, "test")
 
 
@@ -197,3 +207,90 @@ def test_summary_distinguishes_actual_flash_from_skip(capsys, flashed):
     assert "从爪 MCU : 1.2.11 — 版本相同，未刷写" in output
     action = "已刷写并校验" if flashed else "版本相同，未刷写"
     assert f"电机固件 : 0.0.3.32 — {action}" in output
+
+
+def test_power_cycle_wait_accepts_reset_without_disappearance(monkeypatch, fake_clock):
+    ep = Mock()
+    samples = iter([(100_000, 0.0), (1000, 10.0), (2000, 11.0)])
+    monkeypatch.setattr(mod, "_wait_ready", lambda *_: ep)
+    monkeypatch.setattr(mod, "_scan_for", lambda *_: ep)
+    monkeypatch.setattr(mod, "_read_uptime", lambda *_: next(samples))
+    assert mod._wait_power_cycle(("SN", "USB"), 5.0, "test") is ep
+
+
+def test_power_cycle_wait_rejects_usb_only_reconnect(monkeypatch, fake_clock):
+    ep = Mock()
+    monkeypatch.setattr(mod, "_wait_ready", lambda *_: ep)
+    monkeypatch.setattr(mod, "_scan_for", lambda *_: None if fake_clock[0] < 3 else ep)
+    monkeypatch.setattr(
+        mod,
+        "_read_uptime",
+        lambda *_: (100_000 + int(fake_clock[0] * 1000), fake_clock[0]),
+    )
+    with pytest.raises(RuntimeError, match="仅拔 USB"):
+        mod._wait_power_cycle(("SN", "USB"), 8.0, "test")
+
+
+def admin_gripper():
+    gripper = Mock()
+    gripper.firmware_version = SimpleNamespace(major=1, minor=2, patch=11)
+    gripper.home_diag.return_value = SimpleNamespace(flags=0x0E)
+    return gripper
+
+
+def test_admin_waits_for_homing_before_any_write(fake_clock):
+    gripper = admin_gripper()
+    gripper.home_diag.side_effect = [
+        SimpleNamespace(flags=1),
+        SimpleNamespace(flags=1),
+        SimpleNamespace(flags=0x0E),
+    ]
+    operation = Mock(return_value="ok")
+    assert mod._admin_call(gripper, "test", operation) == "ok"
+    assert fake_clock[0] == 1.0
+    operation.assert_called_once()
+
+
+def test_active_homing_timeout_prevents_boot_configuration_writes(fake_clock):
+    gripper = admin_gripper()
+    gripper.home_diag.return_value = SimpleNamespace(flags=1)
+    with pytest.raises(RuntimeError, match="清除电机故障.*超时"):
+        mod._configure_motor_ota_boot(gripper, "RS00", "positive")
+    assert gripper.motor.mock_calls == []
+    gripper.set_gripper_config.assert_not_called()
+
+
+def test_admin_retries_only_explicit_busy(fake_clock):
+    gripper = admin_gripper()
+    operation = Mock(side_effect=[mod.ProtocolError("NACK: SysBusy"), "ok"])
+    assert mod._admin_call(gripper, "test", operation) == "ok"
+    assert operation.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        mod.ProtocolError("NACK: MotorFault"),
+        TimeoutError("unknown outcome"),
+    ],
+)
+def test_admin_does_not_retry_other_errors(fake_clock, error):
+    operation = Mock(side_effect=error)
+    with pytest.raises((RuntimeError, TimeoutError)):
+        mod._admin_call(admin_gripper(), "test", operation)
+    operation.assert_called_once()
+
+
+def test_admin_busy_timeout_names_failed_step(fake_clock):
+    operation = Mock(side_effect=mod.ProtocolError("NACK: SysBusy"))
+    with pytest.raises(RuntimeError, match="切换协议.*超时"):
+        mod._admin_call(admin_gripper(), "切换协议", operation, timeout_s=1.0)
+    assert operation.call_count == 2
+
+
+def test_old_follower_uses_busy_nack_without_requiring_home_diag(fake_clock):
+    gripper = admin_gripper()
+    gripper.firmware_version = SimpleNamespace(major=1, minor=1, patch=5)
+    operation = Mock(side_effect=[mod.ProtocolError("NACK: SysBusy"), "ok"])
+    assert mod._admin_call(gripper, "test", operation) == "ok"
+    gripper.home_diag.assert_not_called()

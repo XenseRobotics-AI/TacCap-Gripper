@@ -176,12 +176,20 @@ python python/examples/full_ota_update.py \
 
 The command cannot operate the physical 24 V supply. At each required hard
 restart it tells the operator to cut 24 V for at least two seconds and waits
-until that exact firmware SN **and** CH343 serial are absent for at least two
-seconds and then return in two consecutive scans. Scan errors do not count as
-power loss. Discovery cannot prove that 24 V was removed (unplugging USB looks
-similar); the operator must cut the 24 V supply as instructed. After reconnect,
+for that exact firmware SN **and** CH343 serial to report a restarted MCU
+uptime in two consecutive heartbeats. It compares uptime with elapsed host time,
+so it can detect a restart without observing the port disappear. USB reconnects
+with continuous MCU uptime, scan errors and 32-bit uptime wrap do not count.
+A heartbeat confirms an MCU restart, not physical removal of 24 V: a soft reset
+also restarts uptime. The operator must cut the 24 V supply as instructed.
+After reconnect,
 the script waits up to 20 seconds for two consecutive target-protocol readings
 before proceeding; it never bypasses the motor OTA preflight.
+
+Before motor configuration writes it waits for active homing to end. Only an
+explicit `NACK: SysBusy` retries the rejected command, within a 45-second budget;
+other command errors stop the workflow. Errors name the failed step. No OTA
+transfer is automatically retried by this busy handler.
 
 Matching firmware versions are skipped by default. The motor version is read
 from the motor under PRIVATE, not inferred from the image filename. The final
