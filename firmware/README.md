@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.11.bin` | follower (SN ends **`s`**) | **1.2.11** | V2.7 + 运动安全包络 | 165,756 B | `0xec9feb13` |
+| `tc-gu-01-slave-1.2.12.bin` | follower (SN ends **`s`**) | **1.2.12** | V2.7 + 运动安全包络 | 166,796 B | `0x6f2e94f4` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -35,8 +35,8 @@ sources bumps that role alone.
 this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
-The leader is at 1.2.6 while the follower is at 1.2.11 for that reason: 1.2.7,
-1.2.8 and 1.2.10 touched only follower code, and 1.2.9 changed the shared
+The leader is at 1.2.6 while the follower is at 1.2.12 for that reason: 1.2.7,
+1.2.8, 1.2.10 and 1.2.12 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
 
@@ -52,6 +52,31 @@ disable keeps `stop_reason == HostTimeout`. The receive path is shared, so the
 leader got the same fix as **1.2.6**, verified on 0115m and 0116m: 15 minutes
 each of a 100 Hz stream plus a 100 Hz acknowledged command, ~87,000 commands, no
 failures.
+
+**Follower 1.2.12 makes the model-dependent settings follow the model.** Before
+it, a follower upgraded from 1.1.x kept EL05-era values after the model was
+identified as RS00: 0x700B at 6.0, the auto-calibration stall torque at 0.35 N·m
+(too little to move an RS00, so calibration stopped short of the stops and could
+record the open direction backwards -- 0094s did), the open direction defaulting
+to "reverse" (right for EL05, wrong for RS00), and no motion envelope at all
+unless someone ran `ensure_envelope()`. Now:
+
+| | EL05 | RS00 |
+|---|---|---|
+| auto-cal stall torque default | 0.5 N·m | 1.8 N·m |
+| default open direction | reverse | not reverse |
+| envelope when none stored | cont 1.1 / peak 6 | cont 3.6 / peak 14 |
+
+The envelope default has the 90/100 °C temperature wall, measured on EL05; RS00
+is not separately characterised. It is computed at run time, never written, so a
+stored envelope still wins; `get_model().default_envelope == 1` says the default
+is in force. When the model record changes, 0x700B, the calibration torque and
+the direction are reset to the new model's defaults; a stored calibration torque
+still at exactly the old 0.35 migrates on boot. A gripper OTA also no longer
+refuses when the motor is not on the bus.
+
+Not verified on hardware: OTA with the motor off the bus, and calibration from an
+invalid config using the model's default direction.
 
 ## Follower: the motor model
 

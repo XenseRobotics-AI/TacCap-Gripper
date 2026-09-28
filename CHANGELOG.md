@@ -7,10 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Shipped leader image is now **1.2.6**: the same control-UART receive fix as
-  follower 1.2.11, in the shared receive path. Verified on 0115m and 0116m.
+## [0.3.9] - 2026-09-28
 
 ### Added
 
@@ -19,22 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   t_max, temperature wall 90/100 C) when none is stored; the audit reports that
   as `effective`, and the controllers log it at info instead of warning that
   the device is unprotected.
-
-### Fixed
-
-- `examples/force_position_control.py` no longer fails a close to the endpoint
-  (target 0.0) that ends in `HOLDING_FORCE`. Since 0.3.7 a jaw blocked by the
-  stop / finger pads short of 0.0 is gripped at the budget and reported as
-  holding -- the correct terminal state there. On 0094s (RS00) the pads meet
-  ~12 mrad early and the controller pushes to the stop within 0.2 s; the
-  example judged its first terminal frame as "holding at the commanded
-  position". Mid-stroke targets keep the check. Reported by factorytool.
-
-
-## [0.3.9] - 2026-09-28
-
-### Added
-
 - `UartStats.rx_errors` / `rx_rearms` (follower >= 1.2.11, leader >= 1.2.6; 0 on
   older firmware). `rx_rearms > 0` means the control UART stopped receiving and
   the firmware restarted it -- the event that, up to follower 1.2.10, silenced
@@ -42,10 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Shipped follower image is now **1.2.11**: fixes the command channel going
-  permanently silent after one UART overrun (0086s, ~3 min into a 3 N·m
-  ForcePosition hold: the host-timeout safe hold dropped the grip to 0.35 N·m and
-  the fingers were pushed open). The shipped leader image stays 1.2.5.
+- Shipped follower image is now **1.2.12**: auto-calibration stall torque,
+  default open direction and a motion envelope (when none is stored) all follow
+  the motor model (EL05 0.5 N·m / reverse / 1.1-6; RS00 1.8 N·m / not reverse /
+  3.6-14); a model change resets 0x700B, the calibration torque and the
+  direction; a gripper OTA proceeds when the motor is not on the bus. Also
+  carries 1.2.11: the command channel no longer goes permanently silent after a
+  single control-UART overrun (0086s, ~3 min into a 3 N·m hold).
+- Shipped leader image is now **1.2.6**: the same control-UART receive fix as
+  follower 1.2.11, in the shared receive path. Verified on 0115m and 0116m.
 - `decode_uart_stats` accepts anything from 32 bytes up; its minimum was derived
   from `sizeof(UartStats)` and would have rejected every older firmware once the
   struct grew. `check_protocol_drift.py` now covers `uart_stats_packet_t`.
@@ -60,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `examples/force_position_control.py` no longer fails a close to the endpoint
+  (target 0.0) that ends in `HOLDING_FORCE`. Since 0.3.7 a jaw blocked by the
+  stop / finger pads short of 0.0 is gripped at the budget and reported as
+  holding -- the correct terminal state there. On 0094s (RS00) the pads meet
+  ~12 mrad early and the controller pushes to the stop within 0.2 s; the
+  example judged its first terminal frame as "holding at the commanded
+  position". Mid-stroke targets keep the check. Reported by factorytool.
 - Both controllers ignore status frames that arrive after `stop()` has begun.
   `stop()` unsubscribes only after the zero frame and the disable ACK, and a
   frame landing in that window marked the stopped controller's observation
