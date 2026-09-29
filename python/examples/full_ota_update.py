@@ -635,10 +635,25 @@ def _verify_motor_version_after_flash(
         return actual
 
 
-def _switch_back_to_mit(identity, timeout_s: float):
+def _write_direction(gripper, direction):
+    if direction == "keep":
+        print("[方向] 保留设备方向；物理张开/闭合方向未经确认。")
+        return
+    _prepare_motor_admin(gripper)
+    cfg = gripper.get_gripper_config()
+    if _apply_direction(cfg, direction):
+        _admin_call(gripper, "设置标定方向", lambda: gripper.set_gripper_config(cfg))
+    actual = gripper.get_gripper_config()
+    if bool(actual.flags & 2) != (direction == "negative"):
+        raise RuntimeError("方向写入读回不一致，停止；不要使用旧标定")
+    print(f"[方向] 已确认 {direction}；需断电重新标定，不能沿用旧零点。")
+
+
+def _switch_back_to_mit(identity, timeout_s: float, direction="keep"):
     ep = _wait_ready(identity, timeout_s, "the follower before final MIT switch")
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
         _prepare_motor_admin(gripper)
+        _write_direction(gripper, direction)
         if gripper.motor.get_protocol() != MotorProtocol.Mit:
             _switch_protocol(gripper, MotorProtocol.Mit)
     return _wait_power_cycle(identity, timeout_s, "切回 MIT 并执行最终自动标定")
@@ -707,6 +722,45 @@ def _final_validation(ep, model_name: str, direction: str, min_travel: float):
         return _version_text(_version_tuple(gripper.firmware_version))
 
 
+def _direction_only(args, model_name):
+    if args.direction == "keep":
+        raise RuntimeError("--direction-only 必须指定 --direction positive 或 negative")
+    if args.reflash_motor or args.reflash_follower:
+        raise RuntimeError("--direction-only 不能与重刷选项同时使用")
+    ep, _, _ = _target.resolve_target(args.target)
+    if not ep.firmware_sn.endswith("s"):
+        raise RuntimeError("方向修正只支持从爪")
+    identity = _identity(ep)
+    with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+        model = gripper.motor.get_model()
+        if model.name != model_name or not model.from_flash:
+            raise RuntimeError("型号未配置或与镜像不符；请先运行完整升级流程")
+        if gripper.motor.get_protocol() != MotorProtocol.Mit:
+            raise RuntimeError("方向修正要求电机已处于 MIT；请先完成升级流程")
+        if not (gripper.get_auto_cal_config().flags & 2):
+            raise RuntimeError("自动标定未启用；请先完成完整升级流程")
+        cfg = gripper.get_gripper_config()
+        print(
+            f"[仅修正方向] {ep.firmware_sn}: reverse={bool(cfg.flags & 2)}"
+            f" -> {args.direction}；不会刷写任何固件或修改标定力矩。"
+        )
+        if args.dry_run:
+            return 0
+        if not args.yes:
+            if (
+                input(
+                    f"清空夹爪行程，输入完整 SN {ep.firmware_sn} 确认重新标定: "
+                ).strip()
+                != ep.firmware_sn
+            ):
+                raise RuntimeError("确认失败，未修改方向")
+        _write_direction(gripper, args.direction)
+    ep = _wait_power_cycle(identity, args.power_cycle_timeout, "应用方向并重新自动标定")
+    _final_validation(ep, model_name, args.direction, args.min_travel_rad)
+    print("方向与标定数据校验通过；请观察实物确认张开/闭合端点。未刷写任何固件。")
+    return 0
+
+
 def _print_result(follower_version, flashed_follower, motor_version, flashed_motor):
     print("\n=== 本次执行结果 ===")
     follower_action = "已刷写并校验" if flashed_follower else "版本相同，未刷写"
@@ -751,6 +805,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-downgrade", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument(
+        "--direction-only",
+        action="store_true",
+        help="only set direction and power-cycle/recalibrate; never flash images",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -779,6 +838,9 @@ def run(args) -> int:
     motor_model, motor_version = motor_ota_update.image_facts(
         args.motor_image, motor_data, None
     )
+
+    if args.direction_only:
+        return _direction_only(args, motor_model)
 
     follower_path, _follower_data, follower_meta = _resolve_follower_image(
         args.follower_image
@@ -879,7 +941,7 @@ def run(args) -> int:
         )
         print(f"[电机 OTA] {before_motor or '?'} -> {actual_motor or '?'}")
 
-    ep = _switch_back_to_mit(identity, args.power_cycle_timeout)
+    ep = _switch_back_to_mit(identity, args.power_cycle_timeout, args.direction)
     actual_follower = _final_validation(
         ep, motor_model, args.direction, args.min_travel_rad
     )

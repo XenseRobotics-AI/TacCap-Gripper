@@ -19,6 +19,61 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
+@pytest.mark.parametrize("direction,flags", [("positive", 1), ("negative", 3)])
+def test_write_direction_reads_back_and_preserves_travel(monkeypatch, direction, flags):
+    g = Mock()
+    cfg = SimpleNamespace(flags=flags ^ 2, max_open_rad=1.2)
+    g.get_gripper_config.return_value = cfg
+    monkeypatch.setattr(mod, "_prepare_motor_admin", Mock())
+    monkeypatch.setattr(mod, "_admin_call", lambda g, label, fn: fn())
+    mod._write_direction(g, direction)
+    assert cfg.flags == flags
+    assert cfg.max_open_rad == 1.2
+    g.set_gripper_config.assert_called_once_with(cfg)
+
+
+def test_write_direction_failed_readback_stops(monkeypatch):
+    g = Mock()
+    g.get_gripper_config.side_effect = [
+        SimpleNamespace(flags=1),
+        SimpleNamespace(flags=1),
+    ]
+    monkeypatch.setattr(mod, "_prepare_motor_admin", Mock())
+    monkeypatch.setattr(mod, "_admin_call", lambda g, label, fn: fn())
+    with pytest.raises(RuntimeError, match="读回不一致"):
+        mod._write_direction(g, "negative")
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_direction_only_never_flashes(model_setup, monkeypatch, dry_run):
+    state, events, g, ep = model_setup
+    state.name, state.recorded = "RS00", True
+    ep.firmware_sn, ep.mcu_serial = "TESTs", "USB"
+    g.motor.get_protocol.return_value = mod.MotorProtocol.Mit
+    g.get_gripper_config.return_value = SimpleNamespace(flags=1)
+    monkeypatch.setattr(mod._target, "resolve_target", lambda _: (ep, None, None))
+    write = Mock()
+    validate = Mock()
+    monkeypatch.setattr(mod, "_write_direction", write)
+    monkeypatch.setattr(mod, "_final_validation", validate)
+    args = mod._build_parser().parse_args(
+        ["unused.bin", "TESTs", "--direction-only", "--direction", "negative", "--yes"]
+    )
+    args.dry_run = dry_run
+    assert mod._direction_only(args, "RS00") == 0
+    assert write.call_count == int(not dry_run)
+    assert validate.call_count == int(not dry_run)
+    assert state.cycles == int(not dry_run)
+    g.motor.switch_protocol.assert_not_called()
+    g.motor.set_model.assert_not_called()
+
+
+def test_direction_only_requires_explicit_direction():
+    args = mod._build_parser().parse_args(["unused.bin", "--direction-only"])
+    with pytest.raises(RuntimeError, match="必须指定"):
+        mod._direction_only(args, "RS00")
+
+
 @pytest.fixture
 def model_setup(monkeypatch):
     state = SimpleNamespace(

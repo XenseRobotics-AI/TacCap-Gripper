@@ -224,6 +224,23 @@ stop is open; use `positive` or `negative` only after observing the mechanism.
 The final check rejects a suspiciously short calibration (default `< 0.8 rad`,
 configurable with `--min-travel-rad`).
 
+If firmware is already upgraded but the physical opening direction is reversed,
+use direction-only mode (the motor image is read only to validate its model;
+neither image is flashed and the MCU manifest is not needed):
+
+```bash
+python python/examples/full_ota_update.py \
+    firmware/motor/rs00-0.0.3.32.bin TCGU01A24Z0000s \
+    --direction-only --direction negative
+```
+
+Choose `negative` only when the current positive direction is physically wrong,
+or `positive` for the opposite correction. This mode requires a recorded matching
+model, MIT and enabled auto-calibration. It reads back the direction, requires a
+24 V cycle, and checks the new homing direction and travel. Keep the mechanism
+clear. Numeric checks cannot prove physical endpoint semantics. Full OTA also
+reapplies an explicit direction immediately before its final MIT/homing cycle.
+
 The two lower-level tools remain available when only one image needs flashing
 or when debugging a failed stage:
 
