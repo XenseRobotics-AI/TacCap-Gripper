@@ -382,8 +382,9 @@ struct __attribute__((packed)) MotorModel {
     // firmware always sends 0.
     uint8_t  autodetected;
     // 1 = no valid envelope is stored, so the follower is enforcing its
-    // model's default (cont = stall rating, peak = t_max, temperature wall at
-    // the firmware's 90/100 C). Follower 1.2.12; was reserved, 0 before.
+    // model's default (cont = stall rating, peak = rated torque -- t_max on
+    // 1.2.12 -- temperature wall at the firmware's 90/100 C). Follower 1.2.12+;
+    // was reserved, 0 before.
     uint8_t  default_envelope;
 };
 
