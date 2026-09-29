@@ -785,8 +785,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--direction",
         choices=("keep", "positive", "negative"),
-        default="positive",
-        help="opening motor direction; default positive clears Reverse and verifies +1 after homing",
+        default="negative",
+        help="opening motor direction; default negative sets Reverse and verifies -1 after homing",
     )
     parser.add_argument(
         "--min-travel-rad",

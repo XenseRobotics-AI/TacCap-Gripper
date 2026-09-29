@@ -19,9 +19,9 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
-def test_image_only_defaults_to_positive_direction():
+def test_image_only_defaults_to_negative_direction():
     args = mod._build_parser().parse_args(["firmware/motor/rs00-0.0.3.32.bin"])
-    assert args.direction == "positive"
+    assert args.direction == "negative"
     assert not args.direction_only
 
 
