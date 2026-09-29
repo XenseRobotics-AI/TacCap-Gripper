@@ -194,11 +194,15 @@ explicit `NACK: SysBusy` retries the rejected command, within a 45-second budget
 other command errors stop the workflow. Errors name the failed step. No OTA
 transfer is automatically retried by this busy handler.
 
-Matching firmware versions are skipped by default. The motor version is read
-from the motor under PRIVATE, not inferred from the image filename. The final
+Matching firmware versions prompt separately for the follower and motor:
+enter `y` to reflash; Enter, `n`, other answers, or EOF skip that image.
+The motor prompt appears after switching to PRIVATE and reading the motor's
+version, not at initial discovery. Skipping a flash does not skip the protocol
+round trip or final checks. `--dry-run` never asks to reflash. `--yes` skips only
+the SN confirmation, not these reflash questions. The final
 summary reports whether each image was actually flashed or skipped. Use
 `--reflash-motor` or `--reflash-follower` only when intentionally rewriting the
-same version.
+same version; each flag bypasses its corresponding reflash question.
 
 `--direction` defaults to `keep`, because software cannot infer which physical
 stop is open; use `positive` or `negative` only after observing the mechanism.

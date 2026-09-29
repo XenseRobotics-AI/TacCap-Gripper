@@ -145,6 +145,54 @@ def test_endpoint_identity_requires_both_firmware_and_usb_serial():
     assert mod._find_endpoint(expected, endpoints) is endpoints[-1]
 
 
+@pytest.mark.parametrize(
+    ("answer", "force", "dry_run", "yes", "decision"),
+    [
+        ("y", False, False, False, "FLASH"),
+        ("n", False, False, False, "SKIP"),
+        ("", False, False, False, "SKIP"),
+        ("n", True, False, False, "FLASH"),
+        ("y", False, True, False, None),
+        ("n", True, True, False, None),
+        ("n", False, False, True, "SKIP"),
+    ],
+)
+def test_follower_reflash_confirmation_and_dry_run(
+    monkeypatch, tmp_path, answer, force, dry_run, yes, decision
+):
+    image = tmp_path / "rs00-0.0.3.32.bin"
+    image.write_bytes(b"test image")
+    args = mod._build_parser().parse_args([str(image)])
+    args.reflash_follower = force
+    args.dry_run = dry_run
+    args.yes = yes
+    ep = FakeEndpoint("TCGU01A28Z0088s", "USB")
+    monkeypatch.setattr(mod._target, "resolve_target", lambda *_: (ep, {}, [ep]))
+    monkeypatch.setattr(mod, "_read_initial_state", lambda *_: {"firmware": (1, 2, 12)})
+    monkeypatch.setattr(
+        mod,
+        "_resolve_follower_image",
+        lambda *_: ("fake.bin", b"image", {"version": "1.2.12"}),
+    )
+    monkeypatch.setattr(mod, "_confirm_plan", Mock())
+    flash_stage = Mock(side_effect=RuntimeError("FLASH"))
+    skip_stage = Mock(side_effect=RuntimeError("SKIP"))
+    monkeypatch.setattr(mod, "_ensure_mit_before_follower_ota", flash_stage)
+    monkeypatch.setattr(mod, "_wait_ready", skip_stage)
+    prompt = Mock(return_value=answer)
+    monkeypatch.setattr("builtins.input", prompt)
+    if dry_run:
+        assert mod.run(args) == 0
+        flash_stage.assert_not_called()
+        skip_stage.assert_not_called()
+    else:
+        with pytest.raises(RuntimeError, match=decision):
+            mod.run(args)
+        assert flash_stage.call_count == int(decision == "FLASH")
+        assert skip_stage.call_count == int(decision == "SKIP")
+    assert prompt.call_count == int(not force and not dry_run)
+
+
 @pytest.fixture
 def fake_clock(monkeypatch):
     now = [0.0]
@@ -215,8 +263,23 @@ def test_scanner_errors_do_not_count_as_power_loss(monkeypatch, fake_clock):
         mod._wait_power_cycle(("SN", "USB"), 5.0, "test")
 
 
-@pytest.mark.parametrize("reflash", [False, True])
-def test_same_motor_version_skips_bytes_unless_forced(monkeypatch, reflash):
+@pytest.mark.parametrize(
+    ("reflash", "answer", "expected"),
+    [
+        (False, "y", True),
+        (False, "Y", True),
+        (False, "", False),
+        (False, "n", False),
+        (False, "other", False),
+        (False, None, False),
+        (True, "n", True),
+    ],
+)
+def test_same_motor_version_requires_confirmation_unless_forced(
+    monkeypatch, reflash, answer, expected
+):
+    prompt = Mock(side_effect=EOFError) if answer is None else Mock(return_value=answer)
+    monkeypatch.setattr("builtins.input", prompt)
     gripper = Mock()
     context = Mock()
     context.__enter__ = Mock(return_value=gripper)
@@ -235,10 +298,11 @@ def test_same_motor_version_skips_bytes_unless_forced(monkeypatch, reflash):
         reflash=reflash,
         no_progress=True,
     )
-    assert flashed is reflash
+    assert flashed is expected
     assert before == "0.0.3.32"
     session.preflight.assert_called_once_with("RS00")
-    assert session.update_from_bytes.call_count == int(reflash)
+    assert session.update_from_bytes.call_count == int(expected)
+    assert prompt.call_count == int(not reflash)
 
 
 @pytest.mark.parametrize("flashed", [False, True])

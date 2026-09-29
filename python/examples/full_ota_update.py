@@ -306,6 +306,16 @@ def _read_initial_state(ep):
         return state
 
 
+def _confirm_reflash(component: str, version: str) -> bool:
+    try:
+        answer = (
+            input(f"{component}已是 {version}，是否重复刷写？[y/N]: ").strip().lower()
+        )
+    except EOFError:
+        return False
+    return answer == "y"
+
+
 def _confirm_plan(
     args, ep, initial, follower_path, follower_meta, motor_model, motor_ver
 ):
@@ -325,7 +335,7 @@ def _confirm_plan(
     if initial.get("detail_error"):
         print(f"  old-fw detail    : {initial['detail_error']}")
     print()
-    print("过程按需刷写 MCU 与电机；版本相同默认跳过。需要时请手动断开 24 V。")
+    print("版本相同时会询问是否重刷，输入 y 确认，回车跳过。需要时请手动断开 24 V。")
     if args.yes or args.dry_run:
         return
     try:
@@ -506,9 +516,9 @@ def _flash_motor(
         )
 
         if before and image_version and before == image_version and not reflash:
-            print(f"  result       : 电机读回已是 {before}，本次未刷写")
-            print("                 如需同版本重刷，使用 --reflash-motor")
-            return False, before
+            if not _confirm_reflash("电机固件", before):
+                print(f"  result       : 电机读回已是 {before}，本次未刷写")
+                return False, before
 
         started = time.monotonic()
         session.update_from_bytes(image_data, _motor_progress(no_progress))
@@ -661,7 +671,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reflash-motor", action="store_true")
     parser.add_argument("--allow-downgrade", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
-    parser.add_argument("--yes", "-y", action="store_true", help="skip SN confirmation")
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="skip SN confirmation only; same-version reflash still asks y/N",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -717,6 +732,11 @@ def run(args) -> int:
     if args.dry_run:
         print("dry-run: preflight complete; no device state was changed")
         return 0
+
+    if not flash_follower:
+        flash_follower = _confirm_reflash(
+            "从爪 MCU 固件", _version_text(initial["firmware"])
+        )
 
     if flash_follower:
         _ensure_mit_before_follower_ota(identity, args.power_cycle_timeout)
