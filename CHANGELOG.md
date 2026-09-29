@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ForcePositionController` has one control law.** Arrival no longer switches
+  to a separate settled hold (no velocity feed-forward, ramp invalidated, its
+  own error clamp and `position_kd`). A streamed target keeps the jaw near the
+  10 mrad arrival band, so the law switched several times a second: brake on
+  entering the band, re-seed the ramp from the jaw on leaving it -- a stop-go
+  gait on 0094s (RS00, 50 Hz cosine, reported by tc-gu-01-pc). The travel law
+  already parks its ramp on a reached target and bounds the total by the
+  budget, so it now does the holding too. `arrived` / `HOLDING_POSITION` are
+  reported exactly as before, as observations; the closed-endpoint preload is
+  applied once the ramp is parked on a closed target, reserved out of the
+  budget as before. `ForcePositionTuning::position_kd` is no longer used.
+
 ## [0.3.10] - 2026-09-29
 
 ### Added
