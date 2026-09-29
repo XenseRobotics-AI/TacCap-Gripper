@@ -238,8 +238,15 @@ void ForcePositionPolicy::set_target(
     // follower streams the leader's position at 100 Hz, and that jitters by far
     // less than the arrival band; clearing on every change would drop the latch
     // each frame and bring back exactly the chatter it exists to prevent.
-    if (std::abs(map_.to_rad(target_position) - map_.to_rad(target_position_)) >
-        tune_.arrival_eps_rad) {
+    //
+    // Measured against where the escalation BEGAN, not the previous frame: a
+    // slowly streamed trajectory moves a few mrad per frame, never tripped the
+    // per-frame test, and its tracking lag escalated to the budget and latched
+    // mid-motion (0094s, 50 Hz cosine, reported by tc-gu-01-pc 2026-09-29).
+    // Jitter in place does not add up, so the latch still survives it.
+    if ((grasp_latched_ || topup_nm_ > 0.0f) &&
+        std::abs(map_.to_rad(target_position) - topup_anchor_raw_) >
+            tune_.arrival_eps_rad) {
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
     }
@@ -499,6 +506,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
         if (short_of_target && at_rest) {
+            if (topup_nm_ <= 0.0f) {
+                topup_anchor_raw_ = target_raw;   // escalation begins here
+            }
             topup_nm_ = std::min(budget,
                                  std::max(topup_nm_, dir * spring) + step_nm);
             if (topup_nm_ >= budget - kEpsilon) {

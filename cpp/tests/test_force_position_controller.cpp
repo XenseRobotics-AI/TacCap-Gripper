@@ -312,6 +312,34 @@ TEST(ForcePositionPolicy, AJitteringStreamedTargetStillEscalatesToTheBudget) {
     EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
 }
 
+// The latch clears on CUMULATIVE target travel since it was taken: a slowly
+// streamed target that walks away in small steps releases it.
+TEST(ForcePositionPolicy, SmallStepsAddingUpPastTheBandReleaseTheLatch) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float blocked = 0.02f;
+    p.reset(sample(blocked), t);
+    p.set_target(sample(blocked), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(blocked), t);
+    for (int i = 0; i < 40; ++i) { t += std::chrono::milliseconds(10); p.step(sample(blocked), t); }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    // Walk the target open in 3 mrad steps (each below arrival_eps).
+    float tgt = 0.0f;
+    bool released = false;
+    for (int i = 0; i < 10 && !released; ++i) {
+        tgt += 0.003f;
+        ASSERT_LT(0.003f, tune.arrival_eps_rad);
+        t += std::chrono::milliseconds(20);
+        p.set_target(sample(blocked), tgt, cfg.grasp_torque_nm, t);
+        p.step(sample(blocked), t);
+        released = !p.holding();
+    }
+    EXPECT_TRUE(released) << "latch survived " << tgt << " rad of cumulative target travel";
+    EXPECT_LE(tgt, tune.arrival_eps_rad + 0.004f) << "released only after " << tgt;
+}
+
 // A new target is a new approach: the latch does not follow the jaw to it.
 TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
     ForcePositionConfig cfg;
@@ -885,4 +913,47 @@ TEST(ForcePositionPolicy, FrictionPlantWallWithinOneLeadStillReachesTheBudget) {
     const auto tr = run_loop(p, plant, 0.0f, cfg.grasp_torque_nm, 3.0f);
     EXPECT_EQ(tr.final_state, ForcePositionState::HoldingForce);
     EXPECT_NEAR(tr.final_cmd_nm, cfg.grasp_torque_nm, 1e-3f);
+}
+
+// A slowly STREAMED target through the friction plant (0.3.10). The jaw lags by
+// friction/kp -- more than arrival_eps on the RS00 -- while it tracks, and the
+// per-frame unlatch test never fired because each 50 Hz step is a few mrad, so
+// the lag escalated to the budget and latched mid-motion: HOLDING_FORCE and
+// Closing/Opening alternating, the budget pushed while tracking. Reported by
+// tc-gu-01-pc on 0094s (RS00) with a 50 Hz cosine, 2026-09-29. Escalation and
+// latch now reset once the target has moved arrival_eps from where the
+// escalation began, in total.
+TEST(ForcePositionPolicy, SlowStreamedCosineThroughFrictionNeverGrasps) {
+    for (const float period_s : {4.0f, 8.0f, 16.0f}) {
+        SCOPED_TRACE(period_s);
+        ForcePositionConfig cfg;
+        cfg.grasp_torque_nm = 3.6f;                 // RS00 budget
+        cfg.hold_torque_limit_nm = 5.0f;
+        cfg.motion_torque_limit_nm = 14.0f;
+        const float travel = 1.2f;
+        ForcePositionPolicy p(GripperPosition::from_travel(travel), cfg);
+        FrictionPlant plant;
+        plant.pos = 0.9f * travel;
+        auto t = std::chrono::steady_clock::now();
+        p.reset(sample(plant.pos), t);
+        protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+        int holding = 0;
+        float max_cmd = 0.0f;
+        const int frames = static_cast<int>(period_s * 2.0f * 100.0f);  // two cycles
+        for (int f = 0; f < frames; ++f) {
+            const float ts = f * 0.01f;
+            if (f % 2 == 0) {                        // 50 Hz target stream
+                const float tgt = 0.5f + 0.4f * std::cos(6.2831853f * ts / period_s);
+                p.set_target(sample(plant.pos, plant.vel), tgt, cfg.grasp_torque_nm, t);
+            }
+            const auto cmd = p.step(sample(plant.pos, plant.vel), t);
+            for (int k = 0; k < 10; ++k) plant.advance(applied, 0.001f);
+            applied = cmd;
+            t += std::chrono::milliseconds(10);
+            if (p.holding()) ++holding;
+            max_cmd = std::max(max_cmd, p.commanded_torque_nm());
+        }
+        EXPECT_EQ(holding, 0) << "frames reported as a grasp while tracking";
+        EXPECT_LT(max_cmd, 1.5f) << "the budget was pushed while tracking";
+    }
 }
