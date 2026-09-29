@@ -126,7 +126,9 @@ TEST(ForcePositionPolicy, BlockedWithinOneLeadOfTheTargetStillPushesTheBudget) {
         p.reset(sample(pos), t);
         p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
         protocol_cmd_t last = p.step(sample(pos), t);
-        for (int i = 0; i < 20; ++i) {
+        // The push escalates from kp*error at topup_rate_nmps (see the next
+        // test), so give it long enough to reach the budget.
+        for (int i = 0; i < 60; ++i) {
             t += std::chrono::milliseconds(10);
             last = p.step(sample(pos), t);   // jaw does not move
             EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-4f);
@@ -144,6 +146,48 @@ TEST(ForcePositionPolicy, BlockedWithinOneLeadOfTheTargetStillPushesTheBudget) {
     }
 }
 
+// The top-up is escalated, not stepped: a stop short of the target may be
+// breakaway friction, and only a push that grows past it tells the two apart.
+// Until the whole budget has failed to move the jaw it is not a grasp.
+TEST(ForcePositionPolicy, TopUpEscalatesAtTheConfiguredRateBeforeLatching) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const float pos = 0.022f;              // short of 0.0, within one lead
+    const float spring = tune.position_kp * pos;
+    ASSERT_LT(spring, cfg.grasp_torque_nm);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(pos), t);
+    float prev = 0.0f;
+    int escalating = 0;
+    for (int i = 0; i < 80 && !p.holding(); ++i) {
+        t += std::chrono::milliseconds(10);
+        const auto c = p.step(sample(pos), t);
+        const float now_nm = p.commanded_torque_nm();
+        // While the ramp is still running to the target, the travel law's own
+        // budget clamp is in charge (a frozen jaw against a moving ramp); the
+        // top-up starts once it has parked.
+        if (c.target_pos != 0.0f || c.vel != 0.0f) continue;
+        if (now_nm > spring + 1e-4f) {
+            ++escalating;
+            EXPECT_LE(now_nm - std::max(prev, spring),
+                      tune.topup_rate_nmps * 0.010f + 1e-4f) << "frame " << i;
+            if (!p.holding()) {
+                EXPECT_EQ(p.state(), ForcePositionState::Closing) << "frame " << i;
+            }
+        }
+        prev = now_nm;
+    }
+    const int expected = static_cast<int>(
+        (cfg.grasp_torque_nm - spring) / (tune.topup_rate_nmps * 0.010f));
+    EXPECT_GE(escalating, expected - 2) << "stepped rather than escalated";
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+}
+
 // A compliant object pushed INTO the arrival band must keep the grip. Before the
 // latch, 0015s on a notebook alternated between a budget push (-0.013 rad, out
 // of the band) and a ~0.4 Nm arrival hold (-0.0098, in it) every ~150 ms, with
@@ -159,7 +203,7 @@ TEST(ForcePositionPolicy, AGraspPushedIntoTheArrivalBandDoesNotChatter) {
     p.reset(sample(out), t);
     p.set_target(sample(out), 0.0f, cfg.grasp_torque_nm, t);
     p.step(sample(out), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 60; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(out), t);
     }
@@ -218,7 +262,7 @@ TEST(ForcePositionPolicy, AJitteringStreamedTargetKeepsTheGraspLatched) {
     p.reset(sample(out), t);
     p.set_target(sample(out), 0.0f, cfg.grasp_torque_nm, t);
     p.step(sample(out), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 60; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(out), t);
     }
@@ -237,6 +281,35 @@ TEST(ForcePositionPolicy, AJitteringStreamedTargetKeepsTheGraspLatched) {
         EXPECT_FLOAT_EQ(c.target_pos, jitter) << "frame " << i;
         EXPECT_FLOAT_EQ(c.vel, 0.0f) << "frame " << i;
     }
+}
+
+// The escalation itself must survive a streamed target. Teleop sends the
+// leader's position every frame, jittering by a few mrad; if each frame the ramp
+// spent catching up restarted the push from the spring, a grasp made while
+// streaming would never reach the budget.
+TEST(ForcePositionPolicy, AJitteringStreamedTargetStillEscalatesToTheBudget) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float pos = 0.022f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(pos), t);
+    for (int i = 0; i < 10; ++i) {              // let the ramp park first
+        t += std::chrono::milliseconds(10);
+        p.step(sample(pos), t);
+    }
+    for (int i = 0; i < 80 && !p.holding(); ++i) {
+        t += std::chrono::milliseconds(10);
+        const float jitter = (i % 3) * 0.002f;
+        ASSERT_LT(jitter, tune.arrival_eps_rad);
+        p.set_target(sample(pos), jitter, cfg.grasp_torque_nm, t);
+        p.step(sample(pos), t);
+    }
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
 }
 
 // A new target is a new approach: the latch does not follow the jaw to it.
@@ -642,4 +715,174 @@ TEST(ForcePositionPolicy, SlowCloseWithAStrongGraspIsAccepted) {
     cfg.close_speed_radps = 0.05f;         // far below the old grasp/5 = 0.22
     EXPECT_NO_THROW(
         ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg));
+}
+
+// ---------------------------------------------------------------------------
+// Closed loop against a plant with friction
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A jaw with inertia, Coulomb friction that sticks, and an optional wall. The
+// motor applies the MIT law at 1 kHz; the policy runs at 100 Hz on the sample
+// the stream would have delivered. Numbers are fitted to the RS00 follower
+// 0088s (2026-09-29): free travel stalls 13-14 mrad short of a mid-stroke
+// target under kp*error ~0.2-0.28 Nm, and a 1 Nm push reaches ~1 rad/s in
+// ~50 ms.
+struct FrictionPlant {
+    float inertia = 0.04f;         // kg*m^2, reflected
+    float static_nm = 0.30f;
+    float kinetic_nm = 0.20f;
+    float viscous = 0.40f;         // Nm*s/rad
+    float wall_raw = NAN;          // blocks motion below this raw angle (closing)
+    float wall_k = 300.0f;         // Nm/rad, contact stiffness
+    float pos = 0.0f;
+    float vel = 0.0f;
+
+    void advance(const protocol_cmd_t& c, float dt) {
+        const float motor = c.kp * (c.target_pos - pos) + c.kd * (c.vel - vel) +
+                            c.target_torque;
+        float ext = 0.0f;
+        if (std::isfinite(wall_raw) && pos < wall_raw) {
+            ext = wall_k * (wall_raw - pos) - 2.0f * vel;
+        }
+        const float drive = motor + ext;
+        if (std::abs(vel) < 1e-4f && std::abs(drive) <= static_nm) {
+            vel = 0.0f;            // stuck
+            return;
+        }
+        const float sign = std::abs(vel) >= 1e-4f ? (vel > 0 ? 1.0f : -1.0f)
+                                                  : (drive > 0 ? 1.0f : -1.0f);
+        const float acc = (drive - sign * kinetic_nm - viscous * vel) / inertia;
+        const float next = vel + acc * dt;
+        vel = (next * sign < 0.0f) ? 0.0f : next;   // friction cannot reverse it
+        pos += vel * dt;
+    }
+};
+
+struct LoopTrace {
+    int holding_frames = 0;
+    int arrived_frames_tail = 0;   // over the last second
+    float max_excursion = 0.0f;    // |pos - target| after first reaching the band
+    float final_pos = 0.0f;
+    ForcePositionState final_state = ForcePositionState::Idle;
+    float final_cmd_nm = 0.0f;
+};
+
+// vel_noise: amplitude of the velocity the stream reports around the true one.
+// The RS00's MIT feedback is quantized to ~16 mrad/s and reads +-0.09 rad/s on a
+// jaw at rest (0088s, 2026-09-29); position does not jitter.
+LoopTrace run_loop(ForcePositionPolicy& p, FrictionPlant& plant, float target,
+                   float budget, float seconds, float vel_noise = 0.0f) {
+    uint32_t lcg = 12345u;
+    auto noisy = [&](float v) {
+        if (vel_noise <= 0.0f) return v;
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;  // [0,1)
+        constexpr float kQuantum = 0.016117f;
+        return std::round((v + (2.0f * u - 1.0f) * vel_noise) / kQuantum) * kQuantum;
+    };
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(plant.pos), t);
+    p.set_target(sample(plant.pos), target, budget, t);
+    LoopTrace tr;
+    bool reached = false;
+    protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+    const int frames = static_cast<int>(seconds * 100.0f);
+    for (int f = 0; f < frames; ++f) {
+        const auto cmd = p.step(sample(plant.pos, noisy(plant.vel)), t);
+        // One frame of transport latency: this command lands next period.
+        for (int k = 0; k < 10; ++k) plant.advance(applied, 0.001f);
+        applied = cmd;
+        t += std::chrono::milliseconds(10);
+        if (p.holding()) ++tr.holding_frames;
+        if (f >= frames - 100 && p.arrived()) ++tr.arrived_frames_tail;
+        const float err = std::abs(plant.pos - target);
+        if (reached) tr.max_excursion = std::max(tr.max_excursion, err);
+        if (p.arrived()) reached = true;
+    }
+    tr.final_pos = plant.pos;
+    tr.final_state = p.state();
+    tr.final_cmd_nm = p.commanded_torque_nm();
+    return tr;
+}
+
+}  // namespace
+
+// Free travel on a stiff mechanism stalls outside the arrival band: at kp=20 a
+// 0.28 Nm breakaway friction parks the jaw 14 mrad short. That is friction, not
+// an object. Treating it as one pushed the whole budget in one frame, shot the
+// jaw through the target, and did the same from the other side -- a ~3 Hz limit
+// cycle of +-30 mrad that never arrived (0088s, RS00, 2026-09-29).
+TEST(ForcePositionPolicy, FrictionStallShortOfTheTargetCreepsInWithoutALimitCycle) {
+    for (const float start : {0.25f, 0.55f}) {        // opening and closing
+        SCOPED_TRACE(start < 0.4f ? "opening" : "closing");
+        ForcePositionConfig cfg;
+        cfg.grasp_torque_nm = 1.0f;
+        cfg.close_speed_radps = 0.5f;
+        ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+        FrictionPlant plant;
+        plant.pos = start;
+        const auto tr = run_loop(p, plant, 0.4f, cfg.grasp_torque_nm, 4.0f);
+        const ForcePositionTuning tune;
+        EXPECT_EQ(tr.holding_frames, 0) << "empty jaw reported as a grasp";
+        EXPECT_EQ(tr.arrived_frames_tail, 100) << "final pos " << tr.final_pos;
+        EXPECT_LE(tr.max_excursion, tune.arrival_eps_rad * 1.5f);
+        EXPECT_EQ(tr.final_state, ForcePositionState::HoldingPosition);
+    }
+}
+
+// The same stall at MOT-04's 0.2 rad/s with the RS00's real velocity feedback.
+// "At rest" is |vel| <= 0.25 * close_speed = 0.05 rad/s there, which a jaw
+// standing still fails on most frames: the escalation must not be reset by
+// velocity noise, or the push never out-grows breakaway and the jaw stays
+// parked 14 mrad out -- no limit cycle, but no arrival either.
+TEST(ForcePositionPolicy, FrictionStallCreepsInDespiteQuantizedVelocityNoise) {
+    for (const float start : {0.25f, 0.55f}) {
+        SCOPED_TRACE(start < 0.4f ? "opening" : "closing");
+        ForcePositionConfig cfg;
+        cfg.grasp_torque_nm = 1.0f;
+        cfg.close_speed_radps = 0.2f;
+        ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+        FrictionPlant plant;
+        plant.pos = start;
+        const auto tr = run_loop(p, plant, 0.4f, cfg.grasp_torque_nm, 5.0f, 0.09f);
+        const ForcePositionTuning tune;
+        EXPECT_EQ(tr.holding_frames, 0) << "empty jaw reported as a grasp";
+        EXPECT_EQ(tr.arrived_frames_tail, 100) << "final pos " << tr.final_pos;
+        EXPECT_LE(tr.max_excursion, tune.arrival_eps_rad * 1.5f);
+        EXPECT_EQ(tr.final_state, ForcePositionState::HoldingPosition);
+    }
+}
+
+// The same plant closing onto a wall mid-stroke: the ramp runs ahead, the lead
+// fills, and the grasp is the budget -- friction handling must not soften it.
+TEST(ForcePositionPolicy, FrictionPlantStillGraspsAWallAtTheBudget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    const auto tr = run_loop(p, plant, 0.1f, cfg.grasp_torque_nm, 3.0f);
+    EXPECT_EQ(tr.final_state, ForcePositionState::HoldingForce);
+    EXPECT_NEAR(tr.final_cmd_nm, cfg.grasp_torque_nm, 1e-3f);
+    EXPECT_NEAR(tr.final_pos, 0.3f, 0.01f);
+}
+
+// A wall inside one lead of the target -- the pad-compression case the top-up
+// exists for (0015s closing to 0.0, fingers meeting ~20-36 mrad early). With
+// friction in the plant it must still end at the full budget.
+TEST(ForcePositionPolicy, FrictionPlantWallWithinOneLeadStillReachesTheBudget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.3f;
+    plant.wall_raw = 0.025f;
+    ASSERT_LT(plant.wall_raw, error_limit_for(tune, cfg.grasp_torque_nm));
+    const auto tr = run_loop(p, plant, 0.0f, cfg.grasp_torque_nm, 3.0f);
+    EXPECT_EQ(tr.final_state, ForcePositionState::HoldingForce);
+    EXPECT_NEAR(tr.final_cmd_nm, cfg.grasp_torque_nm, 1e-3f);
 }

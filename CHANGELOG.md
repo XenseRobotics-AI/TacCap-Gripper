@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ForcePositionController` no longer limit-cycles on an empty jaw whose
+  friction parks it outside the arrival band. A jaw at rest short of a parked
+  ramp used to be topped up to the whole grasp budget in one frame; on an RS00
+  (0088s, friction ~0.3 N·m, parking ~14 mrad out at kp 20) that shot the jaw
+  ~30 mrad through a mid-stroke target, the same test fired from the other side,
+  and it cycled at ~3 Hz reporting `HOLDING_FORCE` without ever arriving. The
+  push now escalates from the spring's own torque at
+  `ForcePositionTuning::topup_rate_nmps` (3 N·m/s) and latches only once the
+  full budget has failed to move the jaw: friction breaks away just above the
+  spring and the jaw creeps into the band; an object still ends at exactly the
+  budget, ~0.2 s later than before for the EL05 pad-compression case.
+  Verified on 0088s (RS00, follower 1.2.12, 2026-09-29) with MOT-04's
+  0.40 <-> 0.25 moves at 0.2 rad/s / 1.0 N·m, three round trips each: 0.3.9
+  never arrived at 0.40 (31-37 mrad overshoot, ~100 `HOLDING_FORCE` frames per
+  move); with the fix every move arrived in 0.70-0.86 s with no overshoot and no
+  `HOLDING_FORCE`, settling 7-8 mrad from target. The closed-loop friction-plant
+  tests guard the new behaviour but also pass on 0.3.9 -- the plant does not
+  reproduce the hardware limit cycle, so they are not a regression test for it.
+  Grasping an object with the escalating push is not yet re-verified on hardware.
+
 ## [0.3.9] - 2026-09-28
 
 ### Added
