@@ -152,7 +152,7 @@ command(target = 目标位置, kp, kd, torque_limit = 夹持力)
 | effort 判据 `to_target >= grasp/kp` | **删** | 只为分类而存在 |
 | `brake_distance_rad` + 刹车段 | **删** | 单一控制律无需分段 |
 | 行进段 `kp=0` 速度阻尼 | **删** | §1.2 的抖动成因 |
-| `position_hold_()` 的误差钳位 | **保留** | 这正是「有界力矩」的实现机制 |
+| `position_hold_()` 的误差钳位 | **保留**(0.4.0 删除) | 当时是「有界力矩」的实现机制;0.4.0 起到位不再切到单独的保持律,行进律的预算区间已限住总力矩,`position_hold_()` 随之删除,见 CHANGELOG 0.4.0 |
 | 数据流陈旧 → 零力矩 + `Fault` | **保留** | 安全 |
 | `Fault` 状态与 `reset()` | **保留** | |
 | `start()` 的包络交叉检查 | **保留** | 夹持力 vs `cont_torque_nm` |

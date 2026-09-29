@@ -413,7 +413,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // interval is solved, so the total -- preload included -- still never
     // exceeds it. It applies once the ramp is parked on a closed-endpoint
     // target, whether or not the jaw is inside the arrival band: arrival is an
-    // observation and switches nothing (0.3.11).
+    // observation and switches nothing (0.4.0).
     const float preload_signed =
         (std::abs(ramp_raw_ - target_raw) <= kEpsilon) ? close_preload_signed_() : 0.0f;
     const float pd_budget = std::max(kEpsilon, budget - std::abs(preload_signed));
@@ -583,7 +583,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
-    // ONE CONTROL LAW (0.3.11). Arrival used to switch to a separate settled
+    // ONE CONTROL LAW (0.4.0). Arrival used to switch to a separate settled
     // hold -- no velocity feed-forward, ramp invalidated, its own error clamp
     // -- and a streamed target keeps the jaw near the arrival band, so the law
     // switched several times a second: brake on entering the band, re-seed the

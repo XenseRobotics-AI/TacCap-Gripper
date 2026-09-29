@@ -239,7 +239,7 @@ python python/examples/force_position_control.py right --grasp-torque 0.8
 
 #### 不再可配的字段
 
-位置增益(`position_kp`;`position_kd` 自 0.3.11 起不再使用)、阻尼(`travel_kd`)与到位半径
+位置增益(`position_kp`;`position_kd` 自 0.4.0 起不再使用)、阻尼(`travel_kd`)与到位半径
 (`arrival_eps_rad`)是在这台硬件上实测
 出来的,对这台夹爪只有一个正确答案,所以留在 C++ 侧的
 `detail::ForcePositionTuning`,只有单元测试构造得到。

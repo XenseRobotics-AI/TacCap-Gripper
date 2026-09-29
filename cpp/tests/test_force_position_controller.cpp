@@ -375,7 +375,7 @@ TEST(ForcePositionPolicy, NoTopUpWhileTheJawIsStillMoving) {
         t += std::chrono::milliseconds(10);
         last = p.step(sample(pos, -cfg.close_speed_radps), t);
     }
-    // No top-up: only the closed-endpoint preload, which since 0.3.11 applies
+    // No top-up: only the closed-endpoint preload, which since 0.4.0 applies
     // as soon as the ramp is parked on the closed target (arrival switches
     // nothing any more).
     EXPECT_FLOAT_EQ(last.target_torque, -cfg.close_preload_nm);
@@ -467,7 +467,7 @@ TEST(ForcePositionPolicy, RuntimeTargetSelectsDirection) {
     EXPECT_FALSE(p.holding());
     EXPECT_GT(opening.vel, 0.0f);
 
-    // Arrival is an observation (0.3.11): the state reports it at once, and
+    // Arrival is an observation (0.4.0): the state reports it at once, and
     // the same travel law brings its ramp onto the target and parks there.
     protocol_cmd_t arrived{};
     for (int i = 0; i < 30; ++i) {
@@ -1025,7 +1025,7 @@ TEST(ForcePositionPolicy, ABlockedJawIsHoldingAfterTheStallWindow) {
     EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
 }
 
-// ONE LAW (0.3.11): a jaw that drifts in and out of the arrival band while
+// ONE LAW (0.4.0): a jaw that drifts in and out of the arrival band while
 // tracking a streamed target must see a continuous command. The old settled
 // hold was a different law -- kd = position_kd, no velocity feed-forward, and
 // the ramp invalidated on every entry, so leaving the band re-seeded it from

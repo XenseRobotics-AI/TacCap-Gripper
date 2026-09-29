@@ -220,7 +220,7 @@ struct ForcePositionTuning {
     // request is error-clamped against the budget either way, so kp only
     // narrows the error window (budget/kp), it does not widen the output.
     float position_kp         = 20.0f;
-    // Unused since 0.3.11: it was the settled hold's damping, and there is no
+    // Unused since 0.4.0: it was the settled hold's damping, and there is no
     // separate settled hold any more -- a reached target is held by the travel
     // law with travel_kd. Kept (and still validated) so existing tuning code
     // that sets it keeps compiling.
