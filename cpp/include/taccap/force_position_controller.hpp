@@ -155,7 +155,7 @@ struct ForcePositionConfig {
     // Feed-forward torque added ONLY while holding the closed endpoint, to seat
     // the jaw against its mechanical stop. 0 disables it.
     //
-    // WHY A FORCE AND NOT A POSITION OFFSET. position_hold_ commands
+    // WHY A FORCE AND NOT A POSITION OFFSET. the closed-endpoint hold commands
     // kp*(target-actual), which goes to zero exactly at the target -- so the jaw
     // arrives at the closed end and then stops pressing, leaving the gear
     // train's backlash unseated. Biasing the target past the stop cannot fix it:
@@ -220,6 +220,10 @@ struct ForcePositionTuning {
     // request is error-clamped against the budget either way, so kp only
     // narrows the error window (budget/kp), it does not widen the output.
     float position_kp         = 20.0f;
+    // Unused since 0.3.11: it was the settled hold's damping, and there is no
+    // separate settled hold any more -- a reached target is held by the travel
+    // law with travel_kd. Kept (and still validated) so existing tuning code
+    // that sets it keeps compiling.
     float position_kd         = 1.0f;
     // Damping gain during travel. FREE OF THE GRASP BUDGET, which is the whole
     // point: the velocity feed-forward follows the RAMP's own advance, and the
@@ -296,14 +300,6 @@ private:
     // Signed preload for the current hold: cfg_.close_preload_nm when the
     // commanded target is the closed endpoint, 0 otherwise. Sign from the map.
     float close_preload_signed_() const;
-    // Settled hold on a fixed point: damps absolute velocity. preload_nm is a
-    // SIGNED feed-forward torque, nonzero only at the closed endpoint (see
-    // ForcePositionConfig::close_preload_nm); it is reserved out of the budget
-    // so the total request stays bounded by it.
-    protocol::MotorImpedanceCtrl position_hold_(const MotorStatusSample& sample,
-                                                 float desired_raw,
-                                                 float torque_budget,
-                                                 float preload_nm);
     // Move toward target_raw along a time-based ramp at desired_vel, with the
     // PD request error-clamped against torque_budget. See the definition.
     protocol::MotorImpedanceCtrl travel_track_(const MotorStatusSample& sample,

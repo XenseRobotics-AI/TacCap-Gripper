@@ -375,7 +375,10 @@ TEST(ForcePositionPolicy, NoTopUpWhileTheJawIsStillMoving) {
         t += std::chrono::milliseconds(10);
         last = p.step(sample(pos, -cfg.close_speed_radps), t);
     }
-    EXPECT_FLOAT_EQ(last.target_torque, 0.0f);
+    // No top-up: only the closed-endpoint preload, which since 0.3.11 applies
+    // as soon as the ramp is parked on the closed target (arrival switches
+    // nothing any more).
+    EXPECT_FLOAT_EQ(last.target_torque, -cfg.close_preload_nm);
     EXPECT_FALSE(p.holding());
     EXPECT_EQ(p.state(), ForcePositionState::Closing);
 }
@@ -464,11 +467,17 @@ TEST(ForcePositionPolicy, RuntimeTargetSelectsDirection) {
     EXPECT_FALSE(p.holding());
     EXPECT_GT(opening.vel, 0.0f);
 
-    now += std::chrono::milliseconds(10);
-    const auto arrived = p.step(sample(0.6f), now);
-    EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
-    EXPECT_TRUE(p.arrived());
+    // Arrival is an observation (0.3.11): the state reports it at once, and
+    // the same travel law brings its ramp onto the target and parks there.
+    protocol_cmd_t arrived{};
+    for (int i = 0; i < 30; ++i) {
+        now += std::chrono::milliseconds(10);
+        arrived = p.step(sample(0.6f), now);
+        EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+        EXPECT_TRUE(p.arrived());
+    }
     EXPECT_NEAR(arrived.target_pos, 0.6f, 1e-4f);
+    EXPECT_NEAR(arrived.vel, 0.0f, 1e-4f);
 }
 
 TEST(ForcePositionPolicy, ReverseMapFlipsTheCommandedVelocity) {
@@ -540,7 +549,8 @@ TEST(ForcePositionPolicy, ClosedEndpointHoldCarriesThePreload) {
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     const auto now = std::chrono::steady_clock::now();
     p.reset(sample(0.0f), now);                  // target_position == 0
-    const auto c = p.step(sample(0.0f), now);
+    p.step(sample(0.0f), now);                   // seeding frame commands nothing
+    const auto c = p.step(sample(0.0f), now + std::chrono::milliseconds(10));
 
     EXPECT_TRUE(p.arrived());
     EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
@@ -575,12 +585,16 @@ TEST(ForcePositionPolicy, PreloadSignFollowsTheMapDirection) {
 
     ForcePositionPolicy normal(GripperPosition::from_travel(1.0f), cfg);
     normal.reset(sample(0.0f), now);
-    EXPECT_LT(normal.step(sample(0.0f), now).target_torque, 0.0f);
+    normal.step(sample(0.0f), now);              // seeding frame
+    EXPECT_LT(normal.step(sample(0.0f), now + std::chrono::milliseconds(10)).target_torque,
+              0.0f);
 
     ForcePositionPolicy reversed(GripperPosition::from_travel(1.0f, 0.0f, true),
                                  cfg);
     reversed.reset(sample(0.0f), now);
-    EXPECT_GT(reversed.step(sample(0.0f), now).target_torque, 0.0f);
+    reversed.step(sample(0.0f), now);
+    EXPECT_GT(reversed.step(sample(0.0f), now + std::chrono::milliseconds(10)).target_torque,
+              0.0f);
 }
 
 // The preload is RESERVED OUT of the grasp budget, not added on top of it, so
@@ -1009,4 +1023,42 @@ TEST(ForcePositionPolicy, ABlockedJawIsHoldingAfterTheStallWindow) {
     EXPECT_GE(first, 15) << "reported before the 150 ms stall window";
     EXPECT_LE(first, 40);
     EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
+
+// ONE LAW (0.3.11): a jaw that drifts in and out of the arrival band while
+// tracking a streamed target must see a continuous command. The old settled
+// hold was a different law -- kd = position_kd, no velocity feed-forward, and
+// the ramp invalidated on every entry, so leaving the band re-seeded it from
+// the jaw: brake, restart, brake, a stop-go gait (0094s, 50 Hz cosine).
+TEST(ForcePositionPolicy, CrossingTheArrivalBandDoesNotSwitchTheLaw) {
+    ForcePositionConfig cfg;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 0.2f;
+    p.reset(sample(pos), t);
+    const float v = 0.05f;                       // rad/s, slow streamed target
+    int arrived_frames = 0, travel_frames = 0;
+    float prev_ramp = NAN;
+    for (int i = 0; i < 300; ++i) {
+        const float tgt = 0.2f + v * i * 0.01f;
+        // The jaw lags the target by 4..16 mrad, crossing the 10 mrad band.
+        const float lag = 0.010f + 0.006f * std::sin(i * 0.15f);
+        pos = tgt - lag;
+        p.set_target(sample(pos, v), tgt, cfg.grasp_torque_nm, t);
+        const auto c = p.step(sample(pos, v), t);
+        if (i > 2) {
+            EXPECT_FLOAT_EQ(c.kd, tune.travel_kd) << "law switched at frame " << i;
+            if (!std::isnan(prev_ramp)) {
+                EXPECT_GE(c.target_pos, prev_ramp - 1e-5f)
+                    << "ramp re-seeded backwards at frame " << i;
+            }
+            prev_ramp = c.target_pos;
+            (p.arrived() ? arrived_frames : travel_frames)++;
+        }
+        t += std::chrono::milliseconds(10);
+    }
+    // The band was really crossed both ways, or this test proved nothing.
+    EXPECT_GT(arrived_frames, 20);
+    EXPECT_GT(travel_frames, 20);
 }

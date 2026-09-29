@@ -89,7 +89,7 @@ void validate_config(const ForcePositionConfig& cfg) {
             "ForcePositionConfig.close_preload_nm must be >= 0");
     }
     // Bounded by the GRASP BUDGET, not by hold_torque_limit_nm: the preload is
-    // reserved out of that budget in position_hold_, so a preload above it would
+    // reserved out of that budget in travel_track_, so a preload above it would
     // leave the position term nothing to work with and stall the approach.
     if (cfg.close_preload_nm > cfg.grasp_torque_nm) {
         throw std::invalid_argument(
@@ -310,34 +310,6 @@ float ForcePositionPolicy::close_preload_signed_() const {
     return close_dir * cfg_.close_preload_nm;
 }
 
-protocol::MotorImpedanceCtrl ForcePositionPolicy::position_hold_(
-        const MotorStatusSample& sample, float desired_raw,
-        float torque_budget, float preload_nm) {
-    const float budget = std::clamp(torque_budget, kEpsilon,
-                                    cfg_.motion_torque_limit_nm);
-    const float speed = std::abs(sample.actual_vel);
-    float kd = tune_.position_kd;
-    if (speed > kEpsilon) {
-        kd = std::min(kd, budget / speed);
-    }
-    const float damping = -kd * sample.actual_vel;
-    // The preload is RESERVED OUT of the budget before the position term gets
-    // its share, which keeps the invariant this function has always held: the
-    // total request never exceeds the budget. Reserving it (rather than adding
-    // it on top) is why close_preload_nm is validated against grasp_torque_nm.
-    const float preload = std::clamp(std::abs(preload_nm), 0.0f, budget);
-    const float position_budget =
-        std::max(0.0f, budget - std::abs(damping) - preload);
-    const float error_limit = position_budget / tune_.position_kp;
-    const float error = std::clamp(desired_raw - sample.actual_pos,
-                                   -error_limit, error_limit);
-    const float target = sample.actual_pos + error;
-    const float tau_ff = (preload_nm < 0.0f) ? -preload : preload;
-    const float predicted = tune_.position_kp * error + damping + tau_ff;
-    commanded_torque_nm_ = std::min(budget, std::abs(predicted));
-    return {target, tune_.position_kp, kd, tau_ff, 0.0f};
-}
-
 /* Move toward target_raw along a TIME-BASED ramp.
  *
  * The ramp is what regulates speed. Commanding "current position plus the error
@@ -436,13 +408,22 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // that makes the command sit exactly on the budget while the ramp converges
     // and exactly on it once the ramp is pinned -- tight at every step, not just
     // in the steady state.
+    //
+    // The closed-endpoint preload is RESERVED out of the budget here, before the
+    // interval is solved, so the total -- preload included -- still never
+    // exceeds it. It applies once the ramp is parked on a closed-endpoint
+    // target, whether or not the jaw is inside the arrival band: arrival is an
+    // observation and switches nothing (0.3.11).
+    const float preload_signed =
+        (std::abs(ramp_raw_ - target_raw) <= kEpsilon) ? close_preload_signed_() : 0.0f;
+    const float pd_budget = std::max(kEpsilon, budget - std::abs(preload_signed));
     {
         const float a = tune_.position_kp + kd / dt;
         const float b = tune_.position_kp * sample.actual_pos
                       + kd * ramp_prev / dt
                       + kd * sample.actual_vel;
         if (a > kEpsilon) {
-            ramp_raw_ = std::clamp(ramp_raw_, (b - budget) / a, (b + budget) / a);
+            ramp_raw_ = std::clamp(ramp_raw_, (b - pd_budget) / a, (b + pd_budget) / a);
         }
     }
 
@@ -570,8 +551,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     }
     // Report the honest prediction, bounded only by the motion limit. Clamping
     // it to the grasp budget would hide the damping term's legitimate excursions.
-    commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm, std::abs(predicted));
-    return {ramp_raw_, tune_.position_kp, kd, 0.0f, ramp_vel};
+    commanded_torque_nm_ =
+        std::min(cfg_.motion_torque_limit_nm, std::abs(predicted + preload_signed));
+    return {ramp_raw_, tune_.position_kp, kd, preload_signed, ramp_vel};
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
@@ -601,13 +583,18 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
+    // ONE CONTROL LAW (0.3.11). Arrival used to switch to a separate settled
+    // hold -- no velocity feed-forward, ramp invalidated, its own error clamp
+    // -- and a streamed target keeps the jaw near the arrival band, so the law
+    // switched several times a second: brake on entering the band, re-seed the
+    // ramp from the jaw on leaving it, a stop-go gait (0094s, tc-gu-01-pc, 50 Hz
+    // cosine). The ramp already stops on a reached target (ramp_vel -> 0), and
+    // the budget interval already bounds the total, so the travel law IS the
+    // hold. Arrival and HoldingPosition remain, as observations only -- the
+    // same way ImpedanceController has a single law and reports states.
     protocol::MotorImpedanceCtrl cmd;
     blocked_short_ = false;
-    if (arrived_) {
-        ramp_valid_ = false;                // next move restarts the ramp here
-        cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
-                             close_preload_signed_());
-    } else {
+    {
         // A latched push keeps its direction even once the jaw is fractionally
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
