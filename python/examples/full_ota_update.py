@@ -51,6 +51,7 @@ from xense.taccap import (  # noqa: E402
 MODEL_IDS = {"EL05": 0, "RS00": 1}
 MODEL_STARTUP_LIMITS = {"EL05": 6.0, "RS00": 14.0}
 MIN_MOTOR_OTA_FOLLOWER = (1, 2, 8)
+MIN_MODEL_SETUP_FOLLOWER = (1, 2, 12)
 
 
 def _version_tuple(version) -> tuple[int, int, int]:
@@ -415,17 +416,95 @@ def _wait_follower_version(identity, expected, timeout_s: float):
     )
 
 
+def _prepare_recorded_model(identity, model_name: str, timeout_s: float):
+    """Bootstrap an unconfigured motor without waiting for wrong-model homing.
+
+    Disabling the persisted flag does not stop the current homing sequence.
+    The operator's first power cut stops it; verify idle before writing a model.
+    Never restore the old full auto-cal record over model-specific defaults.
+    """
+    ep = _wait_ready(identity, timeout_s, "the follower for model setup")
+    with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+        if _version_tuple(gripper.firmware_version) < MIN_MODEL_SETUP_FOLLOWER:
+            raise RuntimeError("型号初始化需要从爪固件 >= 1.2.12；先升级从爪固件")
+        model = gripper.motor.get_model()
+        auto = gripper.get_auto_cal_config()
+        needs_model = model.name != model_name or not model.from_flash
+        was_enabled = bool(auto.flags & 0x02)
+        if not needs_model and was_enabled:
+            return ep
+        print(f"[型号初始化] 设备记录: {model}；镜像型号: {model_name}")
+        print("镜像文件名不能识别实物。此流程会暂停自动标定，最后重新启用。")
+        try:
+            answer = input(f"核实实物后输入 {model_name} 继续: ").strip().upper()
+        except EOFError:
+            answer = ""
+        if answer != model_name:
+            raise RuntimeError("未确认实物型号，未执行型号初始化")
+        if was_enabled:
+            print(
+                "即将禁用自动标定；若中途中止，请重新运行并确认型号以恢复。", flush=True
+            )
+            auto.flags &= ~0x02
+            # The firmware config handler permits this persisted flag write
+            # during homing. Going through _admin_call would deadlock progress.
+            gripper.set_auto_cal_config(auto)
+            if gripper.get_auto_cal_config().flags & 0x02:
+                raise RuntimeError("禁用自动标定未读回确认，停止型号初始化")
+
+    print("自动标定已保存为禁用；当前动作需断开 24 V 才能停止。")
+    print("若中途中止，重新运行会检查禁用状态并要求确认恢复。", flush=True)
+    try:
+        ep = _wait_power_cycle(identity, timeout_s, "停止当前标定，以禁用标定状态启动")
+        with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+            if (
+                gripper.get_auto_cal_config().flags & 0x02
+                or gripper.home_diag().flags & 0x01
+            ):
+                raise RuntimeError("重启后自动标定仍启用或运行，拒绝写型号")
+            model = gripper.motor.get_model()
+            needs_model = model.name != model_name or not model.from_flash
+            if needs_model:
+                _admin_call(
+                    gripper,
+                    "设置电机型号",
+                    lambda: gripper.motor.set_model(MODEL_IDS[model_name]),
+                )
+                # Do not issue motor commands with the old boot-time MIT ranges.
+        if needs_model:
+            ep = _wait_power_cycle(
+                identity, timeout_s, f"让 {model_name} 型号及量程生效"
+            )
+        with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+            model = gripper.motor.get_model()
+            if model.name != model_name or not model.from_flash:
+                raise RuntimeError(f"型号重启后未生效: {model}")
+            _admin_call(gripper, "等待正确型号启动完成", lambda: None)
+            # Read fresh defaults after set_model, preserving torque/speed fields.
+            auto = gripper.get_auto_cal_config()
+            if not (auto.flags & 0x02):
+                auto.flags |= 0x02
+                gripper.set_auto_cal_config(auto)
+            if not (gripper.get_auto_cal_config().flags & 0x02):
+                raise RuntimeError("自动标定重新启用未读回确认")
+        print(f"[型号初始化完成] {model_name} 已生效，自动标定已恢复。")
+        return ep
+    except BaseException:
+        print(
+            "型号初始化未完成：自动标定可能仍被禁用。请保留当前状态，"
+            "重新运行并核实型号后恢复；不要按旧配置强行标定。",
+            file=sys.stderr,
+        )
+        raise
+
+
 def _configure_motor_ota_boot(gripper, model_name: str, direction: str):
     changes = []
     motor = gripper.motor
-    _prepare_motor_admin(gripper)
-
     model = motor.get_model()
     if model.name != model_name or not model.from_flash:
-        _admin_call(
-            gripper, "设置电机型号", lambda: motor.set_model(MODEL_IDS[model_name])
-        )
-        changes.append(f"model={model_name}")
+        raise RuntimeError(f"必须先完成 {model_name} 型号初始化和断电生效: {model}")
+    _prepare_motor_admin(gripper)
 
     desired_limit = MODEL_STARTUP_LIMITS[model_name]
     current_limit = _admin_call(gripper, "读取启动限矩", motor.get_startup_limit_torque)
@@ -738,6 +817,11 @@ def run(args) -> int:
             "从爪 MCU 固件", _version_text(initial["firmware"])
         )
 
+    if initial["firmware"] >= MIN_MODEL_SETUP_FOLLOWER:
+        ep = _prepare_recorded_model(identity, motor_model, args.power_cycle_timeout)
+    elif not flash_follower:
+        raise RuntimeError("旧从爪固件必须先升级至 >= 1.2.12，才能初始化电机型号")
+
     if flash_follower:
         _ensure_mit_before_follower_ota(identity, args.power_cycle_timeout)
         ep = _wait_ready(identity, args.power_cycle_timeout, "the follower for MCU OTA")
@@ -760,6 +844,8 @@ def run(args) -> int:
             f"follower target {_version_text(follower_target)} lacks motor OTA relay; "
             f"need >= {_version_text(MIN_MOTOR_OTA_FOLLOWER)}"
         )
+
+    ep = _prepare_recorded_model(identity, motor_model, args.power_cycle_timeout)
 
     with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
         changes = _configure_motor_ota_boot(gripper, motor_model, args.direction)

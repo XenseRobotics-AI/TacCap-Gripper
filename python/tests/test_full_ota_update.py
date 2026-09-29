@@ -19,6 +19,135 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
+@pytest.fixture
+def model_setup(monkeypatch):
+    state = SimpleNamespace(
+        name="EL05",
+        recorded=False,
+        flags=3,
+        torque=0.35,
+        active=True,
+        pending=None,
+        cycles=0,
+    )
+    events = []
+    ep = SimpleNamespace(mcu_device="mock-only")
+    g = Mock()
+    g.__enter__ = Mock(return_value=g)
+    g.__exit__ = Mock(return_value=False)
+    g.firmware_version = SimpleNamespace(major=1, minor=2, patch=12)
+    g.motor.get_model.side_effect = lambda: SimpleNamespace(
+        name=state.name, from_flash=state.recorded
+    )
+    g.get_auto_cal_config.side_effect = lambda: SimpleNamespace(
+        flags=state.flags, close_torque=state.torque
+    )
+    g.home_diag.side_effect = lambda: SimpleNamespace(flags=int(state.active))
+
+    def save_auto(cfg):
+        state.flags = cfg.flags
+        state.torque = cfg.close_torque
+        events.append(("auto", cfg.flags, cfg.close_torque))
+
+    def save_model(model_id):
+        assert not state.active
+        assert not state.flags & 2
+        state.pending = model_id
+        events.append(("model", model_id))
+
+    def cycle(*args):
+        state.cycles += 1
+        events.append(("cycle", state.cycles))
+        state.active = False
+        if state.pending is not None:
+            state.name = "RS00"
+            state.recorded = True
+            state.pending = None
+            state.torque = 1.8  # New model defaults must survive restoration.
+        return ep
+
+    g.set_auto_cal_config.side_effect = save_auto
+    g.motor.set_model.side_effect = save_model
+    monkeypatch.setattr(mod, "FollowerGripper", Mock(return_value=g))
+    monkeypatch.setattr(mod, "_wait_ready", Mock(return_value=ep))
+    monkeypatch.setattr(mod, "_wait_power_cycle", Mock(side_effect=cycle))
+    monkeypatch.setattr("builtins.input", lambda _: "RS00")
+    return state, events, g, ep
+
+
+def test_model_bootstrap_stops_wrong_model_homing_before_write(model_setup):
+    state, events, g, ep = model_setup
+    assert mod._prepare_recorded_model(None, "RS00", 10) is ep
+    assert events == [
+        ("auto", 1, 0.35),
+        ("cycle", 1),
+        ("model", 1),
+        ("cycle", 2),
+        ("auto", 3, 1.8),
+    ]
+    g.motor.clear_fault.assert_not_called()
+    g.motor.disable.assert_not_called()
+    g.motor.switch_protocol.assert_not_called()
+
+
+def test_correct_model_bootstrap_is_read_only(model_setup, monkeypatch):
+    state, events, g, ep = model_setup
+    state.name, state.recorded = "RS00", True
+    monkeypatch.setattr("builtins.input", Mock(side_effect=AssertionError))
+    assert mod._prepare_recorded_model(None, "RS00", 10) is ep
+    assert events == []
+
+
+def test_model_bootstrap_requires_physical_confirmation(model_setup, monkeypatch):
+    state, events, g, ep = model_setup
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    with pytest.raises(RuntimeError, match="未确认实物型号"):
+        mod._prepare_recorded_model(None, "RS00", 10)
+    assert events == []
+
+
+def test_model_bootstrap_refuses_failed_disable_readback(model_setup):
+    state, events, g, ep = model_setup
+    g.set_auto_cal_config.side_effect = None
+    with pytest.raises(RuntimeError, match="禁用自动标定未读回"):
+        mod._prepare_recorded_model(None, "RS00", 10)
+    g.motor.set_model.assert_not_called()
+    mod._wait_power_cycle.assert_not_called()
+
+
+def test_model_bootstrap_refuses_active_after_restart(model_setup, monkeypatch):
+    state, events, g, ep = model_setup
+    monkeypatch.setattr(mod, "_wait_power_cycle", lambda *args: ep)
+    with pytest.raises(RuntimeError, match="重启后自动标定仍"):
+        mod._prepare_recorded_model(None, "RS00", 10)
+    g.motor.set_model.assert_not_called()
+    assert not state.flags & 2
+
+
+def test_model_bootstrap_failure_does_not_restore_old_config(model_setup, capsys):
+    state, events, g, ep = model_setup
+    cycle = mod._wait_power_cycle.side_effect
+
+    def fail_second(*args):
+        if state.cycles == 1:
+            raise TimeoutError("no reboot")
+        return cycle(*args)
+
+    mod._wait_power_cycle.side_effect = fail_second
+    with pytest.raises(TimeoutError):
+        mod._prepare_recorded_model(None, "RS00", 10)
+    assert not state.flags & 2
+    assert "自动标定可能仍被禁用" in capsys.readouterr().err
+
+
+def test_model_bootstrap_resumes_disabled_matching_model(model_setup):
+    state, events, g, ep = model_setup
+    state.name, state.recorded, state.flags = "RS00", True, 1
+    mod._prepare_recorded_model(None, "RS00", 10)
+    assert events == [("cycle", 1), ("auto", 3, 0.35)]
+    g.motor.set_model.assert_not_called()
+
+
 class FakeConfig:
     def __init__(self, flags):
         self.flags = flags
@@ -167,6 +296,7 @@ def test_follower_reflash_confirmation_and_dry_run(
     args.dry_run = dry_run
     args.yes = yes
     ep = FakeEndpoint("TCGU01A28Z0088s", "USB")
+    monkeypatch.setattr(mod, "_prepare_recorded_model", lambda *_: ep)
     monkeypatch.setattr(mod._target, "resolve_target", lambda *_: (ep, {}, [ep]))
     monkeypatch.setattr(mod, "_read_initial_state", lambda *_: {"firmware": (1, 2, 12)})
     monkeypatch.setattr(
@@ -358,10 +488,12 @@ def test_admin_waits_for_homing_before_any_write(fake_clock):
 
 def test_active_homing_timeout_prevents_boot_configuration_writes(fake_clock):
     gripper = admin_gripper()
+    gripper.motor.get_model.return_value = SimpleNamespace(name="RS00", from_flash=True)
     gripper.home_diag.return_value = SimpleNamespace(flags=1)
     with pytest.raises(RuntimeError, match="清除电机故障.*超时"):
         mod._configure_motor_ota_boot(gripper, "RS00", "positive")
-    assert gripper.motor.mock_calls == []
+    gripper.motor.clear_fault.assert_not_called()
+    gripper.motor.set_model.assert_not_called()
     gripper.set_gripper_config.assert_not_called()
 
 

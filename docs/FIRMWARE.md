@@ -194,6 +194,21 @@ explicit `NACK: SysBusy` retries the rejected command, within a 45-second budget
 other command errors stop the workflow. Errors name the failed step. No OTA
 transfer is automatically retried by this busy handler.
 
+For an unrecorded or mismatched motor model on follower firmware >= 1.2.12,
+model setup runs before waiting for homing (and before optional MCU reflash).
+A compile-time EL05 default is not physical motor identification. The operator
+must type the actual model, matching the selected image, even with `--yes`.
+The script saves auto-calibration as disabled, then requires a 24 V cycle:
+the config write alone does **not** stop ongoing motion. After confirming
+homing is idle, it records the model and requires another cycle before using
+the new motor ranges. It restores auto-calibration using fresh model-specific
+defaults, not the previous model's torque settings. If interrupted, leave the
+device out of normal service and rerun to verify the model and restore the
+disabled flag; do not manually force old calibration settings back. Older
+MCU firmware must first be upgraded; this bootstrap is not supported there.
+This sequence still needs hardware validation; mocked tests cannot establish
+physical direction, torque safety, or actual power removal.
+
 Matching firmware versions prompt separately for the follower and motor:
 enter `y` to reflash; Enter, `n`, other answers, or EOF skip that image.
 The motor prompt appears after switching to PRIVATE and reading the motor's
