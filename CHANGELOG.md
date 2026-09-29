@@ -7,7 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-09-29
+
+### Added
+
+- `FollowerGripper` warns on open when the follower firmware is below 1.2.11
+  (it still opens): those versions can lose the command channel for good after
+  one control-UART overrun.
+
+### Changed
+
+- Shipped follower image is now **1.2.13**: the model-default motion envelope
+  (used when none is stored) takes peak = rated torque (EL05 1.8 / RS00 5.0)
+  instead of `t_max`, which on 1.2.12 left the position-error clamp with nothing
+  to do. Matches what `ensure_envelope()` writes; `audit_envelope()` reports the
+  peak each firmware actually enforces.
+- README / USAGE brought up to leader 1.2.6 / follower 1.2.13 and the default
+  envelope; USAGE no longer sets `grasp_torque_nm = 0.35`.
+
 ### Fixed
+
+- `ForcePositionController` no longer grasps while tracking a slowly streamed
+  target. The escalated push and the latch were cleared only on a per-frame
+  target change larger than `arrival_eps_rad`; a 50 Hz trajectory moves a few
+  mrad per frame, so ordinary friction lag escalated to the budget and latched
+  mid-motion (0094s, RS00, 50 Hz cosine, reported by tc-gu-01-pc). Both now
+  reset once the target has moved `arrival_eps_rad` from where the escalation
+  began, in total; in-place teleop jitter does not add up and still keeps a
+  grasp.
+- The `holding` observation additionally requires the jaw to have made under
+  3 mrad of progress over 150 ms. RS00 opening-side friction lag (25-38 mrad)
+  exceeds the lead threshold at a 1 N·m budget, and slow stick-slip reads under
+  the velocity gate, so the reported state flipped `HOLDING_FORCE`/`OPENING`
+  frame by frame. A blocked jaw is reported ~150 ms later than before; control
+  output is unchanged.
+
+  Measured on 0094s (RS00, follower 1.2.12), 50 Hz cosine over the full stroke,
+  1.0 N·m budget, three round trips per period:
+
+  | period | `HOLDING_FORCE` mid-stroke frames, 0.3.9 -> 0.3.10 | state flips |
+  |---|---|---|
+  | 6 s | 13 -> 0 | 32 -> 6 |
+  | 12 s | 85 -> 0 | 80 -> 6 |
+  | 20 s | 147 -> 0 | 108 -> 8 |
+  | 40 s | 366 -> 0 | 264 -> 6 |
+
+  The remaining flips are the closes to 0.0, where the stop blocks the jaw.
 
 - `ForcePositionController` no longer limit-cycles on an empty jaw whose
   friction parks it outside the arrival band. A jaw at rest short of a parked

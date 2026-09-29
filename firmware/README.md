@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.12.bin` | follower (SN ends **`s`**) | **1.2.12** | V2.7 + 运动安全包络 | 166,796 B | `0x6f2e94f4` |
+| `tc-gu-01-slave-1.2.13.bin` | follower (SN ends **`s`**) | **1.2.13** | V2.7 + 运动安全包络 | 166,796 B | `0xfd0a2fee` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -35,8 +35,8 @@ sources bumps that role alone.
 this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
-The leader is at 1.2.6 while the follower is at 1.2.12 for that reason: 1.2.7,
-1.2.8, 1.2.10 and 1.2.12 touched only follower code, and 1.2.9 changed the shared
+The leader is at 1.2.6 while the follower is at 1.2.13 for that reason: 1.2.7,
+1.2.8, 1.2.10, 1.2.12 and 1.2.13 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
 
@@ -65,9 +65,10 @@ unless someone ran `ensure_envelope()`. Now:
 |---|---|---|
 | auto-cal stall torque default | 0.5 N·m | 1.8 N·m |
 | default open direction | reverse | not reverse |
-| envelope when none stored | cont 1.1 / peak 6 | cont 3.6 / peak 14 |
+| envelope when none stored | cont 1.1 / peak 1.8 | cont 3.6 / peak 5.0 |
 
-The envelope default has the 90/100 °C temperature wall, measured on EL05; RS00
+Peak is the rated torque since 1.2.13 (1.2.12 used `t_max`, which left the
+position-error clamp with nothing to do). The envelope default has the 90/100 °C temperature wall, measured on EL05; RS00
 is not separately characterised. It is computed at run time, never written, so a
 stored envelope still wins; `get_model().default_envelope == 1` says the default
 is in force. When the model record changes, 0x700B, the calibration torque and
