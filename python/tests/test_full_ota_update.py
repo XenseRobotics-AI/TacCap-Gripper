@@ -19,6 +19,12 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
+def test_image_only_defaults_to_positive_direction():
+    args = mod._build_parser().parse_args(["firmware/motor/rs00-0.0.3.32.bin"])
+    assert args.direction == "positive"
+    assert not args.direction_only
+
+
 @pytest.mark.parametrize("direction,flags", [("positive", 1), ("negative", 3)])
 def test_write_direction_reads_back_and_preserves_travel(monkeypatch, direction, flags):
     g = Mock()
@@ -69,7 +75,9 @@ def test_direction_only_never_flashes(model_setup, monkeypatch, dry_run):
 
 
 def test_direction_only_requires_explicit_direction():
-    args = mod._build_parser().parse_args(["unused.bin", "--direction-only"])
+    args = mod._build_parser().parse_args(
+        ["unused.bin", "--direction-only", "--direction", "keep"]
+    )
     with pytest.raises(RuntimeError, match="必须指定"):
         mod._direction_only(args, "RS00")
 

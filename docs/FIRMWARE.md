@@ -219,8 +219,10 @@ summary reports whether each image was actually flashed or skipped. Use
 `--reflash-motor` or `--reflash-follower` only when intentionally rewriting the
 same version; each flag bypasses its corresponding reflash question.
 
-`--direction` defaults to `keep`, because software cannot infer which physical
-stop is open; use `positive` or `negative` only after observing the mechanism.
+`--direction` defaults to `positive`: even with only the motor image argument,
+the script clears Reverse and requires `open_sign=+1` after final homing.
+Use explicit `negative` or `keep` only for an intentionally different setup.
+Software cannot infer which physical stop is open; verify the mechanism visually.
 The final check rejects a suspiciously short calibration (default `< 0.8 rad`,
 configurable with `--min-travel-rad`).
 
