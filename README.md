@@ -126,18 +126,21 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.5 and the follower 1.2.10; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.13; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
-follower numbers. Leader 1.2.5 behaves exactly like 1.2.4: its only change is in
-storage code shared with the follower. A leader in the field may also report
-1.2.6 from a period when the roles were forced onto one number; that is the same
-code as 1.2.4, so flashing the current leader image lowers the number it
-reports, which nothing refuses and nothing should read as a downgrade. On the
-follower, 1.2.7 added the motor model record, 1.2.8 the CAN extended-frame relay
-used by motor OTA, 1.2.9 makes the motor ranges and limits follow the
-recorded model, and 1.2.10 records the model by itself from the motor's
-firmware version the first time a new motor boots.
+follower numbers. **A leader reporting 1.2.6 may be either of two images**: the
+current one, with the control-UART receive fix, or one from the period when the
+roles were forced onto one number, which is 1.2.4 code without it. The number
+cannot tell them apart; `g.diagnostics.uart_stats()` answering 44 bytes (so
+`rx_errors` / `rx_rearms` are meaningful) is the current one — reflash when in
+doubt. On the follower, 1.2.7 added the motor model record, 1.2.8 the CAN
+extended-frame relay used by motor OTA, 1.2.9 makes the motor ranges and limits
+follow the recorded model, 1.2.10 records the model by itself from the motor's
+firmware version the first time a new motor boots, 1.2.11 fixes a command
+channel that could go silent for good after one UART overrun (the SDK warns when
+it opens anything older), and 1.2.12/1.2.13 make the calibration torque, the
+open direction and a default motion envelope follow the model.
 
 [`firmware/README.md`](firmware/README.md) has the image table, CRC32 values and
 the rest of the flashing detail.
@@ -254,8 +257,8 @@ for g in scan_grippers(): print(g.side, g.role, g.firmware_sn, g.mcu_device)"
 # 2. Read its state. Every field explained in the script's header.  (read-only)
 python python/examples/follower_status.py left
 
-# 3. Configure the firmware motion-safety envelope. NOT enabled out of the box,
-#    and it is the only protection layer on the MIT path nothing can bypass.
+# 3. Write the firmware motion-safety envelope. Follower >= 1.2.12 enforces a
+#    model default when none is stored; older firmware enforces nothing.
 python python/examples/impedance_control.py left --show-envelope
 python python/examples/impedance_control.py left --set-envelope
 
@@ -268,7 +271,7 @@ python python/examples/force_position_control.py left --grasp-torque 1.1
 
 Step 3 before step 4 is the load-bearing order — see
 [The motion-safety envelope](#the-motion-safety-envelope) for what it protects
-against and why the default is off.
+against, and what a follower enforces before you write it.
 
 **The motor model** (EL05 or RS00) is recorded by the follower itself since
 firmware 1.2.10: a new motor boots on the private protocol, and on that boot the
@@ -276,9 +279,11 @@ firmware reads the motor's firmware version, records the model and switches the
 motor to MIT. Check with `g.motor.get_model()`. A unit that was already on MIT
 before 1.2.10 keeps whatever was recorded; if it reports the compile-time
 default (the SDK warns on open), run `g.motor.set_model(1)` once (0 = EL05,
-1 = RS00) and cut 24 V for ~2 s. An RS00 upgraded from follower firmware 1.2.8
-or earlier also keeps its stored `0x700B` startup torque limit of 6.0; raise it
-with `g.motor.set_startup_limit_torque(14.0)` and cut 24 V again. Details in
+1 = RS00) and cut 24 V for ~2 s. Since 1.2.12 a change of the recorded model
+also resets `0x700B`, the auto-calibration torque and the open direction to the
+new model's defaults. An RS00 whose record was *already* RS00 before that keeps
+whatever `0x700B` it stored (6.0 on units upgraded from 1.2.8 or earlier); raise
+it with `g.motor.set_startup_limit_torque(14.0)` and cut 24 V again. Details in
 [`firmware/README.md`](firmware/README.md).
 
 ### By task
@@ -412,7 +417,8 @@ numbers: on an RS00 it caps the grip at 1.1 of the 3.6 N·m available, and once
 the RS00's `0x700B` limit is 14 `ForcePositionController.start()` raises.
 
 Before driving a follower for the first time, write the firmware motion-safety
-envelope once; it is off out of the box. See
+envelope once (follower 1.2.12+ enforces a model default until you do; older
+firmware enforces nothing). See
 [The motion-safety envelope](#the-motion-safety-envelope) and
 [Follower gripper control](#follower-gripper-control-mit-force-position).
 
@@ -683,8 +689,12 @@ g.set_auto_cal_config(cfg)                # (close-to-stall) + captures max_open
 ### The motion-safety envelope
 
 **Write the motion-safety envelope first.** It is the firmware's torque and
-thermal protection, and it is **off on a factory device**
-(`GripperConfig.reserved` all zero). Until you write it, it does not exist:
+thermal protection. A factory device stores none (`GripperConfig.reserved` all
+zero). What happens then depends on the firmware: **follower 1.2.12+ enforces a
+model default** (cont = stall rating, peak = rated torque, temperature wall
+90/100 °C; `g.motor.get_model().default_envelope == 1`, and `audit_envelope()`
+reports it as `effective` with `firmware_default`), while **older firmware
+enforces nothing at all**. Write an explicit record either way:
 
 ```bash
 python python/examples/impedance_control.py right --show-envelope   # read, never writes
