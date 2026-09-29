@@ -118,6 +118,10 @@ void validate_tuning(const detail::ForcePositionTuning& t,
         throw std::invalid_argument(
             "ForcePositionTuning.arrival_eps_rad must be >= 0");
     }
+    if (!finite(t.topup_rate_nmps) || t.topup_rate_nmps <= 0.0f) {
+        throw std::invalid_argument(
+            "ForcePositionTuning.topup_rate_nmps must be > 0");
+    }
 }
 
 void validate_target(const ForcePositionConfig& cfg,
@@ -202,6 +206,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     arrived_ = true;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
     fault_reason_.clear();
 }
 
@@ -211,6 +216,7 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     target_position_ = 1.0f;
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
 }
 
 // Commands only move the setpoint. There is no motion state to disturb and no
@@ -235,6 +241,7 @@ void ForcePositionPolicy::set_target(
     if (std::abs(map_.to_rad(target_position) - map_.to_rad(target_position_)) >
         tune_.arrival_eps_rad) {
         grasp_latched_ = false;
+        topup_nm_ = 0.0f;
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
@@ -246,6 +253,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     hold_raw_ = sample.actual_pos;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
@@ -260,6 +268,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     holding_ = false;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
     fault_reason_ = std::move(reason);
 }
 
@@ -462,17 +471,61 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // 2026-09-27). So once the jaw has stopped short, the push stays on until
     // the target changes or the jaw passes the target -- the latter meaning
     // whatever blocked it is gone, and the ordinary hold takes over.
+    //
+    // ESCALATED, NOT STEPPED, because a stop short of the target is not proof
+    // of an object. Breakaway friction parks a free jaw at friction/kp: ~5 mrad
+    // on the EL05, inside the arrival band, but ~14 mrad on the RS00 0088s
+    // (2026-09-29), outside it. Stepping that straight to the budget -- 1 Nm
+    // against ~0.3 Nm of friction -- shot the empty jaw ~30 mrad through the
+    // target, where the same test fired from the other side: a ~3 Hz limit
+    // cycle, reported as holding_force, that never arrived. So the push starts
+    // at what the spring already gives and grows at topup_rate_nmps while the
+    // jaw stays at rest. Friction lets go a hair above the spring, the push
+    // then decays as the jaw creeps in, and the ordinary hold takes over in the
+    // band. An object holds the whole budget, and only then is it latched.
     const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
     const float ramp_gap = std::abs(ramp_raw_ - target_raw);
     const bool parked = ramp_gap <= kEpsilon;
     const float short_by = dir * (target_raw - sample.actual_pos);
-    if (parked && short_by > tune_.arrival_eps_rad &&
-        std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio) {
-        grasp_latched_ = true;
-        grasp_dir_ = dir;
+    // "Parked" within the arrival band, as for the latched push below: a
+    // streamed target jitters by a few mrad per frame, and a ramp one frame
+    // behind it must not restart the escalation from the spring every frame.
+    const bool short_of_target =
+        (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
+        short_by > tune_.arrival_eps_rad;
+    const bool at_rest =
+        std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
+    const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
+    if (!grasp_latched_) {
+        const float step_nm = tune_.topup_rate_nmps * dt;
+        if (short_of_target && at_rest) {
+            topup_nm_ = std::min(budget,
+                                 std::max(topup_nm_, dir * spring) + step_nm);
+            if (topup_nm_ >= budget - kEpsilon) {
+                grasp_latched_ = true;
+                grasp_dir_ = dir;
+            }
+        } else if (short_of_target) {
+            // Broke away: let the push fall back to the spring gently, so the
+            // jaw creeps in rather than being released into a coast.
+            topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
+        } else {
+            topup_nm_ = 0.0f;
+        }
     }
     if (grasp_latched_ && short_by < -tune_.arrival_eps_rad) {
         grasp_latched_ = false;
+        topup_nm_ = 0.0f;
+    }
+    if (!grasp_latched_ && short_of_target && topup_nm_ > dir * spring) {
+        // Escalating: pinned on the target like the latched push below, but the
+        // damping term stays in, so a jaw that breaks away is still braked.
+        ramp_raw_ = target_raw;
+        const float tau_ff = dir * topup_nm_ - spring;
+        commanded_torque_nm_ = std::min(
+            cfg_.motion_torque_limit_nm,
+            std::abs(dir * topup_nm_ - kd * sample.actual_vel));
+        return {ramp_raw_, tune_.position_kp, kd, tau_ff, 0.0f};
     }
     // Once latched, "parked" tolerates a ramp still catching up with a target
     // that jittered by less than the arrival band -- which is all a streamed

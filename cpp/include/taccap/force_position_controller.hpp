@@ -240,6 +240,16 @@ struct ForcePositionTuning {
     // Within this of the commanded position the jaw counts as arrived. Reported,
     // never acted on -- there is no separate arrival branch any more.
     float arrival_eps_rad     = 0.010f;
+    // How fast the push on a jaw at rest short of a parked ramp may grow, from
+    // the spring's own kp*error toward the grasp budget. A stop there is either
+    // an object or breakaway friction, and only the push that moves it tells
+    // them apart: friction lets go a little above the spring, an object holds
+    // the whole budget. Stepping straight to the budget (the old top-up) made
+    // every friction stall an overshoot -- on the RS00 0088s, whose friction
+    // parks the jaw ~14 mrad out, a +-30 mrad limit cycle that never arrived.
+    // 3 Nm/s is 0.03 Nm per 100 Hz frame: breakaway overshoots by that much,
+    // and the EL05 pad-compression grip (0.5 -> 1.1 Nm) builds in ~0.2 s.
+    float topup_rate_nmps     = 3.0f;
 };
 
 
@@ -317,12 +327,19 @@ private:
     // Ramp parked on the target with a grasp latched: travel_track_ has topped
     // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
-    // Set when the jaw comes to rest short of a parked ramp; held until the
-    // target changes or the jaw passes the target (the object is gone). While
+    // Set when the jaw stays at rest short of a parked ramp under the full
+    // budget; held until the target changes or the jaw passes the target (the
+    // object is gone). While
     // set, arrival is not reported, so a compliant object pushed into the
     // arrival band does not drop the grip to a position hold and spring back.
+    //
+    // Latching needs PROOF of an obstruction: the push is escalated at
+    // topup_rate_nmps from the spring's torque, and the latch sets only once the
+    // whole budget still has not moved the jaw. topup_nm_ is that escalating
+    // push (magnitude); zero when not escalating.
     bool  grasp_latched_ = false;
     float grasp_dir_ = 0.0f;         // raw direction of the latched push
+    float topup_nm_ = 0.0f;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
