@@ -248,8 +248,10 @@ taccap-gripper/
 │                                                  __version__ comes from
 │                                                  _taccap_native
 │
-├── firmware/                                     shipped leader + follower
-│                                                  images + manifest.json
+├── firmware/
+│   ├── manifest.json                             released MCU image metadata
+│   ├── gripper/                                  shipped leader + follower images
+│   └── motor/                                    local vendor motor images (ignored)
 ├── scripts/
 │   └── check_protocol_drift.py                   fails when the SDK's
 │                                                  hand-written protocol

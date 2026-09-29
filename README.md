@@ -166,10 +166,10 @@ relays the motor's own OTA through the MCU, so the motor stays mounted:
 
 ```bash
 # Complete follower MCU + motor workflow (recommended)
-python python/examples/full_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 
 # Lower-level motor-only updater
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 The combined command locks the target by firmware SN and CH343 serial, owns the
@@ -327,9 +327,9 @@ python python/examples/leader_normalized_position.py left
 **Firmware:**
 
 ```bash
-python python/examples/full_ota_update.py rs00-0.0.3.32.bin left   # follower MCU + motor
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # follower MCU + motor
 python python/examples/ota_update.py slave left   # then power-cycle (follower: cut 24 V)
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # the motor itself; private protocol
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # the motor itself; private protocol
 ```
 
 ### What each one does to the device

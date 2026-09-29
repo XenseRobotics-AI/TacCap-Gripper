@@ -18,7 +18,7 @@ second shell command is needed.
 
 Typical RS00 invocation::
 
-    python python/examples/full_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0085s
+    python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0085s
 
 The follower image defaults to the released slave image named by
 ``firmware/manifest.json``.  The motor image is deliberately explicit because

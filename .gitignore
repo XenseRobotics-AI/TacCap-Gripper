@@ -25,6 +25,9 @@ compile_commands.json
 .DS_Store
 Thumbs.db
 
+# Local vendor motor images (not distributed with this SDK).
+/firmware/motor/*.bin
+
 # Project — reference clones of the upstream firmware + PC GUI repos.
 # Tracked in their own (internal) git histories, NOT as submodules — this
 # SDK only depends on the wire protocol they define, not on their build

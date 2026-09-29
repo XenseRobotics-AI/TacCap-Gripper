@@ -54,6 +54,7 @@ kCuTtoUT = "kCuTtoUT"
 mis = "mis"
 
 [tool.scikit-build]
+sdist.exclude = ["firmware/motor/*.bin"]
 wheel.packages = ["python/xense"]
 cmake.version = ">=3.20"
 cmake.build-type = "Release"

@@ -1,7 +1,7 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.6.bin",
+      "file": "gripper/tc-gu-01-master-1.2.6.bin",
       "version": "1.2.6",
       "source_commit": "ca1f335",
       "size_bytes": 118300,
@@ -13,7 +13,7 @@
       "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.12.bin",
+      "file": "gripper/tc-gu-01-slave-1.2.12.bin",
       "version": "1.2.12",
       "source_commit": "ca1f335",
       "size_bytes": 166796,

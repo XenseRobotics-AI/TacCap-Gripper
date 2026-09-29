@@ -142,10 +142,10 @@ USB 线可以不拔 —— 从爪的 MCU 和电机都靠 24V 运行,只拔 USB �
 
 ```bash
 # 从爪 MCU + 电机固件完整升级(推荐)
-python python/examples/full_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 
 # 只刷电机固件的底层工具
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 (完整升级脚本会锁定固件 SN 与 CH343,编排 MIT/私有协议切换、版本回读与最终标定
@@ -289,9 +289,9 @@ python python/examples/leader_normalized_position.py left
 **固件:**
 
 ```bash
-python python/examples/full_ota_update.py rs00-0.0.3.32.bin left   # 从爪 MCU + 电机一条命令
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # 从爪 MCU + 电机一条命令
 python python/examples/ota_update.py slave left   # 之后要断电重启(从爪:断 24V)
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本身;需私有协议
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # 电机本身;需私有协议
 ```
 
 ### 每个脚本对设备做了什么

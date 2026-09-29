@@ -94,16 +94,16 @@ them apart. If a leader reports 1.2.6, check `g.diagnostics.uart_stats()`: the
 fixed image answers with 44 bytes, so `rx_errors` / `rx_rearms` exist and are
 meaningful; the old one answers 32 bytes and the SDK reads both as 0 -- which is
 indistinguishable from a healthy zero. When in doubt, reflash
-`tc-gu-01-master-1.2.6.bin` from `firmware/`; OTA compares no versions
+`tc-gu-01-master-1.2.6.bin` from `firmware/gripper/`; OTA compares no versions
 (`--target-version` is informational), so reflashing the same number is fine.
 Compare versions only within one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.6.bin`). That is deliberate:
+`firmware/gripper/` carry the version (`tc-gu-01-master-1.2.6.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
-build into `firmware/`, rename it and update `firmware/manifest.json` in the
+build into `firmware/gripper/`, rename it and update `firmware/manifest.json` in the
 same change** — the manifest's `file` entry is what the role selectors and
 `--all` resolve, so the two drifting apart breaks exactly the path customers
 are told to use. `test_ota_update_all.py` fails if they disagree.
@@ -171,7 +171,7 @@ one process:
 
 ```bash
 python python/examples/full_ota_update.py \
-    ~/Downloads/rs00-0.0.3.32.bin TCGU01A28Z0086s
+    firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 The command cannot operate the physical 24 V supply. At each required hard
@@ -209,7 +209,7 @@ The two lower-level tools remain available when only one image needs flashing
 or when debugging a failed stage:
 
 ```bash
-python python/examples/motor_ota_update.py ~/Downloads/rs00-0.0.3.32.bin TCGU01A28Z0086s
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
 
 - **Follower firmware >= 1.2.8** (the `0x5B` relay).
