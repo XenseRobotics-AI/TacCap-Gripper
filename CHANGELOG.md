@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
+A minor bump for a behaviour change downstream code can observe:
+`ForcePositionController` no longer switches control law on arrival, and
+`ForcePositionTuning::position_kd` is no longer used. The API is unchanged.
+
 ### Changed
 
 - **`ForcePositionController` has one control law.** Arrival no longer switches
@@ -20,6 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported exactly as before, as observations; the closed-endpoint preload is
   applied once the ramp is parked on a closed target, reserved out of the
   budget as before. `ForcePositionTuning::position_kd` is no longer used.
+
+  Measured on 0094s (RS00, follower 1.2.12) by tc-gu-01-pc, against 0.3.10:
+  50 Hz cosine reciprocation, entries into `HOLDING_POSITION` 112/304/482/514 ->
+  25/64/178/297 (6/12/20/40 s periods), frames with the target moving but the
+  jaw stopped 3.4/8.1/7.8/16.3% -> 0.0/0.8/3.1/12.0%, no mid-stroke
+  `HOLDING_FORCE`. Point-to-point holds at 0.25/0.5/0.75/1.0: same time to
+  arrive and same 4-9 mrad static error, position steady to one quantisation
+  step; the commanded torque's peak-to-peak doubles (0.13-0.18 -> 0.26-0.37
+  N·m) from `travel_kd` on the velocity quantisation noise, with no effect on
+  position. That peak-to-peak is in the host's *estimate* only: the motor
+  applies the damping with its own internal velocity, and the measured torque
+  ripple is unchanged (0.06-0.12 N·m both versions). Closed endpoint seats the same (1.00 N·m); a book is gripped at the
+  budget, `HOLDING_FORCE` 0.16 s after the jaw stops.
 
 ## [0.3.10] - 2026-09-29
 
