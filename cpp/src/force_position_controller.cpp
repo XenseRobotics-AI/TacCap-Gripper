@@ -35,6 +35,12 @@ constexpr float kMaxDampingGain = 5.0f;
 // limit at the defaults -- so the separation is an order of magnitude.
 constexpr float kHoldingLeadRatio = 0.5f;
 constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
+// The lead test of "holding" also needs the jaw to have made less than
+// kStallProgressRad of progress over kStallWindow (0.3.10). A jaw creeping
+// through friction lag at 0.024 rad/s covers ~4 mrad in 150 ms; a blocked one
+// covers nothing. 3 mrad is ~8 quantisation steps of MIT position feedback.
+constexpr float kStallProgressRad = 0.003f;
+constexpr auto  kStallWindow = std::chrono::milliseconds(150);
 // The closed endpoint for preload purposes. Normalized, so it scales with the
 // calibrated stroke: 1e-3 of a 1.215 rad travel is 1.2 mrad. It exists only to
 // absorb float sloppiness in a caller that means 0.0 -- the preload is for the
@@ -207,6 +213,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    stall_valid_ = false;
     fault_reason_.clear();
 }
 
@@ -276,6 +283,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    stall_valid_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -618,9 +626,25 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float lead = std::abs(ramp_raw_ - sample.actual_pos);
     // blocked_short_ is the same observation where the lead cannot fill: the
     // ramp is parked on the target and the budget is being applied anyway.
+    //
+    // The lead test is gated on POSITION PROGRESS over a window, not on the
+    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
+    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
+    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
+    // the jaw is still moving -- the reported state flipped HoldingForce /
+    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
+    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
+    if (!stall_valid_ ||
+        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
+        stall_pos_raw_ = sample.actual_pos;
+        stall_since_ = now;
+        stall_valid_ = true;
+    }
+    const bool stalled = (now - stall_since_) >= kStallWindow;
     holding_ = !arrived_ && ramp_valid_ &&
                (blocked_short_ ||
                 (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
+                 stalled &&
                  std::abs(sample.actual_vel) <=
                      cfg_.close_speed_radps * kHoldingVelRatio));
 

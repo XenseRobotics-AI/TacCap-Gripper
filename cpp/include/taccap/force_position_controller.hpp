@@ -346,6 +346,15 @@ private:
     // target -- each 50 Hz step is a few mrad -- so ordinary tracking lag
     // escalated to the budget and latched mid-motion (0094s, 50 Hz cosine).
     float topup_anchor_raw_ = 0.0f;
+    // Stall window for the "holding" observation (0.3.10): the jaw position at
+    // the start of the current window and when it began. The lead test alone
+    // cannot tell a blocked jaw from one creeping under friction lag -- on the
+    // RS00 opening side lag is 25-38 mrad, over the 25 mrad threshold at a
+    // 1 Nm budget -- and the velocity test sits inside the 16-bit
+    // quantisation noise. Position progress over a window can.
+    float stall_pos_raw_ = 0.0f;
+    std::chrono::steady_clock::time_point stall_since_{};
+    bool  stall_valid_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;

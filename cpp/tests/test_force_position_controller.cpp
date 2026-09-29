@@ -957,3 +957,56 @@ TEST(ForcePositionPolicy, SlowStreamedCosineThroughFrictionNeverGrasps) {
         EXPECT_LT(max_cmd, 1.5f) << "the budget was pushed while tracking";
     }
 }
+
+// A jaw creeping through friction lag must not read as "holding" (0.3.10).
+// RS00 opening side: friction 0.5-0.77 Nm leaves the ramp 25-38 mrad ahead --
+// over the 25 mrad lead threshold at a 1 Nm budget -- and slow stick-slip keeps
+// |v| under the 0.028 rad/s gate. The state flipped HoldingForce / Opening frame
+// by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period). Holding now also
+// needs the position to have stopped progressing for 150 ms.
+TEST(ForcePositionPolicy, StickSlipCreepThroughFrictionLagIsNotHolding) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    cfg.close_speed_radps = 0.114f;
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 0.3f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.9f, cfg.grasp_torque_nm, t);   // opening, far target
+    // Friction lag (0.66 Nm / kp 20 = 33 mrad) is over the lead threshold; the
+    // ramp builds that lead by itself because the jaw falls behind it.
+    ASSERT_GT(0.033f, cfg.grasp_torque_nm / tune.position_kp * 0.5f);
+    int holding = 0;
+    for (int i = 0; i < 400; ++i) {
+        // Stick-slip: 3 frames stuck, then a 3 mrad slip; mean 0.075 rad/s.
+        const bool slip = (i % 4) == 3;
+        if (slip) pos += 0.003f;
+        const float v = slip ? 0.3f : 0.0f;
+        p.step(sample(pos, v), t);
+        if (p.holding()) ++holding;
+        t += std::chrono::milliseconds(10);
+    }
+    EXPECT_EQ(holding, 0) << "creeping jaw reported as holding";
+}
+
+// ...while a jaw that really stops is still reported, after the window.
+TEST(ForcePositionPolicy, ABlockedJawIsHoldingAfterTheStallWindow) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    const float pos = 0.3f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.9f, cfg.grasp_torque_nm, t);
+    int first = -1;
+    for (int i = 0; i < 100 && first < 0; ++i) {
+        p.step(sample(pos), t);
+        if (p.holding()) first = i;
+        t += std::chrono::milliseconds(10);
+    }
+    ASSERT_GE(first, 0) << "a jaw that never moves was never reported as holding";
+    EXPECT_GE(first, 15) << "reported before the 150 ms stall window";
+    EXPECT_LE(first, 40);
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
