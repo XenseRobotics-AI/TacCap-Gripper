@@ -61,3 +61,19 @@ TEST(PowerCycleWarnings, ARecordedModelOpensQuietly) {
     auto g = open_follower(pty);
     EXPECT_EQ(log.count("compile-time default"), 0u);
 }
+
+// Below 1.2.11 a follower opens, but warns: one control-UART overrun used to
+// silence the command channel for good (0086s, 2026-09-28).
+TEST(FirmwareAdvisory, FollowerBelow1211WarnsButOpens) {
+    struct V { uint8_t a, b, c; bool warn; };
+    for (const V v : {V{1, 2, 5, true}, V{1, 2, 10, true}, V{1, 2, 11, false},
+                      V{1, 2, 13, false}}) {
+        Pty pty;
+        ASSERT_GE(pty.master(), 0);
+        FakeFollower fw(pty, v.a, v.b, v.c);
+        CaptureLog log;
+        EXPECT_NO_THROW({ auto g = open_follower(pty); });
+        EXPECT_EQ(log.count("低于 1.2.11") > 0, v.warn)
+            << int(v.a) << "." << int(v.b) << "." << int(v.c);
+    }
+}

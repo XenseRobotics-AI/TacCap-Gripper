@@ -436,8 +436,10 @@ f = t.FollowerGripper.open()
 f.motor.clear_fault()
 
 cfg = t.ForcePositionConfig.for_spec(f.motor.get_spec())   # ratings of the installed motor
-cfg.grasp_torque_nm = 0.35         # torque budget, Nm — the grip force setpoint; a
-                                   #   blocked jaw settles here. for_spec: the stall rating (EL05 1.1 / RS00 3.6)
+# cfg.grasp_torque_nm              # torque budget, Nm — the grip force setpoint; a
+                                   #   blocked jaw settles here. for_spec already sets the
+                                   #   stall rating (EL05 1.1 / RS00 3.6), which start() will
+                                   #   not let you exceed; lower it for fragile objects.
 cfg.close_speed_radps = 1.1        # close/open ramp speed rad/s (for_spec: 1.1)
 # for_spec also sets (EL05 / RS00):
 #   hold_torque_limit_nm   = rated torque   1.8 / 5.0  — indefinite-hold ceiling
@@ -449,8 +451,8 @@ grasp = t.ForcePositionController(f, cfg)
 grasp.start()                 # validates the device limit first; does not close on its own yet
 f.motor.enable()
 try:
-    grasp.set_target(0.0)     # close; blocked, the command saturates at 0.35 Nm and holds
-    grasp.set_target(0.35, 0.45)  # change at runtime to 35% opening, 0.45 Nm
+    grasp.set_target(0.0)     # close; blocked, the command saturates at the budget and holds
+    grasp.set_target(0.35, 0.45)  # change at runtime to 35% opening, 0.45 Nm budget
     while running:
         print(grasp.snapshot())
     grasp.release()           # open at bounded speed

@@ -155,7 +155,7 @@ struct ForcePositionConfig {
     // Feed-forward torque added ONLY while holding the closed endpoint, to seat
     // the jaw against its mechanical stop. 0 disables it.
     //
-    // WHY A FORCE AND NOT A POSITION OFFSET. position_hold_ commands
+    // WHY A FORCE AND NOT A POSITION OFFSET. the closed-endpoint hold commands
     // kp*(target-actual), which goes to zero exactly at the target -- so the jaw
     // arrives at the closed end and then stops pressing, leaving the gear
     // train's backlash unseated. Biasing the target past the stop cannot fix it:
@@ -220,6 +220,10 @@ struct ForcePositionTuning {
     // request is error-clamped against the budget either way, so kp only
     // narrows the error window (budget/kp), it does not widen the output.
     float position_kp         = 20.0f;
+    // Unused since 0.4.0: it was the settled hold's damping, and there is no
+    // separate settled hold any more -- a reached target is held by the travel
+    // law with travel_kd. Kept (and still validated) so existing tuning code
+    // that sets it keeps compiling.
     float position_kd         = 1.0f;
     // Damping gain during travel. FREE OF THE GRASP BUDGET, which is the whole
     // point: the velocity feed-forward follows the RAMP's own advance, and the
@@ -240,6 +244,16 @@ struct ForcePositionTuning {
     // Within this of the commanded position the jaw counts as arrived. Reported,
     // never acted on -- there is no separate arrival branch any more.
     float arrival_eps_rad     = 0.010f;
+    // How fast the push on a jaw at rest short of a parked ramp may grow, from
+    // the spring's own kp*error toward the grasp budget. A stop there is either
+    // an object or breakaway friction, and only the push that moves it tells
+    // them apart: friction lets go a little above the spring, an object holds
+    // the whole budget. Stepping straight to the budget (the old top-up) made
+    // every friction stall an overshoot -- on the RS00 0088s, whose friction
+    // parks the jaw ~14 mrad out, a +-30 mrad limit cycle that never arrived.
+    // 3 Nm/s is 0.03 Nm per 100 Hz frame: breakaway overshoots by that much,
+    // and the EL05 pad-compression grip (0.5 -> 1.1 Nm) builds in ~0.2 s.
+    float topup_rate_nmps     = 3.0f;
 };
 
 
@@ -286,14 +300,6 @@ private:
     // Signed preload for the current hold: cfg_.close_preload_nm when the
     // commanded target is the closed endpoint, 0 otherwise. Sign from the map.
     float close_preload_signed_() const;
-    // Settled hold on a fixed point: damps absolute velocity. preload_nm is a
-    // SIGNED feed-forward torque, nonzero only at the closed endpoint (see
-    // ForcePositionConfig::close_preload_nm); it is reserved out of the budget
-    // so the total request stays bounded by it.
-    protocol::MotorImpedanceCtrl position_hold_(const MotorStatusSample& sample,
-                                                 float desired_raw,
-                                                 float torque_budget,
-                                                 float preload_nm);
     // Move toward target_raw along a time-based ramp at desired_vel, with the
     // PD request error-clamped against torque_budget. See the definition.
     protocol::MotorImpedanceCtrl travel_track_(const MotorStatusSample& sample,
@@ -317,12 +323,34 @@ private:
     // Ramp parked on the target with a grasp latched: travel_track_ has topped
     // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
-    // Set when the jaw comes to rest short of a parked ramp; held until the
-    // target changes or the jaw passes the target (the object is gone). While
+    // Set when the jaw stays at rest short of a parked ramp under the full
+    // budget; held until the target changes or the jaw passes the target (the
+    // object is gone). While
     // set, arrival is not reported, so a compliant object pushed into the
     // arrival band does not drop the grip to a position hold and spring back.
+    //
+    // Latching needs PROOF of an obstruction: the push is escalated at
+    // topup_rate_nmps from the spring's torque, and the latch sets only once the
+    // whole budget still has not moved the jaw. topup_nm_ is that escalating
+    // push (magnitude); zero when not escalating.
     bool  grasp_latched_ = false;
     float grasp_dir_ = 0.0f;         // raw direction of the latched push
+    float topup_nm_ = 0.0f;
+    // Target (raw) when the current escalation began. Escalation and latch are
+    // both dropped once the target has moved more than arrival_eps from here IN
+    // TOTAL (0.3.10). A per-frame comparison never fired for a slowly streamed
+    // target -- each 50 Hz step is a few mrad -- so ordinary tracking lag
+    // escalated to the budget and latched mid-motion (0094s, 50 Hz cosine).
+    float topup_anchor_raw_ = 0.0f;
+    // Stall window for the "holding" observation (0.3.10): the jaw position at
+    // the start of the current window and when it began. The lead test alone
+    // cannot tell a blocked jaw from one creeping under friction lag -- on the
+    // RS00 opening side lag is 25-38 mrad, over the 25 mrad threshold at a
+    // 1 Nm budget -- and the velocity test sits inside the 16-bit
+    // quantisation noise. Position progress over a window can.
+    float stall_pos_raw_ = 0.0f;
+    std::chrono::steady_clock::time_point stall_since_{};
+    bool  stall_valid_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;

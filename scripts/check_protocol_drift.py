@@ -76,6 +76,8 @@ STRUCT_MAP = {
     "motor_fault_report_t": "MotorFaultReport",
     "motor_control_stats_packet_t": "MotorControlStats",
     "motor_model_t": "MotorModel",
+    "motor_version_t": "MotorVersion",
+    "motor_fw_version_record_t": "MotorFwVersionRecord",
     "motor_can_xfer_req_t": "MotorCanXferReq",
     "motor_can_xfer_resp_t": "MotorCanXferResp",
     "gripper_config_t": "GripperConfig",

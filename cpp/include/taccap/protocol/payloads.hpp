@@ -304,8 +304,29 @@ struct __attribute__((packed)) MotorVersion {
     uint8_t valid;          // 1 = read succeeded
     uint8_t motor_stopped;  // 1 = the request probably stopped the motor
     uint8_t protocol_mode;  // 0 = private, 2 = MIT (can_motor_get_protocol)
-    uint8_t reserved;
+    // MotorVersionSource::* (follower 1.2.14; was reserved, 0 before). Where
+    // `version` came from: read from the motor just now, or -- when the motor
+    // cannot answer (MIT, timeout) -- the record in the follower's flash.
+    uint8_t source;
 };
+
+namespace MotorVersionSource {
+    constexpr uint8_t Live      = 0;  // read from the motor by this request
+    constexpr uint8_t FlashHost = 1;  // flash record written by a host (0x5C)
+    constexpr uint8_t FlashAuto = 2;  // flash record the firmware took on a
+                                      // private-protocol boot
+}
+
+// ---- Motor firmware version record (Cmd::SetMotorFwVersion 0x5C, fw >= 1.2.14)
+// Request: version[4], same encoding as MotorVersion. Reply: the record as it
+// now stands in flash, for the host to compare with what it wrote.
+struct __attribute__((packed)) MotorFwVersionRecord {
+    uint8_t version[4];
+    uint8_t valid;          // 1 = flash holds a record
+    uint8_t source;         // MotorVersionSource::Flash* when valid
+    uint8_t reserved[2];
+};
+constexpr size_t MOTOR_FW_VERSION_RECORD_SIZE = 8;
 
 // ---- 电机 CAN 扩展帧透传 (Cmd::MotorCanExtXfer 0x5B, firmware >= 1.2.8) ----
 //
@@ -382,8 +403,9 @@ struct __attribute__((packed)) MotorModel {
     // firmware always sends 0.
     uint8_t  autodetected;
     // 1 = no valid envelope is stored, so the follower is enforcing its
-    // model's default (cont = stall rating, peak = t_max, temperature wall at
-    // the firmware's 90/100 C). Follower 1.2.12; was reserved, 0 before.
+    // model's default (cont = stall rating, peak = rated torque -- t_max on
+    // 1.2.12 -- temperature wall at the firmware's 90/100 C). Follower 1.2.12+;
+    // was reserved, 0 before.
     uint8_t  default_envelope;
 };
 
@@ -1150,6 +1172,7 @@ static_assert(sizeof(MotorImpedanceCtrl) == 20);  // V1.7 (+ feed-forward vel)
 static_assert(sizeof(MotorSpec)          == MOTOR_SPEC_SIZE);
 static_assert(sizeof(HomeDiagReport)     == HOME_DIAG_REPORT_SIZE);
 static_assert(sizeof(MotorVersion)       == MOTOR_VERSION_SIZE);
+static_assert(sizeof(MotorFwVersionRecord) == MOTOR_FW_VERSION_RECORD_SIZE);
 static_assert(sizeof(MotorModel)         == MOTOR_MODEL_SIZE);
 static_assert(sizeof(MotorCanXferReq)    == MOTOR_CAN_XFER_REQ_SIZE);
 static_assert(sizeof(MotorCanXferResp)   == MOTOR_CAN_XFER_RESP_SIZE);

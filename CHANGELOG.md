@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-30
+
+### Added
+
+- **Motor firmware version readable under MIT** (follower firmware >= 1.2.14,
+  protocol V2.8). The follower records the motor's firmware version in flash:
+  by itself on a private-protocol boot, or when a host calls the new
+  `Motor.set_motor_fw_version()` (command `0x5C`; a factory SOP step, and the
+  thing to do after a motor OTA). `motor_version()` returns that record when the
+  motor cannot answer, and the formerly reserved byte is now `source`
+  (`MotorVersionSource::Live / FlashHost / FlashAuto`; Python also exposes
+  `from_flash`). `set_motor_fw_version()` checks the echoed flash record and
+  raises on a mismatch, like `set_sn()`. Versions are written and shown the way
+  RobStride writes them -- EL05 `1.0.5.0.4`, RS00 `0.0.3.32` -- although the wire
+  carries 4 raw bytes (the EL05's leading byte 10 is split into "1.0");
+  `protocol::parse_motor_fw_version` / `format_motor_fw_version` convert, and
+  `MotorVersion.vendor_str` exposes the vendor form. Reading never writes flash: a flash save
+  erases and rewrites the whole configuration sector. On older firmware
+  `set_motor_fw_version()` raises with the required version and
+  `motor_version()` behaves as before.
+
+  Verified on 0094s (RS00, follower 1.2.14): 1.2.12 with this SDK reads
+  `valid == 0` under MIT (compatible); 1.2.14 with no record likewise; after
+  `set_motor_fw_version("0.0.3.32")` it reads `0.0.3.32 (flash: host-written)`
+  under MIT, SN / model / 0x700B / gripper config / calibration unchanged, and
+  the record survives a 24 V power cycle. The automatic record on a
+  private-protocol boot (`FlashAuto`) was not exercised.
+- `examples/motor_ota_update.py` records the new version after a successful
+  flash and accepts only a live read as proof of the update.
+
+### Changed
+
+- Shipped follower image is now **1.2.14** (protocol V2.8): the motor firmware
+  version record above. Leader image unchanged (1.2.6).
+
+## [0.4.0] - 2026-09-29
+
+A minor bump for a behaviour change downstream code can observe:
+`ForcePositionController` no longer switches control law on arrival, and
+`ForcePositionTuning::position_kd` is no longer used. The API is unchanged.
+
+### Changed
+
+- **`ForcePositionController` has one control law.** Arrival no longer switches
+  to a separate settled hold (no velocity feed-forward, ramp invalidated, its
+  own error clamp and `position_kd`). A streamed target keeps the jaw near the
+  10 mrad arrival band, so the law switched several times a second: brake on
+  entering the band, re-seed the ramp from the jaw on leaving it -- a stop-go
+  gait on 0094s (RS00, 50 Hz cosine, reported by tc-gu-01-pc). The travel law
+  already parks its ramp on a reached target and bounds the total by the
+  budget, so it now does the holding too. `arrived` / `HOLDING_POSITION` are
+  reported exactly as before, as observations; the closed-endpoint preload is
+  applied once the ramp is parked on a closed target, reserved out of the
+  budget as before. `ForcePositionTuning::position_kd` is no longer used.
+
+  Measured on 0094s (RS00, follower 1.2.12) by tc-gu-01-pc, against 0.3.10:
+  50 Hz cosine reciprocation, entries into `HOLDING_POSITION` 112/304/482/514 ->
+  25/64/178/297 (6/12/20/40 s periods), frames with the target moving but the
+  jaw stopped 3.4/8.1/7.8/16.3% -> 0.0/0.8/3.1/12.0%, no mid-stroke
+  `HOLDING_FORCE`. Point-to-point holds at 0.25/0.5/0.75/1.0: same time to
+  arrive and same 4-9 mrad static error, position steady to one quantisation
+  step; the commanded torque's peak-to-peak doubles (0.13-0.18 -> 0.26-0.37
+  N·m) from `travel_kd` on the velocity quantisation noise, with no effect on
+  position. That peak-to-peak is in the host's *estimate* only: the motor
+  applies the damping with its own internal velocity, and the measured torque
+  ripple is unchanged (0.06-0.12 N·m both versions). Closed endpoint seats the same (1.00 N·m); a book is gripped at the
+  budget, `HOLDING_FORCE` 0.16 s after the jaw stops.
+
+## [0.3.10] - 2026-09-29
+
+### Added
+
+- `FollowerGripper` warns on open when the follower firmware is below 1.2.11
+  (it still opens): those versions can lose the command channel for good after
+  one control-UART overrun.
+
+### Changed
+
+- Shipped follower image is now **1.2.13**: the model-default motion envelope
+  (used when none is stored) takes peak = rated torque (EL05 1.8 / RS00 5.0)
+  instead of `t_max`, which on 1.2.12 left the position-error clamp with nothing
+  to do. Matches what `ensure_envelope()` writes; `audit_envelope()` reports the
+  peak each firmware actually enforces.
+- README / USAGE brought up to leader 1.2.6 / follower 1.2.13 and the default
+  envelope; USAGE no longer sets `grasp_torque_nm = 0.35`.
+
+### Fixed
+
+- `ForcePositionController` no longer grasps while tracking a slowly streamed
+  target. The escalated push and the latch were cleared only on a per-frame
+  target change larger than `arrival_eps_rad`; a 50 Hz trajectory moves a few
+  mrad per frame, so ordinary friction lag escalated to the budget and latched
+  mid-motion (0094s, RS00, 50 Hz cosine, reported by tc-gu-01-pc). Both now
+  reset once the target has moved `arrival_eps_rad` from where the escalation
+  began, in total; in-place teleop jitter does not add up and still keeps a
+  grasp.
+- The `holding` observation additionally requires the jaw to have made under
+  3 mrad of progress over 150 ms. RS00 opening-side friction lag (25-38 mrad)
+  exceeds the lead threshold at a 1 N·m budget, and slow stick-slip reads under
+  the velocity gate, so the reported state flipped `HOLDING_FORCE`/`OPENING`
+  frame by frame. A blocked jaw is reported ~150 ms later than before; control
+  output is unchanged.
+
+  Measured on 0094s (RS00, follower 1.2.12), 50 Hz cosine over the full stroke,
+  1.0 N·m budget, three round trips per period:
+
+  | period | `HOLDING_FORCE` mid-stroke frames, 0.3.9 -> 0.3.10 | state flips |
+  |---|---|---|
+  | 6 s | 13 -> 0 | 32 -> 6 |
+  | 12 s | 85 -> 0 | 80 -> 6 |
+  | 20 s | 147 -> 0 | 108 -> 8 |
+  | 40 s | 366 -> 0 | 264 -> 6 |
+
+  The remaining flips are the closes to 0.0, where the stop blocks the jaw.
+
+- `ForcePositionController` no longer limit-cycles on an empty jaw whose
+  friction parks it outside the arrival band. A jaw at rest short of a parked
+  ramp used to be topped up to the whole grasp budget in one frame; on an RS00
+  (0088s, friction ~0.3 N·m, parking ~14 mrad out at kp 20) that shot the jaw
+  ~30 mrad through a mid-stroke target, the same test fired from the other side,
+  and it cycled at ~3 Hz reporting `HOLDING_FORCE` without ever arriving. The
+  push now escalates from the spring's own torque at
+  `ForcePositionTuning::topup_rate_nmps` (3 N·m/s) and latches only once the
+  full budget has failed to move the jaw: friction breaks away just above the
+  spring and the jaw creeps into the band; an object still ends at exactly the
+  budget, ~0.2 s later than before for the EL05 pad-compression case.
+  Verified on 0088s (RS00, follower 1.2.12, 2026-09-29) with MOT-04's
+  0.40 <-> 0.25 moves at 0.2 rad/s / 1.0 N·m, three round trips each: 0.3.9
+  never arrived at 0.40 (31-37 mrad overshoot, ~100 `HOLDING_FORCE` frames per
+  move); with the fix every move arrived in 0.70-0.86 s with no overshoot and no
+  `HOLDING_FORCE`, settling 7-8 mrad from target. The closed-loop friction-plant
+  tests guard the new behaviour but also pass on 0.3.9 -- the plant does not
+  reproduce the hardware limit cycle, so they are not a regression test for it.
+  Grasping an object with the escalating push is not yet re-verified on hardware.
+
 ## [0.3.9] - 2026-09-28
 
 ### Added

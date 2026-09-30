@@ -35,6 +35,12 @@ constexpr float kMaxDampingGain = 5.0f;
 // limit at the defaults -- so the separation is an order of magnitude.
 constexpr float kHoldingLeadRatio = 0.5f;
 constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
+// The lead test of "holding" also needs the jaw to have made less than
+// kStallProgressRad of progress over kStallWindow (0.3.10). A jaw creeping
+// through friction lag at 0.024 rad/s covers ~4 mrad in 150 ms; a blocked one
+// covers nothing. 3 mrad is ~8 quantisation steps of MIT position feedback.
+constexpr float kStallProgressRad = 0.003f;
+constexpr auto  kStallWindow = std::chrono::milliseconds(150);
 // The closed endpoint for preload purposes. Normalized, so it scales with the
 // calibrated stroke: 1e-3 of a 1.215 rad travel is 1.2 mrad. It exists only to
 // absorb float sloppiness in a caller that means 0.0 -- the preload is for the
@@ -83,7 +89,7 @@ void validate_config(const ForcePositionConfig& cfg) {
             "ForcePositionConfig.close_preload_nm must be >= 0");
     }
     // Bounded by the GRASP BUDGET, not by hold_torque_limit_nm: the preload is
-    // reserved out of that budget in position_hold_, so a preload above it would
+    // reserved out of that budget in travel_track_, so a preload above it would
     // leave the position term nothing to work with and stall the approach.
     if (cfg.close_preload_nm > cfg.grasp_torque_nm) {
         throw std::invalid_argument(
@@ -117,6 +123,10 @@ void validate_tuning(const detail::ForcePositionTuning& t,
     if (!finite(t.arrival_eps_rad) || t.arrival_eps_rad < 0.0f) {
         throw std::invalid_argument(
             "ForcePositionTuning.arrival_eps_rad must be >= 0");
+    }
+    if (!finite(t.topup_rate_nmps) || t.topup_rate_nmps <= 0.0f) {
+        throw std::invalid_argument(
+            "ForcePositionTuning.topup_rate_nmps must be > 0");
     }
 }
 
@@ -202,6 +212,8 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     arrived_ = true;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
+    stall_valid_ = false;
     fault_reason_.clear();
 }
 
@@ -211,6 +223,7 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     target_position_ = 1.0f;
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
 }
 
 // Commands only move the setpoint. There is no motion state to disturb and no
@@ -232,9 +245,17 @@ void ForcePositionPolicy::set_target(
     // follower streams the leader's position at 100 Hz, and that jitters by far
     // less than the arrival band; clearing on every change would drop the latch
     // each frame and bring back exactly the chatter it exists to prevent.
-    if (std::abs(map_.to_rad(target_position) - map_.to_rad(target_position_)) >
-        tune_.arrival_eps_rad) {
+    //
+    // Measured against where the escalation BEGAN, not the previous frame: a
+    // slowly streamed trajectory moves a few mrad per frame, never tripped the
+    // per-frame test, and its tracking lag escalated to the budget and latched
+    // mid-motion (0094s, 50 Hz cosine, reported by tc-gu-01-pc 2026-09-29).
+    // Jitter in place does not add up, so the latch still survives it.
+    if ((grasp_latched_ || topup_nm_ > 0.0f) &&
+        std::abs(map_.to_rad(target_position) - topup_anchor_raw_) >
+            tune_.arrival_eps_rad) {
         grasp_latched_ = false;
+        topup_nm_ = 0.0f;
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
@@ -246,6 +267,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     hold_raw_ = sample.actual_pos;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
@@ -260,6 +282,8 @@ void ForcePositionPolicy::fail(std::string reason) {
     holding_ = false;
     ramp_valid_ = false;
     grasp_latched_ = false;
+    topup_nm_ = 0.0f;
+    stall_valid_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -284,34 +308,6 @@ float ForcePositionPolicy::close_preload_signed_() const {
     if (target_position_ > kClosedEndpointEps) return 0.0f;
     const float close_dir = map_.reverse() ? 1.0f : -1.0f;
     return close_dir * cfg_.close_preload_nm;
-}
-
-protocol::MotorImpedanceCtrl ForcePositionPolicy::position_hold_(
-        const MotorStatusSample& sample, float desired_raw,
-        float torque_budget, float preload_nm) {
-    const float budget = std::clamp(torque_budget, kEpsilon,
-                                    cfg_.motion_torque_limit_nm);
-    const float speed = std::abs(sample.actual_vel);
-    float kd = tune_.position_kd;
-    if (speed > kEpsilon) {
-        kd = std::min(kd, budget / speed);
-    }
-    const float damping = -kd * sample.actual_vel;
-    // The preload is RESERVED OUT of the budget before the position term gets
-    // its share, which keeps the invariant this function has always held: the
-    // total request never exceeds the budget. Reserving it (rather than adding
-    // it on top) is why close_preload_nm is validated against grasp_torque_nm.
-    const float preload = std::clamp(std::abs(preload_nm), 0.0f, budget);
-    const float position_budget =
-        std::max(0.0f, budget - std::abs(damping) - preload);
-    const float error_limit = position_budget / tune_.position_kp;
-    const float error = std::clamp(desired_raw - sample.actual_pos,
-                                   -error_limit, error_limit);
-    const float target = sample.actual_pos + error;
-    const float tau_ff = (preload_nm < 0.0f) ? -preload : preload;
-    const float predicted = tune_.position_kp * error + damping + tau_ff;
-    commanded_torque_nm_ = std::min(budget, std::abs(predicted));
-    return {target, tune_.position_kp, kd, tau_ff, 0.0f};
 }
 
 /* Move toward target_raw along a TIME-BASED ramp.
@@ -412,13 +408,22 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // that makes the command sit exactly on the budget while the ramp converges
     // and exactly on it once the ramp is pinned -- tight at every step, not just
     // in the steady state.
+    //
+    // The closed-endpoint preload is RESERVED out of the budget here, before the
+    // interval is solved, so the total -- preload included -- still never
+    // exceeds it. It applies once the ramp is parked on a closed-endpoint
+    // target, whether or not the jaw is inside the arrival band: arrival is an
+    // observation and switches nothing (0.4.0).
+    const float preload_signed =
+        (std::abs(ramp_raw_ - target_raw) <= kEpsilon) ? close_preload_signed_() : 0.0f;
+    const float pd_budget = std::max(kEpsilon, budget - std::abs(preload_signed));
     {
         const float a = tune_.position_kp + kd / dt;
         const float b = tune_.position_kp * sample.actual_pos
                       + kd * ramp_prev / dt
                       + kd * sample.actual_vel;
         if (a > kEpsilon) {
-            ramp_raw_ = std::clamp(ramp_raw_, (b - budget) / a, (b + budget) / a);
+            ramp_raw_ = std::clamp(ramp_raw_, (b - pd_budget) / a, (b + pd_budget) / a);
         }
     }
 
@@ -462,17 +467,64 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // 2026-09-27). So once the jaw has stopped short, the push stays on until
     // the target changes or the jaw passes the target -- the latter meaning
     // whatever blocked it is gone, and the ordinary hold takes over.
+    //
+    // ESCALATED, NOT STEPPED, because a stop short of the target is not proof
+    // of an object. Breakaway friction parks a free jaw at friction/kp: ~5 mrad
+    // on the EL05, inside the arrival band, but ~14 mrad on the RS00 0088s
+    // (2026-09-29), outside it. Stepping that straight to the budget -- 1 Nm
+    // against ~0.3 Nm of friction -- shot the empty jaw ~30 mrad through the
+    // target, where the same test fired from the other side: a ~3 Hz limit
+    // cycle, reported as holding_force, that never arrived. So the push starts
+    // at what the spring already gives and grows at topup_rate_nmps while the
+    // jaw stays at rest. Friction lets go a hair above the spring, the push
+    // then decays as the jaw creeps in, and the ordinary hold takes over in the
+    // band. An object holds the whole budget, and only then is it latched.
     const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
     const float ramp_gap = std::abs(ramp_raw_ - target_raw);
     const bool parked = ramp_gap <= kEpsilon;
     const float short_by = dir * (target_raw - sample.actual_pos);
-    if (parked && short_by > tune_.arrival_eps_rad &&
-        std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio) {
-        grasp_latched_ = true;
-        grasp_dir_ = dir;
+    // "Parked" within the arrival band, as for the latched push below: a
+    // streamed target jitters by a few mrad per frame, and a ramp one frame
+    // behind it must not restart the escalation from the spring every frame.
+    const bool short_of_target =
+        (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
+        short_by > tune_.arrival_eps_rad;
+    const bool at_rest =
+        std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
+    const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
+    if (!grasp_latched_) {
+        const float step_nm = tune_.topup_rate_nmps * dt;
+        if (short_of_target && at_rest) {
+            if (topup_nm_ <= 0.0f) {
+                topup_anchor_raw_ = target_raw;   // escalation begins here
+            }
+            topup_nm_ = std::min(budget,
+                                 std::max(topup_nm_, dir * spring) + step_nm);
+            if (topup_nm_ >= budget - kEpsilon) {
+                grasp_latched_ = true;
+                grasp_dir_ = dir;
+            }
+        } else if (short_of_target) {
+            // Broke away: let the push fall back to the spring gently, so the
+            // jaw creeps in rather than being released into a coast.
+            topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
+        } else {
+            topup_nm_ = 0.0f;
+        }
     }
     if (grasp_latched_ && short_by < -tune_.arrival_eps_rad) {
         grasp_latched_ = false;
+        topup_nm_ = 0.0f;
+    }
+    if (!grasp_latched_ && short_of_target && topup_nm_ > dir * spring) {
+        // Escalating: pinned on the target like the latched push below, but the
+        // damping term stays in, so a jaw that breaks away is still braked.
+        ramp_raw_ = target_raw;
+        const float tau_ff = dir * topup_nm_ - spring;
+        commanded_torque_nm_ = std::min(
+            cfg_.motion_torque_limit_nm,
+            std::abs(dir * topup_nm_ - kd * sample.actual_vel));
+        return {ramp_raw_, tune_.position_kp, kd, tau_ff, 0.0f};
     }
     // Once latched, "parked" tolerates a ramp still catching up with a target
     // that jittered by less than the arrival band -- which is all a streamed
@@ -499,8 +551,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     }
     // Report the honest prediction, bounded only by the motion limit. Clamping
     // it to the grasp budget would hide the damping term's legitimate excursions.
-    commanded_torque_nm_ = std::min(cfg_.motion_torque_limit_nm, std::abs(predicted));
-    return {ramp_raw_, tune_.position_kp, kd, 0.0f, ramp_vel};
+    commanded_torque_nm_ =
+        std::min(cfg_.motion_torque_limit_nm, std::abs(predicted + preload_signed));
+    return {ramp_raw_, tune_.position_kp, kd, preload_signed, ramp_vel};
 }
 
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
@@ -530,13 +583,18 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
+    // ONE CONTROL LAW (0.4.0). Arrival used to switch to a separate settled
+    // hold -- no velocity feed-forward, ramp invalidated, its own error clamp
+    // -- and a streamed target keeps the jaw near the arrival band, so the law
+    // switched several times a second: brake on entering the band, re-seed the
+    // ramp from the jaw on leaving it, a stop-go gait (0094s, tc-gu-01-pc, 50 Hz
+    // cosine). The ramp already stops on a reached target (ramp_vel -> 0), and
+    // the budget interval already bounds the total, so the travel law IS the
+    // hold. Arrival and HoldingPosition remain, as observations only -- the
+    // same way ImpedanceController has a single law and reports states.
     protocol::MotorImpedanceCtrl cmd;
     blocked_short_ = false;
-    if (arrived_) {
-        ramp_valid_ = false;                // next move restarts the ramp here
-        cmd = position_hold_(sample, target_raw, grasp_torque_nm_,
-                             close_preload_signed_());
-    } else {
+    {
         // A latched push keeps its direction even once the jaw is fractionally
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
@@ -555,9 +613,25 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float lead = std::abs(ramp_raw_ - sample.actual_pos);
     // blocked_short_ is the same observation where the lead cannot fill: the
     // ramp is parked on the target and the budget is being applied anyway.
+    //
+    // The lead test is gated on POSITION PROGRESS over a window, not on the
+    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
+    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
+    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
+    // the jaw is still moving -- the reported state flipped HoldingForce /
+    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
+    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
+    if (!stall_valid_ ||
+        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
+        stall_pos_raw_ = sample.actual_pos;
+        stall_since_ = now;
+        stall_valid_ = true;
+    }
+    const bool stalled = (now - stall_since_) >= kStallWindow;
     holding_ = !arrived_ && ramp_valid_ &&
                (blocked_short_ ||
                 (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
+                 stalled &&
                  std::abs(sample.actual_vel) <=
                      cfg_.close_speed_radps * kHoldingVelRatio));
 

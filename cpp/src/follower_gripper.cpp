@@ -177,6 +177,22 @@ FollowerGripper::FollowerGripper(const Config& cfg)
                 "预压会压过归一化 0.0 所表示的位置。"
                 " (could not read firmware version; 1.2.5 or newer is required)");
         }
+        // Below 1.2.11 the follower opens, but with a known field failure: one
+        // control-UART overrun stops command reception for good while the
+        // status stream keeps flowing, and 300 ms later the host-timeout safe
+        // hold drops the grip to 0.35 N*m (0086s, ~3 min into a 3 N*m hold).
+        // Warn, not refuse: the device is usable for short sessions and the
+        // upgrade path goes through this class.
+        constexpr uint32_t recommended = (1u << 16) | (2u << 8) | 11u;
+        if (known && have >= need && have < recommended) {
+            logger()->warn(
+                "FollowerGripper: 从爪固件 {} 低于 1.2.11 —— 控制串口一次溢出后会"
+                "永久收不到命令(状态流照常,300ms 后夹持降到 0.35N·m、手指松开)。"
+                "建议升级: python python/examples/ota_update.py slave {} ,刷完拔插 24V。"
+                " (follower firmware below 1.2.11 can lose its command channel for "
+                "good after one UART overrun; upgrade recommended)",
+                fw_version_str, fw_sn_str);
+        }
     }
 
     // A follower running on the compile-time DEFAULT motor model is quantising
@@ -580,7 +596,11 @@ EnvelopeAudit FollowerGripper::audit_envelope(std::chrono::milliseconds timeout)
             if (motor().get_model(timeout).default_envelope != 0 && spec) {
                 protocol::GripperEnvelope d{};
                 d.cont_torque_nm = spec->stall_cont_torque_nm;
-                d.peak_torque_nm = spec->t_max_nm;
+                // Follower 1.2.13 uses the rated torque (as ensure_envelope()
+                // does); 1.2.12 used t_max. Report what the device enforces.
+                const bool v1212 = fw_version_ && fw_version_->major == 1 &&
+                                   fw_version_->minor == 2 && fw_version_->patch == 12;
+                d.peak_torque_nm = v1212 ? spec->t_max_nm : spec->rated_torque_nm;
                 d.flags = static_cast<uint16_t>(
                     protocol::GripperEnvelopeFlag::Valid |
                     protocol::GripperEnvelopeFlag::Enforce |

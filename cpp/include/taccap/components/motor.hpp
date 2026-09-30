@@ -14,6 +14,7 @@
 #include <taccap/bus/transport.hpp>
 #include <taccap/protocol/payloads.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -325,8 +326,30 @@ public:
     // The default timeout covers the firmware's own wait: measured round trips
     // run to ~1371 ms, so the old 500 ms default timed out before the reply
     // could possibly arrive and made a working read look like a dead motor.
+    //
+    // FALLS BACK TO FLASH (follower >= 1.2.14). When the motor cannot answer --
+    // on MIT it ignores the version frame -- the follower returns the version it
+    // recorded instead, and `source` says which: MotorVersionSource::Live,
+    // FlashHost (written by set_motor_fw_version) or FlashAuto (taken by the
+    // firmware on a private-protocol boot). Older firmware reports valid=0 on
+    // MIT and source is always 0.
     protocol::MotorVersion motor_version(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{3000});
+
+    // Record the motor's firmware version in the follower's flash (0x5C,
+    // follower >= 1.2.14), so motor_version() can report it while the motor is
+    // on MIT. A factory SOP step -- the operator enters what the nameplate or
+    // the vendor tool shows -- and the thing to do after a successful motor
+    // OTA. Encoding is the raw bytes, high first: an EL05 the vendor writes
+    // "1.0.5.0.4" is {10, 5, 0, 4}; an RS00 "0.0.3.32" is {0, 0, 3, 32}.
+    //
+    // The reply echoes the record now in flash; a mismatch with what was
+    // written throws ProtocolError. Refused (SysBusy / ControlRunning) while a
+    // controller, auto-calibration or OTA is running: it erases a flash sector.
+    // Takes effect at once; no power cycle.
+    protocol::MotorFwVersionRecord set_motor_fw_version(
+        const std::array<uint8_t, 4>& version,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000});
 
     // ---- Which actuator this gripper is built around (0x59 / 0x5A) ---------
     // This asks the MCU what it has RECORDED, not the motor what it is. The

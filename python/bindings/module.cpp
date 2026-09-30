@@ -151,6 +151,7 @@ PYBIND11_MODULE(_taccap_native, m) {
         .value("GetMotorModel",      tp::Cmd::GetMotorModel)
         .value("SetMotorModel",      tp::Cmd::SetMotorModel)
         .value("MotorCanExtXfer",    tp::Cmd::MotorCanExtXfer)
+        .value("SetMotorFwVersion",  tp::Cmd::SetMotorFwVersion)
         .value("SetImuConfig",       tp::Cmd::SetImuConfig)
         .value("GetImuConfig",       tp::Cmd::GetImuConfig)
         .value("SetEncoderConfig",   tp::Cmd::SetEncoderConfig)
