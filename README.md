@@ -148,11 +148,11 @@ the rest of the flashing detail.
 ### RobStride motor firmware
 
 This is the RobStride motor **inside** the follower — an EL05 or an RS00 — not
-the gripper MCU, and the SDK does **not** enforce a motor version: reading it
-needs follower firmware 1.2.6+ (`motor.motor_version()`, command `0x58`), and
-under the MIT protocol the motor was measured not to answer extended frames at
-all, so the version is readable only under the private protocol and a startup
-check has nothing reliable to stand on.
+the gripper MCU. The SDK itself does **not** enforce a motor version (the
+factory test tool does, against the floors below). Reading it needs follower
+firmware 1.2.6+ (`motor.motor_version()`, command `0x58`), and under the MIT
+protocol the motor was measured not to answer extended frames at all, so before
+follower 1.2.14 the version is readable only under the private protocol.
 
 **Since follower 1.2.14 the version is recorded in the follower's flash**, so it
 reads under MIT too: `motor.motor_version()` returns the record when the motor
@@ -165,8 +165,9 @@ on an EL05, `"0.0.3.32"` on an RS00 -- and again after every motor OTA.
 `MotorVersion.vendor_str` shows it the same way. The write echoes the flash record and raises on a mismatch; reading never
 writes flash. Older follower firmware keeps reporting `valid == 0` under MIT.
 
-**EL05: 1.0.5.0.4 or newer.** This floor is EL05-only — RS00 motor firmware is
-numbered 0.0.3.x. It is a documented requirement.
+**Required motor firmware: EL05 1.0.5.0.4 or newer, RS00 0.0.3.32 or newer.**
+The two lines are numbered independently and are not comparable. Below the
+floor a unit fails factory test.
 Measured before and after upgrading the same unit: on 1.0.5.0.2 the velocity
 feedback read as a constant that did not track motion, with 117% motion ripple;
 on 1.0.5.0.4 the same unit behaved normally. Because it is the same device
@@ -190,7 +191,8 @@ the gripper. Afterwards the motor restarts on MIT, so its version is readable
 only after switching to private again. A gripper OTA also switches the motor
 back to MIT, so flash the gripper first and the motor second. Measured on an
 RS00 unit: 0.0.3.22 → 0.0.3.32 removed the motion jitter, leaving
-`ForcePositionController` ripple around 5% at 1.1 rad/s.
+`ForcePositionController` ripple around 5% at 1.1 rad/s — which is why 0.0.3.32
+is the RS00 floor (one unit, before/after; not reproduced by flashing back).
 
 ## Install
 
