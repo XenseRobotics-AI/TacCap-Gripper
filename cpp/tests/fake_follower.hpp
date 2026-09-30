@@ -81,6 +81,8 @@ public:
     }
     unsigned submit_count() const { return submits_.load(); }
     unsigned disable_count() const { return disables_.load(); }
+    // Make 0x5C store something other than what was sent.
+    void set_corrupt_fw_ver_writes(bool on) { corrupt_fw_ver_writes_.store(on); }
 
     // ---- Persisted gripper config / motor spec -----------------------------
     // config_writes() is what pins "the second ensure_envelope() does not
@@ -250,6 +252,34 @@ private:
             case tp::Cmd::SetMotorModel:
                 pty_.send_response(f.seq, f.cmd, {});
                 return;
+            case tp::Cmd::SetMotorFwVersion: {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (f.payload.size() != 4) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::LengthMismatch);
+                    return;
+                }
+                std::memcpy(fw_ver_, f.payload.data(), 4);
+                if (corrupt_fw_ver_writes_.load()) fw_ver_[3] ^= 0x01;
+                fw_ver_valid_ = true;
+                fw_ver_source_ = tp::MotorVersionSource::FlashHost;
+                tp::MotorFwVersionRecord r{};
+                std::memcpy(r.version, fw_ver_, 4);
+                r.valid = 1; r.source = fw_ver_source_;
+                pty_.send_response(f.seq, f.cmd, pod_bytes(&r, sizeof(r)));
+                return;
+            }
+            case tp::Cmd::GetMotorVersion: {
+                // MIT: the motor never answers; fall back to the flash record.
+                std::lock_guard<std::mutex> lk(mu_);
+                tp::MotorVersion v{};
+                v.protocol_mode = 2;
+                if (fw_ver_valid_) {
+                    std::memcpy(v.version, fw_ver_, 4);
+                    v.valid = 1; v.source = fw_ver_source_;
+                }
+                pty_.send_response(f.seq, f.cmd, pod_bytes(&v, sizeof(v)));
+                return;
+            }
             case tp::Cmd::GetMotorModel: {
                 // motor_model_t, 20 B. from_flash is the only field the SDK's
                 // open-time check reads.
@@ -303,6 +333,10 @@ private:
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
     std::atomic<unsigned> disables_{0};
+    std::atomic<bool> corrupt_fw_ver_writes_{false};
+    uint8_t fw_ver_[4] = {0, 0, 0, 0};
+    bool fw_ver_valid_ = false;
+    uint8_t fw_ver_source_ = 0;
     std::atomic<bool> spec_supported_{true};
     std::atomic<bool> corrupt_sn_writes_{false};
     std::atomic<bool> model_from_flash_{true};

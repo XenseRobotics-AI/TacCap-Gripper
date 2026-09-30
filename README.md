@@ -154,6 +154,17 @@ under the MIT protocol the motor was measured not to answer extended frames at
 all, so the version is readable only under the private protocol and a startup
 check has nothing reliable to stand on.
 
+**Since follower 1.2.14 the version is recorded in the follower's flash**, so it
+reads under MIT too: `motor.motor_version()` returns the record when the motor
+cannot answer, with `from_flash` / `source` saying so (1 = written by a host,
+2 = taken by the firmware on a private-protocol boot). The firmware records it
+by itself whenever the motor boots on the private protocol (a new motor always
+does). For units already on MIT, record it as a factory SOP step with
+`motor.set_motor_fw_version("0.0.3.32")` -- raw bytes, high first, so an EL05
+the vendor writes `1.0.5.0.4` is `"10.5.0.4"` -- and again after every motor
+OTA. The write echoes the flash record and raises on a mismatch; reading never
+writes flash. Older follower firmware keeps reporting `valid == 0` under MIT.
+
 **EL05: 1.0.5.0.4 or newer.** This floor is EL05-only — RS00 motor firmware is
 numbered 0.0.3.x. It is a documented requirement.
 Measured before and after upgrading the same unit: on 1.0.5.0.2 the velocity

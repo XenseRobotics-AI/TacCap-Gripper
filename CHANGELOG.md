@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Motor firmware version readable under MIT** (follower firmware >= 1.2.14,
+  protocol V2.8). The follower records the motor's firmware version in flash:
+  by itself on a private-protocol boot, or when a host calls the new
+  `Motor.set_motor_fw_version()` (command `0x5C`; a factory SOP step, and the
+  thing to do after a motor OTA). `motor_version()` returns that record when the
+  motor cannot answer, and the formerly reserved byte is now `source`
+  (`MotorVersionSource::Live / FlashHost / FlashAuto`; Python also exposes
+  `from_flash`). `set_motor_fw_version()` checks the echoed flash record and
+  raises on a mismatch, like `set_sn()`. Reading never writes flash: a flash save
+  erases and rewrites the whole configuration sector. On older firmware
+  `set_motor_fw_version()` raises with the required version and
+  `motor_version()` behaves as before.
+
 ## [0.4.0] - 2026-09-29
 
 A minor bump for a behaviour change downstream code can observe:

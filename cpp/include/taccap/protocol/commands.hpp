@@ -9,13 +9,14 @@
 // and any host-side Python implementation are secondary.
 //
 // Tracked firmware protocol: **wire framing V1.8** (global byte stuffing, see
-// bus/frame.cpp) + **command set through V2.6**, mirrored up to and including
-// 0x5B (V1.7 motor / CAN-id / gripper-config commands; V1.9 WS2812 + private
+// bus/frame.cpp) + **command set through V2.8**, mirrored up to and including
+// 0x5C (V1.7 motor / CAN-id / gripper-config commands; V1.9 WS2812 + private
 // motor params; V2.0/V2.1 fisheye-camera and leader-encoder-max calibration;
 // V2.2 follower startup limit-torque, motor fault report and extended motor
 // status; later: motor spec 0x56, home diag 0x57, motor version 0x58 (follower
-// 1.2.6), motor model record 0x59/0x5A (1.2.7) and CAN extended-frame relay
-// 0x5B (1.2.8)), plus the two diagnostic commands below (0x54 / 0x55), which
+// 1.2.6), motor model record 0x59/0x5A (1.2.7), CAN extended-frame relay
+// 0x5B (1.2.8), and the motor-firmware-version record 0x5C with 0x58's flash
+// fallback (V2.8, 1.2.14)), plus the two diagnostic commands below (0x54 / 0x55), which
 // are NOT part of a V2.x level and are available on both roles.
 //
 // Firmware builds carrying command set V2.1: leader (master) 1.2.0,
@@ -132,6 +133,7 @@ enum class Cmd : uint8_t {
     // while the control loop, auto-calibration or a gripper OTA is running:
     // it can emit any frame, enable and stop included.
     MotorCanExtXfer          = 0x5B,  // 扩展帧透传(req 24B / resp 16B)
+    SetMotorFwVersion        = 0x5C,  // 记电机固件版本进 flash(req 4B / resp 8B),fw >= 1.2.14
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

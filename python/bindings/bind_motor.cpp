@@ -7,6 +7,7 @@
 
 #include "bindings_common.hpp"
 
+#include <array>
 #include <cstring>
 
 namespace xense::taccap::python {
@@ -281,15 +282,44 @@ void bind_motor(py::module_& m) {
                       "commanding motion again.")
         .def_readonly("protocol_mode", &protocol::MotorVersion::protocol_mode,
                       "The motor's CAN protocol when the read was made: 0 = private, 2 = MIT.")
+        .def_readonly("source", &protocol::MotorVersion::source,
+                      "Where `version` came from (follower >= 1.2.14; always 0 before):\n"
+                      "0 = read from the motor just now; 1 = the motor could not answer and\n"
+                      "this is the record a host wrote with Motor.set_motor_fw_version;\n"
+                      "2 = the record the firmware took on a private-protocol boot.")
+        .def_property_readonly("from_flash", [](const protocol::MotorVersion& v) {
+            return v.valid && v.source != protocol::MotorVersionSource::Live;
+        }, "True when `version` is the follower's flash record, not a live read.")
         .def("__str__", [](const protocol::MotorVersion& v) {
             if (!v.valid) {
                 return std::string("MotorVersion(invalid, protocol=") +
-                       (v.protocol_mode == 2 ? "MIT — 电机在 MIT 下不理扩展帧"
+                       (v.protocol_mode == 2 ? "MIT — 电机在 MIT 下不理扩展帧,且没有 flash 记录"
                                              : "private") + ")";
             }
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "MotorVersion(%u.%u.%u.%u)",
-                          v.version[0], v.version[1], v.version[2], v.version[3]);
+            const char* src = v.source == protocol::MotorVersionSource::FlashHost
+                                  ? ", flash: host-written"
+                              : v.source == protocol::MotorVersionSource::FlashAuto
+                                  ? ", flash: auto-recorded"
+                                  : "";
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "MotorVersion(%u.%u.%u.%u%s)",
+                          v.version[0], v.version[1], v.version[2], v.version[3], src);
+            return std::string(buf);
+        });
+
+    py::class_<protocol::MotorFwVersionRecord>(m, "MotorFwVersionRecord",
+        "The motor-firmware-version record in the follower's flash, as echoed by\n"
+        "Motor.set_motor_fw_version (Cmd 0x5C, follower >= 1.2.14).")
+        .def_property_readonly("version", [](const protocol::MotorFwVersionRecord& r) {
+            return py::make_tuple(r.version[0], r.version[1], r.version[2], r.version[3]);
+        })
+        .def_readonly("valid",  &protocol::MotorFwVersionRecord::valid)
+        .def_readonly("source", &protocol::MotorFwVersionRecord::source)
+        .def("__repr__", [](const protocol::MotorFwVersionRecord& r) {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "MotorFwVersionRecord(%u.%u.%u.%u, valid=%u, source=%u)",
+                          r.version[0], r.version[1], r.version[2], r.version[3],
+                          r.valid, r.source);
             return std::string(buf);
         });
 
@@ -840,13 +870,57 @@ void bind_motor(py::module_& m) {
            "因为『电机没应答』和『这里不支持这条命令』是两种不同的诊断,一个 NACK\n"
            "说不清是哪种。\n\n"
            "**已实测**:私有协议下可读(0074s / 0018s 都答了 1.0.5.0.x)。MIT 下\n"
-           "**读不到** —— 请求是扩展帧,MIT 下电机不理扩展帧(实测 0086s)。要读版本\n"
-           "得先切私有协议,切协议来回要断两次 24V。\n\n"
+           "电机**不回** —— 请求是扩展帧,MIT 下电机不理扩展帧(实测 0086s)。\n"
+           "从爪固件 >= 1.2.14 此时返回 flash 里的记录,source / from_flash 标明;\n"
+           "记录来自私有协议开机时的自动识别,或 set_motor_fw_version() 写入。\n"
+           "更旧的固件在 MIT 下 valid=0。\n\n"
            "默认超时 3000 ms:实测往返可达约 1371 ms,原来的 500 ms 会在应答可能到达\n"
            "之前就超时,把一次正常读取显示成电机没反应。\n\n"
            "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"
            "的电机会把它当停止执行。motor_stopped=1 就是这种情况,再发运动命令前\n"
            "要重新 enable()。")
+        .def("set_motor_fw_version", [](Motor& self, py::object version, unsigned timeout_ms) {
+            std::array<uint8_t, 4> v{};
+            std::vector<long> parts;
+            if (py::isinstance<py::str>(version)) {
+                std::string s = version.cast<std::string>();
+                size_t start = 0;
+                while (true) {
+                    const size_t dot = s.find('.', start);
+                    const std::string tok = s.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+                    if (tok.empty() || tok.find_first_not_of("0123456789") != std::string::npos) {
+                        throw py::value_error("motor firmware version must be four dot-separated numbers, e.g. '0.0.3.32'");
+                    }
+                    parts.push_back(std::stol(tok));
+                    if (dot == std::string::npos) break;
+                    start = dot + 1;
+                }
+            } else {
+                for (auto item : version) parts.push_back(item.cast<long>());
+            }
+            if (parts.size() != 4) {
+                throw py::value_error(
+                    "motor firmware version needs exactly 4 parts (raw bytes, high first). "
+                    "RobStride writes the EL05's as '1.0.5.0.4' -- that is 10.5.0.4, "
+                    "i.e. (10, 5, 0, 4); an RS00 '0.0.3.32' is (0, 0, 3, 32).");
+            }
+            for (size_t i = 0; i < 4; ++i) {
+                if (parts[i] < 0 || parts[i] > 255) {
+                    throw py::value_error("each motor firmware version part must be 0..255");
+                }
+                v[i] = static_cast<uint8_t>(parts[i]);
+            }
+            py::gil_scoped_release g;
+            return self.set_motor_fw_version(v, std::chrono::milliseconds(timeout_ms));
+        }, py::arg("version"), py::arg("timeout_ms") = 1000,
+           "把**电机自身**的固件版本记进从爪 flash(0x5C,需从爪固件 >= 1.2.14)。\n\n"
+           "电机只在私有协议下回版本帧,现场几乎都在 MIT,所以这是产线 SOP 的一步:\n"
+           "工人照铭牌 / 上位机读到的版本写入;电机 OTA 成功后也应写一次。之后\n"
+           "motor_version() 在 MIT 下返回它(source=1)。\n\n"
+           "version:'0.0.3.32' 或 (0, 0, 3, 32)。四段原始字节、高位在前。EL05 厂家\n"
+           "写作 '1.0.5.0.4',实为 (10, 5, 0, 4) —— 五段写法会被拒绝并提示。\n\n"
+           "返回 flash 回显的记录;与所写不一致抛 ProtocolError。控制器 / 自动标定 /\n"
+           "OTA 运行中被拒(要擦 flash 扇区)。立即生效,不需要断电。")
         .def("can_ext_xfer", [](Motor& self, uint32_t ext_id, py::bytes data,
                                 unsigned reply_timeout_ms, uint32_t match_mask,
                                 uint32_t match_value) {
