@@ -62,7 +62,9 @@ def read_version(motor, timeout_s: float = 20.0):
     while time.monotonic() < deadline:
         try:
             v = motor.motor_version(3000)
-            if v.valid:
+            # Live reads only: follower >= 1.2.14 answers from its flash record
+            # when the motor is silent, and that would be the OLD version.
+            if v.valid and not getattr(v, "from_flash", False):
                 return ".".join(str(x) for x in v.version)
         except Exception:  # the motor is restarting; keep asking
             pass
@@ -127,6 +129,16 @@ def main() -> int:
 
     session.update_from_bytes(data, progress)
     print(f"\n=== done in {time.monotonic() - t0:.1f}s; waiting for the motor ===")
+
+    # Record the new version in the follower's flash (0x5C, follower >= 1.2.14),
+    # so motor_version() reports it once the motor is back on MIT -- where the
+    # motor itself cannot answer. The image's own version is what was flashed.
+    if version:
+        try:
+            motor.set_motor_fw_version(version)
+            print(f"  recorded     : motor fw {version} in follower flash")
+        except Exception as exc:  # older follower firmware has no 0x5C
+            print(f"  not recorded : {exc}")
 
     # Measured on the first real flash: the motor restarts on MIT, and the MCU
     # follows it there. The version frame needs private, so under MIT "no
