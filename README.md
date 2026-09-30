@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.6 and the follower 1.2.13; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.14; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. **A leader reporting 1.2.6 may be either of two images**: the

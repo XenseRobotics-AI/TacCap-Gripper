@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-30
+
 ### Added
 
 - **Motor firmware version readable under MIT** (follower firmware >= 1.2.14,
@@ -25,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   erases and rewrites the whole configuration sector. On older firmware
   `set_motor_fw_version()` raises with the required version and
   `motor_version()` behaves as before.
+
+  Verified on 0094s (RS00, follower 1.2.14): 1.2.12 with this SDK reads
+  `valid == 0` under MIT (compatible); 1.2.14 with no record likewise; after
+  `set_motor_fw_version("0.0.3.32")` it reads `0.0.3.32 (flash: host-written)`
+  under MIT, SN / model / 0x700B / gripper config / calibration unchanged, and
+  the record survives a 24 V power cycle. The automatic record on a
+  private-protocol boot (`FlashAuto`) was not exercised.
+- `examples/motor_ota_update.py` records the new version after a successful
+  flash and accepts only a live read as proof of the update.
+
+### Changed
+
+- Shipped follower image is now **1.2.14** (protocol V2.8): the motor firmware
+  version record above. Leader image unchanged (1.2.6).
 
 ## [0.4.0] - 2026-09-29
 

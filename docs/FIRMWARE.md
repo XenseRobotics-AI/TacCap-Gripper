@@ -82,7 +82,7 @@ python python/examples/ota_update.py \
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.6 and the follower 1.2.13, and neither is "behind" the other. Both
+leader is 1.2.6 and the follower 1.2.14, and neither is "behind" the other. Both
 carry the same control-UART receive fix, which lives in shared code.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24.
 
