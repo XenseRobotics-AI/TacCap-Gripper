@@ -219,29 +219,34 @@ summary reports whether each image was actually flashed or skipped. Use
 `--reflash-motor` or `--reflash-follower` only when intentionally rewriting the
 same version; each flag bypasses its corresponding reflash question.
 
-`--direction` defaults to `negative`: even with only the motor image argument,
-the script sets Reverse and requires `open_sign=-1` after final homing.
-Use explicit `positive` or `keep` only for an intentionally different setup.
-Software cannot infer which physical stop is open; verify the mechanism visually.
-The final check rejects a suspiciously short calibration (default `< 0.8 rad`,
-configurable with `--min-travel-rad`).
+`--direction` defaults to `model`, the follower 1.2.12 per-model default:
+`negative` (Reverse) for EL05, `positive` for RS00. Power-on homing must close
+first and record the closed stop as zero, then open. Software cannot tell which
+physical stop it reached first, so before the final 24 V cycle the script asks
+you to watch the jaw, and after homing it asks `y/n` whether it closed first.
+`--yes` does not skip this. On `n` it flips Reverse, asks for one more 24 V
+cycle and asks again; a second `n` stops with an error, because then neither
+direction zeroes on the closed stop. EOF also stops. Use explicit `positive`,
+`negative` or `keep` only for an intentionally different setup; the same
+confirmation still applies. The final check also rejects a suspiciously short
+calibration (default `< 0.8 rad`, configurable with `--min-travel-rad`).
 
-If firmware is already upgraded but the physical opening direction is reversed,
+If firmware is already upgraded but homing opens first (zero on the open stop),
 use direction-only mode (the motor image is read only to validate its model;
 neither image is flashed and the MCU manifest is not needed):
 
 ```bash
 python python/examples/full_ota_update.py \
     firmware/motor/rs00-0.0.3.32.bin TCGU01A24Z0000s \
-    --direction-only --direction negative
+    --direction-only --direction positive
 ```
 
-Choose `negative` only when the current positive direction is physically wrong,
-or `positive` for the opposite correction. This mode requires a recorded matching
-model, MIT and enabled auto-calibration. It reads back the direction, requires a
-24 V cycle, and checks the new homing direction and travel. Keep the mechanism
-clear. Numeric checks cannot prove physical endpoint semantics. Full OTA also
-reapplies an explicit direction immediately before its final MIT/homing cycle.
+Pass the direction you want (`model`, `positive` or `negative`; not `keep`).
+This mode requires a recorded matching model, MIT and enabled auto-calibration.
+It reads back the direction, requires a 24 V cycle, checks the new homing
+direction and travel, and asks the same close-first question, flipping once on
+`n`. Keep the mechanism clear. Full OTA also reapplies the direction immediately
+before its final MIT/homing cycle.
 
 The two lower-level tools remain available when only one image needs flashing
 or when debugging a failed stage:

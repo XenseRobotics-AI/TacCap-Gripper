@@ -50,6 +50,10 @@ from xense.taccap import (  # noqa: E402
 
 MODEL_IDS = {"EL05": 0, "RS00": 1}
 MODEL_STARTUP_LIMITS = {"EL05": 6.0, "RS00": 14.0}
+# Follower 1.2.12's per-model default: EL05 reverse, RS00 not (firmware/README.md).
+MODEL_OPEN_DIRECTIONS = {"EL05": "negative", "RS00": "positive"}
+# The original direction plus one automatic flip; a second "no" is mechanical.
+MAX_DIRECTION_ATTEMPTS = 2
 MIN_MOTOR_OTA_FOLLOWER = (1, 2, 8)
 MIN_MODEL_SETUP_FOLLOWER = (1, 2, 12)
 
@@ -94,6 +98,38 @@ def _apply_direction(cfg, direction: str) -> bool:
     else:
         cfg.flags &= ~0x0002
     return int(cfg.flags) != before
+
+
+def _resolve_direction(direction: str, model_name: str) -> str:
+    if direction == "model":
+        return MODEL_OPEN_DIRECTIONS[model_name]
+    return direction
+
+
+def _opposite_direction(cfg) -> str:
+    return "positive" if cfg.flags & 0x0002 else "negative"
+
+
+def _print_close_first_watch() -> None:
+    print("  断电重启后请盯住夹爪：必须先闭合到底（这一端记为零位），再张开到底。")
+    print("  若先张开，说明方向反了；标定结束后会让你确认。", flush=True)
+
+
+def _confirm_close_first(firmware_sn: str) -> bool:
+    """Only the operator can tell which physical stop the firmware zeroed on."""
+    while True:
+        try:
+            answer = input(
+                f"[方向确认] {firmware_sn} 刚才上电标定时，是否先闭合到底、再张开？[y/n]: "
+            )
+        except EOFError as exc:
+            raise RuntimeError("未确认标定方向；零位必须在闭合端，停止") from exc
+        answer = answer.strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("  请输入 y 或 n；这一步不能跳过。")
 
 
 class _RestartDetector:
@@ -160,7 +196,9 @@ def _read_uptime(ep, identity):
         return int(gripper.device.heartbeat().uptime_ms)
 
 
-def _wait_power_cycle(identity, timeout_s: float, reason: str):
+def _wait_power_cycle(
+    identity, timeout_s: float, reason: str, *, watch_homing: bool = False
+):
     firmware_sn, _mcu_serial = identity
     ep = _wait_ready(identity, timeout_s, "the follower before power cycling")
     before = _read_uptime(ep, identity)
@@ -169,6 +207,8 @@ def _wait_power_cycle(identity, timeout_s: float, reason: str):
     print(f"[需要断电] {reason}")
     print("  现在拔掉这只从爪的 24 V，保持至少 2 秒，再插回。")
     print("  USB 保持连接；仅拔 USB 不算断电。", flush=True)
+    if watch_homing:
+        _print_close_first_watch()
     print(f"  MCU uptime 基线 {before} ms；等待心跳确认 MCU 重新计时。", flush=True)
 
     deadline = time.monotonic() + timeout_s
@@ -656,7 +696,9 @@ def _switch_back_to_mit(identity, timeout_s: float, direction="keep"):
         _write_direction(gripper, direction)
         if gripper.motor.get_protocol() != MotorProtocol.Mit:
             _switch_protocol(gripper, MotorProtocol.Mit)
-    return _wait_power_cycle(identity, timeout_s, "切回 MIT 并执行最终自动标定")
+    return _wait_power_cycle(
+        identity, timeout_s, "切回 MIT 并执行最终自动标定", watch_homing=True
+    )
 
 
 def _final_validation(ep, model_name: str, direction: str, min_travel: float):
@@ -722,9 +764,36 @@ def _final_validation(ep, model_name: str, direction: str, min_travel: float):
         return _version_text(_version_tuple(gripper.firmware_version))
 
 
+def _validate_close_first(
+    identity, ep, model_name: str, direction: str, min_travel: float, timeout_s: float
+):
+    """Numeric checks, then the operator's eyes; flip once if homing opened first."""
+    for attempt in range(1, MAX_DIRECTION_ATTEMPTS + 1):
+        version = _final_validation(ep, model_name, direction, min_travel)
+        if _confirm_close_first(identity[0]):
+            print(f"[方向] 操作者确认先闭合再张开，零位在闭合端（{direction}）。")
+            return version, direction
+        if attempt == MAX_DIRECTION_ATTEMPTS:
+            break
+        with FollowerGripper(mcu_device=ep.mcu_device) as gripper:
+            direction = _opposite_direction(gripper.get_gripper_config())
+            print(
+                f"[方向] 标定先张开，零位记在了张开端；反转为 {direction} 后重新标定。"
+            )
+            _write_direction(gripper, direction)
+        ep = _wait_power_cycle(
+            identity, timeout_s, "反转方向后重新自动标定", watch_homing=True
+        )
+    raise RuntimeError(
+        "两个方向标定都不是先闭合再张开；零位不可信，停止。检查机构或电机接线"
+    )
+
+
 def _direction_only(args, model_name):
     if args.direction == "keep":
-        raise RuntimeError("--direction-only 必须指定 --direction positive 或 negative")
+        raise RuntimeError(
+            "--direction-only 不能用 keep；用 model、positive 或 negative"
+        )
     if args.reflash_motor or args.reflash_follower:
         raise RuntimeError("--direction-only 不能与重刷选项同时使用")
     ep, _, _ = _target.resolve_target(args.target)
@@ -755,9 +824,18 @@ def _direction_only(args, model_name):
             ):
                 raise RuntimeError("确认失败，未修改方向")
         _write_direction(gripper, args.direction)
-    ep = _wait_power_cycle(identity, args.power_cycle_timeout, "应用方向并重新自动标定")
-    _final_validation(ep, model_name, args.direction, args.min_travel_rad)
-    print("方向与标定数据校验通过；请观察实物确认张开/闭合端点。未刷写任何固件。")
+    ep = _wait_power_cycle(
+        identity, args.power_cycle_timeout, "应用方向并重新自动标定", watch_homing=True
+    )
+    _validate_close_first(
+        identity,
+        ep,
+        model_name,
+        args.direction,
+        args.min_travel_rad,
+        args.power_cycle_timeout,
+    )
+    print("方向与标定校验通过，零位在闭合端。未刷写任何固件。")
     return 0
 
 
@@ -767,7 +845,7 @@ def _print_result(follower_version, flashed_follower, motor_version, flashed_mot
     motor_action = "已刷写并校验" if flashed_motor else "版本相同，未刷写"
     print(f"  从爪 MCU : {follower_version} — {follower_action}")
     print(f"  电机固件 : {motor_version or '未读到版本'} — {motor_action}")
-    print("  电机已回到 MIT，标定检查通过。")
+    print("  电机已回到 MIT，标定检查通过，操作者已确认零位在闭合端。")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -784,9 +862,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--direction",
-        choices=("keep", "positive", "negative"),
-        default="negative",
-        help="opening motor direction; default negative sets Reverse and verifies -1 after homing",
+        choices=("model", "keep", "positive", "negative"),
+        default="model",
+        help=(
+            "opening motor direction; default model follows firmware 1.2.12 "
+            "(EL05 negative, RS00 positive). Homing must close first either way: "
+            "the operator confirms it, and one automatic flip is tried on 'n'"
+        ),
     )
     parser.add_argument(
         "--min-travel-rad",
@@ -813,7 +895,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yes",
         "-y",
         action="store_true",
-        help="skip SN confirmation only; same-version reflash still asks y/N",
+        help=(
+            "skip SN confirmation only; same-version reflash and the "
+            "close-first homing check still ask"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -838,6 +923,8 @@ def run(args) -> int:
     motor_model, motor_version = motor_ota_update.image_facts(
         args.motor_image, motor_data, None
     )
+
+    args.direction = _resolve_direction(args.direction, motor_model)
 
     if args.direction_only:
         return _direction_only(args, motor_model)
@@ -942,8 +1029,13 @@ def run(args) -> int:
         print(f"[电机 OTA] {before_motor or '?'} -> {actual_motor or '?'}")
 
     ep = _switch_back_to_mit(identity, args.power_cycle_timeout, args.direction)
-    actual_follower = _final_validation(
-        ep, motor_model, args.direction, args.min_travel_rad
+    actual_follower, _direction = _validate_close_first(
+        identity,
+        ep,
+        motor_model,
+        args.direction,
+        args.min_travel_rad,
+        args.power_cycle_timeout,
     )
     _print_result(actual_follower, flash_follower, actual_motor, flashed_motor)
     return 0

@@ -19,10 +19,23 @@ mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
 
 
-def test_image_only_defaults_to_negative_direction():
+def test_image_only_defaults_to_model_direction():
     args = mod._build_parser().parse_args(["firmware/motor/rs00-0.0.3.32.bin"])
-    assert args.direction == "negative"
+    assert args.direction == "model"
     assert not args.direction_only
+
+
+@pytest.mark.parametrize(
+    "direction,model,expected",
+    [
+        ("model", "RS00", "positive"),
+        ("model", "EL05", "negative"),
+        ("negative", "RS00", "negative"),
+        ("keep", "EL05", "keep"),
+    ],
+)
+def test_model_direction_follows_firmware_default(direction, model, expected):
+    assert mod._resolve_direction(direction, model) == expected
 
 
 @pytest.mark.parametrize("direction,flags", [("positive", 1), ("negative", 3)])
@@ -62,6 +75,7 @@ def test_direction_only_never_flashes(model_setup, monkeypatch, dry_run):
     validate = Mock()
     monkeypatch.setattr(mod, "_write_direction", write)
     monkeypatch.setattr(mod, "_final_validation", validate)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
     args = mod._build_parser().parse_args(
         ["unused.bin", "TESTs", "--direction-only", "--direction", "negative", "--yes"]
     )
@@ -78,7 +92,7 @@ def test_direction_only_requires_explicit_direction():
     args = mod._build_parser().parse_args(
         ["unused.bin", "--direction-only", "--direction", "keep"]
     )
-    with pytest.raises(RuntimeError, match="必须指定"):
+    with pytest.raises(RuntimeError, match="不能用 keep"):
         mod._direction_only(args, "RS00")
 
 
@@ -118,7 +132,7 @@ def model_setup(monkeypatch):
         state.pending = model_id
         events.append(("model", model_id))
 
-    def cycle(*args):
+    def cycle(*args, **kwargs):
         state.cycles += 1
         events.append(("cycle", state.cycles))
         state.active = False
@@ -594,3 +608,70 @@ def test_old_follower_uses_busy_nack_without_requiring_home_diag(fake_clock):
     operation = Mock(side_effect=[mod.ProtocolError("NACK: SysBusy"), "ok"])
     assert mod._admin_call(gripper, "test", operation) == "ok"
     gripper.home_diag.assert_not_called()
+
+
+@pytest.fixture
+def close_first(monkeypatch):
+    cfg = SimpleNamespace(flags=1)
+    g = Mock()
+    g.__enter__ = Mock(return_value=g)
+    g.__exit__ = Mock(return_value=False)
+    g.get_gripper_config.return_value = cfg
+    validate = Mock(return_value="1.2.14")
+    write = Mock()
+    cycle = Mock(return_value=SimpleNamespace(mcu_device="after-cycle"))
+    monkeypatch.setattr(mod, "FollowerGripper", Mock(return_value=g))
+    monkeypatch.setattr(mod, "_final_validation", validate)
+    monkeypatch.setattr(mod, "_write_direction", write)
+    monkeypatch.setattr(mod, "_wait_power_cycle", cycle)
+    return validate, write, cycle
+
+
+def _answers(monkeypatch, *answers):
+    prompt = Mock(side_effect=list(answers))
+    monkeypatch.setattr("builtins.input", prompt)
+    return prompt
+
+
+def _validate_close_first():
+    ep = SimpleNamespace(mcu_device="dev")
+    return mod._validate_close_first(("TESTs", "USB"), ep, "RS00", "positive", 0.8, 60)
+
+
+def test_close_first_confirmed_keeps_direction(close_first, monkeypatch):
+    validate, write, cycle = close_first
+    _answers(monkeypatch, "y")
+    assert _validate_close_first() == ("1.2.14", "positive")
+    write.assert_not_called()
+    cycle.assert_not_called()
+
+
+def test_open_first_flips_direction_and_recalibrates(close_first, monkeypatch):
+    validate, write, cycle = close_first
+    _answers(monkeypatch, "n", "y")
+    assert _validate_close_first() == ("1.2.14", "negative")
+    write.assert_called_once()
+    assert write.call_args.args[1] == "negative"
+    assert cycle.call_count == 1
+    assert cycle.call_args.kwargs["watch_homing"]
+    assert [c.args[2] for c in validate.call_args_list] == ["positive", "negative"]
+
+
+def test_open_first_in_both_directions_stops(close_first, monkeypatch):
+    _validate, write, _cycle = close_first
+    _answers(monkeypatch, "n", "n")
+    with pytest.raises(RuntimeError, match="零位不可信"):
+        _validate_close_first()
+    assert write.call_count == 1
+
+
+def test_close_first_needs_explicit_answer(close_first, monkeypatch):
+    prompt = _answers(monkeypatch, "", "maybe", "y")
+    assert _validate_close_first()[1] == "positive"
+    assert prompt.call_count == 3
+
+
+def test_close_first_eof_stops(close_first, monkeypatch):
+    _answers(monkeypatch, EOFError())
+    with pytest.raises(RuntimeError, match="未确认标定方向"):
+        _validate_close_first()
