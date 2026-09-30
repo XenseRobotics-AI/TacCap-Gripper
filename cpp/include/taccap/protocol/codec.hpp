@@ -13,6 +13,7 @@
 
 #include <taccap/protocol/payloads.hpp>
 
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -100,6 +101,26 @@ MotorPrivateParam  decode_motor_private_param(const uint8_t* data, std::size_t l
 // on firmware that only fills part of it still gets a usable struct — check
 // monitor_flags rather than the length. Anything below 31 bytes throws.
 MotorStatusExt     decode_motor_status_ext(const uint8_t* data, std::size_t len);
+
+// ---- Motor firmware version, as RobStride writes it --------------------------
+// The motor's version frame carries 4 raw bytes (high first): an EL05 answers
+// {10, 5, 0, 4}, an RS00 {0, 0, 3, 32}. RobStride writes the EL05 one
+// "1.0.5.0.4" -- the leading byte 10 split into "1.0" -- and the RS00 one
+// "0.0.3.32". These convert between that vendor text and the wire bytes, so a
+// factory operator can type what the nameplate says.
+//
+// Formatting splits the first byte only when it is 10..19, the one case seen
+// (EL05). Anything else prints as four plain parts: how the vendor would write
+// a first byte of 1..9 or >= 20 is not known, and printing it plainly cannot
+// misstate it.
+std::string format_motor_fw_version(const uint8_t version[4]);
+
+// Accepts the vendor text ("1.0.5.0.4", "0.0.3.32") or plain raw bytes
+// ("10.5.0.4"). Five parts merge the first two as tens and units (the first of
+// the two must be 1, the second 0..9, matching what format produces); four
+// parts are the bytes as they stand. Throws std::invalid_argument naming the
+// problem otherwise.
+std::array<uint8_t, 4> parse_motor_fw_version(const std::string& text);
 MotorFaultReport   decode_motor_fault_report(const uint8_t* data, std::size_t len);
 // V1.7 follower (slave) gripper
 GripperConfig      decode_gripper_config(const uint8_t* data, std::size_t len);

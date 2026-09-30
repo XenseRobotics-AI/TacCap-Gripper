@@ -150,3 +150,41 @@ TEST(ExclusiveOpen, TransportStopAloneKeepsThePort) {
     first->close();
     EXPECT_NO_THROW({ auto again = open_follower(pty); });
 }
+
+// ---- Motor firmware version record (0x5C / 0x58 fallback, follower 1.2.14) --
+
+TEST(MotorFwVersionPty, WithNoRecordMitReadsInvalid) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    const auto v = g->motor().motor_version();
+    EXPECT_EQ(v.valid, 0u);
+    EXPECT_EQ(v.source, tp::MotorVersionSource::Live);
+}
+
+TEST(MotorFwVersionPty, AWrittenVersionIsReturnedOnMitAndMarkedAsFlash) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    const auto rec = g->motor().set_motor_fw_version({0, 0, 3, 32});
+    EXPECT_EQ(rec.valid, 1u);
+    EXPECT_EQ(rec.source, tp::MotorVersionSource::FlashHost);
+    const auto v = g->motor().motor_version();
+    ASSERT_EQ(v.valid, 1u);
+    EXPECT_EQ(v.source, tp::MotorVersionSource::FlashHost);
+    EXPECT_EQ(v.version[0], 0u);
+    EXPECT_EQ(v.version[2], 3u);
+    EXPECT_EQ(v.version[3], 32u);
+}
+
+// Same rule as set_sn: a write the flash does not reflect must not pass.
+TEST(MotorFwVersionPty, AWriteThatDidNotLandThrows) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_corrupt_fw_ver_writes(true);
+    auto g = open_follower(pty);
+    EXPECT_THROW(g->motor().set_motor_fw_version({10, 5, 0, 4}), tx::ProtocolError);
+}

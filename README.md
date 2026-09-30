@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.6 and the follower 1.2.13; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.14; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. **A leader reporting 1.2.6 may be either of two images**: the
@@ -153,6 +153,17 @@ needs follower firmware 1.2.6+ (`motor.motor_version()`, command `0x58`), and
 under the MIT protocol the motor was measured not to answer extended frames at
 all, so the version is readable only under the private protocol and a startup
 check has nothing reliable to stand on.
+
+**Since follower 1.2.14 the version is recorded in the follower's flash**, so it
+reads under MIT too: `motor.motor_version()` returns the record when the motor
+cannot answer, with `from_flash` / `source` saying so (1 = written by a host,
+2 = taken by the firmware on a private-protocol boot). The firmware records it
+by itself whenever the motor boots on the private protocol (a new motor always
+does). For units already on MIT, record it as a factory SOP step with
+`motor.set_motor_fw_version(...)`, typing what the nameplate says -- `"1.0.5.0.4"`
+on an EL05, `"0.0.3.32"` on an RS00 -- and again after every motor OTA.
+`MotorVersion.vendor_str` shows it the same way. The write echoes the flash record and raises on a mismatch; reading never
+writes flash. Older follower firmware keeps reporting `valid == 0` under MIT.
 
 **EL05: 1.0.5.0.4 or newer.** This floor is EL05-only — RS00 motor firmware is
 numbered 0.0.3.x. It is a documented requirement.

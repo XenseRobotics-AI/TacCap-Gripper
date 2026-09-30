@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace xense::taccap::protocol {
 
@@ -320,6 +322,62 @@ EskinFrame decode_eskin(const uint8_t* data, std::size_t len) {
     } else {
         out.values_f32.resize(cells);
         std::memcpy(out.values_f32.data(), body, cells * 4);
+    }
+    return out;
+}
+
+std::string format_motor_fw_version(const uint8_t v[4]) {
+    std::string out;
+    if (v[0] >= 10 && v[0] <= 19) {
+        out = std::to_string(v[0] / 10) + "." + std::to_string(v[0] % 10);
+    } else {
+        out = std::to_string(v[0]);
+    }
+    for (int i = 1; i < 4; ++i) out += "." + std::to_string(v[i]);
+    return out;
+}
+
+std::array<uint8_t, 4> parse_motor_fw_version(const std::string& text) {
+    std::vector<long> parts;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t dot = text.find('.', start);
+        const std::string tok = text.substr(
+            start, dot == std::string::npos ? std::string::npos : dot - start);
+        if (tok.empty() || tok.size() > 3 ||
+            tok.find_first_not_of("0123456789") != std::string::npos) {
+            throw std::invalid_argument(
+                "motor firmware version '" + text +
+                "': expected dot-separated numbers, e.g. '1.0.5.0.4' or '0.0.3.32'");
+        }
+        parts.push_back(std::stol(tok));
+        if (dot == std::string::npos) break;
+        start = dot + 1;
+    }
+    if (parts.size() == 5) {
+        // Vendor split of a leading byte 10..19 -- the inverse of format.
+        if (parts[0] != 1 || parts[1] > 9) {
+            throw std::invalid_argument(
+                "motor firmware version '" + text +
+                "': a five-part version is the vendor's split of a leading byte "
+                "10..19 (EL05 '1.0.5.0.4' = bytes 10.5.0.4), so it must start with "
+                "'1.<digit>'");
+        }
+        parts = {10 + parts[1], parts[2], parts[3], parts[4]};
+    }
+    if (parts.size() != 4) {
+        throw std::invalid_argument(
+            "motor firmware version '" + text +
+            "': expected 4 parts (e.g. RS00 '0.0.3.32') or the EL05 vendor form "
+            "'1.0.5.0.4'");
+    }
+    std::array<uint8_t, 4> out{};
+    for (std::size_t i = 0; i < 4; ++i) {
+        if (parts[i] < 0 || parts[i] > 255) {
+            throw std::invalid_argument("motor firmware version '" + text +
+                                        "': each part must be 0..255");
+        }
+        out[i] = static_cast<uint8_t>(parts[i]);
     }
     return out;
 }

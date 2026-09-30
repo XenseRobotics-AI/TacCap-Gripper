@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-30
+
+### Added
+
+- **Motor firmware version readable under MIT** (follower firmware >= 1.2.14,
+  protocol V2.8). The follower records the motor's firmware version in flash:
+  by itself on a private-protocol boot, or when a host calls the new
+  `Motor.set_motor_fw_version()` (command `0x5C`; a factory SOP step, and the
+  thing to do after a motor OTA). `motor_version()` returns that record when the
+  motor cannot answer, and the formerly reserved byte is now `source`
+  (`MotorVersionSource::Live / FlashHost / FlashAuto`; Python also exposes
+  `from_flash`). `set_motor_fw_version()` checks the echoed flash record and
+  raises on a mismatch, like `set_sn()`. Versions are written and shown the way
+  RobStride writes them -- EL05 `1.0.5.0.4`, RS00 `0.0.3.32` -- although the wire
+  carries 4 raw bytes (the EL05's leading byte 10 is split into "1.0");
+  `protocol::parse_motor_fw_version` / `format_motor_fw_version` convert, and
+  `MotorVersion.vendor_str` exposes the vendor form. Reading never writes flash: a flash save
+  erases and rewrites the whole configuration sector. On older firmware
+  `set_motor_fw_version()` raises with the required version and
+  `motor_version()` behaves as before.
+
+  Verified on 0094s (RS00, follower 1.2.14): 1.2.12 with this SDK reads
+  `valid == 0` under MIT (compatible); 1.2.14 with no record likewise; after
+  `set_motor_fw_version("0.0.3.32")` it reads `0.0.3.32 (flash: host-written)`
+  under MIT, SN / model / 0x700B / gripper config / calibration unchanged, and
+  the record survives a 24 V power cycle. The automatic record on a
+  private-protocol boot (`FlashAuto`) was not exercised.
+- `examples/motor_ota_update.py` records the new version after a successful
+  flash and accepts only a live read as proof of the update.
+
+### Changed
+
+- Shipped follower image is now **1.2.14** (protocol V2.8): the motor firmware
+  version record above. Leader image unchanged (1.2.6).
+
 ## [0.4.0] - 2026-09-29
 
 A minor bump for a behaviour change downstream code can observe:

@@ -221,6 +221,44 @@ protocol::MotorVersion Motor::motor_version(std::chrono::milliseconds timeout) {
     return out;
 }
 
+protocol::MotorFwVersionRecord Motor::set_motor_fw_version(
+        const std::array<uint8_t, 4>& version, std::chrono::milliseconds timeout) {
+    const std::vector<uint8_t> payload(version.begin(), version.end());
+    bus::AckResponse ack;
+    try {
+        ack = t_.send_cmd(protocol::Cmd::SetMotorFwVersion, payload, timeout);
+    } catch (const ProtocolError& e) {
+        const std::string what = e.what();
+        if (what.find(protocol::to_string(protocol::ErrorCode::InvalidCmd)) !=
+            std::string::npos) {
+            throw ProtocolError(what + " — SetMotorFwVersion (0x5C) needs follower "
+                                "firmware >= 1.2.14");
+        }
+        throw;
+    }
+    if (const auto err = bus::ack_error_code(ack); err != protocol::ErrorCode::Ok) {
+        throw ProtocolError(std::string("Motor::set_motor_fw_version NACK: ") +
+                            protocol::to_string(err));
+    }
+    if (ack.data.size() < protocol::MOTOR_FW_VERSION_RECORD_SIZE) {
+        throw ProtocolError("Motor::set_motor_fw_version: short payload");
+    }
+    protocol::MotorFwVersionRecord rec{};
+    std::memcpy(&rec, ack.data.data(), protocol::MOTOR_FW_VERSION_RECORD_SIZE);
+    // Same rule as set_sn: a write the flash does not reflect is an error, not
+    // a warning -- the whole point of the record is that someone will trust it.
+    if (!rec.valid || rec.source != protocol::MotorVersionSource::FlashHost ||
+        std::memcmp(rec.version, version.data(), 4) != 0) {
+        throw ProtocolError(fmt::format(
+            "Motor::set_motor_fw_version: wrote {}, flash reads back {} (valid={}, source={})",
+            protocol::format_motor_fw_version(version.data()),
+            protocol::format_motor_fw_version(rec.version), rec.valid, rec.source));
+    }
+    logger()->info("Motor::set_motor_fw_version: recorded {}",
+                   protocol::format_motor_fw_version(version.data()));
+    return rec;
+}
+
 protocol::MotorCanXferResp Motor::can_ext_xfer(uint32_t ext_id,
                                                const std::vector<uint8_t>& data,
                                                uint16_t reply_timeout_ms,

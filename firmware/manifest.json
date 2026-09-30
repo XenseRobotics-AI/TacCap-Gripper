@@ -3,7 +3,7 @@
     "master": {
       "file": "tc-gu-01-master-1.2.6.bin",
       "version": "1.2.6",
-      "source_commit": "ecea7dd",
+      "source_commit": "1336ebb",
       "size_bytes": 118300,
       "crc32": "0x350393b5",
       "sn_suffix": "m",
@@ -13,16 +13,16 @@
       "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.13.bin",
-      "version": "1.2.13",
-      "source_commit": "ecea7dd",
-      "size_bytes": 166796,
-      "crc32": "0xfd0a2fee",
+      "file": "tc-gu-01-slave-1.2.14.bin",
+      "version": "1.2.14",
+      "source_commit": "1336ebb",
+      "size_bytes": 167168,
+      "crc32": "0x267d7f67",
       "sn_suffix": "s",
-      "protocol": "V2.7 + 运动安全包络",
+      "protocol": "V2.8 + 运动安全包络",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Model-dependent defaults now follow the motor model: auto-calibration stall torque (EL05 0.5 / RS00 1.8 N*m, was 0.35 for all -- too little to move an RS00, so calibration stopped short and could record the open direction backwards), default open direction (EL05 reverse, RS00 not), and a motion envelope enforced when none is stored (cont = stall rating, peak = rated torque -- 1.2.13; 1.2.12 used t_max, temperature wall 90/100 C; was no limit at all). When the model record changes, 0x700B, the calibration torque and the direction are reset to the new model's defaults; a stored calibration torque still at the old 0.35 migrates on boot. A gripper OTA no longer refuses when the motor is not on the bus. Carries 1.2.11 (control-UART receive restarted after an overrun). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
+      "note": "Records the motor's own firmware version in follower flash, so it reads under MIT too (protocol V2.8): taken automatically on a private-protocol boot, or written by a host with the new 0x5C (Motor.set_motor_fw_version; a factory SOP step, and after a motor OTA). 0x58 returns the record when the motor cannot answer and says so in its former reserved byte. Model-dependent defaults now follow the motor model: auto-calibration stall torque (EL05 0.5 / RS00 1.8 N*m, was 0.35 for all -- too little to move an RS00, so calibration stopped short and could record the open direction backwards), default open direction (EL05 reverse, RS00 not), and a motion envelope enforced when none is stored (cont = stall rating, peak = rated torque -- 1.2.13; 1.2.12 used t_max, temperature wall 90/100 C; was no limit at all). When the model record changes, 0x700B, the calibration torque and the direction are reset to the new model's defaults; a stored calibration torque still at the old 0.35 migrates on boot. A gripper OTA no longer refuses when the motor is not on the bus. Carries 1.2.11 (control-UART receive restarted after an overrun). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
   }
 }

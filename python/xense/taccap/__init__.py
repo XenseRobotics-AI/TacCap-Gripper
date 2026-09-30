@@ -168,7 +168,9 @@ HomeState = _taccap_native.HomeState
 HomeFail = _taccap_native.HomeFail
 MotorVersion = (
     _taccap_native.MotorVersion
-)  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6)
+)  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6;>= 1.2.14 时 MIT 下返回 flash 记录)
+# 从爪 flash 里的电机固件版本记录 (Cmd 0x5C 回显, 需固件 >= 1.2.14)
+MotorFwVersionRecord = _taccap_native.MotorFwVersionRecord
 # 电机 CAN 扩展帧透传的结果 (Cmd 0x5B, 需固件 >= 1.2.8)
 MotorCanXferResp = _taccap_native.MotorCanXferResp
 # MCU 级命令:心跳 / 复位 / SN / 设备类型(gripper.device,v0.3.3)
@@ -308,6 +310,7 @@ __all__ = [
     "MotorStatusExt",
     "MotorFaultReport",
     "MotorVersion",
+    "MotorFwVersionRecord",
     "MotorCanXferResp",
     "Device",
     "Heartbeat",

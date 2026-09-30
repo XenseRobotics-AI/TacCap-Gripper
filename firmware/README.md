@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.13.bin` | follower (SN ends **`s`**) | **1.2.13** | V2.7 + 运动安全包络 | 166,796 B | `0xfd0a2fee` |
+| `tc-gu-01-slave-1.2.14.bin` | follower (SN ends **`s`**) | **1.2.14** | V2.8 + 运动安全包络 | 167,168 B | `0x267d7f67` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -35,8 +35,8 @@ sources bumps that role alone.
 this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
-The leader is at 1.2.6 while the follower is at 1.2.13 for that reason: 1.2.7,
-1.2.8, 1.2.10, 1.2.12 and 1.2.13 touched only follower code, and 1.2.9 changed the shared
+The leader is at 1.2.6 while the follower is at 1.2.14 for that reason: 1.2.7,
+1.2.8, 1.2.10, 1.2.12, 1.2.13 and 1.2.14 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
 
@@ -75,6 +75,11 @@ is in force. When the model record changes, 0x700B, the calibration torque and
 the direction are reset to the new model's defaults; a stored calibration torque
 still at exactly the old 0.35 migrates on boot. A gripper OTA also no longer
 refuses when the motor is not on the bus.
+
+**Follower 1.2.14 records the motor's firmware version in flash** (0x5C to
+write it, 0x58 falls back to it under MIT) -- see the SDK README, *RobStride
+motor firmware*. Verified on 0094s: written, read back under MIT, kept across a
+24 V power cycle.
 
 Not verified on hardware: OTA with the motor off the bus, and calibration from an
 invalid config using the model's default direction.
