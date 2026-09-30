@@ -7,6 +7,8 @@
 
 #include "bindings_common.hpp"
 
+#include <taccap/protocol/codec.hpp>
+
 #include <array>
 #include <cstring>
 
@@ -287,6 +289,10 @@ void bind_motor(py::module_& m) {
                       "0 = read from the motor just now; 1 = the motor could not answer and\n"
                       "this is the record a host wrote with Motor.set_motor_fw_version;\n"
                       "2 = the record the firmware took on a private-protocol boot.")
+        .def_property_readonly("vendor_str", [](const protocol::MotorVersion& v) {
+            return protocol::format_motor_fw_version(v.version);
+        }, "The version as RobStride writes it: EL05 '1.0.5.0.4', RS00 '0.0.3.32'.\n"
+           "Compare this with the nameplate. Meaningless when valid is 0.")
         .def_property_readonly("from_flash", [](const protocol::MotorVersion& v) {
             return v.valid && v.source != protocol::MotorVersionSource::Live;
         }, "True when `version` is the follower's flash record, not a live read.")
@@ -301,10 +307,7 @@ void bind_motor(py::module_& m) {
                               : v.source == protocol::MotorVersionSource::FlashAuto
                                   ? ", flash: auto-recorded"
                                   : "";
-            char buf[96];
-            std::snprintf(buf, sizeof(buf), "MotorVersion(%u.%u.%u.%u%s)",
-                          v.version[0], v.version[1], v.version[2], v.version[3], src);
-            return std::string(buf);
+            return "MotorVersion(" + protocol::format_motor_fw_version(v.version) + src + ")";
         });
 
     py::class_<protocol::MotorFwVersionRecord>(m, "MotorFwVersionRecord",
@@ -316,11 +319,8 @@ void bind_motor(py::module_& m) {
         .def_readonly("valid",  &protocol::MotorFwVersionRecord::valid)
         .def_readonly("source", &protocol::MotorFwVersionRecord::source)
         .def("__repr__", [](const protocol::MotorFwVersionRecord& r) {
-            char buf[96];
-            std::snprintf(buf, sizeof(buf), "MotorFwVersionRecord(%u.%u.%u.%u, valid=%u, source=%u)",
-                          r.version[0], r.version[1], r.version[2], r.version[3],
-                          r.valid, r.source);
-            return std::string(buf);
+            return "MotorFwVersionRecord(" + protocol::format_motor_fw_version(r.version) +
+                   ", valid=" + std::to_string(r.valid) + ", source=" + std::to_string(r.source) + ")";
         });
 
     // ---- MotorCanXferResp (Cmd 0x5B, 16 bytes, follower firmware >= 1.2.8) ----
@@ -881,34 +881,26 @@ void bind_motor(py::module_& m) {
            "要重新 enable()。")
         .def("set_motor_fw_version", [](Motor& self, py::object version, unsigned timeout_ms) {
             std::array<uint8_t, 4> v{};
-            std::vector<long> parts;
             if (py::isinstance<py::str>(version)) {
-                std::string s = version.cast<std::string>();
-                size_t start = 0;
-                while (true) {
-                    const size_t dot = s.find('.', start);
-                    const std::string tok = s.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
-                    if (tok.empty() || tok.find_first_not_of("0123456789") != std::string::npos) {
-                        throw py::value_error("motor firmware version must be four dot-separated numbers, e.g. '0.0.3.32'");
-                    }
-                    parts.push_back(std::stol(tok));
-                    if (dot == std::string::npos) break;
-                    start = dot + 1;
+                try {
+                    v = protocol::parse_motor_fw_version(version.cast<std::string>());
+                } catch (const std::invalid_argument& e) {
+                    throw py::value_error(e.what());
                 }
             } else {
+                std::vector<long> parts;
                 for (auto item : version) parts.push_back(item.cast<long>());
-            }
-            if (parts.size() != 4) {
-                throw py::value_error(
-                    "motor firmware version needs exactly 4 parts (raw bytes, high first). "
-                    "RobStride writes the EL05's as '1.0.5.0.4' -- that is 10.5.0.4, "
-                    "i.e. (10, 5, 0, 4); an RS00 '0.0.3.32' is (0, 0, 3, 32).");
-            }
-            for (size_t i = 0; i < 4; ++i) {
-                if (parts[i] < 0 || parts[i] > 255) {
-                    throw py::value_error("each motor firmware version part must be 0..255");
+                if (parts.size() != 4) {
+                    throw py::value_error(
+                        "a tuple motor firmware version is the 4 raw bytes, high first "
+                        "(EL05 1.0.5.0.4 = (10, 5, 0, 4)); pass a string for the vendor form");
                 }
-                v[i] = static_cast<uint8_t>(parts[i]);
+                for (size_t i = 0; i < 4; ++i) {
+                    if (parts[i] < 0 || parts[i] > 255) {
+                        throw py::value_error("each motor firmware version byte must be 0..255");
+                    }
+                    v[i] = static_cast<uint8_t>(parts[i]);
+                }
             }
             py::gil_scoped_release g;
             return self.set_motor_fw_version(v, std::chrono::milliseconds(timeout_ms));
@@ -917,8 +909,8 @@ void bind_motor(py::module_& m) {
            "电机只在私有协议下回版本帧,现场几乎都在 MIT,所以这是产线 SOP 的一步:\n"
            "工人照铭牌 / 上位机读到的版本写入;电机 OTA 成功后也应写一次。之后\n"
            "motor_version() 在 MIT 下返回它(source=1)。\n\n"
-           "version:'0.0.3.32' 或 (0, 0, 3, 32)。四段原始字节、高位在前。EL05 厂家\n"
-           "写作 '1.0.5.0.4',实为 (10, 5, 0, 4) —— 五段写法会被拒绝并提示。\n\n"
+           "version:按**厂家写法**给字符串,照铭牌填即可 —— EL05 '1.0.5.0.4'、\n"
+           "RS00 '0.0.3.32'。也可给四个原始字节的元组,如 (10, 5, 0, 4)。\n\n"
            "返回 flash 回显的记录;与所写不一致抛 ProtocolError。控制器 / 自动标定 /\n"
            "OTA 运行中被拒(要擦 flash 扇区)。立即生效,不需要断电。")
         .def("can_ext_xfer", [](Motor& self, uint32_t ext_id, py::bytes data,

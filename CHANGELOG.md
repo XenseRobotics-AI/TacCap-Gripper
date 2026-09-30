@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   motor cannot answer, and the formerly reserved byte is now `source`
   (`MotorVersionSource::Live / FlashHost / FlashAuto`; Python also exposes
   `from_flash`). `set_motor_fw_version()` checks the echoed flash record and
-  raises on a mismatch, like `set_sn()`. Reading never writes flash: a flash save
+  raises on a mismatch, like `set_sn()`. Versions are written and shown the way
+  RobStride writes them -- EL05 `1.0.5.0.4`, RS00 `0.0.3.32` -- although the wire
+  carries 4 raw bytes (the EL05's leading byte 10 is split into "1.0");
+  `protocol::parse_motor_fw_version` / `format_motor_fw_version` convert, and
+  `MotorVersion.vendor_str` exposes the vendor form. Reading never writes flash: a flash save
   erases and rewrites the whole configuration sector. On older firmware
   `set_motor_fw_version()` raises with the required version and
   `motor_version()` behaves as before.

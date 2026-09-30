@@ -14,9 +14,12 @@
 // (motor_model_t). scripts/check_protocol_drift.py compares the two structs by
 // real compiled sizeof; this file pins the field offsets that sizeof cannot see.
 
+#include <array>
 #include <cstddef>
 #include <cstring>
+#include <stdexcept>
 #include <gtest/gtest.h>
+#include <taccap/protocol/codec.hpp>
 #include <taccap/protocol/commands.hpp>
 #include <taccap/protocol/payloads.hpp>
 
@@ -113,4 +116,45 @@ TEST(MotorModelCodec, DefaultEnvelopeSitsAtByte19) {
     std::memcpy(&m, b.data(), sizeof(m));
     EXPECT_EQ(m.default_envelope, 1u);
     EXPECT_EQ(m.autodetected, 0u);
+}
+
+// ---- Motor firmware version: vendor text <-> wire bytes ----------------------
+// RobStride writes the EL05's {10,5,0,4} as "1.0.5.0.4" (the 10 split) and the
+// RS00's {0,0,3,32} as "0.0.3.32". Operators type what the nameplate says.
+
+TEST(MotorFwVersionText, FormatsTheWayTheVendorWritesIt) {
+    const uint8_t el05[4] = {10, 5, 0, 4};
+    const uint8_t rs00[4] = {0, 0, 3, 32};
+    EXPECT_EQ(tp::format_motor_fw_version(el05), "1.0.5.0.4");
+    EXPECT_EQ(tp::format_motor_fw_version(rs00), "0.0.3.32");
+}
+
+TEST(MotorFwVersionText, UnknownLeadingBytesPrintPlainNotSplit) {
+    const uint8_t a[4] = {3, 1, 0, 0};
+    const uint8_t b[4] = {25, 1, 0, 0};
+    EXPECT_EQ(tp::format_motor_fw_version(a), "3.1.0.0");
+    EXPECT_EQ(tp::format_motor_fw_version(b), "25.1.0.0");
+}
+
+TEST(MotorFwVersionText, ParsesVendorFormAndRawForm) {
+    using A = std::array<uint8_t, 4>;
+    EXPECT_EQ(tp::parse_motor_fw_version("1.0.5.0.4"), (A{10, 5, 0, 4}));
+    EXPECT_EQ(tp::parse_motor_fw_version("10.5.0.4"), (A{10, 5, 0, 4}));
+    EXPECT_EQ(tp::parse_motor_fw_version("0.0.3.32"), (A{0, 0, 3, 32}));
+}
+
+TEST(MotorFwVersionText, RoundTripsEveryLeadingByte) {
+    for (int b0 = 0; b0 < 256; ++b0) {
+        const uint8_t v[4] = {static_cast<uint8_t>(b0), 7, 0, 250};
+        const auto back = tp::parse_motor_fw_version(tp::format_motor_fw_version(v));
+        EXPECT_EQ(back[0], b0) << tp::format_motor_fw_version(v);
+        EXPECT_EQ(back[3], 250);
+    }
+}
+
+TEST(MotorFwVersionText, RejectsWhatIsNotAVersion) {
+    for (const char* bad : {"", "1.0.5", "1.0.5.0.4.1", "2.0.5.0.4", "1.10.5.0.4",
+                            "0.0.3.256", "a.b.c.d", "0..3.32", "0.0.3.32 "}) {
+        EXPECT_THROW(tp::parse_motor_fw_version(bad), std::invalid_argument) << bad;
+    }
 }

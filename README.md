@@ -160,9 +160,9 @@ cannot answer, with `from_flash` / `source` saying so (1 = written by a host,
 2 = taken by the firmware on a private-protocol boot). The firmware records it
 by itself whenever the motor boots on the private protocol (a new motor always
 does). For units already on MIT, record it as a factory SOP step with
-`motor.set_motor_fw_version("0.0.3.32")` -- raw bytes, high first, so an EL05
-the vendor writes `1.0.5.0.4` is `"10.5.0.4"` -- and again after every motor
-OTA. The write echoes the flash record and raises on a mismatch; reading never
+`motor.set_motor_fw_version(...)`, typing what the nameplate says -- `"1.0.5.0.4"`
+on an EL05, `"0.0.3.32"` on an RS00 -- and again after every motor OTA.
+`MotorVersion.vendor_str` shows it the same way. The write echoes the flash record and raises on a mismatch; reading never
 writes flash. Older follower firmware keeps reporting `valid == 0` under MIT.
 
 **EL05: 1.0.5.0.4 or newer.** This floor is EL05-only — RS00 motor firmware is

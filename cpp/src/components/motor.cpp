@@ -250,13 +250,12 @@ protocol::MotorFwVersionRecord Motor::set_motor_fw_version(
     if (!rec.valid || rec.source != protocol::MotorVersionSource::FlashHost ||
         std::memcmp(rec.version, version.data(), 4) != 0) {
         throw ProtocolError(fmt::format(
-            "Motor::set_motor_fw_version: wrote {}.{}.{}.{}, flash reads back "
-            "{}.{}.{}.{} (valid={}, source={})",
-            version[0], version[1], version[2], version[3], rec.version[0],
-            rec.version[1], rec.version[2], rec.version[3], rec.valid, rec.source));
+            "Motor::set_motor_fw_version: wrote {}, flash reads back {} (valid={}, source={})",
+            protocol::format_motor_fw_version(version.data()),
+            protocol::format_motor_fw_version(rec.version), rec.valid, rec.source));
     }
-    logger()->info("Motor::set_motor_fw_version: recorded {}.{}.{}.{}",
-                   version[0], version[1], version[2], version[3]);
+    logger()->info("Motor::set_motor_fw_version: recorded {}",
+                   protocol::format_motor_fw_version(version.data()));
     return rec;
 }
 
