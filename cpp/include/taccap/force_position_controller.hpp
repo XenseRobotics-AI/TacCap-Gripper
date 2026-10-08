@@ -318,6 +318,7 @@ private:
     void  ref_step_(float raw, std::chrono::steady_clock::time_point t);
     void  ref_sample_(float raw, std::chrono::steady_clock::time_point t);
     float ref_at_(std::chrono::steady_clock::time_point t) const;
+    void  update_lag_(std::chrono::steady_clock::time_point now);
     // Smoothed status-frame clock: see kFrameClockAlpha in the .cpp.
     std::chrono::steady_clock::time_point frame_clock_(
         std::chrono::steady_clock::time_point now);
@@ -372,14 +373,15 @@ private:
     float ramp_raw_ = 0.0f;
     bool  ramp_valid_ = false;
     // What the ramp chases (0.4.2): the caller's recent targets with their
-    // timestamps, oldest first, played back a smoothed lag behind the present
-    // (see ref_at_). One entry is a step. The interval statistics set the lag.
+    // timestamps, oldest first, played back lag_s_ behind the present (see
+    // update_lag_ / ref_at_). One entry is a step.
     static constexpr size_t kHistory = 16;
     std::chrono::steady_clock::time_point hist_t_[kHistory]{};
     float  hist_raw_[kHistory]{};
     size_t hist_n_ = 0;
-    float  interval_mean_s_ = 0.0f;
-    float  interval_dev_s_ = 0.0f;
+    float  lag_s_ = 0.0f;            // playback lag, see update_lag_
+    std::chrono::steady_clock::time_point lag_t_{};
+    bool   lag_valid_ = false;
     std::chrono::steady_clock::time_point last_step_{};
     std::string fault_reason_;
 };

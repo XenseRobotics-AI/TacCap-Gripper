@@ -51,13 +51,12 @@ constexpr float kClosedEndpointEps = 1e-3f;
 // one stream; a sample with no predecessor inside the gap is a step, exactly as
 // before. 0.1 s admits callers down to 10 Hz -- a 10 Hz caller sits ON the gap
 // and with timer jitter flips between stream and step; that is expected, and
-// faster callers never see it. The playback lag is the mean caller interval
-// plus kLagDeviations mean absolute deviations of it (both smoothed with
-// kIntervalAlpha), so a sample that arrives late by up to that much is already
-// in hand when the reference needs it.
-constexpr float kStreamGapS    = 0.100f;
-constexpr float kLagDeviations = 2.0f;
-constexpr float kIntervalAlpha = 0.2f;
+// faster callers never see it. The playback lag covers the longest interval
+// among the samples held (up to kHistory) plus kLagMarginS, rises to a longer
+// one at once and falls back at kLagDecayPerS: see update_lag_.
+constexpr float kStreamGapS   = 0.100f;
+constexpr float kLagMarginS   = 0.001f;
+constexpr float kLagDecayPerS = 0.005f;   // 5 ms of lag per second
 // The frame clock (0.4.2). Status frames come every 1/motor_stream_hz on the
 // MCU, but the host sees them +-3 ms either way (USB scheduling, the reader and
 // dispatch threads). Each command is applied for one MCU period regardless, so
@@ -270,9 +269,26 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
 // period. A first cut played each sample over the interval since the previous
 // one; the reference then reached the newest sample on schedule and waited
 // there whenever the next one came a few ms late -- a GUI timer at 100 Hz
-// +-3 ms still braked 3% of moving frames. Played back mean + 2 deviations
-// late, the next sample is almost always already here: 20 ms behind a steady
-// 50 Hz caller, ~15 ms behind a jittery 100 Hz one.
+// +-3 ms still braked 3% of moving frames.
+//
+// AND THE LAG HAS TO BE STEADY. The next cut used mean + 2 mean absolute
+// deviations, smoothed per sample. That covered the jitter on average, but the
+// estimate moved with every sample, and every move of the lag shifts the point
+// the reference is read at -- which put the jitter straight back into the
+// setpoint. Replaying the caller streams recorded on 0094s (tc-gu-01-pc,
+// 2026-10-08) through the policy and the friction plant: high-frequency
+// setpoint velocity 0.03-0.12 rad/s with that estimate, 0.009-0.016 with the
+// longest interval held, at an average lag only ~0.5 ms longer (15 / 18 ms at
+// 100 Hz, 23 / 30 ms at 50 Hz). A Qt timer that fires late and then catches up
+// (20 ms then 1 ms) is exactly what the longest interval covers.
+//
+// Held as a max it still moved: as samples roll out of the window the longest
+// interval changes between a few jittered values, each change shifting the read
+// point by ~1 ms of trajectory. So the lag rises to cover a longer interval at
+// once -- it must, or the reference runs out of samples -- and falls back at
+// kLagDecayPerS, 5 ms per second, slow enough that the read point drifts
+// instead of stepping. A single long gap therefore costs extra lag for a few
+// seconds, never a jump.
 //
 // It degenerates to the old behaviour everywhere else. A lone target (no
 // predecessor within kStreamGapS) is a step: the history holds one sample, the
@@ -304,15 +320,31 @@ void ForcePositionPolicy::ref_step_(float raw, std::chrono::steady_clock::time_p
     hist_t_[0] = t;
     hist_raw_[0] = raw;
     hist_n_ = 1;
-    interval_mean_s_ = 0.0f;
-    interval_dev_s_ = 0.0f;
+    lag_valid_ = false;
+}
+
+void ForcePositionPolicy::update_lag_(std::chrono::steady_clock::time_point now) {
+    if (hist_n_ < 2) { lag_valid_ = false; return; }
+    float longest = 0.0f;
+    for (size_t i = 1; i < hist_n_; ++i) {
+        longest = std::max(longest,
+                           std::chrono::duration<float>(hist_t_[i] - hist_t_[i - 1]).count());
+    }
+    const float need = std::min(kStreamGapS, longest + kLagMarginS);
+    if (!lag_valid_ || need >= lag_s_) {
+        lag_s_ = need;
+    } else {
+        const float dt = std::max(0.0f, std::chrono::duration<float>(now - lag_t_).count());
+        lag_s_ = std::max(need, lag_s_ - kLagDecayPerS * dt);
+    }
+    lag_t_ = now;
+    lag_valid_ = true;
 }
 
 float ForcePositionPolicy::ref_at_(std::chrono::steady_clock::time_point now) const {
     if (hist_n_ == 0) return 0.0f;
-    if (hist_n_ == 1 || interval_mean_s_ <= 0.0f) return hist_raw_[hist_n_ - 1];
-    const float lag = std::min(kStreamGapS,
-                               interval_mean_s_ + kLagDeviations * interval_dev_s_);
+    if (hist_n_ == 1 || !lag_valid_) return hist_raw_[hist_n_ - 1];
+    const float lag = lag_s_;
     const auto tq = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                               std::chrono::duration<float>(lag));
     if (tq <= hist_t_[0]) return hist_raw_[0];
@@ -333,13 +365,6 @@ void ForcePositionPolicy::ref_sample_(float raw, std::chrono::steady_clock::time
         std::chrono::duration<float>(t - hist_t_[hist_n_ - 1]).count();
     // Out of order (a command from another thread) or after a pause: a step.
     if (!(interval >= 0.0f) || interval > kStreamGapS) { ref_step_(raw, t); return; }
-    if (interval_mean_s_ <= 0.0f) {
-        interval_mean_s_ = interval;
-    } else {
-        interval_dev_s_ += kIntervalAlpha *
-                           (std::abs(interval - interval_mean_s_) - interval_dev_s_);
-        interval_mean_s_ += kIntervalAlpha * (interval - interval_mean_s_);
-    }
     if (hist_n_ == kHistory) {
         for (size_t i = 1; i < kHistory; ++i) {
             hist_t_[i - 1] = hist_t_[i];
@@ -515,10 +540,22 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // speed-limit clamp below bounds the move to |desired_vel|*dt whichever side
     // of the ramp the reference is on, so a reference that has not yet turned
     // at a reversal is still approached at no more than the commanded speed.
+    //
+    // NEVER BACK THE RAMP UP ONTO A REFERENCE THAT TRAILS IT. The escalation and
+    // the latched push pin the ramp on the caller's target, which the reference
+    // trails by the playback lag; when they let go the ramp would step back by
+    // lag x target speed onto the reference -- a backward kick in the middle of
+    // a move. So the ramp holds where it is (never past the target) and the
+    // reference catches up to it.
     const float ramp_prev = ramp_raw_;
     ramp_raw_ += desired_vel * dt;
-    if (desired_vel > 0.0f) { ramp_raw_ = std::min(ramp_raw_, chase_raw); }
-    else                    { ramp_raw_ = std::max(ramp_raw_, chase_raw); }
+    if (desired_vel > 0.0f) {
+        ramp_raw_ = std::min(ramp_raw_,
+                             std::max(chase_raw, std::min(ramp_prev, target_raw)));
+    } else {
+        ramp_raw_ = std::max(ramp_raw_,
+                             std::min(chase_raw, std::max(ramp_prev, target_raw)));
+    }
     // Speed limit applied to the ramp POSITION, and applied here -- before the
     // budget clamp, never after deriving the velocity from it. Capping the
     // velocity afterwards would edit one side of the equation the budget
@@ -786,6 +823,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
                         : (to_target > 0.0f) ? 1.0f : -1.0f;
+        update_lag_(frame_now);
         cmd = travel_track_(sample, target_raw, ref_at_(frame_now),
                             dir * cfg_.close_speed_radps,
                             grasp_torque_nm_, frame_now);

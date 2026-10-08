@@ -1095,7 +1095,8 @@ struct StreamTrace {
 // 10 ms MCU period -- the +-3 ms tc-gu-01-pc measured on 0094s.
 StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
                           float seconds, int* counts = nullptr,
-                          float stop_after_s = INFINITY, float frame_jitter_s = 0.0f) {
+                          float stop_after_s = INFINITY, float frame_jitter_s = 0.0f,
+                          bool late_and_catch_up = false) {
     ForcePositionConfig cfg;
     cfg.grasp_torque_nm = 3.6f;                 // RS00 budget
     cfg.hold_torque_limit_nm = 5.0f;
@@ -1122,8 +1123,12 @@ StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
         uint32_t h = lcg ^ (static_cast<uint32_t>(i) * 2654435761u);
         h = h * 1664525u + 1013904223u;
         const float u = static_cast<float>(h >> 8) / 16777216.0f;   // [0,1)
-        return i * caller_period_s + (2.0f * u - 1.0f) * jitter_s;
+        // A Qt timer that fires late and then catches up: every fifth sample
+        // ~9 ms late, the next on time -- intervals of ~19 ms then ~1 ms.
+        const float late = (late_and_catch_up && i % 5 == 4) ? 0.009f : 0.0f;
+        return i * caller_period_s + late + (2.0f * u - 1.0f) * jitter_s;
     };
+    float last_stamp = 0.0f;
     float prev_ramp = NAN;
     std::vector<float> steps;
     const float peak_speed = 0.4f * travel * 6.2831853f / period_s;
@@ -1139,7 +1144,11 @@ StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
         }
         float ks;
         int n = 0;
-        while ((ks = std::max(0.0f, stamp(k))) <= now_s && ks <= stop_after_s) {
+        // Stamps are monotonic, as ForcePositionController's are (taken from
+        // steady_clock under its lock): jitter can bunch samples, not reorder them.
+        while ((ks = std::max(last_stamp, std::max(0.0f, stamp(k)))) <= now_s &&
+               ks <= stop_after_s) {
+            last_stamp = ks;
             p.set_target(sample(plant.pos, plant.vel), tgt(ks), cfg.grasp_torque_nm, at(ks));
             ++k;
             ++n;
@@ -1298,4 +1307,23 @@ TEST(ForcePositionPolicy, FrameTimingJitterDoesNotRoughenTheSetpoint) {
     // timing does (what remains in both is the plant's own stick-slip).
     EXPECT_LT(jittery.step_hf_rms, 1.2f * smooth.step_hf_rms)
         << "jittered " << jittery.step_hf_rms << " vs steady " << smooth.step_hf_rms;
+}
+
+// The playback lag has to be STEADY, not just long enough on average. A lag of
+// mean + 2 deviations, re-estimated per sample, moved with every sample and
+// moved the read point of the reference with it, putting the caller's jitter
+// back into the setpoint: replayed against the streams recorded on 0094s,
+// 0.03-0.12 rad/s of high-frequency setpoint velocity, against 0.009-0.016
+// with the longest held interval. The worst of those streams was a 100 Hz Qt
+// timer firing late and catching up, which this reproduces.
+TEST(ForcePositionPolicy, ALateThenCatchUpCallerLeavesTheSetpointSmooth) {
+    const StreamTrace steady = stream_cosine(0.01f, 0.001f, 4.0f, 8.0f);
+    const StreamTrace bursty = stream_cosine(0.01f, 0.001f, 4.0f, 8.0f, nullptr,
+                                             INFINITY, 0.0f, true);
+    EXPECT_EQ(bursty.braked_frames, 0);
+    // Not 1x: linear interpolation over 19 ms / 1 ms segments leaves a chord
+    // error of ~accel x T/2, ~0.01 rad/s here -- far under the jaw's own
+    // velocity noise. A per-sample lag measured ~9x.
+    EXPECT_LT(bursty.step_hf_rms, 2.5f * steady.step_hf_rms)
+        << "bursty " << bursty.step_hf_rms << " vs steady " << steady.step_hf_rms;
 }
