@@ -41,8 +41,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frames whose feed-forward falls under a third of the trajectory speed went
   from 69/303 (100 Hz +-3 ms) and 54-78/303 (50 Hz, steady or +-3 ms) to 0 in
   every case. A first cut that played each sample over the previous interval
-  still braked under jitter (8-9/303); the lag is what removes it. Hardware
-  regression pending.
+  still braked under jitter (8-9/303); the lag is what removes it.
+
+  On 0094s with the same 50/100 Hz cosine (tc-gu-01-pc, 2026-10-08) frames with
+  the setpoint stopped while moving fell from 13-14% to 0.2-0.3%, near-zero-speed
+  frames from 8-10% to <= 0.2%, and the high-frequency speed ripple from 0.16 to
+  0.07 rad/s RMS (`ImpedanceController` on the same trajectory: 0.05).
+  Tracking lag grew 10 ms (100 Hz) / 14 ms (50 Hz).
+- **The friction escalation no longer fires at every reversal of a streamed
+  target.** "At rest" was a velocity threshold, `close_speed_radps / 4` -- 0.275
+  rad/s on an RS00 config -- and a streamed cosine spends ~20% of its time under
+  that around each reversal. The escalation then pinned the setpoint on the raw
+  target and pushed up to ~1 N·m: on 0094s 39 of the 40 (100 Hz) and all 199
+  (50 Hz) remaining stopped-setpoint frames were escalation frames. It now also
+  needs the stall window `holding` already uses (less than 3 mrad of progress in
+  150 ms). In simulation escalated frames over two cosine cycles went from
+  157-160 (up to 0.76 N·m) to at most 14 (under 0.2 N·m, a jaw genuinely stuck
+  at a reversal). **Observable change: on a real friction stall or a blocked
+  jaw short of the target, the escalation -- and so `HOLDING_FORCE` -- starts
+  ~150 ms later.** It now builds from what the parked hold already pushes,
+  including the closed-endpoint preload; starting from the bare spring had
+  dropped the push by the 0.25 N·m preload first.
+- **The setpoint advances on a smoothed status-frame clock.** The host sees
+  status frames +-3 ms either way while the motor applies each command for one
+  fixed period, so advancing the reference on the host's reading made the
+  per-frame setpoint move uneven (0.09-0.11 rad/s of high-frequency setpoint
+  velocity left on 0094s). The clock is now the previous frame plus one period,
+  pulled 10% toward the host's reading and snapped to it when more than half a
+  period off. In simulation with +-3 ms frame jitter the per-frame move is as
+  smooth as with none (it was 2.3x rougher). Hardware regression of these two
+  pending.
 
 ## [0.4.1] - 2026-09-30
 

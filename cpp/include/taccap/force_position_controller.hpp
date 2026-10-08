@@ -318,6 +318,9 @@ private:
     void  ref_step_(float raw, std::chrono::steady_clock::time_point t);
     void  ref_sample_(float raw, std::chrono::steady_clock::time_point t);
     float ref_at_(std::chrono::steady_clock::time_point t) const;
+    // Smoothed status-frame clock: see kFrameClockAlpha in the .cpp.
+    std::chrono::steady_clock::time_point frame_clock_(
+        std::chrono::steady_clock::time_point now);
 
     GripperPosition map_;
     ForcePositionConfig cfg_;
@@ -361,6 +364,9 @@ private:
     float stall_pos_raw_ = 0.0f;
     std::chrono::steady_clock::time_point stall_since_{};
     bool  stall_valid_ = false;
+    bool  stalled_ = false;          // refreshed at the top of step()
+    std::chrono::steady_clock::time_point frame_t_{};
+    bool  frame_clock_valid_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;

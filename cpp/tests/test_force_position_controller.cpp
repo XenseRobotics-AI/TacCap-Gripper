@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -154,7 +155,9 @@ TEST(ForcePositionPolicy, TopUpEscalatesAtTheConfiguredRateBeforeLatching) {
     const ForcePositionTuning tune;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     const float pos = 0.022f;              // short of 0.0, within one lead
-    const float spring = tune.position_kp * pos;
+    // Parked on the closed endpoint the hold already pushes spring + preload,
+    // and the escalation (after the 150 ms stall window, 0.4.2) builds from there.
+    const float spring = tune.position_kp * pos + cfg.close_preload_nm;
     ASSERT_LT(spring, cfg.grasp_torque_nm);
     auto t = std::chrono::steady_clock::now();
     p.reset(sample(pos), t);
@@ -172,6 +175,7 @@ TEST(ForcePositionPolicy, TopUpEscalatesAtTheConfiguredRateBeforeLatching) {
         if (c.target_pos != 0.0f || c.vel != 0.0f) continue;
         if (now_nm > spring + 1e-4f) {
             ++escalating;
+            EXPECT_GE(now_nm, prev - 1e-4f) << "the push dipped at frame " << i;
             EXPECT_LE(now_nm - std::max(prev, spring),
                       tune.topup_rate_nmps * 0.010f + 1e-4f) << "frame " << i;
             if (!p.holding()) {
@@ -231,7 +235,7 @@ TEST(ForcePositionPolicy, PassingTheTargetReleasesTheGraspLatch) {
     p.reset(sample(blocked), t);
     p.set_target(sample(blocked), target, cfg.grasp_torque_nm, t);
     p.step(sample(blocked), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 45; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(blocked), t);
     }
@@ -348,7 +352,7 @@ TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
     p.reset(sample(0.02f), t);
     p.set_target(sample(0.02f), 0.0f, cfg.grasp_torque_nm, t);
     p.step(sample(0.02f), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 45; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(0.02f), t);
     }
@@ -1074,6 +1078,9 @@ struct StreamTrace {
     int braked_frames = 0;       // |vel ff| under a third of the trajectory's speed
     float max_ramp_step = 0.0f;  // largest |ramp move| in one frame
     int holding = 0;
+    int escalated = 0;           // frames carrying feed-forward torque
+    float max_escalation_nm = 0.0f;
+    float step_hf_rms = 0.0f;    // per-frame ramp move minus its local mean, rad
 };
 
 // A cosine streamed by a caller whose clock does not match the 100 Hz status
@@ -1083,9 +1090,12 @@ struct StreamTrace {
 // 100 Hz (2026-10-08); 0.02 with no jitter is its 50 Hz case. Each target is
 // stamped with the time the caller made it, as ForcePositionController does.
 // counts[n] receives how many frames saw n new targets.
+// frame_jitter_s moves the time the HOST sees each status frame by up to that
+// much either way, while the plant still applies every command for exactly one
+// 10 ms MCU period -- the +-3 ms tc-gu-01-pc measured on 0094s.
 StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
                           float seconds, int* counts = nullptr,
-                          float stop_after_s = INFINITY) {
+                          float stop_after_s = INFINITY, float frame_jitter_s = 0.0f) {
     ForcePositionConfig cfg;
     cfg.grasp_torque_nm = 3.6f;                 // RS00 budget
     cfg.hold_torque_limit_nm = 5.0f;
@@ -1115,11 +1125,18 @@ StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
         return i * caller_period_s + (2.0f * u - 1.0f) * jitter_s;
     };
     float prev_ramp = NAN;
+    std::vector<float> steps;
     const float peak_speed = 0.4f * travel * 6.2831853f / period_s;
     const int frames = static_cast<int>(seconds * 100.0f);
     for (int f = 0; f < frames; ++f) {
         // Frames 0.5 ms after the caller's nominal ticks: jitter straddles them.
-        const float now_s = f * 0.01f + 0.0005f;
+        float now_s = f * 0.01f + 0.0005f;
+        if (frame_jitter_s > 0.0f) {
+            uint32_t h = 977u ^ (static_cast<uint32_t>(f) * 2246822519u);
+            h = h * 1664525u + 1013904223u;
+            now_s += (2.0f * (static_cast<float>(h >> 8) / 16777216.0f) - 1.0f) *
+                     frame_jitter_s;
+        }
         float ks;
         int n = 0;
         while ((ks = std::max(0.0f, stamp(k))) <= now_s && ks <= stop_after_s) {
@@ -1132,6 +1149,11 @@ StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
         for (int i = 0; i < 10; ++i) plant.advance(applied, 0.001f);
         applied = cmd;
         if (p.holding()) ++tr.holding;
+        if (f > 100 && std::abs(cmd.target_torque) > 1e-6f) {
+            ++tr.escalated;
+            tr.max_escalation_nm = std::max(tr.max_escalation_nm, std::abs(cmd.target_torque));
+        }
+        if (!std::isnan(prev_ramp)) steps.push_back(cmd.target_pos - prev_ramp);
         if (!std::isnan(prev_ramp)) {
             tr.max_ramp_step = std::max(tr.max_ramp_step, std::abs(cmd.target_pos - prev_ramp));
         }
@@ -1143,6 +1165,18 @@ StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
             if (std::abs(cmd.vel) < traj_speed / 3.0f) ++tr.braked_frames;
         }
     }
+    // High-frequency part of the per-frame ramp move: each step minus the
+    // 9-frame centred mean. A smooth trajectory leaves only curvature.
+    double acc = 0.0;
+    int n = 0;
+    for (size_t i = 4; i + 4 < steps.size(); ++i) {
+        float m = 0.0f;
+        for (size_t j = i - 4; j <= i + 4; ++j) m += steps[j];
+        const float d = steps[i] - m / 9.0f;
+        acc += d * d;
+        ++n;
+    }
+    tr.step_hf_rms = n ? static_cast<float>(std::sqrt(acc / n)) : 0.0f;
     return tr;
 }
 
@@ -1231,4 +1265,37 @@ TEST(ForcePositionPolicy, ATargetAfterAPauseIsAStepNotAStream) {
         t += std::chrono::milliseconds(10);
     }
     EXPECT_LT(pos, 0.45f) << "the step never moved the ramp";
+}
+
+// The friction escalation is for a jaw that has STOPPED short of its target. A
+// streamed cosine passes through zero speed at every reversal, and the old
+// velocity gate (close_speed/4, 0.275 rad/s on an RS00 config) let it fire
+// there: up to ~1 N·m of push and the ramp pinned on the raw target, every
+// other frame stopped at 50 Hz (0094s, tc-gu-01-pc 2026-10-08). In this
+// plant the velocity gate escalated 157-160 of ~700 frames, up to 0.76 N·m.
+// Gated on the stall window only a jaw that really sticks at a reversal for
+// 150 ms gets a push, and only the first few hundredths of a N·m of it.
+TEST(ForcePositionPolicy, AStreamedReversalBarelyEscalates) {
+    for (const float caller : {0.01f, 0.02f}) {
+        SCOPED_TRACE(caller);
+        const StreamTrace tr = stream_cosine(caller, 0.003f, 4.0f, 8.0f);
+        EXPECT_LE(tr.escalated, 20) << "frames with an escalated push while tracking";
+        EXPECT_LT(tr.max_escalation_nm, 0.2f);
+    }
+}
+
+// The host sees status frames +-3 ms either way, but the motor applies each
+// command for one fixed period. Advanced on the host's reading the ramp moved
+// a jittering distance per frame -- 0.09-0.11 rad/s of high-frequency setpoint
+// velocity left on 0094s after the jitter buffer. On the smoothed frame clock
+// the per-frame move follows the trajectory.
+TEST(ForcePositionPolicy, FrameTimingJitterDoesNotRoughenTheSetpoint) {
+    const StreamTrace smooth = stream_cosine(0.01f, 0.003f, 4.0f, 8.0f, nullptr,
+                                             INFINITY, 0.0f);
+    const StreamTrace jittery = stream_cosine(0.01f, 0.003f, 4.0f, 8.0f, nullptr,
+                                              INFINITY, 0.003f);
+    // Jittered frame timing must leave the setpoint no rougher than steady
+    // timing does (what remains in both is the plant's own stick-slip).
+    EXPECT_LT(jittery.step_hf_rms, 1.2f * smooth.step_hf_rms)
+        << "jittered " << jittery.step_hf_rms << " vs steady " << smooth.step_hf_rms;
 }

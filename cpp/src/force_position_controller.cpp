@@ -58,6 +58,14 @@ constexpr float kClosedEndpointEps = 1e-3f;
 constexpr float kStreamGapS    = 0.100f;
 constexpr float kLagDeviations = 2.0f;
 constexpr float kIntervalAlpha = 0.2f;
+// The frame clock (0.4.2). Status frames come every 1/motor_stream_hz on the
+// MCU, but the host sees them +-3 ms either way (USB scheduling, the reader and
+// dispatch threads). Each command is applied for one MCU period regardless, so
+// the reference is advanced on a smoothed clock: the previous frame time plus
+// one period, pulled toward the host's reading by kFrameClockAlpha. A reading
+// more than half a period off is not jitter -- a dropped frame, a stalled loop,
+// a test stepping at another rate -- and the clock snaps to it.
+constexpr float kFrameClockAlpha = 0.1f;
 
 namespace {
 float detail_spec_or(float v, float fallback) {
@@ -225,6 +233,8 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     stall_valid_ = false;
+    stalled_ = false;
+    frame_clock_valid_ = false;
     ref_step_(sample.actual_pos, now);
     fault_reason_.clear();
 }
@@ -271,6 +281,25 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
 // there. Only the ramp chases the reference -- arrival, the grasp latch, the
 // escalation and the closed-endpoint preload are all still judged against the
 // caller's own target.
+std::chrono::steady_clock::time_point ForcePositionPolicy::frame_clock_(
+        std::chrono::steady_clock::time_point now) {
+    using clk = std::chrono::steady_clock;
+    const float period = 1.0f / static_cast<float>(std::max(1u, cfg_.motor_stream_hz));
+    if (frame_clock_valid_) {
+        const auto predicted = frame_t_ + std::chrono::duration_cast<clk::duration>(
+                                              std::chrono::duration<float>(period));
+        const float err = std::chrono::duration<float>(now - predicted).count();
+        if (std::abs(err) <= 0.5f * period) {
+            frame_t_ = predicted + std::chrono::duration_cast<clk::duration>(
+                                       std::chrono::duration<float>(kFrameClockAlpha * err));
+            return frame_t_;
+        }
+    }
+    frame_t_ = now;
+    frame_clock_valid_ = true;
+    return frame_t_;
+}
+
 void ForcePositionPolicy::ref_step_(float raw, std::chrono::steady_clock::time_point t) {
     hist_t_[0] = t;
     hist_raw_[0] = raw;
@@ -386,6 +415,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     stall_valid_ = false;
+    stalled_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -605,9 +635,26 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     const bool short_of_target =
         (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
         short_by > tune_.arrival_eps_rad;
+    // AT REST means the stall window, not a velocity threshold (0.4.2). The
+    // threshold was close_speed/4 -- 0.275 rad/s on an RS00 config -- and a
+    // streamed cosine spends ~20% of its time below that around each reversal,
+    // so the escalation fired at every turnaround, pinned the ramp on the raw
+    // target (every other frame stopped at 50 Hz) and pushed up to ~1 N·m
+    // (0094s, tc-gu-01-pc 2026-10-08: 39/40 and 199/199 stopped frames were
+    // escalation frames). A jaw passing through zero speed at a reversal keeps
+    // moving; a friction-parked or blocked one makes no progress for 150 ms.
+    // The cost is that escalation starts 150 ms later on a real stall.
     const bool at_rest =
+        stalled_ &&
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
     const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
+    // What the parked hold already pushes with, in the push direction: the
+    // spring plus the closed-endpoint preload when it applies. The escalation
+    // starts from here, not from the spring alone -- since the stall window
+    // delays it by 150 ms, a closing jaw has been held at spring + preload all
+    // that time, and restarting from the bare spring dropped the push by the
+    // 0.25 N·m preload before building it back up (0.4.2).
+    const float base = dir * spring + std::max(0.0f, dir * preload_signed);
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
         if (short_of_target && at_rest) {
@@ -615,7 +662,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
                 topup_anchor_raw_ = target_raw;   // escalation begins here
             }
             topup_nm_ = std::min(budget,
-                                 std::max(topup_nm_, dir * spring) + step_nm);
+                                 std::max(topup_nm_, base) + step_nm);
             if (topup_nm_ >= budget - kEpsilon) {
                 grasp_latched_ = true;
                 grasp_dir_ = dir;
@@ -632,7 +679,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
     }
-    if (!grasp_latched_ && short_of_target && topup_nm_ > dir * spring) {
+    if (!grasp_latched_ && short_of_target && topup_nm_ > base) {
         // Escalating: pinned on the target like the latched push below, but the
         // damping term stays in, so a jaw that breaks away is still braked.
         ramp_raw_ = target_raw;
@@ -696,6 +743,30 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float open_position = map_.to_position(sample.actual_pos);
 
     hold_raw_ = sample.actual_pos;          // where the jaw actually is
+    // The ramp and the streamed-target reference run on the smoothed frame
+    // clock; the stall window below stays on wall time.
+    const auto frame_now = frame_clock_(now);
+
+    // STALL WINDOW: the jaw has made less than kStallProgressRad of progress
+    // over kStallWindow. Updated BEFORE the law, because the law uses it too:
+    // it gates the escalation in travel_track_ as well as the "holding"
+    // observation below.
+    //
+    // The lead test is gated on POSITION PROGRESS over a window, not on the
+    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
+    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
+    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
+    // the jaw is still moving -- the reported state flipped HoldingForce /
+    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
+    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
+    if (!stall_valid_ ||
+        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
+        stall_pos_raw_ = sample.actual_pos;
+        stall_since_ = now;
+        stall_valid_ = true;
+    }
+    stalled_ = (now - stall_since_) >= kStallWindow;
+
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
@@ -715,9 +786,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
                         : (to_target > 0.0f) ? 1.0f : -1.0f;
-        cmd = travel_track_(sample, target_raw, ref_at_(now),
+        cmd = travel_track_(sample, target_raw, ref_at_(frame_now),
                             dir * cfg_.close_speed_radps,
-                            grasp_torque_nm_, now);
+                            grasp_torque_nm_, frame_now);
     }
 
     // OBSERVATIONS, not decisions. "Holding" is the clamp binding while the jaw
@@ -730,25 +801,11 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float lead = std::abs(ramp_raw_ - sample.actual_pos);
     // blocked_short_ is the same observation where the lead cannot fill: the
     // ramp is parked on the target and the budget is being applied anyway.
-    //
-    // The lead test is gated on POSITION PROGRESS over a window, not on the
-    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
-    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
-    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
-    // the jaw is still moving -- the reported state flipped HoldingForce /
-    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
-    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
-    if (!stall_valid_ ||
-        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
-        stall_pos_raw_ = sample.actual_pos;
-        stall_since_ = now;
-        stall_valid_ = true;
-    }
-    const bool stalled = (now - stall_since_) >= kStallWindow;
+    // The lead test is gated on the stall window (see above).
     holding_ = !arrived_ && ramp_valid_ &&
                (blocked_short_ ||
                 (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
-                 stalled &&
+                 stalled_ &&
                  std::abs(sample.actual_vel) <=
                      cfg_.close_speed_radps * kHoldingVelRatio));
 
