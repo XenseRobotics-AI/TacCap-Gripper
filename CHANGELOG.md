@@ -23,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The ramp now chases a reference indexed by time: each target is stamped when
   the caller sends it (on the caller's thread), and consecutive targets less
-  than 0.1 s apart are interpolated linearly and played back a smoothed lag
-  behind the present -- mean caller interval plus two mean absolute deviations,
-  so a sample a few ms late is already in hand. The timestamped-waypoint
+  than 0.1 s apart are interpolated linearly and played back a steady lag
+  behind the present: the longest recent caller interval plus 1 ms, raised at
+  once when a longer one arrives and lowered at 5 ms/s, so a late sample is
+  already in hand and the read point never jumps. The timestamped-waypoint
   interpolation UMI and ros2_control use, with a jitter buffer. Queued targets
   are applied in order instead of the last one winning. **Observable change: a
   streamed target is followed a little over one interval late** (20 ms behind a
@@ -71,6 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   period off. In simulation with +-3 ms frame jitter the per-frame move is as
   smooth as with none (it was 2.3x rougher). Hardware regression of these two
   pending.
+
+  A first cut of the lag, mean + 2 deviations re-estimated per sample, moved
+  with every sample and fed the caller's jitter back into the setpoint: on
+  0094s at 100 Hz, with the Qt timer firing late and catching up (20 ms then
+  1 ms), the speed ripple rose from 0.066 to 0.087 rad/s. Replaying all four
+  recorded caller streams through the policy and the friction plant,
+  high-frequency setpoint velocity is 0.065-0.123 rad/s with that lag and
+  0.007-0.010 with the steady one. Released escalations also no longer step
+  the setpoint back onto the trailing reference.
 
 ## [0.4.1] - 2026-09-30
 
