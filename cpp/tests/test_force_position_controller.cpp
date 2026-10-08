@@ -1327,3 +1327,33 @@ TEST(ForcePositionPolicy, ALateThenCatchUpCallerLeavesTheSetpointSmooth) {
     EXPECT_LT(bursty.step_hf_rms, 2.5f * steady.step_hf_rms)
         << "bursty " << bursty.step_hf_rms << " vs steady " << steady.step_hf_rms;
 }
+
+// A compliant contact under a STEADY target: the pad compresses by more than
+// the stall window's 3 mrad per 150 ms, so the jaw never reads as stalled, and
+// gated on that alone the push stayed at the spring -- closing to 0.0 on 0094s
+// took 3.2 s instead of 1.1 (2026-10-08). With the target steady, the slow jaw
+// escalates as it did before 0.4.2.
+TEST(ForcePositionPolicy, ACreepingCompliantGraspStillEscalatesUnderASteadyTarget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 3.6f;
+    cfg.hold_torque_limit_nm = 5.0f;
+    cfg.motion_torque_limit_nm = 14.0f;
+    cfg.close_speed_radps = 1.1f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 0.040f;                          // pad meets the jaw 40 mrad out
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    bool held = false;
+    for (int i = 0; i < 150 && !held; ++i) {     // 1.5 s
+        t += std::chrono::milliseconds(10);
+        // Creeping in at 0.03 rad/s (4.5 mrad per 150 ms) until 25 mrad, where
+        // the pad stops it -- always slower than the velocity gate.
+        const float v = pos > 0.025f ? -0.03f : 0.0f;
+        pos = std::max(0.025f, pos + v * 0.01f);
+        p.step(sample(pos, v), t);
+        held = p.holding();
+    }
+    EXPECT_TRUE(held) << "never escalated to a grip";
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-2f);
+}

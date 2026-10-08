@@ -58,9 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs the stall window `holding` already uses (less than 3 mrad of progress in
   150 ms). In simulation escalated frames over two cosine cycles went from
   157-160 (up to 0.76 N·m) to at most 14 (under 0.2 N·m, a jaw genuinely stuck
-  at a reversal). **Observable change: on a real friction stall or a blocked
-  jaw short of the target, the escalation -- and so `HOLDING_FORCE` -- starts
-  ~150 ms later.** It now builds from what the parked hold already pushes,
+  at a reversal). The gate applies only while the caller's target is moving:
+  with a target that has been steady for 150 ms the velocity gate alone still
+  escalates, as before -- gated on the stall window unconditionally, closing
+  to 0.0 on 0094s took 3.2 s instead of 1.1, because the compressing finger
+  pads never read as stalled. **Observable change: on a stall short of a
+  target that is still moving, the escalation -- and so `HOLDING_FORCE` --
+  starts ~150 ms later.** It now builds from what the parked hold already pushes,
   including the closed-endpoint preload; starting from the bare spring had
   dropped the push by the 0.25 N·m preload first.
 - **The setpoint advances on a smoothed status-frame clock.** The host sees

@@ -366,6 +366,11 @@ private:
     std::chrono::steady_clock::time_point stall_since_{};
     bool  stall_valid_ = false;
     bool  stalled_ = false;          // refreshed at the top of step()
+    // The caller's target, on the same window (see at_rest in the .cpp).
+    float target_steady_raw_ = 0.0f;
+    std::chrono::steady_clock::time_point target_steady_since_{};
+    bool  target_steady_valid_ = false;
+    bool  target_steady_ = false;
     std::chrono::steady_clock::time_point frame_t_{};
     bool  frame_clock_valid_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and

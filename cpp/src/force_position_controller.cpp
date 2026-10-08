@@ -233,6 +233,8 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     topup_nm_ = 0.0f;
     stall_valid_ = false;
     stalled_ = false;
+    target_steady_valid_ = false;
+    target_steady_ = false;
     frame_clock_valid_ = false;
     ref_step_(sample.actual_pos, now);
     fault_reason_.clear();
@@ -441,6 +443,8 @@ void ForcePositionPolicy::fail(std::string reason) {
     topup_nm_ = 0.0f;
     stall_valid_ = false;
     stalled_ = false;
+    target_steady_valid_ = false;
+    target_steady_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -672,17 +676,24 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     const bool short_of_target =
         (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
         short_by > tune_.arrival_eps_rad;
-    // AT REST means the stall window, not a velocity threshold (0.4.2). The
-    // threshold was close_speed/4 -- 0.275 rad/s on an RS00 config -- and a
-    // streamed cosine spends ~20% of its time below that around each reversal,
-    // so the escalation fired at every turnaround, pinned the ramp on the raw
-    // target (every other frame stopped at 50 Hz) and pushed up to ~1 N·m
-    // (0094s, tc-gu-01-pc 2026-10-08: 39/40 and 199/199 stopped frames were
-    // escalation frames). A jaw passing through zero speed at a reversal keeps
-    // moving; a friction-parked or blocked one makes no progress for 150 ms.
-    // The cost is that escalation starts 150 ms later on a real stall.
+    // AT REST: slow, and either the target has stopped moving or the jaw has
+    // (0.4.2).
+    //
+    // The velocity threshold alone -- close_speed/4, 0.275 rad/s on an RS00
+    // config -- fired at every reversal of a streamed cosine, which spends ~20%
+    // of its time under it: the escalation pinned the ramp on the raw target
+    // (every other frame stopped at 50 Hz) and pushed up to ~1 N·m (0094s,
+    // tc-gu-01-pc 2026-10-08: 39/40 and 199/199 stopped frames were escalation
+    // frames). A lag behind a MOVING target is tracking, not a stall.
+    //
+    // But the jaw's own stall window alone broke the slow seat: closing to 0.0
+    // on 0094s with nothing in the jaw, the finger pads compress by more than
+    // 3 mrad per 150 ms, the window never closed, the push stayed at the
+    // spring, and the close took 3.2 s instead of 1.1 (2026-10-08; 0.4.1 and
+    // this gate both 1.1 s). A steady target is what the velocity gate was
+    // always for, so it keeps it.
     const bool at_rest =
-        stalled_ &&
+        (stalled_ || target_steady_) &&
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
     const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
     // What the parked hold already pushes with, in the push direction: the
@@ -803,6 +814,18 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         stall_valid_ = true;
     }
     stalled_ = (now - stall_since_) >= kStallWindow;
+    // Same window on the CALLER'S TARGET: steady once it has moved less than
+    // kStallProgressRad for kStallWindow. Gates the escalation, see at_rest.
+    {
+        const float target_now = map_.to_rad(target_position_);
+        if (!target_steady_valid_ ||
+            std::abs(target_now - target_steady_raw_) > kStallProgressRad) {
+            target_steady_raw_ = target_now;
+            target_steady_since_ = now;
+            target_steady_valid_ = true;
+        }
+        target_steady_ = (now - target_steady_since_) >= kStallWindow;
+    }
 
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
