@@ -47,6 +47,17 @@ constexpr auto  kStallWindow = std::chrono::milliseconds(150);
 // endpoint, not for "somewhere near the closed side", because pressing while
 // holding a mid-stroke target would drag the jaw off that target.
 constexpr float kClosedEndpointEps = 1e-3f;
+// Streamed targets (0.4.2). Two samples closer together than kStreamGapS are
+// one stream; a sample with no predecessor inside the gap is a step, exactly as
+// before. 0.1 s admits callers down to 10 Hz -- a 10 Hz caller sits ON the gap
+// and with timer jitter flips between stream and step; that is expected, and
+// faster callers never see it. The playback lag is the mean caller interval
+// plus kLagDeviations mean absolute deviations of it (both smoothed with
+// kIntervalAlpha), so a sample that arrives late by up to that much is already
+// in hand when the reference needs it.
+constexpr float kStreamGapS    = 0.100f;
+constexpr float kLagDeviations = 2.0f;
+constexpr float kIntervalAlpha = 0.2f;
 
 namespace {
 float detail_spec_or(float v, float fallback) {
@@ -214,6 +225,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     stall_valid_ = false;
+    ref_step_(sample.actual_pos, now);
     fault_reason_.clear();
 }
 
@@ -224,6 +236,91 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    // A discrete command, not a stream sample: the reference steps.
+    ref_step_(map_.to_rad(1.0f), now);
+}
+
+// THE STREAMED-TARGET REFERENCE (0.4.2). The ramp used to chase the latest
+// target directly and clamp on reaching it, so its advance -- and the velocity
+// feed-forward derived from it -- depended on how many caller samples happened
+// to land between two status frames. The two clocks are not synchronised, so
+// at 100 Hz that was 0/1/2 targets per frame and at 50 Hz 0/1, and every frame
+// with none turned travel_kd into a pure brake: a 10-20 Hz stop-go in the
+// measured speed while tracking a cosine (0094s, RS00, tc-gu-01-pc
+// 2026-10-08), absent under ImpedanceController, which has no such term.
+//
+// So the ramp now chases a reference indexed by TIME: the caller's samples,
+// each stamped when the caller made it, played back through linear
+// interpolation a short lag behind the present -- a jitter buffer, the same
+// design as UMI's timestamped waypoint interpolator and ros2_control's
+// trajectory sampling, for the same reason: velocity has to come from a
+// trajectory in time, not from per-frame target deltas.
+//
+// THE LAG IS WHAT MAKES IT WORK, and it has to cover jitter, not just the
+// period. A first cut played each sample over the interval since the previous
+// one; the reference then reached the newest sample on schedule and waited
+// there whenever the next one came a few ms late -- a GUI timer at 100 Hz
+// +-3 ms still braked 3% of moving frames. Played back mean + 2 deviations
+// late, the next sample is almost always already here: 20 ms behind a steady
+// 50 Hz caller, ~15 ms behind a jittery 100 Hz one.
+//
+// It degenerates to the old behaviour everywhere else. A lone target (no
+// predecessor within kStreamGapS) is a step: the history holds one sample, the
+// reference IS that target and the ramp runs at close_speed_radps as before. A
+// stream that stops leaves the reference on its last sample and the ramp parks
+// there. Only the ramp chases the reference -- arrival, the grasp latch, the
+// escalation and the closed-endpoint preload are all still judged against the
+// caller's own target.
+void ForcePositionPolicy::ref_step_(float raw, std::chrono::steady_clock::time_point t) {
+    hist_t_[0] = t;
+    hist_raw_[0] = raw;
+    hist_n_ = 1;
+    interval_mean_s_ = 0.0f;
+    interval_dev_s_ = 0.0f;
+}
+
+float ForcePositionPolicy::ref_at_(std::chrono::steady_clock::time_point now) const {
+    if (hist_n_ == 0) return 0.0f;
+    if (hist_n_ == 1 || interval_mean_s_ <= 0.0f) return hist_raw_[hist_n_ - 1];
+    const float lag = std::min(kStreamGapS,
+                               interval_mean_s_ + kLagDeviations * interval_dev_s_);
+    const auto tq = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<float>(lag));
+    if (tq <= hist_t_[0]) return hist_raw_[0];
+    for (size_t i = 1; i < hist_n_; ++i) {
+        if (tq <= hist_t_[i]) {
+            const float span = std::chrono::duration<float>(hist_t_[i] - hist_t_[i - 1]).count();
+            if (!(span > 0.0f)) return hist_raw_[i];
+            const float u = std::chrono::duration<float>(tq - hist_t_[i - 1]).count() / span;
+            return hist_raw_[i - 1] + (hist_raw_[i] - hist_raw_[i - 1]) * u;
+        }
+    }
+    return hist_raw_[hist_n_ - 1];               // stream stopped or very late
+}
+
+void ForcePositionPolicy::ref_sample_(float raw, std::chrono::steady_clock::time_point t) {
+    if (hist_n_ == 0) { ref_step_(raw, t); return; }
+    const float interval =
+        std::chrono::duration<float>(t - hist_t_[hist_n_ - 1]).count();
+    // Out of order (a command from another thread) or after a pause: a step.
+    if (!(interval >= 0.0f) || interval > kStreamGapS) { ref_step_(raw, t); return; }
+    if (interval_mean_s_ <= 0.0f) {
+        interval_mean_s_ = interval;
+    } else {
+        interval_dev_s_ += kIntervalAlpha *
+                           (std::abs(interval - interval_mean_s_) - interval_dev_s_);
+        interval_mean_s_ += kIntervalAlpha * (interval - interval_mean_s_);
+    }
+    if (hist_n_ == kHistory) {
+        for (size_t i = 1; i < kHistory; ++i) {
+            hist_t_[i - 1] = hist_t_[i];
+            hist_raw_[i - 1] = hist_raw_[i];
+        }
+        --hist_n_;
+    }
+    hist_t_[hist_n_] = t;
+    hist_raw_[hist_n_] = raw;
+    ++hist_n_;
 }
 
 // Commands only move the setpoint. There is no motion state to disturb and no
@@ -259,6 +356,10 @@ void ForcePositionPolicy::set_target(
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
+    // `now` is the caller's own timestamp for this sample (the controller stamps
+    // it in set_target() on the caller's thread), so the interval is the one
+    // the caller actually took, not when the control thread got round to it.
+    ref_sample_(map_.to_rad(target_position), now);
 }
 
 void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
@@ -268,6 +369,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    ref_step_(sample.actual_pos, last_step_);
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
@@ -330,8 +432,9 @@ float ForcePositionPolicy::close_preload_signed_() const {
  * whatever the plant is stable with, instead of being rationed against the grip.
   */
 protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
-        const MotorStatusSample& sample, float target_raw, float desired_vel,
-        float torque_budget, std::chrono::steady_clock::time_point now) {
+        const MotorStatusSample& sample, float target_raw, float chase_raw,
+        float desired_vel, float torque_budget,
+        std::chrono::steady_clock::time_point now) {
     const float budget = std::clamp(torque_budget, kEpsilon,
                                     cfg_.motion_torque_limit_nm);
     const float kd = std::min(tune_.travel_kd, kMaxDampingGain);
@@ -377,10 +480,15 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         ramp_raw_ = std::clamp(ramp_raw_, sample.actual_pos - max_lead,
                                sample.actual_pos + max_lead);
     }
+    // The ramp chases the time-indexed REFERENCE, not the caller's latest
+    // target (see ref_sample_). For a lone target they are the same point. The
+    // speed-limit clamp below bounds the move to |desired_vel|*dt whichever side
+    // of the ramp the reference is on, so a reference that has not yet turned
+    // at a reversal is still approached at no more than the commanded speed.
     const float ramp_prev = ramp_raw_;
     ramp_raw_ += desired_vel * dt;
-    if (desired_vel > 0.0f) { ramp_raw_ = std::min(ramp_raw_, target_raw); }
-    else                    { ramp_raw_ = std::max(ramp_raw_, target_raw); }
+    if (desired_vel > 0.0f) { ramp_raw_ = std::min(ramp_raw_, chase_raw); }
+    else                    { ramp_raw_ = std::max(ramp_raw_, chase_raw); }
     // Speed limit applied to the ramp POSITION, and applied here -- before the
     // budget clamp, never after deriving the velocity from it. Capping the
     // velocity afterwards would edit one side of the equation the budget
@@ -416,6 +524,13 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // observation and switches nothing (0.4.0).
     const float preload_signed =
         (std::abs(ramp_raw_ - target_raw) <= kEpsilon) ? close_preload_signed_() : 0.0f;
+    // While a stream is live the reference trails the caller's target by up to
+    // one interval, so the ramp is never exactly ON that target. For the grasp
+    // decisions below, "parked" therefore means the ramp has caught the
+    // reference and the reference is within the arrival band of the target --
+    // a lone target still has to be reached exactly, as before.
+    const bool ref_settled =
+        std::abs(chase_raw - target_raw) <= tune_.arrival_eps_rad;
     const float pd_budget = std::max(kEpsilon, budget - std::abs(preload_signed));
     {
         const float a = tune_.position_kp + kd / dt;
@@ -481,7 +596,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // band. An object holds the whole budget, and only then is it latched.
     const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
     const float ramp_gap = std::abs(ramp_raw_ - target_raw);
-    const bool parked = ramp_gap <= kEpsilon;
+    const bool parked = ramp_gap <= kEpsilon ||
+                        (ref_settled && std::abs(ramp_raw_ - chase_raw) <= kEpsilon);
     const float short_by = dir * (target_raw - sample.actual_pos);
     // "Parked" within the arrival band, as for the latched push below: a
     // streamed target jitters by a few mrad per frame, and a ramp one frame
@@ -599,7 +715,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
                         : (to_target > 0.0f) ? 1.0f : -1.0f;
-        cmd = travel_track_(sample, target_raw, dir * cfg_.close_speed_radps,
+        cmd = travel_track_(sample, target_raw, ref_at_(now),
+                            dir * cfg_.close_speed_radps,
                             grasp_torque_nm_, now);
     }
 
@@ -924,6 +1041,7 @@ void ForcePositionController::start() {
         std::lock_guard<std::mutex> lk(mu_);
         policy_ = std::make_unique<detail::ForcePositionPolicy>(map_, cfg_);
         policy_->reset(initial, now);
+        queue_.clear();
         latest_ = initial;
         latest_time_ = now;
         have_sample_ = true;
@@ -1057,6 +1175,14 @@ void ForcePositionController::set_target(float position) {
     set_target(position, cfg_.grasp_torque_nm);
 }
 
+// Caller holds mu_. Bounded so a caller far outrunning the status stream (or a
+// stream that has stopped) cannot grow it; the oldest entries are the ones a
+// newer target has already superseded.
+void ForcePositionController::enqueue_(const QueuedCommand& c) {
+    if (queue_.size() >= kMaxQueuedCommands) queue_.erase(queue_.begin());
+    queue_.push_back(c);
+}
+
 // Caller commands are QUEUED, not applied here.
 //
 // Applying them on the caller's thread also submitted on the caller's thread,
@@ -1066,6 +1192,14 @@ void ForcePositionController::set_target(float position) {
 // happens in run_() on the status-frame doorbell, inside the ~9.8 ms the MCU
 // is known to be idle. The cost is that a command takes effect on the next status frame
 // instead of instantly: at motor_stream_hz = 100 that is under 10 ms.
+//
+// QUEUED IN ORDER AND STAMPED HERE (0.4.2). Each target carries the time this
+// call was made, on the caller's thread, because the policy builds its
+// streamed-target reference from the caller's own intervals -- stamping when
+// run_() got round to it would put the control thread's jitter back in. And
+// every queued command is applied, in order: two targets in one status period
+// used to collapse to the last, which is exactly the 0/1/2-per-frame pattern
+// that made a 100 Hz stream stutter.
 //
 // Validation stays eager. Deferring it would turn a caller's out-of-range
 // argument into a silent no-op on a background thread instead of the
@@ -1086,9 +1220,8 @@ void ForcePositionController::set_target(float position, float grasp_torque_nm) 
             std::to_string(stall_limit_nm_) +
             " Nm, which a blocked jaw holds indefinitely");
     }
-    pending_ = PendingCommand::SetTarget;
-    pending_position_ = position;
-    pending_grasp_torque_nm_ = grasp_torque_nm;
+    enqueue_({PendingCommand::SetTarget, position, grasp_torque_nm,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1098,7 +1231,8 @@ void ForcePositionController::release() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::release called before start");
     }
-    pending_ = PendingCommand::Release;
+    enqueue_({PendingCommand::Release, 1.0f, cfg_.grasp_torque_nm,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1108,7 +1242,8 @@ void ForcePositionController::hold_position() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::hold_position called before start");
     }
-    pending_ = PendingCommand::HoldPosition;
+    enqueue_({PendingCommand::HoldPosition, 0.0f, 0.0f,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1222,15 +1357,15 @@ void ForcePositionController::run_() {
             // doorbell and about to submit inside the MCU's idle window. A dead
             // stream drops it: policy_ is in Fault, where every command is a
             // no-op anyway, and holding it back would fire it late on recovery.
-            if (pending_ != PendingCommand::None) {
-                if (!stale) {
-                    switch (pending_) {
+            if (!stale) {
+                for (const QueuedCommand& q : queue_) {
+                    switch (q.kind) {
                         case PendingCommand::SetTarget:
-                            policy_->set_target(latest_, pending_position_,
-                                                pending_grasp_torque_nm_, now);
+                            policy_->set_target(latest_, q.position,
+                                                q.grasp_torque_nm, q.stamp);
                             break;
                         case PendingCommand::Release:
-                            policy_->release(now);
+                            policy_->release(q.stamp);
                             break;
                         case PendingCommand::HoldPosition:
                             policy_->hold_position(latest_);
@@ -1239,8 +1374,8 @@ void ForcePositionController::run_() {
                             break;
                     }
                 }
-                pending_ = PendingCommand::None;
             }
+            queue_.clear();
 
             command = policy_->step(latest_, now);
             send = true;

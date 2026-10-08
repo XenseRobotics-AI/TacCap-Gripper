@@ -380,6 +380,12 @@ finally:
 还是这两个调用。`with t.ForcePositionController(g, cfg) as c:` 会替你配好
 `start()` / `stop()` 这一对。
 
+按什么频率流式下发都可以,不必和状态流对齐:`ForcePositionController` 在你的线程上
+给每次 `set_target()` 打时间戳,相邻目标间隔小于 0.1 s 就当作一条流,沿一条按时间
+插值的参考轨迹跟随,比目标晚略多于一个间隔,用来吸收定时器抖动 —— 100 Hz 时约
+15 ms,50 Hz 时 20 ms。单个目标
+或停顿之后的目标仍是一次阶跃,按 `close_speed_radps` 走。
+
 配置一律用 `for_spec()` 构造。裸的默认配置带的是 EL05 的数:在 RS00 上它把夹持力
 卡在 3.6 N·m 里的 1.1,而一旦 RS00 的 `0x700B` 限值是 14,
 `ForcePositionController.start()` 会直接抛异常。

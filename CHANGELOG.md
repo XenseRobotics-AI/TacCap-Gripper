@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ForcePositionController` no longer stutters on a streamed target.** The
+  ramp chased the latest target and clamped on reaching it, so its advance --
+  and the velocity feed-forward derived from it -- depended on how many caller
+  samples landed between two status frames. The two clocks are not
+  synchronised: at 100 Hz frames saw 0/1/2 new targets (20/60/20%), at 50 Hz
+  0/1 (50/50%), and on every frame with none `travel_kd` became a pure brake.
+  Reported by tc-gu-01-pc on 0094s (RS00, follower 1.2.14, SDK 0.4.1, 50/100 Hz
+  cosine): 14% of moving frames had the setpoint stopped, mean |v| 0.11-0.14
+  rad/s on those against 0.42-0.50 elsewhere, a 10 / 20 Hz oscillation in the
+  measured speed; `ImpedanceController` on the same trajectory was smooth. This
+  is the residual stop-go 0.4.0 measured (target moving, jaw stopped 0.8-12%).
+
+  The ramp now chases a reference indexed by time: each target is stamped when
+  the caller sends it (on the caller's thread), and consecutive targets less
+  than 0.1 s apart are interpolated linearly and played back a smoothed lag
+  behind the present -- mean caller interval plus two mean absolute deviations,
+  so a sample a few ms late is already in hand. The timestamped-waypoint
+  interpolation UMI and ros2_control use, with a jitter buffer. Queued targets
+  are applied in order instead of the last one winning. **Observable change: a
+  streamed target is followed a little over one interval late** (20 ms behind a
+  steady 50 Hz caller, ~15 ms behind a 100 Hz one with +-3 ms jitter). A 10 Hz
+  caller sits on the 0.1 s gap and may alternate between stream and step. A lone target, or one after a
+  pause, is still a step at `close_speed_radps`; a stream that stops parks the
+  ramp on its last target. Arrival, the grasp latch and escalation, the
+  closed-endpoint preload and the torque bound are judged as before; the
+  escalation now also starts when the reference has caught up to within the
+  arrival band of the target. Python and C++ APIs unchanged.
+
+  In simulation (friction plant fitted to the RS00, 4 s cosine) the moving
+  frames whose feed-forward falls under a third of the trajectory speed went
+  from 69/303 (100 Hz +-3 ms) and 54-78/303 (50 Hz, steady or +-3 ms) to 0 in
+  every case. A first cut that played each sample over the previous interval
+  still braked under jitter (8-9/303); the lag is what removes it. Hardware
+  regression pending.
+
 ## [0.4.1] - 2026-09-30
 
 ### Added
