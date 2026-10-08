@@ -425,6 +425,13 @@ same two calls — when you want to *follow a position* rather than grasp.
 `with t.ForcePositionController(g, cfg) as c:` does the `start()` / `stop()`
 pair for you.
 
+Streaming at any rate is fine, and does not have to match the status stream:
+`ForcePositionController` timestamps each `set_target()` on your thread and
+follows consecutive targets (less than 0.1 s apart) along a time-indexed
+reference played back a little over one interval behind them, enough to absorb
+timer jitter — about 15 ms at 100 Hz, 20 ms at 50 Hz. A lone
+target, or one after a pause, is a step at `close_speed_radps`.
+
 Always build the config with `for_spec()`. A bare default config carries EL05
 numbers: on an RS00 it caps the grip at 1.1 of the 3.6 N·m available, and once
 the RS00's `0x700B` limit is 14 `ForcePositionController.start()` raises.

@@ -47,6 +47,24 @@ constexpr auto  kStallWindow = std::chrono::milliseconds(150);
 // endpoint, not for "somewhere near the closed side", because pressing while
 // holding a mid-stroke target would drag the jaw off that target.
 constexpr float kClosedEndpointEps = 1e-3f;
+// Streamed targets (0.4.2). Two samples closer together than kStreamGapS are
+// one stream; a sample with no predecessor inside the gap is a step, exactly as
+// before. 0.1 s admits callers down to 10 Hz -- a 10 Hz caller sits ON the gap
+// and with timer jitter flips between stream and step; that is expected, and
+// faster callers never see it. The playback lag covers the longest interval
+// among the samples held (up to kHistory) plus kLagMarginS, rises to a longer
+// one at once and falls back at kLagDecayPerS: see update_lag_.
+constexpr float kStreamGapS   = 0.100f;
+constexpr float kLagMarginS   = 0.001f;
+constexpr float kLagDecayPerS = 0.005f;   // 5 ms of lag per second
+// The frame clock (0.4.2). Status frames come every 1/motor_stream_hz on the
+// MCU, but the host sees them +-3 ms either way (USB scheduling, the reader and
+// dispatch threads). Each command is applied for one MCU period regardless, so
+// the reference is advanced on a smoothed clock: the previous frame time plus
+// one period, pulled toward the host's reading by kFrameClockAlpha. A reading
+// more than half a period off is not jitter -- a dropped frame, a stalled loop,
+// a test stepping at another rate -- and the clock snaps to it.
+constexpr float kFrameClockAlpha = 0.1f;
 
 namespace {
 float detail_spec_or(float v, float fallback) {
@@ -214,6 +232,11 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     stall_valid_ = false;
+    stalled_ = false;
+    target_steady_valid_ = false;
+    target_steady_ = false;
+    frame_clock_valid_ = false;
+    ref_step_(sample.actual_pos, now);
     fault_reason_.clear();
 }
 
@@ -224,6 +247,136 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    // A discrete command, not a stream sample: the reference steps.
+    ref_step_(map_.to_rad(1.0f), now);
+}
+
+// THE STREAMED-TARGET REFERENCE (0.4.2). The ramp used to chase the latest
+// target directly and clamp on reaching it, so its advance -- and the velocity
+// feed-forward derived from it -- depended on how many caller samples happened
+// to land between two status frames. The two clocks are not synchronised, so
+// at 100 Hz that was 0/1/2 targets per frame and at 50 Hz 0/1, and every frame
+// with none turned travel_kd into a pure brake: a 10-20 Hz stop-go in the
+// measured speed while tracking a cosine (0094s, RS00, tc-gu-01-pc
+// 2026-10-08), absent under ImpedanceController, which has no such term.
+//
+// So the ramp now chases a reference indexed by TIME: the caller's samples,
+// each stamped when the caller made it, played back through linear
+// interpolation a short lag behind the present -- a jitter buffer, the same
+// design as UMI's timestamped waypoint interpolator and ros2_control's
+// trajectory sampling, for the same reason: velocity has to come from a
+// trajectory in time, not from per-frame target deltas.
+//
+// THE LAG IS WHAT MAKES IT WORK, and it has to cover jitter, not just the
+// period. A first cut played each sample over the interval since the previous
+// one; the reference then reached the newest sample on schedule and waited
+// there whenever the next one came a few ms late -- a GUI timer at 100 Hz
+// +-3 ms still braked 3% of moving frames.
+//
+// AND THE LAG HAS TO BE STEADY. The next cut used mean + 2 mean absolute
+// deviations, smoothed per sample. That covered the jitter on average, but the
+// estimate moved with every sample, and every move of the lag shifts the point
+// the reference is read at -- which put the jitter straight back into the
+// setpoint. Replaying the caller streams recorded on 0094s (tc-gu-01-pc,
+// 2026-10-08) through the policy and the friction plant: high-frequency
+// setpoint velocity 0.03-0.12 rad/s with that estimate, 0.009-0.016 with the
+// longest interval held, at an average lag only ~0.5 ms longer (15 / 18 ms at
+// 100 Hz, 23 / 30 ms at 50 Hz). A Qt timer that fires late and then catches up
+// (20 ms then 1 ms) is exactly what the longest interval covers.
+//
+// Held as a max it still moved: as samples roll out of the window the longest
+// interval changes between a few jittered values, each change shifting the read
+// point by ~1 ms of trajectory. So the lag rises to cover a longer interval at
+// once -- it must, or the reference runs out of samples -- and falls back at
+// kLagDecayPerS, 5 ms per second, slow enough that the read point drifts
+// instead of stepping. A single long gap therefore costs extra lag for a few
+// seconds, never a jump.
+//
+// It degenerates to the old behaviour everywhere else. A lone target (no
+// predecessor within kStreamGapS) is a step: the history holds one sample, the
+// reference IS that target and the ramp runs at close_speed_radps as before. A
+// stream that stops leaves the reference on its last sample and the ramp parks
+// there. Only the ramp chases the reference -- arrival, the grasp latch, the
+// escalation and the closed-endpoint preload are all still judged against the
+// caller's own target.
+std::chrono::steady_clock::time_point ForcePositionPolicy::frame_clock_(
+        std::chrono::steady_clock::time_point now) {
+    using clk = std::chrono::steady_clock;
+    const float period = 1.0f / static_cast<float>(std::max(1u, cfg_.motor_stream_hz));
+    if (frame_clock_valid_) {
+        const auto predicted = frame_t_ + std::chrono::duration_cast<clk::duration>(
+                                              std::chrono::duration<float>(period));
+        const float err = std::chrono::duration<float>(now - predicted).count();
+        if (std::abs(err) <= 0.5f * period) {
+            frame_t_ = predicted + std::chrono::duration_cast<clk::duration>(
+                                       std::chrono::duration<float>(kFrameClockAlpha * err));
+            return frame_t_;
+        }
+    }
+    frame_t_ = now;
+    frame_clock_valid_ = true;
+    return frame_t_;
+}
+
+void ForcePositionPolicy::ref_step_(float raw, std::chrono::steady_clock::time_point t) {
+    hist_t_[0] = t;
+    hist_raw_[0] = raw;
+    hist_n_ = 1;
+    lag_valid_ = false;
+}
+
+void ForcePositionPolicy::update_lag_(std::chrono::steady_clock::time_point now) {
+    if (hist_n_ < 2) { lag_valid_ = false; return; }
+    float longest = 0.0f;
+    for (size_t i = 1; i < hist_n_; ++i) {
+        longest = std::max(longest,
+                           std::chrono::duration<float>(hist_t_[i] - hist_t_[i - 1]).count());
+    }
+    const float need = std::min(kStreamGapS, longest + kLagMarginS);
+    if (!lag_valid_ || need >= lag_s_) {
+        lag_s_ = need;
+    } else {
+        const float dt = std::max(0.0f, std::chrono::duration<float>(now - lag_t_).count());
+        lag_s_ = std::max(need, lag_s_ - kLagDecayPerS * dt);
+    }
+    lag_t_ = now;
+    lag_valid_ = true;
+}
+
+float ForcePositionPolicy::ref_at_(std::chrono::steady_clock::time_point now) const {
+    if (hist_n_ == 0) return 0.0f;
+    if (hist_n_ == 1 || !lag_valid_) return hist_raw_[hist_n_ - 1];
+    const float lag = lag_s_;
+    const auto tq = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<float>(lag));
+    if (tq <= hist_t_[0]) return hist_raw_[0];
+    for (size_t i = 1; i < hist_n_; ++i) {
+        if (tq <= hist_t_[i]) {
+            const float span = std::chrono::duration<float>(hist_t_[i] - hist_t_[i - 1]).count();
+            if (!(span > 0.0f)) return hist_raw_[i];
+            const float u = std::chrono::duration<float>(tq - hist_t_[i - 1]).count() / span;
+            return hist_raw_[i - 1] + (hist_raw_[i] - hist_raw_[i - 1]) * u;
+        }
+    }
+    return hist_raw_[hist_n_ - 1];               // stream stopped or very late
+}
+
+void ForcePositionPolicy::ref_sample_(float raw, std::chrono::steady_clock::time_point t) {
+    if (hist_n_ == 0) { ref_step_(raw, t); return; }
+    const float interval =
+        std::chrono::duration<float>(t - hist_t_[hist_n_ - 1]).count();
+    // Out of order (a command from another thread) or after a pause: a step.
+    if (!(interval >= 0.0f) || interval > kStreamGapS) { ref_step_(raw, t); return; }
+    if (hist_n_ == kHistory) {
+        for (size_t i = 1; i < kHistory; ++i) {
+            hist_t_[i - 1] = hist_t_[i];
+            hist_raw_[i - 1] = hist_raw_[i];
+        }
+        --hist_n_;
+    }
+    hist_t_[hist_n_] = t;
+    hist_raw_[hist_n_] = raw;
+    ++hist_n_;
 }
 
 // Commands only move the setpoint. There is no motion state to disturb and no
@@ -259,6 +412,10 @@ void ForcePositionPolicy::set_target(
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
+    // `now` is the caller's own timestamp for this sample (the controller stamps
+    // it in set_target() on the caller's thread), so the interval is the one
+    // the caller actually took, not when the control thread got round to it.
+    ref_sample_(map_.to_rad(target_position), now);
 }
 
 void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
@@ -268,6 +425,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    ref_step_(sample.actual_pos, last_step_);
 }
 
 void ForcePositionPolicy::fail(std::string reason) {
@@ -284,6 +442,9 @@ void ForcePositionPolicy::fail(std::string reason) {
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     stall_valid_ = false;
+    stalled_ = false;
+    target_steady_valid_ = false;
+    target_steady_ = false;
     fault_reason_ = std::move(reason);
 }
 
@@ -330,8 +491,9 @@ float ForcePositionPolicy::close_preload_signed_() const {
  * whatever the plant is stable with, instead of being rationed against the grip.
   */
 protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
-        const MotorStatusSample& sample, float target_raw, float desired_vel,
-        float torque_budget, std::chrono::steady_clock::time_point now) {
+        const MotorStatusSample& sample, float target_raw, float chase_raw,
+        float desired_vel, float torque_budget,
+        std::chrono::steady_clock::time_point now) {
     const float budget = std::clamp(torque_budget, kEpsilon,
                                     cfg_.motion_torque_limit_nm);
     const float kd = std::min(tune_.travel_kd, kMaxDampingGain);
@@ -377,10 +539,27 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         ramp_raw_ = std::clamp(ramp_raw_, sample.actual_pos - max_lead,
                                sample.actual_pos + max_lead);
     }
+    // The ramp chases the time-indexed REFERENCE, not the caller's latest
+    // target (see ref_sample_). For a lone target they are the same point. The
+    // speed-limit clamp below bounds the move to |desired_vel|*dt whichever side
+    // of the ramp the reference is on, so a reference that has not yet turned
+    // at a reversal is still approached at no more than the commanded speed.
+    //
+    // NEVER BACK THE RAMP UP ONTO A REFERENCE THAT TRAILS IT. The escalation and
+    // the latched push pin the ramp on the caller's target, which the reference
+    // trails by the playback lag; when they let go the ramp would step back by
+    // lag x target speed onto the reference -- a backward kick in the middle of
+    // a move. So the ramp holds where it is (never past the target) and the
+    // reference catches up to it.
     const float ramp_prev = ramp_raw_;
     ramp_raw_ += desired_vel * dt;
-    if (desired_vel > 0.0f) { ramp_raw_ = std::min(ramp_raw_, target_raw); }
-    else                    { ramp_raw_ = std::max(ramp_raw_, target_raw); }
+    if (desired_vel > 0.0f) {
+        ramp_raw_ = std::min(ramp_raw_,
+                             std::max(chase_raw, std::min(ramp_prev, target_raw)));
+    } else {
+        ramp_raw_ = std::max(ramp_raw_,
+                             std::min(chase_raw, std::max(ramp_prev, target_raw)));
+    }
     // Speed limit applied to the ramp POSITION, and applied here -- before the
     // budget clamp, never after deriving the velocity from it. Capping the
     // velocity afterwards would edit one side of the equation the budget
@@ -416,6 +595,13 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // observation and switches nothing (0.4.0).
     const float preload_signed =
         (std::abs(ramp_raw_ - target_raw) <= kEpsilon) ? close_preload_signed_() : 0.0f;
+    // While a stream is live the reference trails the caller's target by up to
+    // one interval, so the ramp is never exactly ON that target. For the grasp
+    // decisions below, "parked" therefore means the ramp has caught the
+    // reference and the reference is within the arrival band of the target --
+    // a lone target still has to be reached exactly, as before.
+    const bool ref_settled =
+        std::abs(chase_raw - target_raw) <= tune_.arrival_eps_rad;
     const float pd_budget = std::max(kEpsilon, budget - std::abs(preload_signed));
     {
         const float a = tune_.position_kp + kd / dt;
@@ -481,7 +667,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // band. An object holds the whole budget, and only then is it latched.
     const float dir = (desired_vel > 0.0f) ? 1.0f : -1.0f;
     const float ramp_gap = std::abs(ramp_raw_ - target_raw);
-    const bool parked = ramp_gap <= kEpsilon;
+    const bool parked = ramp_gap <= kEpsilon ||
+                        (ref_settled && std::abs(ramp_raw_ - chase_raw) <= kEpsilon);
     const float short_by = dir * (target_raw - sample.actual_pos);
     // "Parked" within the arrival band, as for the latched push below: a
     // streamed target jitters by a few mrad per frame, and a ramp one frame
@@ -489,9 +676,33 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     const bool short_of_target =
         (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
         short_by > tune_.arrival_eps_rad;
+    // AT REST: slow, and either the target has stopped moving or the jaw has
+    // (0.4.2).
+    //
+    // The velocity threshold alone -- close_speed/4, 0.275 rad/s on an RS00
+    // config -- fired at every reversal of a streamed cosine, which spends ~20%
+    // of its time under it: the escalation pinned the ramp on the raw target
+    // (every other frame stopped at 50 Hz) and pushed up to ~1 N·m (0094s,
+    // tc-gu-01-pc 2026-10-08: 39/40 and 199/199 stopped frames were escalation
+    // frames). A lag behind a MOVING target is tracking, not a stall.
+    //
+    // But the jaw's own stall window alone broke the slow seat: closing to 0.0
+    // on 0094s with nothing in the jaw, the finger pads compress by more than
+    // 3 mrad per 150 ms, the window never closed, the push stayed at the
+    // spring, and the close took 3.2 s instead of 1.1 (2026-10-08; 0.4.1 and
+    // this gate both 1.1 s). A steady target is what the velocity gate was
+    // always for, so it keeps it.
     const bool at_rest =
+        (stalled_ || target_steady_) &&
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
     const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
+    // What the parked hold already pushes with, in the push direction: the
+    // spring plus the closed-endpoint preload when it applies. The escalation
+    // starts from here, not from the spring alone -- since the stall window
+    // delays it by 150 ms, a closing jaw has been held at spring + preload all
+    // that time, and restarting from the bare spring dropped the push by the
+    // 0.25 N·m preload before building it back up (0.4.2).
+    const float base = dir * spring + std::max(0.0f, dir * preload_signed);
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
         if (short_of_target && at_rest) {
@@ -499,7 +710,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
                 topup_anchor_raw_ = target_raw;   // escalation begins here
             }
             topup_nm_ = std::min(budget,
-                                 std::max(topup_nm_, dir * spring) + step_nm);
+                                 std::max(topup_nm_, base) + step_nm);
             if (topup_nm_ >= budget - kEpsilon) {
                 grasp_latched_ = true;
                 grasp_dir_ = dir;
@@ -516,7 +727,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
     }
-    if (!grasp_latched_ && short_of_target && topup_nm_ > dir * spring) {
+    if (!grasp_latched_ && short_of_target && topup_nm_ > base) {
         // Escalating: pinned on the target like the latched push below, but the
         // damping term stays in, so a jaw that breaks away is still braked.
         ramp_raw_ = target_raw;
@@ -580,6 +791,42 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float open_position = map_.to_position(sample.actual_pos);
 
     hold_raw_ = sample.actual_pos;          // where the jaw actually is
+    // The ramp and the streamed-target reference run on the smoothed frame
+    // clock; the stall window below stays on wall time.
+    const auto frame_now = frame_clock_(now);
+
+    // STALL WINDOW: the jaw has made less than kStallProgressRad of progress
+    // over kStallWindow. Updated BEFORE the law, because the law uses it too:
+    // it gates the escalation in travel_track_ as well as the "holding"
+    // observation below.
+    //
+    // The lead test is gated on POSITION PROGRESS over a window, not on the
+    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
+    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
+    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
+    // the jaw is still moving -- the reported state flipped HoldingForce /
+    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
+    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
+    if (!stall_valid_ ||
+        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
+        stall_pos_raw_ = sample.actual_pos;
+        stall_since_ = now;
+        stall_valid_ = true;
+    }
+    stalled_ = (now - stall_since_) >= kStallWindow;
+    // Same window on the CALLER'S TARGET: steady once it has moved less than
+    // kStallProgressRad for kStallWindow. Gates the escalation, see at_rest.
+    {
+        const float target_now = map_.to_rad(target_position_);
+        if (!target_steady_valid_ ||
+            std::abs(target_now - target_steady_raw_) > kStallProgressRad) {
+            target_steady_raw_ = target_now;
+            target_steady_since_ = now;
+            target_steady_valid_ = true;
+        }
+        target_steady_ = (now - target_steady_since_) >= kStallWindow;
+    }
+
     // A latched grasp is not an arrival, even inside the band: see travel_track_.
     arrived_ = !grasp_latched_ && std::abs(to_target) <= tune_.arrival_eps_rad;
 
@@ -599,8 +846,10 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         // past the target; flipping it there would push the object back out.
         const float dir = grasp_latched_ ? grasp_dir_
                         : (to_target > 0.0f) ? 1.0f : -1.0f;
-        cmd = travel_track_(sample, target_raw, dir * cfg_.close_speed_radps,
-                            grasp_torque_nm_, now);
+        update_lag_(frame_now);
+        cmd = travel_track_(sample, target_raw, ref_at_(frame_now),
+                            dir * cfg_.close_speed_radps,
+                            grasp_torque_nm_, frame_now);
     }
 
     // OBSERVATIONS, not decisions. "Holding" is the clamp binding while the jaw
@@ -613,25 +862,11 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float lead = std::abs(ramp_raw_ - sample.actual_pos);
     // blocked_short_ is the same observation where the lead cannot fill: the
     // ramp is parked on the target and the budget is being applied anyway.
-    //
-    // The lead test is gated on POSITION PROGRESS over a window, not on the
-    // instantaneous velocity. Friction lag alone can fill half the lead (RS00
-    // opening: 0.5-0.77 Nm / kp 20 = 25-38 mrad against 25 mrad at a 1 Nm
-    // budget), and slow stick-slip reads |v| under the 0.028 rad/s gate while
-    // the jaw is still moving -- the reported state flipped HoldingForce /
-    // Opening frame by frame on 0094s (tc-gu-01-pc, 50 Hz cosine, 40 s period,
-    // 2026-09-29). A blocked jaw does not move at all; a creeping one does.
-    if (!stall_valid_ ||
-        std::abs(sample.actual_pos - stall_pos_raw_) > kStallProgressRad) {
-        stall_pos_raw_ = sample.actual_pos;
-        stall_since_ = now;
-        stall_valid_ = true;
-    }
-    const bool stalled = (now - stall_since_) >= kStallWindow;
+    // The lead test is gated on the stall window (see above).
     holding_ = !arrived_ && ramp_valid_ &&
                (blocked_short_ ||
                 (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
-                 stalled &&
+                 stalled_ &&
                  std::abs(sample.actual_vel) <=
                      cfg_.close_speed_radps * kHoldingVelRatio));
 
@@ -924,6 +1159,7 @@ void ForcePositionController::start() {
         std::lock_guard<std::mutex> lk(mu_);
         policy_ = std::make_unique<detail::ForcePositionPolicy>(map_, cfg_);
         policy_->reset(initial, now);
+        queue_.clear();
         latest_ = initial;
         latest_time_ = now;
         have_sample_ = true;
@@ -1057,6 +1293,14 @@ void ForcePositionController::set_target(float position) {
     set_target(position, cfg_.grasp_torque_nm);
 }
 
+// Caller holds mu_. Bounded so a caller far outrunning the status stream (or a
+// stream that has stopped) cannot grow it; the oldest entries are the ones a
+// newer target has already superseded.
+void ForcePositionController::enqueue_(const QueuedCommand& c) {
+    if (queue_.size() >= kMaxQueuedCommands) queue_.erase(queue_.begin());
+    queue_.push_back(c);
+}
+
 // Caller commands are QUEUED, not applied here.
 //
 // Applying them on the caller's thread also submitted on the caller's thread,
@@ -1066,6 +1310,14 @@ void ForcePositionController::set_target(float position) {
 // happens in run_() on the status-frame doorbell, inside the ~9.8 ms the MCU
 // is known to be idle. The cost is that a command takes effect on the next status frame
 // instead of instantly: at motor_stream_hz = 100 that is under 10 ms.
+//
+// QUEUED IN ORDER AND STAMPED HERE (0.4.2). Each target carries the time this
+// call was made, on the caller's thread, because the policy builds its
+// streamed-target reference from the caller's own intervals -- stamping when
+// run_() got round to it would put the control thread's jitter back in. And
+// every queued command is applied, in order: two targets in one status period
+// used to collapse to the last, which is exactly the 0/1/2-per-frame pattern
+// that made a 100 Hz stream stutter.
 //
 // Validation stays eager. Deferring it would turn a caller's out-of-range
 // argument into a silent no-op on a background thread instead of the
@@ -1086,9 +1338,8 @@ void ForcePositionController::set_target(float position, float grasp_torque_nm) 
             std::to_string(stall_limit_nm_) +
             " Nm, which a blocked jaw holds indefinitely");
     }
-    pending_ = PendingCommand::SetTarget;
-    pending_position_ = position;
-    pending_grasp_torque_nm_ = grasp_torque_nm;
+    enqueue_({PendingCommand::SetTarget, position, grasp_torque_nm,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1098,7 +1349,8 @@ void ForcePositionController::release() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::release called before start");
     }
-    pending_ = PendingCommand::Release;
+    enqueue_({PendingCommand::Release, 1.0f, cfg_.grasp_torque_nm,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1108,7 +1360,8 @@ void ForcePositionController::hold_position() {
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::hold_position called before start");
     }
-    pending_ = PendingCommand::HoldPosition;
+    enqueue_({PendingCommand::HoldPosition, 0.0f, 0.0f,
+              std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1222,15 +1475,15 @@ void ForcePositionController::run_() {
             // doorbell and about to submit inside the MCU's idle window. A dead
             // stream drops it: policy_ is in Fault, where every command is a
             // no-op anyway, and holding it back would fire it late on recovery.
-            if (pending_ != PendingCommand::None) {
-                if (!stale) {
-                    switch (pending_) {
+            if (!stale) {
+                for (const QueuedCommand& q : queue_) {
+                    switch (q.kind) {
                         case PendingCommand::SetTarget:
-                            policy_->set_target(latest_, pending_position_,
-                                                pending_grasp_torque_nm_, now);
+                            policy_->set_target(latest_, q.position,
+                                                q.grasp_torque_nm, q.stamp);
                             break;
                         case PendingCommand::Release:
-                            policy_->release(now);
+                            policy_->release(q.stamp);
                             break;
                         case PendingCommand::HoldPosition:
                             policy_->hold_position(latest_);
@@ -1239,8 +1492,8 @@ void ForcePositionController::run_() {
                             break;
                     }
                 }
-                pending_ = PendingCommand::None;
             }
+            queue_.clear();
 
             command = policy_->step(latest_, now);
             send = true;

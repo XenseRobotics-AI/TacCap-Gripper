@@ -72,6 +72,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace xense::taccap {
 
@@ -274,6 +275,9 @@ public:
     void reset(const MotorStatusSample& sample,
                std::chrono::steady_clock::time_point now);
     void release(std::chrono::steady_clock::time_point now);
+    // `now` is the time the CALLER issued this target, not when it is applied:
+    // consecutive targets closer together than 0.1 s are a stream, and the ramp
+    // follows them along a time-indexed reference a little over one interval behind (0.4.2).
     void set_target(const MotorStatusSample& sample,
                     float target_position,
                     float grasp_torque_nm,
@@ -300,14 +304,24 @@ private:
     // Signed preload for the current hold: cfg_.close_preload_nm when the
     // commanded target is the closed endpoint, 0 otherwise. Sign from the map.
     float close_preload_signed_() const;
-    // Move toward target_raw along a time-based ramp at desired_vel, with the
-    // PD request error-clamped against torque_budget. See the definition.
+    // Move toward chase_raw (the streamed-target reference) along a time-based
+    // ramp at desired_vel, with the PD request error-clamped against
+    // torque_budget; grasp decisions use target_raw. See the definition.
     protocol::MotorImpedanceCtrl travel_track_(const MotorStatusSample& sample,
                                                float target_raw,
+                                               float chase_raw,
                                                float desired_vel,
                                                float torque_budget,
                                                std::chrono::steady_clock::time_point now);
     float direction_open_() const noexcept;
+    // Streamed-target reference: see ref_sample_ in the .cpp.
+    void  ref_step_(float raw, std::chrono::steady_clock::time_point t);
+    void  ref_sample_(float raw, std::chrono::steady_clock::time_point t);
+    float ref_at_(std::chrono::steady_clock::time_point t) const;
+    void  update_lag_(std::chrono::steady_clock::time_point now);
+    // Smoothed status-frame clock: see kFrameClockAlpha in the .cpp.
+    std::chrono::steady_clock::time_point frame_clock_(
+        std::chrono::steady_clock::time_point now);
 
     GripperPosition map_;
     ForcePositionConfig cfg_;
@@ -351,10 +365,28 @@ private:
     float stall_pos_raw_ = 0.0f;
     std::chrono::steady_clock::time_point stall_since_{};
     bool  stall_valid_ = false;
+    bool  stalled_ = false;          // refreshed at the top of step()
+    // The caller's target, on the same window (see at_rest in the .cpp).
+    float target_steady_raw_ = 0.0f;
+    std::chrono::steady_clock::time_point target_steady_since_{};
+    bool  target_steady_valid_ = false;
+    bool  target_steady_ = false;
+    std::chrono::steady_clock::time_point frame_t_{};
+    bool  frame_clock_valid_ = false;
     // Travel ramp: the commanded setpoint, advanced at the commanded speed and
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
     bool  ramp_valid_ = false;
+    // What the ramp chases (0.4.2): the caller's recent targets with their
+    // timestamps, oldest first, played back lag_s_ behind the present (see
+    // update_lag_ / ref_at_). One entry is a step.
+    static constexpr size_t kHistory = 16;
+    std::chrono::steady_clock::time_point hist_t_[kHistory]{};
+    float  hist_raw_[kHistory]{};
+    size_t hist_n_ = 0;
+    float  lag_s_ = 0.0f;            // playback lag, see update_lag_
+    std::chrono::steady_clock::time_point lag_t_{};
+    bool   lag_valid_ = false;
     std::chrono::steady_clock::time_point last_step_{};
     std::string fault_reason_;
 };
@@ -411,15 +443,23 @@ private:
     // Applying them on the caller's thread submitted off-phase and cost
     // telemetry frames. See the note above set_target() in the .cpp.
     enum class PendingCommand : uint8_t { None, SetTarget, Release, HoldPosition };
-    PendingCommand pending_ = PendingCommand::None;
     // One-shot wake flag. Caller commands must still wake run_() so staleness
     // is evaluated promptly, but they must NOT set step_requested_ -- that is
     // the status-frame doorbell, and setting it here is what used to submit
-    // off-phase. Kept separate from pending_ so the wake is consumed once and
+    // off-phase. Kept separate from queue_ so the wake is consumed once and
     // the loop does not spin on a command it is deliberately holding back.
     bool command_woke_ = false;
-    float pending_position_ = 0.0f;
-    float pending_grasp_torque_nm_ = 0.0f;
+    // FIFO, not last-wins (0.4.2): every target a caller sent between two
+    // status frames is applied, with the time the caller sent it.
+    struct QueuedCommand {
+        PendingCommand kind;
+        float position;
+        float grasp_torque_nm;
+        std::chrono::steady_clock::time_point stamp;
+    };
+    static constexpr size_t kMaxQueuedCommands = 32;
+    std::vector<QueuedCommand> queue_;
+    void enqueue_(const QueuedCommand& c);
     MotorStatusSample latest_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};

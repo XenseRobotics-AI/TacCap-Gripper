@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-08
+
+### Fixed
+
+- **`ForcePositionController` no longer stutters on a streamed target.** The
+  ramp chased the latest target and clamped on reaching it, so its advance --
+  and the velocity feed-forward derived from it -- depended on how many caller
+  samples landed between two status frames. The two clocks are not
+  synchronised: at 100 Hz frames saw 0/1/2 new targets (20/60/20%), at 50 Hz
+  0/1 (50/50%), and on every frame with none `travel_kd` became a pure brake.
+  Reported by tc-gu-01-pc on 0094s (RS00, follower 1.2.14, SDK 0.4.1, 50/100 Hz
+  cosine): 14% of moving frames had the setpoint stopped, mean |v| 0.11-0.14
+  rad/s on those against 0.42-0.50 elsewhere, a 10 / 20 Hz oscillation in the
+  measured speed; `ImpedanceController` on the same trajectory was smooth. This
+  is the residual stop-go 0.4.0 measured (target moving, jaw stopped 0.8-12%).
+
+  The ramp now chases a reference indexed by time: each target is stamped when
+  the caller sends it (on the caller's thread), and consecutive targets less
+  than 0.1 s apart are interpolated linearly and played back a steady lag
+  behind the present: the longest recent caller interval plus 1 ms, raised at
+  once when a longer one arrives and lowered at 5 ms/s, so a late sample is
+  already in hand and the read point never jumps. The timestamped-waypoint
+  interpolation UMI and ros2_control use, with a jitter buffer. Queued targets
+  are applied in order instead of the last one winning. **Observable change: a
+  streamed target is followed a little over one interval late** (20 ms behind a
+  steady 50 Hz caller, ~15 ms behind a 100 Hz one with +-3 ms jitter). A 10 Hz
+  caller sits on the 0.1 s gap and may alternate between stream and step. A lone target, or one after a
+  pause, is still a step at `close_speed_radps`; a stream that stops parks the
+  ramp on its last target. Arrival, the grasp latch and escalation, the
+  closed-endpoint preload and the torque bound are judged as before; the
+  escalation now also starts when the reference has caught up to within the
+  arrival band of the target. Python and C++ APIs unchanged.
+
+  In simulation (friction plant fitted to the RS00, 4 s cosine) the moving
+  frames whose feed-forward falls under a third of the trajectory speed went
+  from 69/303 (100 Hz +-3 ms) and 54-78/303 (50 Hz, steady or +-3 ms) to 0 in
+  every case. A first cut that played each sample over the previous interval
+  still braked under jitter (8-9/303); the lag is what removes it.
+
+  On 0094s with the same 50/100 Hz cosine (tc-gu-01-pc, 2026-10-08) frames with
+  the setpoint stopped while moving fell from 13-14% to 0.2-0.3%, near-zero-speed
+  frames from 8-10% to <= 0.2%, and the high-frequency speed ripple from 0.16 to
+  0.07 rad/s RMS (`ImpedanceController` on the same trajectory: 0.05).
+  Tracking lag grew 10 ms (100 Hz) / 14 ms (50 Hz).
+- **The friction escalation no longer fires at every reversal of a streamed
+  target.** "At rest" was a velocity threshold, `close_speed_radps / 4` -- 0.275
+  rad/s on an RS00 config -- and a streamed cosine spends ~20% of its time under
+  that around each reversal. The escalation then pinned the setpoint on the raw
+  target and pushed up to ~1 N·m: on 0094s 39 of the 40 (100 Hz) and all 199
+  (50 Hz) remaining stopped-setpoint frames were escalation frames. It now also
+  needs the stall window `holding` already uses (less than 3 mrad of progress in
+  150 ms). In simulation escalated frames over two cosine cycles went from
+  157-160 (up to 0.76 N·m) to at most 14 (under 0.2 N·m, a jaw genuinely stuck
+  at a reversal). The gate applies only while the caller's target is moving:
+  with a target that has been steady for 150 ms the velocity gate alone still
+  escalates, as before -- gated on the stall window unconditionally, closing
+  to 0.0 on 0094s took 3.2 s instead of 1.1, because the compressing finger
+  pads never read as stalled. **Observable change: on a stall short of a
+  target that is still moving, the escalation -- and so `HOLDING_FORCE` --
+  starts ~150 ms later.** It now builds from what the parked hold already pushes,
+  including the closed-endpoint preload; starting from the bare spring had
+  dropped the push by the 0.25 N·m preload first.
+- **The setpoint advances on a smoothed status-frame clock.** The host sees
+  status frames +-3 ms either way while the motor applies each command for one
+  fixed period, so advancing the reference on the host's reading made the
+  per-frame setpoint move uneven (0.09-0.11 rad/s of high-frequency setpoint
+  velocity left on 0094s). The clock is now the previous frame plus one period,
+  pulled 10% toward the host's reading and snapped to it when more than half a
+  period off. In simulation with +-3 ms frame jitter the per-frame move is as
+  smooth as with none (it was 2.3x rougher). Hardware regression of these two
+  pending.
+
+  A first cut of the lag, mean + 2 deviations re-estimated per sample, moved
+  with every sample and fed the caller's jitter back into the setpoint: on
+  0094s at 100 Hz, with the Qt timer firing late and catching up (20 ms then
+  1 ms), the speed ripple rose from 0.066 to 0.087 rad/s. Replaying all four
+  recorded caller streams through the policy and the friction plant,
+  high-frequency setpoint velocity is 0.065-0.123 rad/s with that lag and
+  0.007-0.010 with the steady one. Released escalations also no longer step
+  the setpoint back onto the trailing reference.
+
 ## [0.4.1] - 2026-09-30
 
 ### Added

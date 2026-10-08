@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -154,7 +155,9 @@ TEST(ForcePositionPolicy, TopUpEscalatesAtTheConfiguredRateBeforeLatching) {
     const ForcePositionTuning tune;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     const float pos = 0.022f;              // short of 0.0, within one lead
-    const float spring = tune.position_kp * pos;
+    // Parked on the closed endpoint the hold already pushes spring + preload,
+    // and the escalation (after the 150 ms stall window, 0.4.2) builds from there.
+    const float spring = tune.position_kp * pos + cfg.close_preload_nm;
     ASSERT_LT(spring, cfg.grasp_torque_nm);
     auto t = std::chrono::steady_clock::now();
     p.reset(sample(pos), t);
@@ -172,6 +175,7 @@ TEST(ForcePositionPolicy, TopUpEscalatesAtTheConfiguredRateBeforeLatching) {
         if (c.target_pos != 0.0f || c.vel != 0.0f) continue;
         if (now_nm > spring + 1e-4f) {
             ++escalating;
+            EXPECT_GE(now_nm, prev - 1e-4f) << "the push dipped at frame " << i;
             EXPECT_LE(now_nm - std::max(prev, spring),
                       tune.topup_rate_nmps * 0.010f + 1e-4f) << "frame " << i;
             if (!p.holding()) {
@@ -231,7 +235,7 @@ TEST(ForcePositionPolicy, PassingTheTargetReleasesTheGraspLatch) {
     p.reset(sample(blocked), t);
     p.set_target(sample(blocked), target, cfg.grasp_torque_nm, t);
     p.step(sample(blocked), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 45; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(blocked), t);
     }
@@ -348,7 +352,7 @@ TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
     p.reset(sample(0.02f), t);
     p.set_target(sample(0.02f), 0.0f, cfg.grasp_torque_nm, t);
     p.step(sample(0.02f), t);
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 45; ++i) {
         t += std::chrono::milliseconds(10);
         p.step(sample(0.02f), t);
     }
@@ -1061,4 +1065,295 @@ TEST(ForcePositionPolicy, CrossingTheArrivalBandDoesNotSwitchTheLaw) {
     // The band was really crossed both ways, or this test proved nothing.
     EXPECT_GT(arrived_frames, 20);
     EXPECT_GT(travel_frames, 20);
+}
+
+// ---------------------------------------------------------------------------
+// Streamed targets (0.4.2)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct StreamTrace {
+    int moving_frames = 0;
+    int braked_frames = 0;       // |vel ff| under a third of the trajectory's speed
+    float max_ramp_step = 0.0f;  // largest |ramp move| in one frame
+    int holding = 0;
+    int escalated = 0;           // frames carrying feed-forward torque
+    float max_escalation_nm = 0.0f;
+    float step_hf_rms = 0.0f;    // per-frame ramp move minus its local mean, rad
+};
+
+// A cosine streamed by a caller whose clock does not match the 100 Hz status
+// stream. jitter_s spreads each sample's time uniformly by +-jitter_s, as a GUI
+// timer does: at a 10 ms caller period and +-3 ms that gives frames with 0, 1
+// and 2 new targets in roughly the 20/60/20% tc-gu-01-pc measured on 0094s at
+// 100 Hz (2026-10-08); 0.02 with no jitter is its 50 Hz case. Each target is
+// stamped with the time the caller made it, as ForcePositionController does.
+// counts[n] receives how many frames saw n new targets.
+// frame_jitter_s moves the time the HOST sees each status frame by up to that
+// much either way, while the plant still applies every command for exactly one
+// 10 ms MCU period -- the +-3 ms tc-gu-01-pc measured on 0094s.
+StreamTrace stream_cosine(float caller_period_s, float jitter_s, float period_s,
+                          float seconds, int* counts = nullptr,
+                          float stop_after_s = INFINITY, float frame_jitter_s = 0.0f,
+                          bool late_and_catch_up = false) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 3.6f;                 // RS00 budget
+    cfg.hold_torque_limit_nm = 5.0f;
+    cfg.motion_torque_limit_nm = 14.0f;
+    cfg.close_speed_radps = 1.1f;
+    const float travel = 1.2f;
+    ForcePositionPolicy p(GripperPosition::from_travel(travel), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.9f * travel;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto at = [&](float s) {
+        return t0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<float>(s));
+    };
+    auto tgt = [&](float s) {
+        return 0.5f + 0.4f * std::cos(6.2831853f * s / period_s);
+    };
+    p.reset(sample(plant.pos), at(0.0f));
+    protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+    StreamTrace tr;
+    int k = 0;
+    uint32_t lcg = 2468u;
+    auto stamp = [&](int i) {
+        uint32_t h = lcg ^ (static_cast<uint32_t>(i) * 2654435761u);
+        h = h * 1664525u + 1013904223u;
+        const float u = static_cast<float>(h >> 8) / 16777216.0f;   // [0,1)
+        // A Qt timer that fires late and then catches up: every fifth sample
+        // ~9 ms late, the next on time -- intervals of ~19 ms then ~1 ms.
+        const float late = (late_and_catch_up && i % 5 == 4) ? 0.009f : 0.0f;
+        return i * caller_period_s + late + (2.0f * u - 1.0f) * jitter_s;
+    };
+    float last_stamp = 0.0f;
+    float prev_ramp = NAN;
+    std::vector<float> steps;
+    const float peak_speed = 0.4f * travel * 6.2831853f / period_s;
+    const int frames = static_cast<int>(seconds * 100.0f);
+    for (int f = 0; f < frames; ++f) {
+        // Frames 0.5 ms after the caller's nominal ticks: jitter straddles them.
+        float now_s = f * 0.01f + 0.0005f;
+        if (frame_jitter_s > 0.0f) {
+            uint32_t h = 977u ^ (static_cast<uint32_t>(f) * 2246822519u);
+            h = h * 1664525u + 1013904223u;
+            now_s += (2.0f * (static_cast<float>(h >> 8) / 16777216.0f) - 1.0f) *
+                     frame_jitter_s;
+        }
+        float ks;
+        int n = 0;
+        // Stamps are monotonic, as ForcePositionController's are (taken from
+        // steady_clock under its lock): jitter can bunch samples, not reorder them.
+        while ((ks = std::max(last_stamp, std::max(0.0f, stamp(k)))) <= now_s &&
+               ks <= stop_after_s) {
+            last_stamp = ks;
+            p.set_target(sample(plant.pos, plant.vel), tgt(ks), cfg.grasp_torque_nm, at(ks));
+            ++k;
+            ++n;
+        }
+        if (counts && f > 0) ++counts[std::min(n, 3)];
+        const auto cmd = p.step(sample(plant.pos, plant.vel), at(now_s));
+        for (int i = 0; i < 10; ++i) plant.advance(applied, 0.001f);
+        applied = cmd;
+        if (p.holding()) ++tr.holding;
+        if (f > 100 && std::abs(cmd.target_torque) > 1e-6f) {
+            ++tr.escalated;
+            tr.max_escalation_nm = std::max(tr.max_escalation_nm, std::abs(cmd.target_torque));
+        }
+        if (!std::isnan(prev_ramp)) steps.push_back(cmd.target_pos - prev_ramp);
+        if (!std::isnan(prev_ramp)) {
+            tr.max_ramp_step = std::max(tr.max_ramp_step, std::abs(cmd.target_pos - prev_ramp));
+        }
+        prev_ramp = cmd.target_pos;
+        // Mid-stroke only, past the first half cycle: |sin| > 0.7 of the peak.
+        const float traj_speed = peak_speed * std::abs(std::sin(6.2831853f * now_s / period_s));
+        if (now_s > period_s / 2 && now_s < stop_after_s && traj_speed > 0.7f * peak_speed) {
+            ++tr.moving_frames;
+            if (std::abs(cmd.vel) < traj_speed / 3.0f) ++tr.braked_frames;
+        }
+    }
+    // High-frequency part of the per-frame ramp move: each step minus the
+    // 9-frame centred mean. A smooth trajectory leaves only curvature.
+    double acc = 0.0;
+    int n = 0;
+    for (size_t i = 4; i + 4 < steps.size(); ++i) {
+        float m = 0.0f;
+        for (size_t j = i - 4; j <= i + 4; ++j) m += steps[j];
+        const float d = steps[i] - m / 9.0f;
+        acc += d * d;
+        ++n;
+    }
+    tr.step_hf_rms = n ? static_cast<float>(std::sqrt(acc / n)) : 0.0f;
+    return tr;
+}
+
+}  // namespace
+
+// THE BUG this release fixes: with the ramp chasing the latest target and
+// clamping on it, every frame no new target arrived in had a velocity
+// feed-forward of 0, and travel_kd braked the jaw -- 14% of moving frames on
+// 0094s, a 10-20 Hz stop-go in the measured speed. Against a time-indexed
+// reference the feed-forward follows the trajectory whatever the sample timing.
+TEST(ForcePositionPolicy, AStreamedTargetDrivesASmoothFeedForward) {
+    struct Case { float period, jitter; };
+    for (const Case cs : {Case{0.01f, 0.003f}, Case{0.0101f, 0.0f}, Case{0.02f, 0.0f},
+                          Case{0.02f, 0.003f}}) {
+        SCOPED_TRACE(testing::Message() << cs.period << " +- " << cs.jitter);
+        int counts[4] = {0, 0, 0, 0};
+        const StreamTrace tr = stream_cosine(cs.period, cs.jitter, 4.0f, 8.0f, counts);
+        if (cs.period == 0.01f) {
+            // The harness has to reproduce the field pattern, or this case
+            // proves nothing: frames with no new target and with two.
+            EXPECT_GT(counts[0], 80) << "0-target frames";
+            EXPECT_GT(counts[2], 80) << "2-target frames";
+        }
+        ASSERT_GT(tr.moving_frames, 100);
+        EXPECT_EQ(tr.braked_frames, 0)
+            << tr.braked_frames << " of " << tr.moving_frames << " moving frames braked";
+        EXPECT_EQ(tr.holding, 0) << "tracking reported as a grasp";
+        EXPECT_LE(tr.max_ramp_step, 1.1f * 0.0105f + 1e-4f)
+            << "ramp moved faster than close_speed_radps";
+    }
+}
+
+// A stream that stops leaves the reference on its last target: the ramp parks
+// there and the feed-forward goes to zero, exactly as for a lone target.
+TEST(ForcePositionPolicy, AStreamThatStopsParksTheRampOnItsLastTarget) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    const auto t0 = std::chrono::steady_clock::now();
+    auto t = t0;
+    float pos = 0.5f;
+    p.reset(sample(pos), t);
+    float tgt = 0.5f;
+    for (int i = 0; i < 50; ++i) {                // 100 Hz stream at 0.3 rad/s
+        tgt -= 0.003f;
+        p.set_target(sample(pos), tgt, cfg.grasp_torque_nm, t);
+        const auto c = p.step(sample(pos), t);
+        pos = c.target_pos;                       // an ideal jaw on the ramp
+        t += std::chrono::milliseconds(10);
+    }
+    protocol_cmd_t c{};
+    for (int i = 0; i < 10; ++i) {                // stream stopped
+        c = p.step(sample(pos), t);
+        pos = c.target_pos;
+        t += std::chrono::milliseconds(10);
+    }
+    EXPECT_NEAR(c.target_pos, tgt, 1e-5f);
+    EXPECT_FLOAT_EQ(c.vel, 0.0f);
+    EXPECT_TRUE(p.arrived());
+}
+
+// A lone target is a step, not a stream: a target sent after a pause drives
+// exactly the command it would have with no earlier target at all.
+TEST(ForcePositionPolicy, ATargetAfterAPauseIsAStepNotAStream) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy a(GripperPosition::from_travel(1.0f), cfg);
+    ForcePositionPolicy b(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    a.reset(sample(0.5f), t);
+    b.reset(sample(0.5f), t);
+    a.set_target(sample(0.5f), 0.5f, cfg.grasp_torque_nm, t);   // only a has a past
+    for (int i = 0; i < 20; ++i) {
+        a.step(sample(0.5f), t);
+        b.step(sample(0.5f), t);
+        t += std::chrono::milliseconds(10);
+    }
+    t += std::chrono::milliseconds(300);                          // pause > the gap
+    a.set_target(sample(0.5f), 0.0f, cfg.grasp_torque_nm, t);
+    b.set_target(sample(0.5f), 0.0f, cfg.grasp_torque_nm, t);
+    float pos = 0.5f;
+    for (int i = 0; i < 20; ++i) {
+        const auto ca = a.step(sample(pos), t);
+        const auto cb = b.step(sample(pos), t);
+        EXPECT_FLOAT_EQ(ca.target_pos, cb.target_pos) << "frame " << i;
+        EXPECT_FLOAT_EQ(ca.vel, cb.vel) << "frame " << i;
+        pos = ca.target_pos;
+        t += std::chrono::milliseconds(10);
+    }
+    EXPECT_LT(pos, 0.45f) << "the step never moved the ramp";
+}
+
+// The friction escalation is for a jaw that has STOPPED short of its target. A
+// streamed cosine passes through zero speed at every reversal, and the old
+// velocity gate (close_speed/4, 0.275 rad/s on an RS00 config) let it fire
+// there: up to ~1 N·m of push and the ramp pinned on the raw target, every
+// other frame stopped at 50 Hz (0094s, tc-gu-01-pc 2026-10-08). In this
+// plant the velocity gate escalated 157-160 of ~700 frames, up to 0.76 N·m.
+// Gated on the stall window only a jaw that really sticks at a reversal for
+// 150 ms gets a push, and only the first few hundredths of a N·m of it.
+TEST(ForcePositionPolicy, AStreamedReversalBarelyEscalates) {
+    for (const float caller : {0.01f, 0.02f}) {
+        SCOPED_TRACE(caller);
+        const StreamTrace tr = stream_cosine(caller, 0.003f, 4.0f, 8.0f);
+        EXPECT_LE(tr.escalated, 20) << "frames with an escalated push while tracking";
+        EXPECT_LT(tr.max_escalation_nm, 0.2f);
+    }
+}
+
+// The host sees status frames +-3 ms either way, but the motor applies each
+// command for one fixed period. Advanced on the host's reading the ramp moved
+// a jittering distance per frame -- 0.09-0.11 rad/s of high-frequency setpoint
+// velocity left on 0094s after the jitter buffer. On the smoothed frame clock
+// the per-frame move follows the trajectory.
+TEST(ForcePositionPolicy, FrameTimingJitterDoesNotRoughenTheSetpoint) {
+    const StreamTrace smooth = stream_cosine(0.01f, 0.003f, 4.0f, 8.0f, nullptr,
+                                             INFINITY, 0.0f);
+    const StreamTrace jittery = stream_cosine(0.01f, 0.003f, 4.0f, 8.0f, nullptr,
+                                              INFINITY, 0.003f);
+    // Jittered frame timing must leave the setpoint no rougher than steady
+    // timing does (what remains in both is the plant's own stick-slip).
+    EXPECT_LT(jittery.step_hf_rms, 1.2f * smooth.step_hf_rms)
+        << "jittered " << jittery.step_hf_rms << " vs steady " << smooth.step_hf_rms;
+}
+
+// The playback lag has to be STEADY, not just long enough on average. A lag of
+// mean + 2 deviations, re-estimated per sample, moved with every sample and
+// moved the read point of the reference with it, putting the caller's jitter
+// back into the setpoint: replayed against the streams recorded on 0094s,
+// 0.03-0.12 rad/s of high-frequency setpoint velocity, against 0.009-0.016
+// with the longest held interval. The worst of those streams was a 100 Hz Qt
+// timer firing late and catching up, which this reproduces.
+TEST(ForcePositionPolicy, ALateThenCatchUpCallerLeavesTheSetpointSmooth) {
+    const StreamTrace steady = stream_cosine(0.01f, 0.001f, 4.0f, 8.0f);
+    const StreamTrace bursty = stream_cosine(0.01f, 0.001f, 4.0f, 8.0f, nullptr,
+                                             INFINITY, 0.0f, true);
+    EXPECT_EQ(bursty.braked_frames, 0);
+    // Not 1x: linear interpolation over 19 ms / 1 ms segments leaves a chord
+    // error of ~accel x T/2, ~0.01 rad/s here -- far under the jaw's own
+    // velocity noise. A per-sample lag measured ~9x.
+    EXPECT_LT(bursty.step_hf_rms, 2.5f * steady.step_hf_rms)
+        << "bursty " << bursty.step_hf_rms << " vs steady " << steady.step_hf_rms;
+}
+
+// A compliant contact under a STEADY target: the pad compresses by more than
+// the stall window's 3 mrad per 150 ms, so the jaw never reads as stalled, and
+// gated on that alone the push stayed at the spring -- closing to 0.0 on 0094s
+// took 3.2 s instead of 1.1 (2026-10-08). With the target steady, the slow jaw
+// escalates as it did before 0.4.2.
+TEST(ForcePositionPolicy, ACreepingCompliantGraspStillEscalatesUnderASteadyTarget) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 3.6f;
+    cfg.hold_torque_limit_nm = 5.0f;
+    cfg.motion_torque_limit_nm = 14.0f;
+    cfg.close_speed_radps = 1.1f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 0.040f;                          // pad meets the jaw 40 mrad out
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    bool held = false;
+    for (int i = 0; i < 150 && !held; ++i) {     // 1.5 s
+        t += std::chrono::milliseconds(10);
+        // Creeping in at 0.03 rad/s (4.5 mrad per 150 ms) until 25 mrad, where
+        // the pad stops it -- always slower than the velocity gate.
+        const float v = pos > 0.025f ? -0.03f : 0.0f;
+        pos = std::max(0.025f, pos + v * 0.01f);
+        p.step(sample(pos, v), t);
+        held = p.holding();
+    }
+    EXPECT_TRUE(held) << "never escalated to a grip";
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-2f);
 }
