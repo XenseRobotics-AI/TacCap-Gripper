@@ -183,6 +183,22 @@ EnvelopeAudit audit_envelope(const protocol::GripperEnvelope& stored,
 // only what is absent, untrustworthy or unenforceable is replaced.
 protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit);
 
+// The open direction a follower of this model and side must have stored
+// (GripperConfigFlag::Reverse): true = "open" is the motor's negative
+// direction. std::nullopt = no rule for this model or side, check nothing.
+//
+// RS00 FOLLOWERS COME IN A LEFT AND A RIGHT HAND. The gear train inside is
+// mounted mirror-symmetrically, so the same motor turns the opposite way to
+// open: right (even SN) Reverse 0, left (odd SN) Reverse 1 -- 0094s and 0086s
+// right, 0089s left (2026-10-09). The firmware still picks one default per
+// model (RS00 = 0), and auto-calibration writes back whichever direction it
+// used, so a new left-hand RS00 calibrates backwards and stays that way.
+//
+// EL05 is deliberately not covered: only one unit (0015s, left, Reverse 1) has
+// been measured, and whether EL05 followers are handed too is not known.
+std::optional<bool> expected_open_reverse(std::uint8_t model_id,
+                                          discovery::Side side) noexcept;
+
 }  // namespace detail
 
 class FollowerGripper {

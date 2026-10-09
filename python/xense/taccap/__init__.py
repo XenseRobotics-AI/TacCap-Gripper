@@ -209,6 +209,7 @@ Side = _taccap_native.Side
 Role = _taccap_native.Role
 ParsedSerial = _taccap_native.ParsedSerial
 parse_serial = _taccap_native.parse_serial
+expected_open_reverse = _taccap_native.expected_open_reverse
 scan_grippers = _taccap_native.scan_grippers
 find_one = _taccap_native.find_one
 find_left = _taccap_native.find_left
@@ -349,6 +350,7 @@ __all__ = [
     "Role",
     "ParsedSerial",
     "parse_serial",
+    "expected_open_reverse",
     "scan_grippers",
     "find_one",
     "find_left",

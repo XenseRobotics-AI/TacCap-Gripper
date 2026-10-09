@@ -258,6 +258,15 @@ python python/examples/force_position_control.py left --grasp-torque 1.1
 `g.motor.set_startup_limit_torque(14.0)` 调上去,再拔插一次 24V。细节见
 [`firmware/README.md`](firmware/README.md)。
 
+**RS00 从爪分左右手。** 夹爪内部齿轮对称安装,同一款电机张开时转向相反:**右**
+从爪(SN 末位偶数)存 flags `0x0001`(Reverse 0),**左**从爪(奇数)存 `0x0003`
+(Reverse 1)。固件仍按型号只认一个方向(RS00 = Reverse 0),自动标定又会把实际用的
+方向原样写回,所以新的左手 RS00 第一次标定一定标反、而且不会自己纠正 —— 开度整个
+颠倒，合着读成接近 1,`set_target(0.0)` 会张开。`FollowerGripper` 打开时若存的方向
+与左右不符会告警;`t.expected_open_reverse(model_id, side)` 给出应有的值。修法：用
+`g.set_gripper_config()` 只改 flags,再拔插 24V 让标定按新方向重跑。改型号记录会把
+它重置回型号默认。EL05 暂无规则。
+
 ### 按任务分
 
 **控制。** 两个控制器都只用同样两个非阻塞调用 —— `set_target(0..1)` 和
