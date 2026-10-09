@@ -77,3 +77,45 @@ TEST(FirmwareAdvisory, FollowerBelow1211WarnsButOpens) {
             << int(v.a) << "." << int(v.b) << "." << int(v.c);
     }
 }
+
+// RS00 followers are handed (mirror-mounted gear train): a left one must store
+// Reverse 1, a right one Reverse 0. A wrong bit mirrors the normalized
+// position, so opening warns; writing flash behind the caller's back is not
+// the SDK's call, so it only warns.
+TEST(OpenDirectionWarning, ALeftRs00StoredAsRightWarns) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_model_rs00(true);
+    fw.set_sn("TCGU01A28Z0089s");    // odd -> left
+    fw.set_reverse(false);
+    CaptureLog log;
+    auto g = open_follower(pty);
+    EXPECT_EQ(log.count("open direction does not match the Left hand"), 1u);
+    EXPECT_EQ(log.count("0x0003"), 1u) << "the warning names the flags to write";
+}
+
+TEST(OpenDirectionWarning, CorrectlyHandedRs00OpensQuietly) {
+    for (const bool left : {true, false}) {
+        Pty pty;
+        ASSERT_GE(pty.master(), 0);
+        FakeFollower fw(pty);
+        fw.set_model_rs00(true);
+        fw.set_sn(left ? "TCGU01A28Z0089s" : "TCGU01A28Z0094s");
+        fw.set_reverse(left);
+        CaptureLog log;
+        auto g = open_follower(pty);
+        EXPECT_EQ(log.count("open direction does not match"), 0u) << (left ? "left" : "right");
+    }
+}
+
+TEST(OpenDirectionWarning, El05IsNotChecked) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);                // EL05
+    fw.set_sn("TCGU01A28Z0094s");
+    fw.set_reverse(true);
+    CaptureLog log;
+    auto g = open_follower(pty);
+    EXPECT_EQ(log.count("open direction does not match"), 0u);
+}

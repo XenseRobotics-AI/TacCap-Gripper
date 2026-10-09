@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RS00 followers are handed; `FollowerGripper` warns when the stored open
+  direction does not match the side.** The gear train is mirror-mounted, so a
+  right (even SN) RS00 follower stores Reverse 0 (flags `0x0001`) and a left
+  (odd SN) one Reverse 1 (`0x0003`) -- 0094s / 0086s right, 0089s left
+  (2026-10-09). The firmware assumes one direction per model and calibration
+  writes back whatever it used, so a new left-hand RS00 calibrates backwards
+  and stays that way, with the normalized position mirrored. The SDK only
+  warns, naming the flags to write; it does not write flash on open.
+  `detail::expected_open_reverse(model_id, side)` (Python
+  `expected_open_reverse`) is the rule; EL05 is not covered (one unit
+  measured).
+
 ## [0.4.2] - 2026-10-08
 
 ### Fixed

@@ -354,3 +354,19 @@ TEST(EnvelopeCrossLayer, FirmwareContSitsAtOrAboveTheDefaultGrasp) {
 }
 
 }  // namespace
+
+// RS00 followers are handed: the gear train is mirror-mounted, so a left one
+// opens toward the motor's negative direction (Reverse 1) and a right one the
+// other way (0089s left, 0094s / 0086s right, 2026-10-09). EL05 has no rule
+// yet -- one measured unit is not a rule -- and an unknown side checks nothing.
+TEST(OpenDirection, Rs00IsHandedAndNothingElseIsChecked) {
+    using xense::taccap::detail::expected_open_reverse;
+    using xense::taccap::discovery::Side;
+    constexpr std::uint8_t kEl05 = 0, kRs00 = 1;
+    EXPECT_EQ(expected_open_reverse(kRs00, Side::Left),  std::optional<bool>(true));
+    EXPECT_EQ(expected_open_reverse(kRs00, Side::Right), std::optional<bool>(false));
+    EXPECT_EQ(expected_open_reverse(kRs00, Side::Unknown), std::nullopt);
+    EXPECT_EQ(expected_open_reverse(kEl05, Side::Left),  std::nullopt);
+    EXPECT_EQ(expected_open_reverse(kEl05, Side::Right), std::nullopt);
+    EXPECT_EQ(expected_open_reverse(7, Side::Left), std::nullopt);
+}

@@ -214,6 +214,39 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         }
     } catch (...) {}
 
+    // Open direction against the hand this follower is (see
+    // detail::expected_open_reverse). Wrong, nothing errors: the normalized
+    // position is mirrored, so a closed jaw reads ~1.0 and set_target(0.0)
+    // drives it open. Warn only -- writing flash on open would change a
+    // device behind the caller's back; the fix is a flags write plus a 24 V
+    // power cycle so auto-calibration re-runs the right way.
+    try {
+        const auto m = motor_.get_model(std::chrono::milliseconds{300});
+        const auto side = discovery::parse_serial(fw_sn_).side;
+        const auto want = (m.from_flash && side)
+                              ? detail::expected_open_reverse(m.id, *side)
+                              : std::nullopt;
+        const auto gc = get_gripper_config();
+        if (want && (gc.flags & protocol::GripperConfigFlag::Valid) != 0) {
+            const bool have = (gc.flags & protocol::GripperConfigFlag::Reverse) != 0;
+            if (have != *want) {
+                const std::string name(m.name, ::strnlen(m.name, sizeof(m.name)));
+                const unsigned fixed = *want
+                    ? (gc.flags | protocol::GripperConfigFlag::Reverse)
+                    : (gc.flags & ~protocol::GripperConfigFlag::Reverse);
+                logger()->warn(
+                    "FollowerGripper: 开合方向与左右不符 —— {} {} 侧从爪应为 Reverse {},"
+                    "存的是 {}(flags=0x{:04x})。开度会整个颠倒:合着读成接近 1,"
+                    "set_target(0.0) 会张开。修:set_gripper_config 把 flags 改为 0x{:04x},"
+                    "再拔插 24V 让自动标定按新方向重跑。 (open direction does not match "
+                    "the {} hand of this {} follower: Reverse should be {}, stored {})",
+                    name, *side == discovery::Side::Left ? "左" : "右",
+                    *want ? 1 : 0, have ? 1 : 0, gc.flags, fixed,
+                    discovery::to_string(*side), name, *want ? 1 : 0, have ? 1 : 0);
+            }
+        }
+    } catch (...) {}
+
     // The wrist camera is off by default — an external camera service owns the
     // wrist UVC V4L2 device. Only open it when explicitly asked AND a device
     // path is provided.
@@ -342,6 +375,15 @@ std::string fmt(float v) {
 }
 
 }  // namespace
+
+std::optional<bool> expected_open_reverse(std::uint8_t model_id,
+                                          discovery::Side side) noexcept {
+    constexpr std::uint8_t kRs00 = 1;   // MotorModel::id, persisted, never reused
+    if (model_id != kRs00) return std::nullopt;
+    if (side == discovery::Side::Left)  return true;
+    if (side == discovery::Side::Right) return false;
+    return std::nullopt;
+}
 
 protocol::GripperEnvelope recommend_envelope(
         const std::optional<protocol::MotorSpec>& spec) {

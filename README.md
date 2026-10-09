@@ -299,6 +299,19 @@ whatever `0x700B` it stored (6.0 on units upgraded from 1.2.8 or earlier); raise
 it with `g.motor.set_startup_limit_torque(14.0)` and cut 24 V again. Details in
 [`firmware/README.md`](firmware/README.md).
 
+**RS00 followers are left- or right-handed.** The gear train inside is mounted
+mirror-symmetrically, so the same motor turns the opposite way to open: a
+**right** follower (even SN) stores flags `0x0001` (Reverse 0), a **left** one
+(odd SN) `0x0003` (Reverse 1). The firmware still assumes one direction per
+model (RS00 = Reverse 0) and auto-calibration writes back whatever direction it
+used, so a new left-hand RS00 calibrates backwards and stays that way -- the
+normalized position is mirrored, a closed jaw reads ~1.0 and `set_target(0.0)`
+opens it. `FollowerGripper` warns on open when the stored bit disagrees with
+the side; `t.expected_open_reverse(model_id, side)` gives the right bit. Fix it
+with `g.set_gripper_config()` (change the flags only) and cut 24 V so
+calibration re-runs. A model-record change resets the bit to the model default
+again. EL05 has no rule yet.
+
 ### By task
 
 **Control.** Both controllers take the same two non-blocking calls,
