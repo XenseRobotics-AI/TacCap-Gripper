@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.6 and the follower 1.2.15; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.16; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. **A leader reporting 1.2.6 may be either of two images**: the
@@ -312,6 +312,16 @@ with `g.set_gripper_config()` (change the flags only) and cut 24 V so
 calibration re-runs. Follower 1.2.15 does this by itself: calibration takes the
 direction from the SN's side and corrects a stored bit that disagrees, and a
 model-record change keeps the side's direction. EL05 has no rule yet.
+
+**RS00 followers need motor CAN ID 17 (left) / 18 (right), not the factory
+127.** Byte 0 of an MIT motion frame is the target position's high byte, and the
+motor takes a frame whose byte 0 equals its own CAN ID for another command.
+127 is 0x7F, the byte for -0.098..0 rad -- a left-hand RS00's closed end -- so
+on 127 force-position cannot close to 0. The IDs are written by the factory
+config tool (`g.motor.set_can_id()`, then cut 24 V); nothing changes them
+silently. `FollowerGripper` warns on open when they disagree with the SN's side,
+and `t.expected_motor_can_id(model_id, side)` gives the right one. EL05 is not
+handed and keeps its ID.
 
 ### By task
 

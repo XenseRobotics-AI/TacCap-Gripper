@@ -13,16 +13,16 @@
       "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.15.bin",
-      "version": "1.2.15",
-      "source_commit": "4d3a3b9",
-      "size_bytes": 167464,
-      "crc32": "0xbdbb2b4b",
+      "file": "tc-gu-01-slave-1.2.16.bin",
+      "version": "1.2.16",
+      "source_commit": "a7dc07f",
+      "size_bytes": 167544,
+      "crc32": "0x4a8cd360",
       "sn_suffix": "s",
       "protocol": "V2.8 + 运动安全包络",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "RS00 followers are handed: the gear train is mirror-mounted, so the open direction follows the side in the firmware SN (last digit odd = left = Reverse 1, even = right = Reverse 0) instead of one default per model. Auto-calibration uses that direction and corrects a stored one that disagrees (that run approaches slowly, since the old zero is at the open end); a model-record change picks the side's direction too. EL05 and units whose SN gives no side behave as 1.2.14. Verified on 0089s (left) and 0094s (right); 0089s deliberately stored reversed was corrected on the next 24 V power cycle. Carries 1.2.14 (motor firmware version record, protocol V2.8). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
+      "note": "Stops decoding the motor's echo frames as status. A RobStride motor takes an MIT motion frame whose byte 0 equals its own CAN ID for another command and answers on 0xFD with the frame's first four bytes and zeros in bytes 4-7; byte 0 is the target position's high byte, and the factory ID 127 (0x7F) is -0.098..0 rad -- a LEFT-hand RS00's closed end. 1.2.15 decoded each echo as status (temperature 0, torque -t_max, position clamped to the far end), the envelope clamp then dragged the target toward the open end and the jaw was thrown open: force-position never closed to 0.0 on 0089s. The real fix is the CAN ID (RS00 followers: left 17, right 18, written by the factory config tool); this image is the backstop. Carries 1.2.15 (RS00 open direction from the SN's side). Verified on 0089s (left) / 0094s (right). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
   }
 }

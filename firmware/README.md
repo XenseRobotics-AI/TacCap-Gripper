@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.15.bin` | follower (SN ends **`s`**) | **1.2.15** | V2.8 + 运动安全包络 | 167,464 B | `0xbdbb2b4b` |
+| `tc-gu-01-slave-1.2.16.bin` | follower (SN ends **`s`**) | **1.2.16** | V2.8 + 运动安全包络 | 167,544 B | `0x4a8cd360` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -35,8 +35,8 @@ sources bumps that role alone.
 this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
-The leader is at 1.2.6 while the follower is at 1.2.15 for that reason: 1.2.7,
-1.2.8, 1.2.10, 1.2.12, 1.2.13, 1.2.14 and 1.2.15 touched only follower code, and 1.2.9 changed the shared
+The leader is at 1.2.6 while the follower is at 1.2.16 for that reason: 1.2.7,
+1.2.8, 1.2.10, 1.2.12, 1.2.13, 1.2.14, 1.2.15 and 1.2.16 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
 
@@ -75,6 +75,12 @@ is in force. When the model record changes, 0x700B, the calibration torque and
 the direction are reset to the new model's defaults; a stored calibration torque
 still at exactly the old 0.35 migrates on boot. A gripper OTA also no longer
 refuses when the motor is not on the bus.
+
+**Follower 1.2.16 no longer decodes the motor's echo frames as status.** A motor
+takes an MIT motion frame whose byte 0 (the target position's high byte) equals
+its own CAN ID for another command; on the factory ID 127 that is a left-hand
+RS00's closed end. The fix is the CAN ID -- RS00 followers left 17, right 18,
+written by the factory config tool -- and 1.2.16 is the backstop.
 
 **Follower 1.2.15 sets an RS00's open direction from its side.** The gear train
 is mirror-mounted, so a left follower (odd SN) needs Reverse 1 and a right one
