@@ -17,7 +17,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
-VERSION = "0.1.1-3"
+VERSION = "0.1.1-4"
+
+
+def install_icons(source, share):
+    """Letterbox the original into square theme icons without stretching."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    original = QImage(str(source))
+    if original.isNull():
+        raise ValueError(f"Cannot load application icon: {source}")
+    for size in (16, 24, 32, 48, 64, 128, 256, 512):
+        scaled = original.scaled(
+            size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        canvas = QImage(size, size, QImage.Format_ARGB32)
+        canvas.fill(Qt.transparent)
+        painter = QPainter(canvas)
+        painter.drawImage(
+            (size - scaled.width()) // 2, (size - scaled.height()) // 2, scaled
+        )
+        painter.end()
+        destination = share / "icons/hicolor" / f"{size}x{size}/apps"
+        destination.mkdir(parents=True, exist_ok=True)
+        if not canvas.save(str(destination / f"{PACKAGE}.png")):
+            raise RuntimeError("Cannot save application icon")
 
 
 def main():
@@ -178,12 +203,13 @@ def main():
         pixmaps = package / "usr/share/pixmaps"
         pixmaps.mkdir(parents=True)
         shutil.copy2(app / "icon.png", pixmaps / f"{PACKAGE}.png")
+        install_icons(app / "icon.png", package / "usr/share")
         desktop = package / "usr/share/applications"
         desktop.mkdir(parents=True)
         (desktop / f"{PACKAGE}.desktop").write_text(
-            "[Desktop Entry]\nType=Application\nName=TacCap Firmware Updater\n"
-            "Name[zh_CN]=TacCap 固件升级与回滚\n"
-            f"Exec=/usr/bin/{PACKAGE}\nIcon={PACKAGE}\nTerminal=false\nCategories=Utility;\n"
+            "[Desktop Entry]\nType=Application\nName=Xense TacCap Firmware Updater\n"
+            "Name[zh_CN]=Xense TacCap 固件更新\n"
+            f"Exec=/usr/bin/{PACKAGE}\nIcon={PACKAGE}\nTerminal=false\nStartupWMClass={PACKAGE}\nCategories=Utility;\n"
         )
         docs = package / "usr/share/doc" / PACKAGE
         docs.mkdir(parents=True)

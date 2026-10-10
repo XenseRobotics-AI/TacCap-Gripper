@@ -43,6 +43,19 @@ class UpdaterUiTests(unittest.TestCase):
         self.assertLessEqual(self.window.height(), 460)
         self.assertLessEqual(self.window.width(), 700)
 
+    def test_connected_information_does_not_overlap_firmware_rows(self):
+        self.window.info.setText(
+            "型号 EL05（已记录）   MCU 1.2.16\\n电机 1.0.5.0.4（Flash 存档，非实时）"
+        )
+        self.app.processEvents()
+        info = self.window.info
+        self.assertGreaterEqual(info.height(), info.sizeHint().height())
+        self.assertLess(
+            info.geometry().bottom(),
+            self.window.file_labels["mcu"].geometry().top(),
+        )
+        self.assertEqual(self.window.windowTitle(), "Xense TacCap 固件更新")
+
     def test_dark_system_palette_is_overridden(self):
         from PySide6.QtGui import QColor, QPalette
 

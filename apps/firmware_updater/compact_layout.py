@@ -8,9 +8,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -70,19 +72,20 @@ def text(value, name="muted"):
 
 
 def build(window):
-    window.setWindowTitle("TacCap 固件更新")
+    window.setWindowTitle("Xense TacCap 固件更新")
     window.resize(680, 430)
-    window.setMinimumSize(640, 420)
+    window.setMinimumWidth(640)
     surface = QWidget()
     surface.setObjectName("surface")
     window.setCentralWidget(surface)
     box = QVBoxLayout(surface)
+    box.setSizeConstraint(QLayout.SetMinimumSize)
     box.setContentsMargins(24, 20, 24, 16)
-    box.setSpacing(12)
+    box.setSpacing(8)
     header = QHBoxLayout()
     header.addWidget(text("固件更新", "title"))
     header.addStretch()
-    header.addWidget(text("TacCap"))
+    header.addWidget(text("Xense TacCap"))
     box.addLayout(header)
     window.controls = []
     form = QGridLayout()
@@ -100,7 +103,10 @@ def build(window):
     window.controls.append(window.combo)
     window.info = text("正在自动扫描，请关闭其他控制程序。")
     window.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    window.info.setMinimumHeight(38)
+    window.info.setWordWrap(False)
+    window.info.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+    window.info.ensurePolished()
+    window.info.setMinimumHeight(window.info.fontMetrics().lineSpacing() * 2 + 8)
     form.addWidget(window.info, 1, 1, 1, 3)
     window.file_labels = {}
     for row, kind, title in ((2, "mcu", "夹爪固件"), (3, "motor", "电机固件")):
@@ -131,8 +137,7 @@ def build(window):
     window.model_row.hide()
     box.addWidget(window.model_row)
     options = QHBoxLayout()
-    options.addWidget(text("默认使用内置固件；可手动选择其他版本。"))
-    options.addStretch()
+    options.addWidget(text("默认使用内置固件；可手动选择其他版本。"), 1)
     defaults = window.button("恢复默认", window.use_defaults)
     defaults.setObjectName("link")
     options.addWidget(defaults)
