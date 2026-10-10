@@ -208,6 +208,40 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.emit("power_done", "")
         self.window.drain()
 
+    def test_repeated_log_toggle_recovers_compact_height(self):
+        self.window.info.setText("型号 EL05（已记录）   MCU 1.2.16\\n电机 1.0.5.0.4")
+        self.window.fit_contents()
+        self.app.processEvents()
+        compact = self.window.height()
+        for _ in range(4):
+            self.window.toggle.setChecked(True)
+            self.app.processEvents()
+            self.assertGreater(self.window.height(), compact)
+            self.window.toggle.setChecked(False)
+            self.app.processEvents()
+            self.assertLessEqual(self.window.height(), compact + 2)
+            self.assertLess(
+                self.window.status.geometry().top()
+                - self.window.safety.geometry().bottom(),
+                20,
+            )
+
+    def test_master_defaults_and_usb_prompt(self):
+        identity = ("TESTm", "usb")
+        self.window.selected_identity = identity
+        self.window.emit(
+            "info",
+            (identity, dict(model="主爪", recorded=True, mcu="1.2.6", motor="不适用")),
+        )
+        self.window.drain()
+        self.app.processEvents()
+        self.assertIn("master", self.window.paths["mcu"])
+        self.assertEqual(self.window.paths["motor"], "")
+        self.assertFalse(self.window.file_labels["motor"].isVisible())
+        self.window.emit("power", {"role": "master", "reason": "更新完成"})
+        self.window.drain()
+        self.assertIn("USB", self.window.popup.windowTitle())
+
     def test_busy_blocks_close(self):
         self.window.busy = True
         with patch.object(QMessageBox, "warning"):

@@ -29,7 +29,7 @@ def load_image(path, kind, catalog):
         raise ValueError(
             "文件不在内置校验清单中或类型错误，请向技术支持获取匹配的固件/工具。改名不能绕过校验。"
         )
-    return Image(**matches[0], data=data)
+    return Image(**{k: v for k, v in matches[0].items() if k != "file"}, data=data)
 
 
 def catalog_at(path):
@@ -67,6 +67,32 @@ def confirm_change(ask, label, current, image):
     return True
 
 
+def role_from_sn(sn):
+    if sn.endswith("m"):
+        return "master"
+    if sn.endswith("s"):
+        return "slave"
+    raise ValueError("设备 SN 未标明主/从角色，拒绝猜测")
+
+
+def execute_master(device, info, mcu, motor, ask, emit):
+    if motor or not mcu or mcu.model != "master":
+        raise ValueError("主爪只允许主爪 MCU 镜像，不支持从爪或电机固件")
+    if not ask(
+        "开始主爪更新",
+        f"设备 {info['sn']}\nMCU {info['mcu']} → {mcu.version}\n更新后需拔插 USB。",
+    ):
+        raise RuntimeError("用户取消，未修改设备")
+    if confirm_change(ask, "主爪 MCU", device.mcu_version(), mcu):
+        device.flash_mcu(mcu)
+        device.power_cycle("主爪 MCU 刷写完成，请拔插 USB")
+        if device.mcu_version() != mcu.version:
+            raise RuntimeError("主爪 MCU 实际版本不符")
+        emit("success", f"主爪 MCU {mcu.version} 已更新并核验，无需电机标定。")
+    else:
+        emit("success", "已核验主爪 MCU 为所选版本，跳过重复刷写；未修改设备。")
+
+
 def execute(device, mcu, motor, ask, emit):
     """The driver owns identity checks, busy guards and actual transfers.
 
@@ -77,6 +103,9 @@ def execute(device, mcu, motor, ask, emit):
         raise ValueError("至少选择一种固件")
     emit("stage", "更新预检：重新核对设备与固件")
     info = device.inspect()
+    role = role_from_sn(info["sn"])
+    if role == "master":
+        return execute_master(device, info, mcu, motor, ask, emit)
     if not info["recorded"]:
         raise RuntimeError("电机型号尚未配置，请联系技术支持；用户版不覆盖型号")
     if version_key(info["mcu"]) < (1, 2, 14):

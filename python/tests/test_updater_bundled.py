@@ -33,7 +33,18 @@ class BundledTests(unittest.TestCase):
 
     def test_all_three_defaults_are_verified(self):
         versions = bundled.verify_all(self.catalog, self.root)
-        self.assertEqual(set(versions), {"mcu/slave", "motor/EL05", "motor/RS00"})
+        self.assertEqual(
+            set(versions), {"mcu/slave", "mcu/master", "motor/EL05", "motor/RS00"}
+        )
+
+    def test_defaults_select_highest_approved_version(self):
+        catalog = {
+            "images": [
+                dict(kind="motor", model="EL05", version="1.0.5.0.2", file="old.bin"),
+                dict(kind="motor", model="EL05", version="1.0.5.0.4", file="new.bin"),
+            ]
+        }
+        self.assertEqual(bundled.approved_defaults(catalog)["motor", "EL05"], "new.bin")
 
     def test_unknown_motor_never_defaults_to_el05(self):
         for model in (None, "", "UNKNOWN"):

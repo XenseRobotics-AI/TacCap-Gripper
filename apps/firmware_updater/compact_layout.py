@@ -87,13 +87,18 @@ def build(window):
     box = QVBoxLayout(surface)
     box.setSizeConstraint(QLayout.SetMinimumSize)
     box.setContentsMargins(24, 20, 24, 16)
-    box.setSpacing(7)
+    box.setSpacing(6)
+    box.setAlignment(Qt.AlignTop)
     header = QHBoxLayout()
     header.addWidget(text("固件更新", "title"))
     header.addStretch()
+    window.role_filter = QComboBox()
+    window.role_filter.addItems(["全部夹爪", "从爪", "主爪"])
+    window.role_filter.activated.connect(window.scan)
+    header.addWidget(window.role_filter)
     header.addWidget(text("Xense TacCap", "brand"))
     box.addLayout(header)
-    window.controls = []
+    window.controls = [window.role_filter]
     form = QGridLayout()
     form.setHorizontalSpacing(10)
     form.setVerticalSpacing(10)
@@ -101,7 +106,7 @@ def build(window):
     form.addWidget(text("设备", "label"), 0, 0)
     window.combo = QComboBox()
     window.combo.setMinimumHeight(34)
-    window.combo.setPlaceholderText("选择已连接的从爪")
+    window.combo.setPlaceholderText("选择已连接的夹爪")
     window.combo.activated.connect(window.inspect)
     form.addWidget(window.combo, 0, 1, 1, 2)
     window.refresh = window.button("刷新", window.scan)
@@ -115,20 +120,23 @@ def build(window):
     window.info.setMinimumHeight(window.info.fontMetrics().lineSpacing() * 2 + 8)
     form.addWidget(window.info, 1, 1, 1, 3)
     window.file_labels = {}
+    window.motor_widgets = []
     for row, kind, title in ((2, "mcu", "夹爪固件"), (3, "motor", "电机固件")):
-        form.addWidget(text(title, "label"), row, 0)
+        title_label = text(title, "label")
+        form.addWidget(title_label, row, 0)
         field = text("未选择", "file")
         field.setMinimumHeight(34)
         form.addWidget(field, row, 1)
         window.file_labels[kind] = field
-        form.addWidget(
-            window.button("选择文件", lambda checked=False, k=kind: window.choose(k)),
-            row,
-            2,
+        choose = window.button(
+            "选择文件", lambda checked=False, k=kind: window.choose(k)
         )
+        form.addWidget(choose, row, 2)
         clear = window.button("清除", lambda checked=False, k=kind: window.clear(k))
         clear.setObjectName("link")
         form.addWidget(clear, row, 3)
+        if kind == "motor":
+            window.motor_widgets = [title_label, field, choose, clear]
     box.addLayout(form)
     window.model_row = QWidget()
     model_box = QHBoxLayout(window.model_row)
@@ -152,8 +160,10 @@ def build(window):
     line.setFixedHeight(1)
     line.setStyleSheet("background: #E8EBEF;")
     box.addWidget(line)
-    box.addWidget(text("请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。", "notice"))
-    box.addStretch(1)
+    window.safety = text(
+        "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。", "notice"
+    )
+    box.addWidget(window.safety)
     window.status = text("等待选择设备和固件", "status")
     box.addWidget(window.status)
     window.progress = QProgressBar()

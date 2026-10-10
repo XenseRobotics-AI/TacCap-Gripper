@@ -221,3 +221,45 @@ def test_skip_same_motor_uses_live_version_and_restores_mit():
     assert not any(e[0] == "flash_motor" for e in d.events)
     assert ("protocol", "Mit", False) in d.events
     assert ("protocol", "Private", True) not in d.events
+
+
+class FakeMaster(FakeDevice):
+    def inspect(self):
+        return dict(
+            sn="TESTm",
+            role="master",
+            model="主爪",
+            recorded=True,
+            mcu=self.mcu,
+            motor="不适用",
+        )
+
+
+def test_master_only_mcu_and_usb_cycle():
+    d = FakeMaster()
+    d.mcu = "1.2.2"
+    events = run(d, mcu=image("mcu", "1.2.6", "master"))
+    assert [e[0] for e in d.events] == ["flash_mcu", "cycle"]
+    assert "USB" in d.events[1][1]
+    assert events[-1][0] == "success"
+
+
+@pytest.mark.parametrize(
+    "mcu,motor",
+    [
+        (image("mcu", "1.2.16"), None),
+        (image("mcu", "1.2.6", "master"), image("motor", "1.0.5.0.4")),
+    ],
+)
+def test_master_rejects_wrong_role_and_motor_before_writes(mcu, motor):
+    d = FakeMaster()
+    with pytest.raises(ValueError):
+        run(d, mcu=mcu, motor=motor)
+    assert not d.events
+
+
+def test_follower_rejects_master_image():
+    d = FakeDevice()
+    with pytest.raises(RuntimeError):
+        run(d, mcu=image("mcu", "1.2.6", "master"))
+    assert not d.events

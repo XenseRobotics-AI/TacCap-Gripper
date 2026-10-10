@@ -3,6 +3,7 @@
 import time
 from contextlib import contextmanager
 
+import core
 import full_ota_update as flow
 import motor_ota_update as motor_tools
 from xense.taccap import (
@@ -19,25 +20,26 @@ def discover():
     return [
         (e.firmware_sn, e.mcu_serial)
         for e in scan_grippers()
-        if e.firmware_sn and e.firmware_sn.endswith("s")
+        if e.firmware_sn and e.firmware_sn.endswith(("s", "m"))
     ]
 
 
 class Device:
     def __init__(self, identity, emit):
         self.identity = tuple(identity)
+        self.role = core.role_from_sn(self.identity[0])
         self.emit = emit
         self.transfer_unit = "B"
         self.last_progress_emit = 0.0
         self.last_progress_log = -1
 
     def endpoint(self):
-        return flow._wait_ready(self.identity, 12, "查找所选从爪")
+        return flow._wait_ready(self.identity, 12, "查找所选夹爪")
 
     @contextmanager
     def opened(self, leader=False):
         ep = self.endpoint()
-        cls = LeaderGripper if leader else FollowerGripper
+        cls = LeaderGripper if leader or self.role == "master" else FollowerGripper
         with cls(mcu_device=ep.mcu_device) as g:
             if g.device.get_sn() != self.identity[0]:
                 raise RuntimeError("串口设备身份变化，停止")
@@ -46,6 +48,15 @@ class Device:
     def inspect(self):
         self.emit("stage", "读取设备身份、型号与固件版本（版本查询最多等待 3 秒）")
         with self.opened() as g:
+            if self.role == "master":
+                return {
+                    "sn": self.identity[0],
+                    "role": "master",
+                    "model": "主爪",
+                    "recorded": True,
+                    "motor": "不适用",
+                    "mcu": flow._version_text(flow._version_tuple(g.firmware_version)),
+                }
             m = g.motor.get_model()
             v = g.motor.motor_version(3000)
             label = "未知"
@@ -67,6 +78,8 @@ class Device:
             return flow._version_text(flow._version_tuple(g.firmware_version))
 
     def record_model(self, name):
+        if self.role != "slave":
+            raise RuntimeError("主爪不提供从爪电机型号设置")
         ids = {"EL05": 0, "RS00": 1}
         if name not in ids:
             raise ValueError("不支持的电机型号")
@@ -92,8 +105,7 @@ class Device:
         detector = flow._RestartDetector(before)
         self.emit(
             "power",
-            reason
-            + "\n重新上电可能自动标定，请清空活动范围。心跳检测不能代替实际断电。",
+            {"role": self.role, "reason": reason},
         )
         deadline = time.monotonic() + 180
         last_report = 0.0
@@ -103,7 +115,7 @@ class Device:
                 try:
                     ep = flow._scan_for(self.identity)
                     if ep is None:
-                        detail = "未发现目标 USB 设备，请检查 USB 和 24 V 连接"
+                        detail = "未发现目标 USB 设备，请检查 USB 连接和设备供电"
                     else:
                         uptime = flow._read_uptime(ep, self.identity)
                         if detector.observe(uptime):
@@ -121,13 +133,13 @@ class Device:
                     self.emit("power_status", detail)
                     last_report = time.monotonic()
                 time.sleep(0.5)
-            raise RuntimeError(
-                f"等待 24 V 断电重启超时；{detail}。未绕过校验，请导出日志"
-            )
+            raise RuntimeError(f"等待断电重启超时；{detail}。未绕过校验，请导出日志")
         finally:
             self.emit("power_done", "")
 
     def protocol(self, name, force_cycle=False):
+        if self.role != "slave":
+            raise RuntimeError("主爪不能切换从爪电机协议")
         self.emit("stage", f"准备切换/核验 {name} 协议")
         expected = getattr(MotorProtocol, name)
         if force_cycle:
@@ -172,6 +184,8 @@ class Device:
             self.last_progress_log = bucket
 
     def flash_mcu(self, image):
+        if image.kind != "mcu" or image.model != self.role:
+            raise ValueError("MCU 镜像与设备主/从角色不匹配")
         with self.opened(leader=True) as g:
             target = OtaTargetVersion(*map(int, image.version.split(".")), 0)
             self.begin_transfer("MCU 刷写：启动会话并传输固件，请勿拔线", "B")
@@ -183,6 +197,8 @@ class Device:
         )
 
     def flash_motor(self, image):
+        if self.role != "slave":
+            raise RuntimeError("主爪不支持电机 OTA")
         with self.opened() as g:
             session = MotorOtaSession(g.motor, g.motor.get_can_id())
             self.emit("stage", "电机 OTA 预检：核对协议、型号与 UID")

@@ -99,11 +99,29 @@ class App(QMainWindow):
         self.apply_defaults()
 
     def apply_defaults(self):
+        master = bool(
+            self.selected_identity
+            and core.role_from_sn(self.selected_identity[0]) == "master"
+        )
+        for widget in self.motor_widgets:
+            widget.setVisible(not master)
         for kind in ("mcu", "motor"):
+            if (
+                self.selected_identity
+                and core.role_from_sn(self.selected_identity[0]) == "master"
+                and kind == "motor"
+            ):
+                self.paths[kind] = ""
+                self.file_labels[kind].setText("主爪不适用")
+                continue
             if kind in self.overrides:
                 continue
             model = (
-                "slave"
+                (
+                    core.role_from_sn(self.selected_identity[0])
+                    if self.selected_identity
+                    else "slave"
+                )
                 if kind == "mcu"
                 else (
                     self.current_info["model"]
@@ -163,7 +181,17 @@ class App(QMainWindow):
     def toggle_log(self, visible):
         self.text.setVisible(visible)
         self.toggle.setText("收起日志" if visible else "查看日志")
-        self.resize(self.width(), 602 if visible else 430)
+        self.fit_contents()
+        QTimer.singleShot(0, self.fit_contents)
+
+    def fit_contents(self):
+        layout = self.centralWidget().layout()
+        layout.invalidate()
+        layout.activate()
+        self.layout().invalidate()
+        self.layout().activate()
+        if not self.isMaximized():
+            self.resize(self.width(), self.sizeHint().height())
 
     def log(self, value):
         line = time.strftime("%Y-%m-%d %H:%M:%S ") + str(value)
@@ -208,15 +236,24 @@ class App(QMainWindow):
 
         threading.Thread(target=work, daemon=False).start()
 
-    def scan(self):
+    def scan(self, *_):
         if self.busy:
             return
         self.status.setText("正在扫描设备…")
 
+        role = self.role_filter.currentIndex()
+
         def work():
             from device import discover
 
-            self.emit("devices", discover())
+            devices = discover()
+            if role:
+                devices = [
+                    e
+                    for e in devices
+                    if core.role_from_sn(e[0]) == ("slave" if role == 1 else "master")
+                ]
+            self.emit("devices", devices)
 
         self.launch(work)
 
@@ -278,11 +315,26 @@ class App(QMainWindow):
         self.file_labels[kind].setToolTip("")
 
     def choose(self, kind):
+        if (
+            kind == "motor"
+            and self.selected_identity
+            and core.role_from_sn(self.selected_identity[0]) == "master"
+        ):
+            QMessageBox.information(
+                self, "主爪固件", "主爪仅支持 MCU 更新，无需选择电机固件。"
+            )
+            return
         path, _ = QFileDialog.getOpenFileName(self, "选择固件", "", "固件 (*.bin)")
         if not path:
             return
         try:
             image = core.load_image(path, kind, self.catalog)
+            if (
+                kind == "mcu"
+                and self.selected_identity
+                and image.model != core.role_from_sn(self.selected_identity[0])
+            ):
+                raise ValueError("镜像主/从角色与当前设备不匹配")
             self.overrides.add(kind)
             self.set_image(kind, path, image)
         except Exception as exc:
@@ -322,7 +374,9 @@ class App(QMainWindow):
 
     def show_power(self, value):
         self.popup = PowerDialog(self)
-        self.popup.setWindowTitle("请按步骤断开 24 V")
+        master = isinstance(value, dict) and value["role"] == "master"
+        reason = value["reason"] if isinstance(value, dict) else value
+        self.popup.setWindowTitle("请拔插主爪 USB" if master else "请按步骤断开 24 V")
         self.popup.setMinimumWidth(580)
         box = QVBoxLayout(self.popup)
         box.setContentsMargins(28, 24, 28, 24)
@@ -330,12 +384,23 @@ class App(QMainWindow):
         box.addWidget(label("需要你操作电源", "title"))
         box.addWidget(
             label(
-                "①  拔掉 24 V 电源\n\n②  等待至少 2 秒\n\n③  重新插回 24 V 电源",
+                (
+                    "①  拔掉主爪 USB\n\n②  等待至少 2 秒\n\n③  重新插回 USB"
+                    if master
+                    else "①  拔掉 24 V 电源\n\n②  等待至少 2 秒\n\n③  重新插回 24 V 电源"
+                ),
                 "heading",
             )
         )
-        box.addWidget(label("USB 保持连接。仅拔 USB 不算断电。", "notice"))
-        box.addWidget(label(value, "muted"))
+        box.addWidget(
+            label(
+                "主爪通过 USB 供电，拔插 USB 即可。"
+                if master
+                else "USB 保持连接。仅拔 USB 不算断电。",
+                "notice",
+            )
+        )
+        box.addWidget(label(reason, "muted"))
         self.popup.connection_label = label(
             "正在检测设备；确认重启后自动继续。", "muted"
         )
@@ -377,7 +442,11 @@ class App(QMainWindow):
                 self.set_stage("继续处理确认结果")
                 reply.put(answer)
             elif kind == "power":
-                self.set_stage("等待用户断开 24 V 并重新上电（上限 180 秒）")
+                self.set_stage(
+                    "等待主爪 USB 重新插入（上限 180 秒）"
+                    if isinstance(value, dict) and value["role"] == "master"
+                    else "等待用户断开 24 V 并重新上电（上限 180 秒）"
+                )
                 self.set_tone("warning")
                 self.log(value)
                 self.show_power(value)
@@ -401,7 +470,7 @@ class App(QMainWindow):
                 self.info.setText(
                     "请选择设备查看版本"
                     if value
-                    else "未发现从爪，等待连接；请关闭其他控制程序。"
+                    else "未发现匹配夹爪，等待连接；请关闭其他控制程序。"
                 )
                 self.status.setText(
                     "请选择目标设备" if value else "等待设备 · 自动扫描中"
@@ -426,7 +495,16 @@ class App(QMainWindow):
                 self.model_row.setVisible(not info["recorded"])
                 self.model_combo.setCurrentIndex(0)
                 text = f"型号 {info['model']}（{'已记录' if info['recorded'] else '未配置'}）  MCU {info['mcu']}\n电机 {info['motor']}"
+                role = core.role_from_sn(identity[0])
+                if role == "master":
+                    text = f"主爪 · MCU {info['mcu']}\n仅更新主爪 MCU，无电机固件"
                 self.info.setText(text)
+                self.safety.setText(
+                    "主爪：刷写时勿拔 USB，完成后按提示拔插 USB。"
+                    if role == "master"
+                    else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。"
+                )
+                self.fit_contents()
                 self.log(text)
                 self.apply_defaults()
                 self.set_tone("success")

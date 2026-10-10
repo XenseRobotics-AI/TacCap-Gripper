@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
-VERSION = "0.1.1-5"
+VERSION = "0.1.1-6"
 
 
 def install_icons(source, share):
@@ -65,7 +65,20 @@ def main():
         import bundled
         import core
 
-        bundled.verify_all(core.catalog_at(app / "catalog.json"), ROOT / "firmware")
+        versions = bundled.verify_all(
+            core.catalog_at(app / "catalog.json"), ROOT / "firmware"
+        )
+        manifest = json.loads((ROOT / "firmware/manifest.json").read_text())
+        for role in ("master", "slave"):
+            entry = manifest["images"][role]
+            if (
+                versions[f"mcu/{role}"] != entry["version"]
+                or bundled.FILES["mcu", role] != entry["file"]
+            ):
+                raise ValueError(
+                    f"{role}: approved catalog differs from current manifest; review firmware before packaging"
+                )
+
         firmware_args = []
         for relative in bundled.FILES.values():
             path = ROOT / "firmware" / relative
