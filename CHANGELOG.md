@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expected_open_reverse`) is the rule; EL05 is not covered (one unit
   measured).
 
+### Changed
+
+- Shipped follower image is now **1.2.15**: an RS00's open direction follows
+  the side in its firmware SN, auto-calibration corrects a stored direction that
+  disagrees, and a model-record change keeps the side's direction. Verified on
+  0089s (left) / 0094s (right), including a deliberately reversed 0089s
+  corrected on the next 24 V power cycle. Leader image unchanged (1.2.6).
+
 ## [0.4.2] - 2026-10-08
 
 ### Fixed
