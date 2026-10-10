@@ -27,7 +27,17 @@ def prepare_appdir(extracted, appdir):
     if metadata["dirty"]:
         raise ValueError("Refusing a dirty source build")
     shutil.copytree(frozen, appdir / "usr/lib" / PACKAGE)
-    shutil.copy2(extracted / "usr/share/pixmaps" / f"{PACKAGE}.png", appdir)
+    icon_tree = extracted / "usr/share/icons"
+    if icon_tree.is_dir():
+        shutil.copytree(icon_tree, appdir / "usr/share/icons")
+    square = icon_tree / "hicolor/512x512/apps" / f"{PACKAGE}.png"
+    icon = (
+        square
+        if square.is_file()
+        else extracted / "usr/share/pixmaps" / f"{PACKAGE}.png"
+    )
+    shutil.copy2(icon, appdir / f"{PACKAGE}.png")
+    shutil.copy2(icon, appdir / "usr/lib" / PACKAGE / "_internal/icon.png")
     shutil.copy2(appdir / f"{PACKAGE}.png", appdir / ".DirIcon")
     desktop = (extracted / "usr/share/applications" / f"{PACKAGE}.desktop").read_text()
     desktop = desktop.replace(f"Exec=/usr/bin/{PACKAGE}", "Exec=AppRun")

@@ -155,3 +155,27 @@ MCU 时钟重置只证明 MCU 重启，不证明电机供电已经断开。必�
 用户明确同意后重新请求切换，并重新引导断电、核验 Private；不重复 MCU 刷写。
 取消、通信异常、第二次校验失败或电机刷写后的校验失败均停止，不自动重试刷写。
 这提供了受控恢复，不表示已确认或修复电机内部参数保存失败的根因。
+
+### 一键打包三种格式
+
+在已配置 PyInstaller、PySide6、patchelf 与匹配原生 SDK 的构建环境执行：
+
+```bash
+python packaging/firmware_updater/build_all.py
+```
+
+一次冻结生成 deb/run，再从同一 deb 生成 AppImage，三者使用同一 build SHA、
+SDK 和内置固件。首次下载官方 AppImage 构建依赖到 `build/appimage-tools` 并验证固定 SHA256，
+缓存存在时可离线使用；上游文件摘要变化会拒绝构建，不自动信任新版本。
+也可用 `--tools-dir /path/to/verified-tools` 指定缓存。
+三种产物全部生成和自检通过后才替换 `dist` 中同名文件，旧文件移至 `dist/previous-build-*`。
+构建依赖只用于打包，用户运行仍不依赖 conda。
+
+AppImage 正常启动会为当前用户注册专用菜单入口（不需要 root），并将等比例图标
+复制到用户图标主题目录。它使用独立的 `taccap-firmware-updater-appimage` 标识，
+不覆盖 deb 的菜单入口；移动 AppImage 后重新直接启动一次可更新入口路径。
+`--self-test` 和 `--ui-smoke-test` 不创建用户入口。
+可删除 `~/.local/share/applications/taccap-firmware-updater-appimage.desktop` 和对应
+`~/.local/share/icons/hicolor/512x512/apps/taccap-firmware-updater-appimage.png` 移除入口
+（设置 XDG_DATA_HOME 时使用该目录）。
+文件管理器中的 AppImage 文件缩略图由系统支持决定，内嵌图片不保证文件列表自动显示。

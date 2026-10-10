@@ -12,6 +12,7 @@ import bundled
 import core
 from activity import Activity
 from compact_layout import STYLE, build, palette
+from desktop_integration import desktop_id, integrate_appimage
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
@@ -30,8 +31,8 @@ HERE = Path(__file__).resolve().parent
 
 
 def configure(app):
-    app.setApplicationName("taccap-firmware-updater")
-    app.setDesktopFileName("taccap-firmware-updater")
+    app.setApplicationName(desktop_id())
+    app.setDesktopFileName(desktop_id())
     app.setWindowIcon(QIcon(str(HERE / "icon.png")))
     app.setStyle("Fusion")
     app.setPalette(palette())
@@ -628,7 +629,15 @@ def main(args):
         raise SystemExit("请以普通用户运行，禁止 sudo 启动升级界面。")
     app = QApplication(sys.argv[:1])
     family = configure(app)
+    integration_error = None
+    if not args.ui_smoke_test:
+        try:
+            integrate_appimage(HERE / "icon.png")
+        except (OSError, ValueError) as exc:
+            integration_error = str(exc)
     window = App(auto_connect=not args.ui_smoke_test)
+    if integration_error:
+        window.log(f"应用菜单图标注册失败（不影响升级）：{integration_error}")
     window.show()
     if args.ui_smoke_test:
 
