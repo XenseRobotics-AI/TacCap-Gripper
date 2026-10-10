@@ -69,6 +69,11 @@ public:
         status_.actual_torque = torque;
     }
 
+    void set_temperature(float c) {
+        std::lock_guard<std::mutex> lk(mu_);
+        status_.motor_temp = c;
+    }
+
     // protocol::MotorStatusBit::* on the streamed frames.
     void set_status_word(uint16_t bits) {
         std::lock_guard<std::mutex> lk(mu_);

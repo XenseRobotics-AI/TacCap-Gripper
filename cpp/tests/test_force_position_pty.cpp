@@ -385,3 +385,49 @@ TEST(ForcePositionControllerPty, SetTargetRefusesAGraspAboveTheStallRating) {
     EXPECT_THROW(c.set_target(0.0f, 1.2f), std::invalid_argument);
     c.stop();
 }
+
+// Follower firmware <= 1.2.15 decodes a late MIT fault reply as a status frame:
+// temperature 0.0, torque -t_max, position clamped to the far end of travel.
+// On a left-hand RS00 (0089s) the controller stepped on each and threw the jaw
+// open. Those frames must never reach a subscriber, so the controller never
+// submits against one.
+TEST(MotorStatusFilter, AFaultReplyDecodedAsStatusIsDropped) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_temperature(33.0f);
+    fw.set_status(0.10f, 0.0f, 0.2f);
+    auto g = open_follower(pty);
+
+    std::mutex mu;
+    std::vector<float> temps, positions;
+    auto sub = g->motor().on_status([&](const tx::MotorStatusSample& s) {
+        std::lock_guard<std::mutex> lk(mu);
+        temps.push_back(s.motor_temp_c);
+        positions.push_back(s.actual_pos);
+    });
+    g->start_streaming(100);
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(mu); return temps.size() >= 5; }, std::chrono::milliseconds(2000)));
+
+    fw.set_temperature(0.0f);                 // the stray frame
+    fw.set_status(-1.2202f, 12.4f, -14.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    fw.set_temperature(33.0f);
+    fw.set_status(0.10f, 0.0f, 0.2f);
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(mu); return temps.size() >= 12; }, std::chrono::milliseconds(2000)));
+    g->stop_streaming();
+    g->motor().off(sub);
+
+    std::lock_guard<std::mutex> lk(mu);
+    for (size_t i = 0; i < temps.size(); ++i) {
+        EXPECT_NE(temps[i], 0.0f) << "frame " << i << " reached the subscriber";
+        EXPECT_GT(positions[i], 0.0f) << "frame " << i;
+    }
+}
+
+TEST(MotorStatusFilter, ZeroBeforeTheFirstRealReadingIsNotAStray) {
+    using tx::detail::is_stray_fault_reply_frame;
+    EXPECT_FALSE(is_stray_fault_reply_frame(false, 0.0f));   // firmware not yet fed
+    EXPECT_TRUE(is_stray_fault_reply_frame(true, 0.0f));
+    EXPECT_FALSE(is_stray_fault_reply_frame(true, 33.0f));
+}

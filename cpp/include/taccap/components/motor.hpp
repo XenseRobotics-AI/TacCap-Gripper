@@ -127,6 +127,28 @@ struct MotorStatusSample {
     protocol::MotorStatusExt raw;
 };
 
+namespace detail {
+// A status frame the follower decoded from the motor's late fault reply rather
+// than from a status frame. The MIT fault reply carries the fault word in bytes
+// 1-4 and zeros in 5-7, and follower firmware <= 1.2.15 decodes one that
+// arrives after its fault-read timeout as an ordinary status frame: temperature
+// 0.0 (bytes 6-7), torque at the bottom of its range (byte 5), and a position
+// and velocity made of fault-word bits. A real motor never reports 0.0 C once
+// it has reported anything else, so a 0.0 after a real reading is that frame.
+//
+// It is not harmless. On 0089s (RS00, left hand, 2026-10-10) every closing
+// move drew a few: position -1.22 rad (the firmware's clamp of the garbage),
+// torque -14 N*m, velocity +-16..25 rad/s. ForcePositionController stepped on
+// each, commanded a setpoint ~8 rad away, and the jaw was thrown open at
+// 4-7 rad/s -- closing to 0.0 never converged. A right-hand unit decodes the
+// same garbage too, but its clamp lands on the closed end, where it was going.
+//
+// seen_real_temp: a frame with a nonzero temperature has been seen on this
+// stream, so 0.0 cannot be "not yet measured" (the firmware zero-fills its
+// status before the first motor reply).
+bool is_stray_fault_reply_frame(bool seen_real_temp, float motor_temp_c) noexcept;
+}  // namespace detail
+
 class Motor {
 public:
     using SubId    = bus::Transport::SubscriptionId;
@@ -401,6 +423,8 @@ public:
 
     // Subscribe to streamed MotorStatus DATA frames (StreamSrc::MotorStatus
     // must be enabled in start_streaming for these to arrive).
+    // Frames decoded from a late motor fault reply are dropped here, before any
+    // subscriber sees them (see detail::is_stray_fault_reply_frame).
     SubId on_status(Callback cb);
     void  off(SubId id);
 
