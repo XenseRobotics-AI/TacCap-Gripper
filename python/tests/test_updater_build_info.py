@@ -1,4 +1,4 @@
-"""Application titles must not expose the Debian packaging revision."""
+"""Application and package versions must share the suffix-free version."""
 
 import importlib.util
 import json
@@ -10,9 +10,10 @@ build_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build_info)
 
 
-def test_application_and_package_versions_are_separate():
-    assert build_info.VERSION == "0.1.1"
-    assert build_info.PACKAGE_VERSION == "0.1.1-9"
+def test_application_and_package_versions_match_without_revision():
+    assert build_info.VERSION == "0.1.2"
+    assert build_info.PACKAGE_VERSION == build_info.VERSION
+    assert "-" not in build_info.PACKAGE_VERSION
 
 
 def test_frozen_title_uses_application_version(tmp_path, monkeypatch):
@@ -20,18 +21,18 @@ def test_frozen_title_uses_application_version(tmp_path, monkeypatch):
     (tmp_path / "build-info.json").write_text(
         json.dumps(
             {
-                "version": "0.1.1",
-                "package_version": "0.1.1-9",
+                "version": "0.1.2",
+                "package_version": "0.1.2",
                 "sha": "abcdef123456",
                 "dirty": False,
             }
         )
     )
     assert build_info.window_title() == (
-        "Xense TacCap 固件更新 · v0.1.1 · build abcdef123456"
+        "Xense TacCap 固件更新 · v0.1.2 · build abcdef123456"
     )
 
 
 def test_source_preview_keeps_development_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(build_info, "__file__", str(tmp_path / "build_info.py"))
-    assert build_info.window_title().endswith("v0.1.1 · build dev-dirty")
+    assert build_info.window_title().endswith("v0.1.2 · build dev-dirty")
