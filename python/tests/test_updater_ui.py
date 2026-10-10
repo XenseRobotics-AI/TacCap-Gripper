@@ -242,6 +242,33 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.drain()
         self.assertIn("USB", self.window.popup.windowTitle())
 
+    def test_master_filter_without_device_never_shows_follower_firmware(self):
+        with patch.object(self.window, "scan"):
+            self.window.role_filter.setCurrentIndex(2)
+        self.app.processEvents()
+        self.assertIsNone(self.window.selected_identity)
+        self.assertIn("master", self.window.paths["mcu"])
+        self.assertEqual(self.window.paths["motor"], "")
+        self.assertFalse(self.window.file_labels["motor"].isVisible())
+        self.assertFalse(self.window.start.isEnabled())
+        self.window.emit("devices", [])
+        self.window.drain()
+        self.app.processEvents()
+        self.assertIn("master", self.window.paths["mcu"])
+        self.assertFalse(self.window.file_labels["motor"].isVisible())
+        self.assertNotEqual(self.window.status.property("tone"), "success")
+        with patch.object(self.window, "scan"):
+            self.window.role_filter.setCurrentIndex(1)
+        self.app.processEvents()
+        self.assertIn("slave", self.window.paths["mcu"])
+        self.assertTrue(self.window.file_labels["motor"].isVisible())
+
+    def test_default_refresh_does_not_duplicate_hash_logs(self):
+        before = len(self.window.log_lines)
+        self.window.apply_defaults()
+        self.window.apply_defaults()
+        self.assertEqual(len(self.window.log_lines), before)
+
     def test_busy_blocks_close(self):
         self.window.busy = True
         with patch.object(QMessageBox, "warning"):

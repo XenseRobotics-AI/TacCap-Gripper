@@ -7,7 +7,7 @@
 ## 安装与权限
 
 ```bash
-sudo apt install ./taccap-firmware-updater_0.1.1-6_amd64.deb
+sudo apt install ./taccap-firmware-updater_0.1.1-7_amd64.deb
 sudo usermod -aG dialout "$USER"
 ```
 
@@ -93,3 +93,7 @@ python packaging/firmware_updater/build_deb.py --output dist
 
 主爪模式隐藏电机固件和型号设置，执行前和刷写前分别阻止主/从镜像混刷。
 日志展开/收起按可见内容重新计算窗口高度，不再使用固定高度或中间弹性空白。
+
+切换角色筛选后，即使没有设备连接，也立即使用对应角色的默认 MCU 镜像与提示；
+主爪隐藏整行电机控件。未连接/未就绪时禁用开始按钮。自动刷新不重复输出未变更
+镜像的哈希日志。界面只保留系统标题栏标题，类型、设备、固件使用统一网格对齐。

@@ -94,34 +94,52 @@ class App(QMainWindow):
         if self.auto_connect and not self.busy and not self.devices:
             self.scan()
 
+    def effective_role(self):
+        if self.selected_identity:
+            return core.role_from_sn(self.selected_identity[0])
+        return "master" if self.role_filter.currentIndex() == 2 else "slave"
+
+    def change_role(self, *_):
+        if self.busy:
+            return
+        self.selected_identity = None
+        self.current_info = None
+        self.devices = []
+        self.combo.clear()
+        self.model_row.hide()
+        self.overrides.clear()
+        self.apply_defaults()
+        self.set_tone("running")
+        self.info.setText("正在查找匹配设备…")
+        self.fit_contents()
+        self.scan()
+
+    def update_actions(self):
+        self.start.setEnabled(
+            not self.busy
+            and self.selected_identity is not None
+            and bool(self.current_info and self.current_info["recorded"])
+            and any(self.paths.values())
+        )
+
     def use_defaults(self):
         self.overrides.clear()
         self.apply_defaults()
 
     def apply_defaults(self):
-        master = bool(
-            self.selected_identity
-            and core.role_from_sn(self.selected_identity[0]) == "master"
-        )
+        role = self.effective_role()
+        master = role == "master"
         for widget in self.motor_widgets:
             widget.setVisible(not master)
         for kind in ("mcu", "motor"):
-            if (
-                self.selected_identity
-                and core.role_from_sn(self.selected_identity[0]) == "master"
-                and kind == "motor"
-            ):
+            if master and kind == "motor":
                 self.paths[kind] = ""
                 self.file_labels[kind].setText("主爪不适用")
                 continue
             if kind in self.overrides:
                 continue
             model = (
-                (
-                    core.role_from_sn(self.selected_identity[0])
-                    if self.selected_identity
-                    else "slave"
-                )
+                role
                 if kind == "mcu"
                 else (
                     self.current_info["model"]
@@ -138,14 +156,28 @@ class App(QMainWindow):
                 self.file_labels[kind].setText("等待识别型号")
                 self.file_labels[kind].setToolTip("型号未确认，不自动选择电机固件")
 
+        self.safety.setText(
+            "主爪：刷写时勿拔 USB，完成后按提示拔插 USB。"
+            if master
+            else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。"
+        )
+        self.update_actions()
+        self.fit_contents()
+
     def set_image(self, kind, path, image, builtin=False):
+        changed = self.paths[kind] != str(path)
         self.paths[kind] = str(path)
         source = "内置" if builtin else "手动"
-        self.file_labels[kind].setText(f"{image.model} · {image.version}（{source}）")
-        self.file_labels[kind].setToolTip(str(path))
-        self.log(
-            f"{source} {kind}: {image.model} {image.version} SHA256={image.sha256}"
+        model_name = {"master": "主爪 MCU", "slave": "从爪 MCU"}.get(
+            image.model, image.model
         )
+        self.file_labels[kind].setText(f"{model_name} · {image.version}（{source}）")
+        self.file_labels[kind].setToolTip(str(path))
+        if changed:
+            self.log(
+                f"{source} {kind}: {image.model} {image.version} SHA256={image.sha256}"
+            )
+        self.update_actions()
 
     def refresh_activity(self):
         if not self.activity.active:
@@ -239,6 +271,7 @@ class App(QMainWindow):
     def scan(self, *_):
         if self.busy:
             return
+        self.set_tone("running")
         self.status.setText("正在扫描设备…")
 
         role = self.role_filter.currentIndex()
@@ -313,6 +346,7 @@ class App(QMainWindow):
         self.paths[kind] = ""
         self.file_labels[kind].setText("未选择")
         self.file_labels[kind].setToolTip("")
+        self.update_actions()
 
     def choose(self, kind):
         if (
@@ -472,6 +506,7 @@ class App(QMainWindow):
                     if value
                     else "未发现匹配夹爪，等待连接；请关闭其他控制程序。"
                 )
+                self.set_tone("running")
                 self.status.setText(
                     "请选择目标设备" if value else "等待设备 · 自动扫描中"
                 )
@@ -533,6 +568,7 @@ class App(QMainWindow):
                 self.busy = False
                 for control in self.controls:
                     control.setEnabled(True)
+                self.update_actions()
             else:
                 if kind != "stage":
                     self.log(value)
