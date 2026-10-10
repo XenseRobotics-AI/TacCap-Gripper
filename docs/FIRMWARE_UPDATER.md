@@ -125,3 +125,23 @@ MCU 与电机分别对比安装包内置的最高审核版本：一致为绿色�
 未知或型号未记录时不判定为最新；高于内置版本时提示核实，不建议降级。
 电机 Flash 存档保留非实时标注，绿色仅表示存档版本一致，不代替实时升级校验。
 手动选择回滚镜像不会改变此比较基准；不联网查询厂商版本。
+
+### AppImage 单文件
+
+额外提供 `taccap-firmware-updater_0.1.0_x86_64.AppImage`，与源 deb 使用相同的程序、
+内置固件和 build SHA。赋予执行权限后可在 Ubuntu 24.04 x86_64 双击运行；
+下载或复制后权限可能丢失，需在文件属性中勾选“允许作为程序执行”。
+不需要 conda，不以 root 运行；串口权限仍按上文配置。
+系统不允许 FUSE 挂载时可使用 `--appimage-extract-and-run` 启动。
+
+构建使用已审核 SHA256 的官方工具和运行时（不自动信任更新后的 continuous 文件）：
+
+```bash
+python packaging/firmware_updater/build_appimage.py \
+  dist/taccap-firmware-updater_0.1.0_amd64.deb \
+  --tool /path/to/appimagetool-x86_64.AppImage \
+  --runtime /path/to/runtime-x86_64
+```
+
+工具来源为 AppImage/appimagetool 和 AppImage/type2-runtime 的官方 GitHub Releases。
+脚本校验摘要，拒绝覆盖现有 AppImage，也拒绝打包源码未提交的 deb。
