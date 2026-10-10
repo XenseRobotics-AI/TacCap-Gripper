@@ -25,10 +25,11 @@ def discover():
 
 
 class Device:
-    def __init__(self, identity, emit):
+    def __init__(self, identity, emit, ask=None):
         self.identity = tuple(identity)
         self.role = core.role_from_sn(self.identity[0])
         self.emit = emit
+        self.ask = ask
         self.transfer_unit = "B"
         self.last_progress_emit = 0.0
         self.last_progress_log = -1
@@ -119,7 +120,11 @@ class Device:
                     else:
                         uptime = flow._read_uptime(ep, self.identity)
                         if detector.observe(uptime):
-                            self.emit("log", f"目标设备重启已确认：uptime={uptime} ms")
+                            self.emit(
+                                "log",
+                                f"MCU 时钟重置已确认：uptime={uptime} ms；"
+                                "这不能证明电机已断电，仍须校验实际协议",
+                            )
                             return
                         detail = (
                             f"设备在线：uptime={uptime} ms；等待有效时钟回退及连续增长"
@@ -137,7 +142,7 @@ class Device:
         finally:
             self.emit("power_done", "")
 
-    def protocol(self, name, force_cycle=False):
+    def protocol(self, name, force_cycle=False, *, allow_recovery=True):
         if self.role != "slave":
             raise RuntimeError("主爪不能切换从爪电机协议")
         self.emit("stage", f"准备切换/核验 {name} 协议")
@@ -157,8 +162,32 @@ class Device:
         if changed or force_cycle:
             self.power_cycle(f"应用 {name} 协议并重启电机")
         self.emit("stage", f"等待 {name} 协议连续两次读回一致（上限 20 秒）")
-        with self.opened() as g:
-            flow._wait_motor_protocol(g.motor, expected)
+        try:
+            with self.opened() as g:
+                flow._wait_motor_protocol(g.motor, expected)
+        except RuntimeError as exc:
+            self.emit("log", f"协议校验失败：{exc}")
+            # Never retry a flash, a failed connection, or the post-flash cycle.
+            if name != "Private" or force_cycle or not allow_recovery or not self.ask:
+                raise
+            with self.opened() as g:
+                actual = g.motor.get_protocol()
+            self.emit("log", f"恢复前实际协议读回：{actual}")
+            if actual != MotorProtocol.Mit:
+                raise
+            if not self.ask(
+                "Private 协议未生效：是否恢复一次？",
+                "当前仍读回 MIT，电机尚未开始本次刷写。\\n"
+                "MCU 重启不能证明电机已断电；也可能是切换或参数保存未生效。\\n"
+                "确认后仅重新发送一次协议切换请求，再按弹窗断开整只夹爪的 "
+                "24 V 至少 2 秒（USB 保持连接）。\\n"
+                "不会重刷 MCU、不会绕过协议校验；再次失败将停止并保留日志。",
+            ):
+                raise RuntimeError(
+                    "用户取消协议恢复；未开始电机刷写，最后读回 MIT"
+                ) from exc
+            self.emit("log", "用户确认一次协议恢复；重新核对设备、等待空闲后发送")
+            return self.protocol("Private", allow_recovery=False)
         self.emit("log", f"{name} 协议已核验")
 
     def begin_transfer(self, label, unit):

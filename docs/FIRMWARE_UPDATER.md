@@ -145,3 +145,13 @@ python packaging/firmware_updater/build_appimage.py \
 
 工具来源为 AppImage/appimagetool 和 AppImage/type2-runtime 的官方 GitHub Releases。
 脚本校验摘要，拒绝覆盖现有 AppImage，也拒绝打包源码未提交的 deb。
+
+### Private 协议未生效时
+
+MCU 时钟重置只证明 MCU 重启，不证明电机供电已经断开。必须按提示断开整只从爪
+24 V 至少 2 秒，不能仅拔 USB；程序仍会核验实际协议。
+
+电机刷写前切换 Private 校验失败时，只有重新查询仍为 MIT 才提供一次恢复确认。
+用户明确同意后重新请求切换，并重新引导断电、核验 Private；不重复 MCU 刷写。
+取消、通信异常、第二次校验失败或电机刷写后的校验失败均停止，不自动重试刷写。
+这提供了受控恢复，不表示已确认或修复电机内部参数保存失败的根因。

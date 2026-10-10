@@ -32,6 +32,21 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.busy = False
         self.window.close()
 
+    def test_clear_logs_preserves_export_history_and_layout(self):
+        self.window.toggle.setChecked(True)
+        self.window.log("before clear")
+        saved = list(self.window.log_lines)
+        height = self.window.height()
+        self.window.clear_logs.click()
+        self.app.processEvents()
+        self.assertEqual(self.window.text.toPlainText(), "")
+        self.assertEqual(self.window.log_lines, saved)
+        self.assertEqual(self.window.height(), height)
+        self.window.log("after clear")
+        self.assertIn("after clear", self.window.text.toPlainText())
+        self.assertNotIn("before clear", self.window.text.toPlainText())
+        self.assertLessEqual(self.window.width(), 700)
+
     def test_initial_state_and_font(self):
         self.assertEqual(self.family, "Noto Sans CJK SC")
         self.assertFalse(self.app.windowIcon().isNull())

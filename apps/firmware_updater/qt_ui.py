@@ -213,6 +213,9 @@ class App(QMainWindow):
         self.controls.append(button)
         return button
 
+    def clear_log_view(self):
+        self.text.clear()
+
     def toggle_log(self, visible):
         self.text.setVisible(visible)
         self.toggle.setText("收起日志" if visible else "查看日志")
@@ -400,7 +403,7 @@ class App(QMainWindow):
                 for k, p in paths.items()
             }
             core.execute(
-                Device(identity, self.emit),
+                Device(identity, self.emit, ask=self.ask),
                 images["mcu"],
                 images["motor"],
                 self.ask,
@@ -439,7 +442,7 @@ class App(QMainWindow):
         )
         box.addWidget(label(reason, "muted"))
         self.popup.connection_label = label(
-            "正在检测设备；确认重启后自动继续。", "muted"
+            "正在检测 MCU 重启；随后仍需校验实际协议。", "muted"
         )
         box.addWidget(self.popup.connection_label)
         self.popup.detail_label = label(self.activity.detail(), "muted")

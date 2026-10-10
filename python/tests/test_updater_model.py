@@ -114,6 +114,55 @@ class ModelTests(unittest.TestCase):
         )
         self.device.emit.assert_any_call("power_done", "")
 
+    def setup_protocol_failure(self):
+        flow = self.module.flow
+        flow._switch_protocol = Mock()
+        flow._wait_motor_protocol = Mock(side_effect=[RuntimeError("still MIT"), None])
+        self.motor.get_protocol.return_value = self.module.MotorProtocol.Mit
+        self.device.ask = Mock(return_value=True)
+        return flow
+
+    def test_private_recovery_requires_confirmation_and_reverification(self):
+        flow = self.setup_protocol_failure()
+        self.device.protocol("Private")
+        self.device.ask.assert_called_once()
+        self.assertEqual(flow._switch_protocol.call_count, 2)
+        self.assertEqual(flow._wait_motor_protocol.call_count, 2)
+        self.assertEqual(self.device.power_cycle.call_count, 2)
+
+    def test_private_recovery_cancel_does_not_resend(self):
+        flow = self.setup_protocol_failure()
+        self.device.ask.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "用户取消"):
+            self.device.protocol("Private")
+        self.assertEqual(flow._switch_protocol.call_count, 1)
+
+    def test_private_recovery_is_bounded_to_one(self):
+        flow = self.setup_protocol_failure()
+        flow._wait_motor_protocol.side_effect = RuntimeError("still MIT")
+        with self.assertRaisesRegex(RuntimeError, "still MIT"):
+            self.device.protocol("Private")
+        self.device.ask.assert_called_once()
+        self.assertEqual(flow._switch_protocol.call_count, 2)
+
+    def test_post_flash_failure_never_offers_retry(self):
+        flow = self.setup_protocol_failure()
+        with patch.object(self.module.time, "sleep"), self.assertRaises(RuntimeError):
+            self.device.protocol("Private", force_cycle=True)
+        self.device.ask.assert_not_called()
+        self.assertEqual(flow._switch_protocol.call_count, 1)
+
+    def test_communication_error_never_resends(self):
+        flow = self.setup_protocol_failure()
+        self.motor.get_protocol.side_effect = [
+            self.module.MotorProtocol.Mit,
+            RuntimeError("disconnected"),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "disconnected"):
+            self.device.protocol("Private")
+        self.device.ask.assert_not_called()
+        self.assertEqual(flow._switch_protocol.call_count, 1)
+
     def test_failed_cycle_never_reports_initialized(self):
         self.device.power_cycle.side_effect = RuntimeError("timeout")
         with self.assertRaises(RuntimeError):
