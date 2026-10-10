@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-10
+
 ### Fixed
 
 - **Force-position could not close a left-hand RS00 follower to 0.0.** Root
@@ -33,14 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   echo count at the closed end is 0 and force-position closes to 0 on both
   units.
 
-### Changed
-
-- Shipped follower image is now **1.2.16**: it no longer decodes those echo
-  frames as status. Leader image unchanged (1.2.6).
-- The open-direction and CAN-ID warnings are English only.
-
-### Added
-
 - **RS00 followers are handed; `FollowerGripper` warns when the stored open
   direction does not match the side.** The gear train is mirror-mounted, so a
   right (even SN) RS00 follower stores Reverse 0 (flags `0x0001`) and a left
@@ -55,11 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Shipped follower image is now **1.2.15**: an RS00's open direction follows
-  the side in its firmware SN, auto-calibration corrects a stored direction that
-  disagrees, and a model-record change keeps the side's direction. Verified on
+- Shipped follower image is now **1.2.16** (was 1.2.14 in 0.4.2; leader
+  unchanged at 1.2.6). It carries 1.2.15: an RS00's open direction follows the
+  side in its firmware SN, auto-calibration corrects a stored direction that
+  disagrees, and a model-record change keeps the side's direction -- verified on
   0089s (left) / 0094s (right), including a deliberately reversed 0089s
-  corrected on the next 24 V power cycle. Leader image unchanged (1.2.6).
+  corrected on the next 24 V power cycle. And 1.2.16 no longer decodes the
+  motor's echo frames as status.
+- The open-direction and CAN-ID warnings are English only.
 
 ## [0.4.2] - 2026-10-08
 
