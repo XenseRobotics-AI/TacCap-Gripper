@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
-VERSION = "0.1.1-2"
+VERSION = "0.1.1-3"
 
 
 def main():
@@ -78,6 +78,8 @@ def main():
                 "xense.taccap._taccap_native",
                 "--add-data",
                 f"{app / 'catalog.json'}:.",
+                "--add-data",
+                f"{app / 'icon.png'}:.",
                 "--add-data",
                 "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc:fonts",
                 "--exclude-module",
@@ -173,12 +175,15 @@ def main():
             f'exec /opt/{PACKAGE}/{PACKAGE} "$@"\n'
         )
         launcher.chmod(0o755)
+        pixmaps = package / "usr/share/pixmaps"
+        pixmaps.mkdir(parents=True)
+        shutil.copy2(app / "icon.png", pixmaps / f"{PACKAGE}.png")
         desktop = package / "usr/share/applications"
         desktop.mkdir(parents=True)
         (desktop / f"{PACKAGE}.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=TacCap Firmware Updater\n"
             "Name[zh_CN]=TacCap 固件升级与回滚\n"
-            f"Exec=/usr/bin/{PACKAGE}\nTerminal=false\nCategories=Utility;\n"
+            f"Exec=/usr/bin/{PACKAGE}\nIcon={PACKAGE}\nTerminal=false\nCategories=Utility;\n"
         )
         docs = package / "usr/share/doc" / PACKAGE
         docs.mkdir(parents=True)

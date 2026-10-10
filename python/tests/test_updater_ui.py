@@ -34,6 +34,8 @@ class UpdaterUiTests(unittest.TestCase):
 
     def test_initial_state_and_font(self):
         self.assertEqual(self.family, "Noto Sans CJK SC")
+        self.assertFalse(self.app.windowIcon().isNull())
+        self.assertEqual(self.app.desktopFileName(), "taccap-firmware-updater")
         self.assertFalse(self.window.text.isVisible())
         self.assertEqual(self.window.combo.currentIndex(), -1)
         self.assertFalse(self.window.busy)
@@ -141,6 +143,47 @@ class UpdaterUiTests(unittest.TestCase):
         ):
             self.window.set_model()
             launch.assert_not_called()
+
+    def test_stage_switches_from_percentage_to_wait_animation(self):
+        self.window.activity.begin("传输")
+        self.window.emit("progress", {"done": 25, "total": 100, "unit": "B"})
+        self.window.drain()
+        self.assertEqual(self.window.progress.value(), 25)
+        self.window.emit("stage", "等待重启")
+        self.window.drain()
+        self.assertEqual(self.window.progress.maximum(), 0)
+        self.assertIn("等待重启", self.window.text.toPlainText())
+        self.assertNotIn("25%", self.window.activity_detail.text())
+
+    def test_live_worker_progress_reaches_ui_before_worker_finishes(self):
+        import threading
+        import time
+
+        release = threading.Event()
+
+        def work():
+            self.window.emit("stage", "模拟传输")
+            self.window.emit("progress", {"done": 40, "total": 100, "unit": "包"})
+            release.wait(2)
+
+        self.window.launch(work, updating=True)
+        try:
+            deadline = time.monotonic() + 1
+            while self.window.progress.value() != 40 and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.01)
+            self.assertEqual(self.window.progress.value(), 40)
+            self.assertTrue(self.window.busy)
+            self.assertTrue(self.window.text.isVisible())
+            self.assertIn("模拟传输", self.window.text.toPlainText())
+        finally:
+            release.set()
+            deadline = time.monotonic() + 2
+            while self.window.busy and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.01)
+        self.assertFalse(self.window.busy)
+        self.assertFalse(self.window.activity.active)
 
     def test_busy_blocks_close(self):
         self.window.busy = True

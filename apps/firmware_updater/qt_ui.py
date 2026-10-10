@@ -10,9 +10,10 @@ from pathlib import Path
 
 import bundled
 import core
+from activity import Activity
 from compact_layout import STYLE, build, palette
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -28,6 +29,9 @@ HERE = Path(__file__).resolve().parent
 
 
 def configure(app):
+    app.setApplicationName("taccap-firmware-updater")
+    app.setDesktopFileName("taccap-firmware-updater")
+    app.setWindowIcon(QIcon(str(HERE / "icon.png")))
     app.setStyle("Fusion")
     app.setPalette(palette())
     font_file = HERE / "fonts/NotoSansCJK-Regular.ttc"
@@ -62,6 +66,7 @@ class App(QMainWindow):
         super().__init__()
         self.events = queue.Queue()
         self.busy = False
+        self.activity = Activity()
         self.popup = None
         self.devices = []
         self.paths = {"mcu": "", "motor": ""}
@@ -75,6 +80,9 @@ class App(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.drain)
         self.timer.start(100)
+        self.activity_timer = QTimer(self)
+        self.activity_timer.timeout.connect(self.refresh_activity)
+        self.activity_timer.start(250)
         self.use_defaults()
         self.scan_timer = QTimer(self)
         self.scan_timer.timeout.connect(self.auto_scan)
@@ -121,6 +129,24 @@ class App(QMainWindow):
             f"{source} {kind}: {image.model} {image.version} SHA256={image.sha256}"
         )
 
+    def refresh_activity(self):
+        if not self.activity.active:
+            return
+        detail = self.activity.detail()
+        self.activity_detail.setText(detail)
+        if self.popup and hasattr(self.popup, "detail_label"):
+            self.popup.detail_label.setText(detail)
+        line = self.activity.heartbeat()
+        if line:
+            self.log(line)
+
+    def set_stage(self, title):
+        self.activity.set_stage(title)
+        self.status.setText(title)
+        self.progress.setRange(0, 0)
+        self.log(title)
+        self.refresh_activity()
+
     def button(self, text, callback):
         button = QPushButton(text)
         button.setMinimumHeight(34)
@@ -150,6 +176,13 @@ class App(QMainWindow):
         if self.busy:
             return
         self.busy = True
+        self.activity.begin("准备更新，请稍候" if updating else self.status.text())
+        self.progress.setRange(0, 0)
+        self.status.setText(self.activity.stage)
+        self.log(self.activity.stage)
+        if updating:
+            self.toggle.setChecked(True)
+        self.refresh_activity()
         for control in self.controls:
             control.setEnabled(False)
 
@@ -298,19 +331,29 @@ class App(QMainWindow):
         box.addWidget(label("USB 保持连接。仅拔 USB 不算断电。", "notice"))
         box.addWidget(label(value, "muted"))
         box.addWidget(label("正在自动检测重启，确认后将继续，无需点击按钮。", "muted"))
+        self.popup.detail_label = label(self.activity.detail(), "muted")
+        box.addWidget(self.popup.detail_label)
         self.popup.setModal(True)
         self.popup.show()
 
     def drain(self):
-        while True:
+        for _ in range(200):
             try:
                 kind, value = self.events.get_nowait()
             except queue.Empty:
                 return
             if kind == "progress":
-                self.progress.setValue(int(value))
+                self.activity.update(value["done"], value["total"], value["unit"])
+                if value["total"] > 0:
+                    self.progress.setRange(0, 100)
+                    self.progress.setFormat("当前传输 %p%")
+                    self.progress.setValue(
+                        min(100, int(100 * value["done"] / value["total"]))
+                    )
+                self.refresh_activity()
             elif kind == "ask":
                 title, text, reply = value
+                self.set_stage("等待确认：" + title)
                 self.log(title + ": " + text)
                 box = QMessageBox(QMessageBox.Question, title, text, parent=self)
                 yes = box.addButton("确认继续", QMessageBox.YesRole)
@@ -319,16 +362,17 @@ class App(QMainWindow):
                 box.exec()
                 answer = box.clickedButton() == yes
                 self.log("用户确认: " + str(answer))
+                self.set_stage("继续处理确认结果")
                 reply.put(answer)
             elif kind == "power":
-                self.status.setText("等待断开 24 V 并重新上电…")
+                self.set_stage("等待用户断开 24 V 并重新上电（上限 180 秒）")
                 self.log(value)
                 self.show_power(value)
             elif kind == "power_done":
                 if self.popup:
                     self.popup.accept()
                     self.popup = None
-                self.status.setText("正在校验设备…")
+                self.set_stage("断电检测结束，继续检查结果")
             elif kind == "devices":
                 previous = self.selected_identity
                 self.devices = value
@@ -382,18 +426,35 @@ class App(QMainWindow):
                 self.status.setText("未连接 · 详情见日志")
                 self.log(value)
             elif kind == "idle":
+                if self.activity.active:
+                    self.activity_detail.setText(self.activity.detail())
+                self.activity.finish()
+                if self.progress.maximum() == 0:
+                    self.progress.setRange(0, 100)
+                    self.progress.setValue(0)
+                    self.progress.setFormat("等待下一步")
                 self.busy = False
                 for control in self.controls:
                     control.setEnabled(True)
             else:
-                self.log(value)
+                if kind != "stage":
+                    self.log(value)
                 if kind == "stage":
-                    self.status.setText(value)
+                    self.set_stage(value)
                 elif kind == "error":
+                    self.activity_detail.setText(self.activity.detail())
+                    self.activity.finish()
+                    self.progress.setRange(0, 100)
+                    self.progress.setValue(0)
+                    self.progress.setFormat("已停止")
                     self.status.setText("操作已停止 · 请查看详细日志")
                     self.toggle.setChecked(True)
                     QMessageBox.critical(self, "需要处理", value)
                 elif kind == "success":
+                    self.activity_detail.setText(self.activity.detail())
+                    self.activity.finish()
+                    self.progress.setRange(0, 100)
+                    self.progress.setFormat("完成")
                     self.status.setText("更新完成 · 所选固件已核验")
                     self.progress.setValue(100)
                     QMessageBox.information(self, "更新完成", value)
@@ -433,6 +494,7 @@ def main(args):
             assert not window.text.isVisible()
             assert window.combo.currentIndex() == -1
             assert family.startswith("Noto Sans CJK")
+            assert not app.windowIcon().isNull()
             if args.screenshot:
                 if not window.grab().save(args.screenshot):
                     raise RuntimeError("截图保存失败")

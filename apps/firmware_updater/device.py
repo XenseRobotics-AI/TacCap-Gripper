@@ -27,6 +27,9 @@ class Device:
     def __init__(self, identity, emit):
         self.identity = tuple(identity)
         self.emit = emit
+        self.transfer_unit = "B"
+        self.last_progress_emit = 0.0
+        self.last_progress_log = -1
 
     def endpoint(self):
         return flow._wait_ready(self.identity, 12, "查找所选从爪")
@@ -41,6 +44,7 @@ class Device:
             yield g
 
     def inspect(self):
+        self.emit("stage", "读取设备身份、型号与固件版本（版本查询最多等待 3 秒）")
         with self.opened() as g:
             m = g.motor.get_model()
             v = g.motor.motor_version(3000)
@@ -64,7 +68,9 @@ class Device:
         with self.opened() as g:
             if g.motor.get_model().from_flash:
                 raise RuntimeError("设备已有型号记录，用户版不覆盖已有型号")
+            self.emit("stage", "等待设备空闲，准备写入电机型号")
             flow._prepare_motor_admin(g)
+            self.emit("log", f"写入电机型号：{name}")
             g.motor.set_model(ids[name])
         self.power_cycle("应用电机型号；重新上电可能触发自动标定")
         info = self.inspect()
@@ -74,6 +80,7 @@ class Device:
 
     def power_cycle(self, reason):
         # Observe a baseline before displaying the nonblocking instructions.
+        self.emit("stage", "准备断电检测：读取 MCU 启动时钟基线")
         ep = self.endpoint()
         before = flow._read_uptime(ep, self.identity)
         deadline = time.monotonic() + 30
@@ -82,6 +89,7 @@ class Device:
             before = flow._read_uptime(ep, self.identity)
         if before < 5000:
             raise RuntimeError("设备启动时钟尚未稳定，无法可靠检测断电；请稍后重试")
+        self.emit("log", f"断电检测基线：uptime={before} ms；等待物理断电，上限 180 秒")
         detector = flow._RestartDetector(before)
         self.emit(
             "power",
@@ -110,26 +118,55 @@ class Device:
             self.emit("power_done", "")
 
     def protocol(self, name, force_cycle=False):
+        self.emit("stage", f"准备切换/核验 {name} 协议")
         expected = getattr(MotorProtocol, name)
         if force_cycle:
             time.sleep(3)
         with self.opened() as g:
+            self.emit("stage", "等待标定结束并失能电机（单项等待上限 45 秒）")
             flow._prepare_motor_admin(g)
             changed = g.motor.get_protocol() != expected
+            self.emit(
+                "log", f"{name} 协议：{'需要切换并断电' if changed else '无需切换'}"
+            )
             if changed:
+                self.emit("stage", f"写入 {name} 协议启动配置")
                 flow._switch_protocol(g, expected)
         if changed or force_cycle:
             self.power_cycle(f"应用 {name} 协议并重启电机")
+        self.emit("stage", f"等待 {name} 协议连续两次读回一致（上限 20 秒）")
         with self.opened() as g:
             flow._wait_motor_protocol(g.motor, expected)
+        self.emit("log", f"{name} 协议已核验")
+
+    def begin_transfer(self, label, unit):
+        self.transfer_unit = unit
+        self.last_progress_emit = 0.0
+        self.last_progress_log = -1
+        self.emit("stage", label)
 
     def progress(self, done, total):
-        self.emit("progress", int(100 * done / total) if total else 0)
+        # Coalesce frequent MCU callbacks so the GUI does not starve on logs.
+        now = time.monotonic()
+        percent = min(100, int(100 * done / total)) if total else 0
+        if now - self.last_progress_emit >= 0.1 or done >= total:
+            self.emit(
+                "progress", {"done": done, "total": total, "unit": self.transfer_unit}
+            )
+            self.last_progress_emit = now
+        bucket = percent // 10
+        if bucket != self.last_progress_log or done >= total:
+            self.emit(
+                "log", f"传输 {percent}%：{done:,}/{total:,} {self.transfer_unit}"
+            )
+            self.last_progress_log = bucket
 
     def flash_mcu(self, image):
         with self.opened(leader=True) as g:
             target = OtaTargetVersion(*map(int, image.version.split(".")), 0)
+            self.begin_transfer("MCU 刷写：启动会话并传输固件，请勿拔线", "B")
             g.ota.update_from_bytes(image.data, target, self.progress)
+        self.emit("stage", "MCU 已提交，等待设备重启和版本读回（上限约 33 秒）")
         time.sleep(3)
         flow._wait_follower_version(
             self.identity, flow._parse_version_text(image.version), 30
@@ -138,21 +175,27 @@ class Device:
     def flash_motor(self, image):
         with self.opened() as g:
             session = MotorOtaSession(g.motor, g.motor.get_can_id())
+            self.emit("stage", "电机 OTA 预检：核对协议、型号与 UID")
             session.preflight(image.model)
             uid = session.read_uid()
             self.emit("log", f"电机 UID: {uid.hex()}；镜像 SHA256: {image.sha256}")
+            self.begin_transfer("电机刷写：等待握手并传输固件，请勿拔线", "包")
             session.update_from_bytes(image.data, self.progress)
+        self.emit("log", "电机结束帧已确认；仍需断电、版本核验和恢复协议")
 
     def live_motor_version(self):
+        self.emit("stage", "等待 Private 协议及电机实时版本（版本轮询上限 20 秒）")
         with self.opened() as g:
             flow._wait_motor_protocol(g.motor, MotorProtocol.Private)
             return motor_tools.read_version(g.motor, 20)
 
     def record_motor(self, actual):
+        self.emit("stage", f"保存已核验的电机版本记录：{actual}")
         with self.opened() as g:
             g.motor.set_motor_fw_version(actual)
 
     def check_homing(self):
+        self.emit("stage", "最终检查：等待 MIT 协议和自动标定完成")
         with self.opened() as g:
             flow._wait_motor_protocol(g.motor, MotorProtocol.Mit)
             flow._admin_call(g, "等待最终标定", lambda: None)

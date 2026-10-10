@@ -70,6 +70,17 @@ class ModelTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.device.record_model("RS00")
 
+    def test_progress_reports_real_counts_and_final_value(self):
+        self.device.begin_transfer("电机传输", "包")
+        self.device.progress(256, 1024)
+        self.device.progress(1024, 1024)
+        events = self.device.emit.call_args_list
+        payloads = [call.args[1] for call in events if call.args[0] == "progress"]
+        self.assertEqual(payloads[-1], {"done": 1024, "total": 1024, "unit": "包"})
+        self.assertTrue(
+            any(call.args[0] == "log" and "100%" in call.args[1] for call in events)
+        )
+
     def test_failed_cycle_never_reports_initialized(self):
         self.device.power_cycle.side_effect = RuntimeError("timeout")
         with self.assertRaises(RuntimeError):

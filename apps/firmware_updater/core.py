@@ -68,6 +68,7 @@ def execute(device, mcu, motor, ask, emit):
     """
     if not mcu and not motor:
         raise ValueError("至少选择一种固件")
+    emit("stage", "更新预检：重新核对设备与固件")
     info = device.inspect()
     if not info["recorded"]:
         raise RuntimeError("电机型号尚未配置，请联系技术支持；用户版不覆盖型号")

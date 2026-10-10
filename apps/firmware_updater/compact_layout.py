@@ -35,8 +35,8 @@ QPushButton#link:hover { color: #2563EB; }
 QComboBox { background: #FAFBFC; color: #252A32; border: 1px solid #D7DBE1; border-radius: 5px; padding: 6px 10px; }
 QComboBox QAbstractItemView { background: white; color: #252A32; selection-background-color: #E8EFFD; selection-color: #252A32; }
 QLabel#file { background: #FAFBFC; border: 1px solid #E1E5EB; border-radius: 5px; padding: 6px 10px; color: #626B78; }
-QProgressBar { background: #EDF0F4; border: none; border-radius: 2px; }
-QProgressBar::chunk { background: #2563EB; border-radius: 2px; }
+QProgressBar { background: #EDF0F4; color: #172B46; border: none; border-radius: 2px; text-align: center; }
+QProgressBar::chunk { background: #A9C5FF; border-radius: 2px; }
 QPlainTextEdit { background: #FAFBFC; color: #252A32; border: 1px solid #E1E5EB; border-radius: 5px; padding: 6px; }
 QToolTip { background: #FFFFFF; color: #252A32; border: 1px solid #D7DBE1; }
 """
@@ -148,9 +148,12 @@ def build(window):
     window.progress = QProgressBar()
     window.progress.setRange(0, 100)
     window.progress.setValue(0)
-    window.progress.setTextVisible(False)
-    window.progress.setFixedHeight(4)
+    window.progress.setTextVisible(True)
+    window.progress.setFormat("%p%")
+    window.progress.setFixedHeight(18)
     box.addWidget(window.progress)
+    window.activity_detail = text("百分比仅表示当前固件传输；完成后还需重启和校验。")
+    box.addWidget(window.activity_detail)
     footer = QHBoxLayout()
     window.toggle = QPushButton("查看日志")
     window.toggle.setObjectName("link")
