@@ -34,6 +34,7 @@ class ModelTests(unittest.TestCase):
             {"full_ota_update": flow, "motor_ota_update": Mock(), "xense.taccap": sdk},
         ):
             spec.loader.exec_module(module)
+        self.module = module
         self.device = module.Device(("test-s", "usb"), Mock())
         self.motor = Mock()
         self.motor.get_model.return_value = SimpleNamespace(from_flash=False)
@@ -80,6 +81,38 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(
             any(call.args[0] == "log" and "100%" in call.args[1] for call in events)
         )
+
+    def test_young_clock_does_not_wait_for_five_seconds(self):
+        flow = self.module.flow
+        flow._read_uptime = Mock(side_effect=[200, 50])
+        flow._scan_for = Mock(return_value="endpoint")
+        flow._RestartDetector = Mock()
+        flow._RestartDetector.return_value.observe.return_value = True
+        self.device.endpoint = Mock(return_value="endpoint")
+        with patch.object(self.module.time, "sleep") as sleep:
+            type(self.device).power_cycle(self.device, "test")
+        sleep.assert_not_called()
+        flow._RestartDetector.assert_called_once_with(200)
+        self.assertEqual(flow._read_uptime.call_count, 2)
+        self.device.emit.assert_any_call("power_done", "")
+
+    def test_missing_usb_is_reported_and_never_passes_as_restart(self):
+        flow = self.module.flow
+        flow._read_uptime = Mock(return_value=200)
+        flow._scan_for = Mock(return_value=None)
+        flow._RestartDetector = Mock()
+        self.device.endpoint = Mock(return_value="endpoint")
+        with (
+            patch.object(self.module.time, "monotonic", side_effect=[0, 1, 4, 4, 181]),
+            patch.object(self.module.time, "sleep"),
+            self.assertRaisesRegex(RuntimeError, "未发现目标 USB"),
+        ):
+            type(self.device).power_cycle(self.device, "test")
+        flow._RestartDetector.return_value.observe.assert_not_called()
+        self.assertTrue(
+            any(c.args[0] == "power_status" for c in self.device.emit.call_args_list)
+        )
+        self.device.emit.assert_any_call("power_done", "")
 
     def test_failed_cycle_never_reports_initialized(self):
         self.device.power_cycle.side_effect = RuntimeError("timeout")

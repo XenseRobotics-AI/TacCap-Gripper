@@ -49,7 +49,12 @@ def confirm_change(ask, label, current, image):
     if not current:
         raise RuntimeError(f"无法确认{label}当前版本，停止，不能凭存档推断电机实际版本")
     a, b = version_key(current), version_key(image.version)
-    action = "回滚" if b < a else "重复刷写" if b == a else "升级"
+    if b == a:
+        return ask(
+            f"确认{label}重复刷写",
+            f"当前已是 {current}。通常无需重刷。\n选择跳过可减少刷写和断电步骤；需要重刷时请确认。",
+        )
+    action = "回滚" if b < a else "升级"
     warning = image.warning or "刷写过程中不可断电；重新上电可能触发自动标定。"
     if not ask(
         f"确认{label}{action}",
@@ -58,6 +63,8 @@ def confirm_change(ask, label, current, image):
         raise RuntimeError(
             "用户取消；如已切换协议，设备可能仍处于 Private，请联系支持或重新完成升级流程。"
         )
+
+    return True
 
 
 def execute(device, mcu, motor, ask, emit):
@@ -89,12 +96,14 @@ def execute(device, mcu, motor, ask, emit):
     def flash_mcu():
         if not mcu:
             return
-        confirm_change(ask, "夹爪 MCU", device.inspect()["mcu"], mcu)
+        if not confirm_change(ask, "夹爪 MCU", device.mcu_version(), mcu):
+            emit("log", f"跳过同版本 MCU：{mcu.version}；无需刷写或为它断电")
+            return
         device.protocol("Mit")
         emit("stage", "正在刷写 MCU：不要断开电源或 USB")
         device.flash_mcu(mcu)
         device.power_cycle("MCU 刷写完成，必须硬重启")
-        if device.inspect()["mcu"] != mcu.version:
+        if device.mcu_version() != mcu.version:
             raise RuntimeError("MCU 运行版本不符，停止后续步骤")
         emit("log", f"MCU 实际版本已确认：{mcu.version}")
 
@@ -103,13 +112,15 @@ def execute(device, mcu, motor, ask, emit):
     if motor:
         device.protocol("Private")
         before = device.live_motor_version()
-        confirm_change(ask, "电机", before, motor)
-        emit("stage", "正在刷写电机：不要断开电源或 USB")
-        device.flash_motor(motor)
-        # Motor reboot may reset its protocol. An extra physical cycle remains
-        # mandatory even if the reported protocol is already Private.
-        device.protocol("Private", force_cycle=True)
-        actual = device.live_motor_version()
+        if confirm_change(ask, "电机", before, motor):
+            emit("stage", "正在刷写电机：不要断开电源或 USB")
+            device.flash_motor(motor)
+            # Keep the mandatory physical cycle after an actual transfer.
+            device.protocol("Private", force_cycle=True)
+            actual = device.live_motor_version()
+        else:
+            emit("log", f"跳过同版本电机：{before}；仍需恢复 MIT 协议")
+            actual = before
         if not actual or version_key(actual) != version_key(motor.version):
             raise RuntimeError(
                 f"电机实时版本核验失败：目标 {motor.version}，读回 {actual}；未写入版本记录"

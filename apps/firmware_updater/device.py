@@ -61,6 +61,11 @@ class Device:
                 "motor": label,
             }
 
+    def mcu_version(self):
+        # Do not spend up to three seconds querying an unrelated motor version.
+        with self.opened(leader=True) as g:
+            return flow._version_text(flow._version_tuple(g.firmware_version))
+
     def record_model(self, name):
         ids = {"EL05": 0, "RS00": 1}
         if name not in ids:
@@ -83,36 +88,41 @@ class Device:
         self.emit("stage", "准备断电检测：读取 MCU 启动时钟基线")
         ep = self.endpoint()
         before = flow._read_uptime(ep, self.identity)
-        deadline = time.monotonic() + 30
-        while before < 5000 and time.monotonic() < deadline:
-            time.sleep(0.5)
-            before = flow._read_uptime(ep, self.identity)
-        if before < 5000:
-            raise RuntimeError("设备启动时钟尚未稳定，无法可靠检测断电；请稍后重试")
         self.emit("log", f"断电检测基线：uptime={before} ms；等待物理断电，上限 180 秒")
         detector = flow._RestartDetector(before)
         self.emit(
             "power",
             reason
-            + "\n拔掉这只夹爪的 24 V，保持至少 2 秒再插回；USB 保留。\n仅拔 USB 不算断电。重新上电可能标定，请清空活动范围。\n程序自动检测，无需点击确认。心跳重启不能替代真实物理断电。",
+            + "\n重新上电可能自动标定，请清空活动范围。心跳检测不能代替实际断电。",
         )
         deadline = time.monotonic() + 180
+        last_report = 0.0
+        detail = "等待 MCU 时钟回退并连续增长"
         try:
             while time.monotonic() < deadline:
                 try:
                     ep = flow._scan_for(self.identity)
-                    if ep is not None and detector.observe(
-                        flow._read_uptime(ep, self.identity)
-                    ):
-                        self.emit("log", "目标设备重启已确认")
-                        return
-                except Exception:
+                    if ep is None:
+                        detail = "未发现目标 USB 设备，请检查 USB 和 24 V 连接"
+                    else:
+                        uptime = flow._read_uptime(ep, self.identity)
+                        if detector.observe(uptime):
+                            self.emit("log", f"目标设备重启已确认：uptime={uptime} ms")
+                            return
+                        detail = (
+                            f"设备在线：uptime={uptime} ms；等待有效时钟回退及连续增长"
+                        )
+                except Exception as exc:
                     # Cable removal can interrupt an in-flight read, but an
                     # error alone must never count as proof of restart.
                     detector.reset_from = None
-                time.sleep(1)
+                    detail = f"设备暂时无法通信：{type(exc).__name__}: {exc}"
+                if time.monotonic() - last_report >= 3:
+                    self.emit("power_status", detail)
+                    last_report = time.monotonic()
+                time.sleep(0.5)
             raise RuntimeError(
-                "等待 24 V 断电重启超时；未绕过校验，请检查供电并导出日志"
+                f"等待 24 V 断电重启超时；{detail}。未绕过校验，请导出日志"
             )
         finally:
             self.emit("power_done", "")

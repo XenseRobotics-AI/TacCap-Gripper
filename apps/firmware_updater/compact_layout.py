@@ -19,11 +19,17 @@ from PySide6.QtWidgets import (
 
 STYLE = """
 QWidget { color: #252A32; font-size: 13px; }
-QWidget#surface, QDialog, QMessageBox { background: #FFFFFF; }
+QWidget#surface { background: #F5F8FC; }
+QDialog, QMessageBox { background: #FFFFFF; }
 QLabel { background: transparent; }
-QLabel#title { font-size: 18px; font-weight: 600; }
+QLabel#title { font-size: 18px; font-weight: 600; color: #163C65; }
+QLabel#brand { color: #236C87; font-weight: 600; }
+QLabel#status { border-radius: 5px; padding: 5px 8px; color: #214E85; background: #E5EEFC; }
+QLabel#status[tone="success"] { color: #146448; background: #DDF3E9; }
+QLabel#status[tone="warning"] { color: #815000; background: #FFF0CE; }
+QLabel#status[tone="error"] { color: #9A2836; background: #FCE4E8; }
 QLabel#muted { color: #626B78; }
-QLabel#notice { color: #626B78; padding: 0; background: transparent; }
+QLabel#notice { color: #815000; padding: 4px 6px; background: #FFF0CE; border-radius: 4px; }
 QLabel#heading { font-size: 15px; font-weight: 600; }
 QPushButton { background: #FFFFFF; border: 1px solid #D7DBE1; border-radius: 5px; padding: 5px 12px; }
 QPushButton:hover { background: #F3F5F8; border-color: #AAB2BF; }
@@ -81,11 +87,11 @@ def build(window):
     box = QVBoxLayout(surface)
     box.setSizeConstraint(QLayout.SetMinimumSize)
     box.setContentsMargins(24, 20, 24, 16)
-    box.setSpacing(8)
+    box.setSpacing(7)
     header = QHBoxLayout()
     header.addWidget(text("固件更新", "title"))
     header.addStretch()
-    header.addWidget(text("Xense TacCap"))
+    header.addWidget(text("Xense TacCap", "brand"))
     box.addLayout(header)
     window.controls = []
     form = QGridLayout()
@@ -146,9 +152,9 @@ def build(window):
     line.setFixedHeight(1)
     line.setStyleSheet("background: #E8EBEF;")
     box.addWidget(line)
-    box.addWidget(text("请清空夹爪活动范围，仅在提示时断开 24 V；刷写中勿拔线。"))
+    box.addWidget(text("请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。", "notice"))
     box.addStretch(1)
-    window.status = text("等待选择设备和固件")
+    window.status = text("等待选择设备和固件", "status")
     box.addWidget(window.status)
     window.progress = QProgressBar()
     window.progress.setRange(0, 100)

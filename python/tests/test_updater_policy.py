@@ -41,6 +41,9 @@ class FakeDevice:
             motor=self.motor,
         )
 
+    def mcu_version(self):
+        return self.mcu
+
     def protocol(self, name, force_cycle=False):
         self.events.append(("protocol", name, force_cycle))
 
@@ -204,3 +207,17 @@ def test_catalog_has_unique_hashes():
     entries = core.catalog_at(APP / "catalog.json")["images"]
     assert len({r["sha256"] for r in entries}) == len(entries)
     assert any(r["version"] == "1.0.5.0.2" and r["warning"] for r in entries)
+
+
+def test_skip_same_mcu_never_flashes_or_cycles():
+    d = FakeDevice()
+    run(d, mcu=image("mcu", d.mcu), ask=lambda title, _: "重复刷写" not in title)
+    assert not any(e[0] in ("flash_mcu", "cycle") for e in d.events)
+
+
+def test_skip_same_motor_uses_live_version_and_restores_mit():
+    d = FakeDevice()
+    run(d, motor=image("motor", d.motor), ask=lambda title, _: "重复刷写" not in title)
+    assert not any(e[0] == "flash_motor" for e in d.events)
+    assert ("protocol", "Mit", False) in d.events
+    assert ("protocol", "Private", True) not in d.events

@@ -198,6 +198,16 @@ class UpdaterUiTests(unittest.TestCase):
         self.assertFalse(self.window.busy)
         self.assertFalse(self.window.activity.active)
 
+    def test_power_status_and_semantic_color(self):
+        self.window.emit("power", "请断开 24 V")
+        self.window.drain()
+        self.assertEqual(self.window.status.property("tone"), "warning")
+        self.window.emit("power_status", "设备在线：uptime=8000 ms")
+        self.window.drain()
+        self.assertIn("8000", self.window.popup.connection_label.text())
+        self.window.emit("power_done", "")
+        self.window.drain()
+
     def test_busy_blocks_close(self):
         self.window.busy = True
         with patch.object(QMessageBox, "warning"):

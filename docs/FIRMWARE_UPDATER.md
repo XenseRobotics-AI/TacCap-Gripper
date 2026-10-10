@@ -7,7 +7,7 @@
 ## 安装与权限
 
 ```bash
-sudo apt install ./taccap-firmware-updater_0.1.1-4_amd64.deb
+sudo apt install ./taccap-firmware-updater_0.1.1-5_amd64.deb
 sudo usermod -aG dialout "$USER"
 ```
 
@@ -75,3 +75,11 @@ python packaging/firmware_updater/build_deb.py --output dist
 构建需要 `firmware/motor/` 中对应的两份原始电机镜像（仍不加入 Git）；
 缺失或哈希不符时构建失败，不能生成缺省镜像残缺的安装包。
 `--self-test` 也会校验随包三份镜像；`--ui-smoke-test` 明确禁用自动连接。
+
+### 等待与同版本处理
+
+- 不再等待 MCU 时钟达到 5 秒；读到基线后立即显示断电提示。重启仍需时钟回退及后续增长，USB 重连不等同断电证明。
+- 断电弹窗每约 3 秒显示实际探测结果（在线时钟、找不到设备或通信错误），不再只显示等待动画。
+- 同版本确认可选“跳过此项”，不执行该项刷写及刷写后的断电。电机版本仍通过 Private 实时读取，不以 Flash 存档代替；跳过后也必须恢复 MIT。
+- MCU 版本校验只查询 MCU，不再附带最多 3 秒的电机版本查询。实际提速取决于连接和人工断电时间，不保证固定总时长。
+- 界面蓝色表示进行中、绿色表示就绪/完成、橙色提示人工操作、红色提示异常；文字提示始终保留。

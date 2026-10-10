@@ -140,7 +140,13 @@ class App(QMainWindow):
         if line:
             self.log(line)
 
+    def set_tone(self, tone):
+        self.status.setProperty("tone", tone)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+
     def set_stage(self, title):
+        self.set_tone("running")
         self.activity.set_stage(title)
         self.status.setText(title)
         self.progress.setRange(0, 0)
@@ -330,7 +336,10 @@ class App(QMainWindow):
         )
         box.addWidget(label("USB 保持连接。仅拔 USB 不算断电。", "notice"))
         box.addWidget(label(value, "muted"))
-        box.addWidget(label("正在自动检测重启，确认后将继续，无需点击按钮。", "muted"))
+        self.popup.connection_label = label(
+            "正在检测设备；确认重启后自动继续。", "muted"
+        )
+        box.addWidget(self.popup.connection_label)
         self.popup.detail_label = label(self.activity.detail(), "muted")
         box.addWidget(self.popup.detail_label)
         self.popup.setModal(True)
@@ -356,8 +365,11 @@ class App(QMainWindow):
                 self.set_stage("等待确认：" + title)
                 self.log(title + ": " + text)
                 box = QMessageBox(QMessageBox.Question, title, text, parent=self)
-                yes = box.addButton("确认继续", QMessageBox.YesRole)
-                no = box.addButton("取消", QMessageBox.NoRole)
+                same = "重复刷写" in title
+                yes = box.addButton(
+                    "仍要重刷" if same else "确认继续", QMessageBox.YesRole
+                )
+                no = box.addButton("跳过此项" if same else "取消", QMessageBox.NoRole)
                 box.setDefaultButton(no)
                 box.exec()
                 answer = box.clickedButton() == yes
@@ -366,8 +378,13 @@ class App(QMainWindow):
                 reply.put(answer)
             elif kind == "power":
                 self.set_stage("等待用户断开 24 V 并重新上电（上限 180 秒）")
+                self.set_tone("warning")
                 self.log(value)
                 self.show_power(value)
+            elif kind == "power_status":
+                self.log(value)
+                if self.popup:
+                    self.popup.connection_label.setText(value)
             elif kind == "power_done":
                 if self.popup:
                     self.popup.accept()
@@ -412,6 +429,7 @@ class App(QMainWindow):
                 self.info.setText(text)
                 self.log(text)
                 self.apply_defaults()
+                self.set_tone("success")
                 self.status.setText("已连接 · 核对固件后点击开始更新")
             elif kind == "connection_error":
                 self.scan_timer.stop()
@@ -423,6 +441,7 @@ class App(QMainWindow):
                 self.info.setText(
                     "连接失败，请检查 USB、24 V、串口权限或设备占用，然后点击刷新。"
                 )
+                self.set_tone("error")
                 self.status.setText("未连接 · 详情见日志")
                 self.log(value)
             elif kind == "idle":
@@ -442,6 +461,7 @@ class App(QMainWindow):
                 if kind == "stage":
                     self.set_stage(value)
                 elif kind == "error":
+                    self.set_tone("error")
                     self.activity_detail.setText(self.activity.detail())
                     self.activity.finish()
                     self.progress.setRange(0, 100)
@@ -451,6 +471,7 @@ class App(QMainWindow):
                     self.toggle.setChecked(True)
                     QMessageBox.critical(self, "需要处理", value)
                 elif kind == "success":
+                    self.set_tone("success")
                     self.activity_detail.setText(self.activity.detail())
                     self.activity.finish()
                     self.progress.setRange(0, 100)
