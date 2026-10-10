@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
 sys.path.insert(0, str(ROOT / "apps/firmware_updater"))
-from build_info import VERSION  # noqa: E402
+from build_info import PACKAGE_VERSION, VERSION  # noqa: E402
 from portable import build_portable  # noqa: E402
 
 
@@ -103,7 +103,14 @@ def main():
         )
         metadata = temp / "build-info.json"
         metadata.write_text(
-            json.dumps({"version": VERSION, "sha": sha, "dirty": dirty})
+            json.dumps(
+                {
+                    "version": VERSION,
+                    "package_version": PACKAGE_VERSION,
+                    "sha": sha,
+                    "dirty": dirty,
+                }
+            )
         )
         firmware_args = ["--add-data", f"{metadata}:."]
 
@@ -221,7 +228,7 @@ def main():
         shutil.copy2(
             "/usr/share/doc/fonts-noto-cjk/copyright", frozen / "Noto-CJK-copyright"
         )
-        portable = args.output.resolve() / f"{PACKAGE}_{VERSION}_amd64.run"
+        portable = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_amd64.run"
         build_portable(frozen, portable)
         print(portable)
         package = temp / "deb"
@@ -232,7 +239,7 @@ def main():
         control = package / "DEBIAN"
         control.mkdir()
         (control / "control").write_text(
-            f"Package: {PACKAGE}\nVersion: {VERSION}\nArchitecture: amd64\n"
+            f"Package: {PACKAGE}\nVersion: {PACKAGE_VERSION}\nArchitecture: amd64\n"
             "Maintainer: TacCap firmware updater maintainers\nSection: utils\nPriority: optional\n"
             "Depends: libc6 (>= 2.39), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libgl1, libegl1\n"
             "Description: TacCap follower firmware update and rollback assistant\n"
@@ -265,7 +272,7 @@ def main():
         shutil.copy2(
             "/usr/share/doc/fonts-noto-cjk/copyright", docs / "Noto-CJK-copyright"
         )
-        out = args.output.resolve() / f"{PACKAGE}_{VERSION}_amd64.deb"
+        out = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_amd64.deb"
         subprocess.run(
             ["dpkg-deb", "--root-owner-group", "--build", str(package), str(out)],
             check=True,

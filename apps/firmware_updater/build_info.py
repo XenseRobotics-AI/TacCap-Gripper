@@ -3,7 +3,9 @@
 import json
 from pathlib import Path
 
-VERSION = "0.1.1-8"
+VERSION = "0.1.1"
+PACKAGE_REVISION = 9
+PACKAGE_VERSION = f"{VERSION}-{PACKAGE_REVISION}"
 
 
 def read_build_info():

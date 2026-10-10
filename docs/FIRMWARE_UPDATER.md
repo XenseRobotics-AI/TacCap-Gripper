@@ -7,7 +7,7 @@
 ## 安装与权限
 
 ```bash
-sudo apt install ./taccap-firmware-updater_0.1.1-8_amd64.deb
+sudo apt install ./taccap-firmware-updater_0.1.1-9_amd64.deb
 sudo usermod -aG dialout "$USER"
 ```
 
@@ -100,16 +100,18 @@ python packaging/firmware_updater/build_deb.py --output dist
 
 ## 免安装单文件
 
-构建同时输出 `taccap-firmware-updater_0.1.1-8_amd64.run`，适用 Ubuntu 24.04 x86_64。
+构建同时输出 `taccap-firmware-updater_0.1.1-9_amd64.run`，适用 Ubuntu 24.04 x86_64。
 它是自解压可执行文件，不需要 conda 或 FUSE；首次运行前按需赋予执行权限：
 
 ```bash
-chmod +x taccap-firmware-updater_0.1.1-8_amd64.run
-./taccap-firmware-updater_0.1.1-8_amd64.run
+chmod +x taccap-firmware-updater_0.1.1-9_amd64.run
+./taccap-firmware-updater_0.1.1-9_amd64.run
 ```
 
 启动时临时解压 Python、Qt、SDK 和固件，退出后清理；不要以 root 或 sudo 运行。
 仍需系统图形库（同 deb 的依赖）和 dialout 串口权限；便携版不自动注册系统菜单。
 下载来源必须可信，文件本身为可执行程序。可用 `--self-test` 检查隔离环境及固件。
-标题显示应用版本与 Git build SHA；未提交源码构建时附带 dirty，源码预览标记 dev。
+标题显示应用版本 `v0.1.1` 与 Git build SHA，不显示打包修订号。
+文件名与 Debian 包版本保留 `0.1.1-9`，其中 `-9` 仅用于区分打包修订和保证 apt 升级顺序；
+未提交源码构建时附带 dirty，源码预览标记 dev。
 这不是 MCU 或电机版本；实际设备版本仍显示在设备信息中。
