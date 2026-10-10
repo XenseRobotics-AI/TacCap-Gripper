@@ -25,6 +25,7 @@ def main():
     import bundled
     import core
     import xense.taccap as sdk
+    from build_info import read_build_info
     from PySide6.QtCore import qVersion
     from xense.taccap import _taccap_native as native
 
@@ -49,6 +50,7 @@ def main():
     print(
         json.dumps(
             {
+                "build": read_build_info(),
                 "sdk": sdk.__version__,
                 "native": native.__file__,
                 "python": sys.version,

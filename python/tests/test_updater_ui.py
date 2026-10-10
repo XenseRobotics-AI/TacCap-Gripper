@@ -54,7 +54,10 @@ class UpdaterUiTests(unittest.TestCase):
             info.geometry().bottom(),
             self.window.file_labels["mcu"].geometry().top(),
         )
-        self.assertEqual(self.window.windowTitle(), "Xense TacCap 固件更新")
+        self.assertTrue(
+            self.window.windowTitle().startswith("Xense TacCap 固件更新 · v")
+        )
+        self.assertIn("build ", self.window.windowTitle())
 
     def test_dark_system_palette_is_overridden(self):
         from PySide6.QtGui import QColor, QPalette
@@ -268,6 +271,17 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.apply_defaults()
         self.window.apply_defaults()
         self.assertEqual(len(self.window.log_lines), before)
+
+    def test_matching_hint_alignment_and_font(self):
+        from PySide6.QtCore import Qt
+
+        hint = self.window.match_hint
+        self.assertTrue(hint.alignment() & Qt.AlignRight)
+        self.assertEqual(hint.font(), self.window.role_label.font())
+        self.assertEqual(hint.font().family(), self.window.role_filter.font().family())
+        self.assertEqual(
+            hint.geometry().right(), self.window.refresh.geometry().right()
+        )
 
     def test_busy_blocks_close(self):
         self.window.busy = True

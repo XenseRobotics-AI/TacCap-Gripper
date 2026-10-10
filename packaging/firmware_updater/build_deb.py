@@ -17,7 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
-VERSION = "0.1.1-7"
+sys.path.insert(0, str(ROOT / "apps/firmware_updater"))
+from build_info import VERSION  # noqa: E402
+from portable import build_portable  # noqa: E402
 
 
 def install_icons(source, share):
@@ -79,7 +81,32 @@ def main():
                     f"{role}: approved catalog differs from current manifest; review firmware before packaging"
                 )
 
-        firmware_args = []
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        dirty = bool(
+            subprocess.check_output(
+                [
+                    "git",
+                    "status",
+                    "--porcelain",
+                    "--",
+                    "apps/firmware_updater",
+                    "packaging/firmware_updater",
+                    "python",
+                    "cpp",
+                    "docs/FIRMWARE_UPDATER.md",
+                ],
+                cwd=ROOT,
+                text=True,
+            ).strip()
+        )
+        metadata = temp / "build-info.json"
+        metadata.write_text(
+            json.dumps({"version": VERSION, "sha": sha, "dirty": dirty})
+        )
+        firmware_args = ["--add-data", f"{metadata}:."]
+
         for relative in bundled.FILES.values():
             path = ROOT / "firmware" / relative
             firmware_args.extend(
@@ -190,6 +217,13 @@ def main():
             or str(frozen) not in report["native"]
         ):
             raise RuntimeError(f"Mismatched or non-isolated SDK: {report}")
+        (frozen / "LICENSE").write_text((ROOT / "LICENSE").read_text())
+        shutil.copy2(
+            "/usr/share/doc/fonts-noto-cjk/copyright", frozen / "Noto-CJK-copyright"
+        )
+        portable = args.output.resolve() / f"{PACKAGE}_{VERSION}_amd64.run"
+        build_portable(frozen, portable)
+        print(portable)
         package = temp / "deb"
         installed = package / "opt" / PACKAGE
         installed.parent.mkdir(parents=True)

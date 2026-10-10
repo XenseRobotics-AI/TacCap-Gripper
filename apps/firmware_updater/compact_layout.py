@@ -1,5 +1,6 @@
 """Compact updater form with explicit, theme-independent surface colors."""
 
+from build_info import window_title
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
@@ -78,7 +79,7 @@ def text(value, name="muted"):
 
 
 def build(window):
-    window.setWindowTitle("Xense TacCap 固件更新")
+    window.setWindowTitle(window_title())
     window.resize(680, 430)
     window.setMinimumWidth(680)
     surface = QWidget()
@@ -86,8 +87,8 @@ def build(window):
     window.setCentralWidget(surface)
     box = QVBoxLayout(surface)
     box.setSizeConstraint(QLayout.SetMinimumSize)
-    box.setContentsMargins(24, 16, 24, 12)
-    box.setSpacing(5)
+    box.setContentsMargins(24, 12, 24, 12)
+    box.setSpacing(4)
     box.setAlignment(Qt.AlignTop)
     window.role_filter = QComboBox()
     window.role_filter.addItems(["全部夹爪", "从爪", "主爪"])
@@ -97,14 +98,18 @@ def build(window):
     window.controls = [window.role_filter]
     form = QGridLayout()
     form.setHorizontalSpacing(10)
-    form.setVerticalSpacing(10)
+    form.setVerticalSpacing(9)
     form.setColumnMinimumWidth(0, 72)
     form.setColumnMinimumWidth(2, 90)
     form.setColumnMinimumWidth(3, 44)
     form.setColumnStretch(1, 1)
-    form.addWidget(text("设备类型", "label"), 0, 0)
+    window.role_label = text("设备类型", "label")
+    form.addWidget(window.role_label, 0, 0)
     form.addWidget(window.role_filter, 0, 1, alignment=Qt.AlignLeft)
-    form.addWidget(text("自动匹配固件"), 0, 2, 1, 2)
+    window.match_hint = text("自动匹配固件", "label")
+    window.match_hint.setWordWrap(False)
+    window.match_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    form.addWidget(window.match_hint, 0, 2, 1, 2)
     form.addWidget(text("连接设备", "label"), 1, 0)
     window.combo = QComboBox()
     window.combo.setMinimumHeight(36)

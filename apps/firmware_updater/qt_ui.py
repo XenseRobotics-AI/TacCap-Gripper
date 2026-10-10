@@ -43,7 +43,9 @@ def configure(app):
         raise RuntimeError("中文字体加载失败，请重新安装升级工具")
     family = next((f for f in families if f.endswith(" SC")), families[0])
     app.setFont(QFont(family, 11))
-    app.setStyleSheet(STYLE)
+    app.setStyleSheet(
+        f'QWidget {{ font-family: "{family}"; font-weight: 400; }}\n' + STYLE
+    )
     return family
 
 
