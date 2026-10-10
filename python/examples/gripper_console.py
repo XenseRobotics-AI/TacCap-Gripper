@@ -319,6 +319,22 @@ def _redraw(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
+def _motor_firmware_label(motor) -> str:
+    """Read once before control starts, never inside the control loop.
+
+    The query may stop older motors; MIT may return only a flash record.
+    Do not switch protocol or write records merely to populate the display.
+    """
+    try:
+        version = motor.motor_version(3000)
+        if not version.valid:
+            return "unknown (无有效版本记录)"
+        source = "Flash存档/非实时" if version.from_flash else "实时读取"
+        return f"{version.vendor_str} [{source}]"
+    except Exception as exc:
+        return f"unknown (查询失败: {type(exc).__name__})"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -407,6 +423,8 @@ def main() -> int:
     log.set_level("warn")
     g, ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
+    motor_fw = _motor_firmware_label(g.motor)
+    print(f"[motor fw] {motor_fw}")
 
     # ---- 运动安全包络:固件侧、MIT 路径上唯一绕不过的一层 ----
     #
@@ -470,7 +488,7 @@ def main() -> int:
     )
     head = (
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "
-        f"fw {g.firmware_version}{gains} ==="
+        f"fw {g.firmware_version}  motor_fw={motor_fw}{gains} ==="
     )
 
     last_key = "-"
