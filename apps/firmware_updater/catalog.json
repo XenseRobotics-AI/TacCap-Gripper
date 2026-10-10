@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "images": [
+    {"kind":"mcu","model":"slave","version":"1.2.16","sha256":"ece89250246c85a6fb07d564772fb3312102748d60b85d1203a93dc3dc6c5067","warning":""},
+    {"kind":"mcu","model":"slave","version":"1.2.14","sha256":"f777774a8b4ac8dd7ac4cd1cc3b0d284d9cfb2103cf45fc0a9f2cd7921f53858","warning":"旧版不含 1.2.16 的电机回显帧过滤与后续修复。回滚后不要直接恢复生产运行。"},
+    {"kind":"motor","model":"EL05","version":"1.0.5.0.4","sha256":"fb232707a852f9144bdf4a744ee9c89d39c8d96695189f61ff1e6b8eac293f0f","warning":""},
+    {"kind":"motor","model":"EL05","version":"1.0.5.0.2","sha256":"2b281d5930d502fa27e65381db3b8aa3fb1d38d5054eb957ae608b3eec93ea2d","warning":"低于 EL05 支持下限 1.0.5.0.4；已知速度反馈异常，仅供必要的回退/对比测试，不宜直接夹取。"},
+    {"kind":"motor","model":"RS00","version":"0.0.3.32","sha256":"a889f1b027b53fd7b18bb6db5e7df1f97d4edd62d6ff9c8b5665293c1f9ffa80","warning":""}
+  ]
+}
