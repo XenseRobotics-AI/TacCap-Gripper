@@ -24,6 +24,7 @@ def main():
     args = parser.parse_args()
     if args.install_desktop:
         import os
+
         from desktop_integration import integrate_appimage
 
         if os.geteuid() == 0:
