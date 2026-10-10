@@ -9,53 +9,26 @@ import time
 from pathlib import Path
 
 import core
-from PySide6.QtCore import Qt, QTimer
+from compact_layout import STYLE, build, palette
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFileDialog,
-    QFrame,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
-    QWidget,
 )
 
 HERE = Path(__file__).resolve().parent
-STYLE = """
-QWidget { color: #172B46; font-size: 14px; }
-QMainWindow, QDialog { background: #F3F6FA; }
-QFrame#card { background: white; border: 1px solid #DFE6EF; border-radius: 12px; }
-QLabel#title { font-size: 28px; font-weight: 700; }
-QLabel#heading { font-size: 17px; font-weight: 600; }
-QLabel#muted { color: #52657D; }
-QLabel#eyebrow { color: #2169D5; font-size: 12px; font-weight: 600; }
-QLabel#notice { background: #E8F0FC; color: #285387; padding: 12px; border-radius: 8px; }
-QPushButton { background: white; border: 1px solid #CBD5E1; border-radius: 7px; padding: 9px 17px; }
-QPushButton:hover { background: #EDF3FD; border-color: #7CA5E0; }
-QPushButton:disabled { color: #8794A5; background: #EFF2F6; }
-QPushButton#primary { background: #2169D5; border: 0; color: white; font-weight: 600; padding: 12px 24px; }
-QPushButton#primary:hover { background: #1756B5; }
-QPushButton#primary:disabled { background: #A5BBD9; }
-QComboBox { background: white; border: 1px solid #CBD5E1; border-radius: 7px; padding: 9px; }
-QComboBox QAbstractItemView { background: white; selection-background-color: #DBEAFE; selection-color: #172B46; }
-QProgressBar { background: #E8EDF4; border: none; border-radius: 4px; height: 8px; }
-QProgressBar::chunk { background: #2169D5; border-radius: 4px; }
-QPlainTextEdit { background: #F8FAFC; border: 1px solid #DFE6EF; border-radius: 8px; padding: 8px; }
-QMessageBox { background: #F3F6FA; }
-"""
 
 
 def configure(app):
     app.setStyle("Fusion")
+    app.setPalette(palette())
     font_file = HERE / "fonts/NotoSansCJK-Regular.ttc"
     if not font_file.is_file():
         font_file = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
@@ -93,121 +66,22 @@ class App(QMainWindow):
         self.paths = {"mcu": "", "motor": ""}
         self.log_lines = []
         self.catalog = core.catalog_at(HERE / "catalog.json")
-        self.setWindowTitle("TacCap 固件升级与回滚")
-        self.resize(920, 790)
-        self.setMinimumSize(800, 720)
-        body = QWidget()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(body)
-        self.setCentralWidget(scroll)
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(30, 24, 30, 24)
-        layout.setSpacing(14)
-        layout.addWidget(label("TACCAP  /  DEVICE CARE", "eyebrow"))
-        layout.addWidget(label("让夹爪更新，就这么简单", "title"))
-        layout.addWidget(label("选择设备和固件，工具会引导你完成升级或回滚。", "muted"))
-        self.steps = label(
-            "① 选择夹爪    →    ② 选择固件    →    ③ 确认与更新    →    ④ 完成",
-            "notice",
-        )
-        layout.addWidget(self.steps)
-        self.controls = []
-        device = self.card(layout)
-        device.addWidget(label("01   连接的夹爪", "heading"))
-        row = QHBoxLayout()
-        self.combo = QComboBox()
-        self.combo.setPlaceholderText("点击刷新，查找已连接的从爪")
-        self.combo.activated.connect(self.inspect)
-        row.addWidget(self.combo, 1)
-        self.refresh = self.button("刷新设备", self.scan)
-        row.addWidget(self.refresh)
-        device.addLayout(row)
-        self.info = label("连接 USB 和 24 V 电源后刷新。请关闭其他控制程序。", "muted")
-        self.info.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        device.addWidget(self.info)
-        self.controls.append(self.combo)
-        files = self.card(layout)
-        files.addWidget(label("02   选择要更新的固件", "heading"))
-        files.addWidget(
-            label("可只更新其中一项。相同版本重刷和旧版本回滚都会再次确认。", "muted")
-        )
-        self.file_labels = {}
-        for kind, title in (("mcu", "夹爪 MCU"), ("motor", "电机")):
-            row = QHBoxLayout()
-            row.addWidget(label(title))
-            field = label("未选择 · 保持当前固件", "muted")
-            row.addWidget(field, 1)
-            self.file_labels[kind] = field
-            row.addWidget(
-                self.button("选择 .bin", lambda checked=False, k=kind: self.choose(k))
-            )
-            row.addWidget(
-                self.button("清除", lambda checked=False, k=kind: self.clear(k))
-            )
-            files.addLayout(row)
-        layout.addWidget(
-            label(
-                "安全提示：先放下物体并清空夹爪活动范围。仅在提示时断开 24 V；刷写中请勿拔线。",
-                "notice",
-            )
-        )
-        row = QHBoxLayout()
-        self.status = label("准备就绪 · 请先选择设备和固件", "muted")
-        row.addWidget(self.status, 1)
-        self.start = self.button("检查并开始更新", self.run)
-        self.start.setObjectName("primary")
-        row.addWidget(self.start)
-        layout.addLayout(row)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(8)
-        layout.addWidget(self.progress)
-        row = QHBoxLayout()
-        self.toggle = QPushButton("展开详细日志")
-        self.toggle.setCheckable(True)
-        self.toggle.toggled.connect(self.toggle_log)
-        row.addWidget(self.toggle)
-        row.addStretch()
-        export = QPushButton("导出日志")
-        export.clicked.connect(self.export)
-        row.addWidget(export)
-        layout.addLayout(row)
-        self.text = QPlainTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setMinimumHeight(140)
-        self.text.hide()
-        layout.addWidget(self.text)
-        layout.addStretch()
-        layout.addWidget(
-            label("仅支持从爪 · 不修改型号、方向或力矩参数 · 回滚不恢复旧配置", "muted")
-        )
+        build(self)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.drain)
         self.timer.start(100)
 
-    def card(self, parent):
-        frame = QFrame()
-        frame.setObjectName("card")
-        box = QVBoxLayout(frame)
-        box.setContentsMargins(18, 16, 18, 16)
-        box.setSpacing(12)
-        parent.addWidget(frame)
-        return box
-
     def button(self, text, callback):
         button = QPushButton(text)
-        button.setMinimumHeight(42)
+        button.setMinimumHeight(34)
         button.clicked.connect(callback)
         self.controls.append(button)
         return button
 
     def toggle_log(self, visible):
         self.text.setVisible(visible)
-        self.toggle.setText("收起详细日志" if visible else "展开详细日志")
+        self.toggle.setText("收起日志" if visible else "查看日志")
+        self.resize(self.width(), 602 if visible else 430)
 
     def log(self, value):
         line = time.strftime("%Y-%m-%d %H:%M:%S ") + str(value)
@@ -269,7 +143,7 @@ class App(QMainWindow):
 
     def clear(self, kind):
         self.paths[kind] = ""
-        self.file_labels[kind].setText("未选择 · 保持当前固件")
+        self.file_labels[kind].setText("未选择")
         self.file_labels[kind].setToolTip("")
 
     def choose(self, kind):
@@ -279,9 +153,7 @@ class App(QMainWindow):
         try:
             image = core.load_image(path, kind, self.catalog)
             self.paths[kind] = path
-            self.file_labels[kind].setText(
-                f"{image.model}  ·  {image.version}\n{Path(path).name}"
-            )
+            self.file_labels[kind].setText(f"{image.model}  ·  {image.version}")
             self.file_labels[kind].setToolTip(path)
             self.log(
                 f"选择 {kind}: {image.model} {image.version} SHA256={image.sha256}"

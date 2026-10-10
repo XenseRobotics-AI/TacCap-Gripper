@@ -37,7 +37,21 @@ class UpdaterUiTests(unittest.TestCase):
         self.assertFalse(self.window.text.isVisible())
         self.assertEqual(self.window.combo.currentIndex(), -1)
         self.assertFalse(self.window.busy)
-        self.assertGreaterEqual(self.window.start.height(), 42)
+        self.assertGreaterEqual(self.window.start.height(), 34)
+        self.assertLessEqual(self.window.height(), 460)
+        self.assertLessEqual(self.window.width(), 700)
+
+    def test_dark_system_palette_is_overridden(self):
+        from PySide6.QtGui import QColor, QPalette
+
+        dark = QPalette()
+        dark.setColor(QPalette.Window, QColor("#202020"))
+        dark.setColor(QPalette.Text, QColor("#ffffff"))
+        self.app.setPalette(dark)
+        qt_ui.configure(self.app)
+        self.assertEqual(self.app.palette().color(QPalette.Window).name(), "#ffffff")
+        self.assertEqual(self.app.palette().color(QPalette.Text).name(), "#252a32")
+        self.assertEqual(self.window.centralWidget().objectName(), "surface")
 
     def test_expand_logs_and_clear_image(self):
         self.window.toggle.setChecked(True)

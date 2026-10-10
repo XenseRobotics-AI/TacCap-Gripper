@@ -7,7 +7,7 @@
 ## 安装与权限
 
 ```bash
-sudo apt install ./taccap-firmware-updater_0.1.1_amd64.deb
+sudo apt install ./taccap-firmware-updater_0.1.1-1_amd64.deb
 sudo usermod -aG dialout "$USER"
 ```
 
