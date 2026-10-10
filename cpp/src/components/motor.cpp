@@ -6,6 +6,7 @@
 #include <taccap/protocol/codec.hpp>
 
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -302,12 +303,38 @@ protocol::MotorCanXferResp Motor::can_ext_xfer(uint32_t ext_id,
     return out;
 }
 
+namespace detail {
+bool is_stray_fault_reply_frame(bool seen_real_temp, float motor_temp_c) noexcept {
+    return seen_real_temp && motor_temp_c == 0.0f;
+}
+}  // namespace detail
+
 Motor::SubId Motor::on_status(Callback cb) {
+    // Per subscription: the dispatch thread is the only caller, so no lock.
+    auto seen_real_temp = std::make_shared<bool>(false);
+    auto dropped = std::make_shared<std::uint64_t>(0);
     return t_.subscribe(
         protocol::Cmd::GetMotorStatus,
-        [cb = std::move(cb)](const bus::Frame& f) {
+        [cb = std::move(cb), seen_real_temp, dropped](const bus::Frame& f) {
             try {
-                cb(decode(f.payload.data(), f.payload.size()));
+                const MotorStatusSample s = decode(f.payload.data(), f.payload.size());
+                if (detail::is_stray_fault_reply_frame(*seen_real_temp, s.motor_temp_c)) {
+                    // Rate-limited: a closing move on an affected unit draws a few
+                    // per second. Powers of two keep the count visible.
+                    const std::uint64_t n = ++*dropped;
+                    if ((n & (n - 1)) == 0) {
+                        logger()->warn(
+                            "Motor::on_status: dropped {} status frame(s) that were not "
+                            "status (temperature 0.0, pos {:.4f} rad, torque {:.2f} N*m): "
+                            "the motor answers motion frames whose position byte equals "
+                            "its CAN ID. Set an RS00 follower's CAN ID to 17 (left) / 18 "
+                            "(right); follower firmware >= 1.2.16 also drops these.",
+                            n, s.actual_pos, s.actual_torque);
+                    }
+                    return;
+                }
+                if (s.motor_temp_c != 0.0f) *seen_real_temp = true;
+                cb(s);
             } catch (...) {}
         });
 }

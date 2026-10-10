@@ -214,6 +214,61 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         }
     } catch (...) {}
 
+    // Open direction against the hand this follower is (see
+    // detail::expected_open_reverse). Wrong, nothing errors: the normalized
+    // position is mirrored, so a closed jaw reads ~1.0 and set_target(0.0)
+    // drives it open. Warn only -- writing flash on open would change a
+    // device behind the caller's back; the fix is a flags write plus a 24 V
+    // power cycle so auto-calibration re-runs the right way.
+    try {
+        const auto m = motor_.get_model(std::chrono::milliseconds{300});
+        const auto side = discovery::parse_serial(fw_sn_).side;
+        const auto want = (m.from_flash && side)
+                              ? detail::expected_open_reverse(m.id, *side)
+                              : std::nullopt;
+        const auto gc = get_gripper_config();
+        if (want && (gc.flags & protocol::GripperConfigFlag::Valid) != 0) {
+            const bool have = (gc.flags & protocol::GripperConfigFlag::Reverse) != 0;
+            if (have != *want) {
+                const std::string name(m.name, ::strnlen(m.name, sizeof(m.name)));
+                const unsigned fixed = *want
+                    ? (gc.flags | protocol::GripperConfigFlag::Reverse)
+                    : (gc.flags & ~protocol::GripperConfigFlag::Reverse);
+                logger()->warn(
+                    "FollowerGripper: open direction does not match the {} hand of this "
+                    "{} follower: Reverse should be {}, stored {} (flags=0x{:04x}). The "
+                    "normalized position is mirrored: a closed jaw reads ~1.0 and "
+                    "set_target(0.0) opens it. Fix: set_gripper_config with flags "
+                    "0x{:04x}, then cut 24 V so auto-calibration re-runs.",
+                    discovery::to_string(*side), name, *want ? 1 : 0, have ? 1 : 0,
+                    gc.flags, fixed);
+            }
+        }
+    } catch (...) {}
+
+    // Motor CAN ID against the side (see detail::expected_motor_can_id). Warn
+    // only: the ID is a factory-tool write, not something to change on open.
+    try {
+        const auto m = motor_.get_model(std::chrono::milliseconds{300});
+        const auto side = discovery::parse_serial(fw_sn_).side;
+        const auto want = (m.from_flash && side)
+                              ? detail::expected_motor_can_id(m.id, *side)
+                              : std::nullopt;
+        if (want) {
+            const std::uint8_t have = motor_.get_can_id();
+            if (have != *want) {
+                const std::string name(m.name, ::strnlen(m.name, sizeof(m.name)));
+                logger()->warn(
+                    "FollowerGripper: motor CAN ID {} does not match the {} hand of this "
+                    "{} follower: expected {}. On the factory ID 127 a left-hand motor "
+                    "takes motion frames near the closed end for another command, and "
+                    "force-position cannot close to 0. Write {} with the factory config "
+                    "tool, then cut 24 V for ~2 s.",
+                    have, discovery::to_string(*side), name, *want, *want);
+            }
+        }
+    } catch (...) {}
+
     // The wrist camera is off by default — an external camera service owns the
     // wrist UVC V4L2 device. Only open it when explicitly asked AND a device
     // path is provided.
@@ -342,6 +397,24 @@ std::string fmt(float v) {
 }
 
 }  // namespace
+
+std::optional<bool> expected_open_reverse(std::uint8_t model_id,
+                                          discovery::Side side) noexcept {
+    constexpr std::uint8_t kRs00 = 1;   // MotorModel::id, persisted, never reused
+    if (model_id != kRs00) return std::nullopt;
+    if (side == discovery::Side::Left)  return true;
+    if (side == discovery::Side::Right) return false;
+    return std::nullopt;
+}
+
+std::optional<std::uint8_t> expected_motor_can_id(std::uint8_t model_id,
+                                                  discovery::Side side) noexcept {
+    constexpr std::uint8_t kRs00 = 1;
+    if (model_id != kRs00) return std::nullopt;
+    if (side == discovery::Side::Left)  return std::uint8_t{17};
+    if (side == discovery::Side::Right) return std::uint8_t{18};
+    return std::nullopt;
+}
 
 protocol::GripperEnvelope recommend_envelope(
         const std::optional<protocol::MotorSpec>& spec) {

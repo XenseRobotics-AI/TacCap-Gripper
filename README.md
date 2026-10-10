@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.6 and the follower 1.2.14; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.16; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. **A leader reporting 1.2.6 may be either of two images**: the
@@ -309,6 +309,30 @@ whatever `0x700B` it stored (6.0 on units upgraded from 1.2.8 or earlier); raise
 it with `g.motor.set_startup_limit_torque(14.0)` and cut 24 V again. Details in
 [`firmware/README.md`](firmware/README.md).
 
+**RS00 followers are left- or right-handed.** The gear train inside is mounted
+mirror-symmetrically, so the same motor turns the opposite way to open: a
+**right** follower (even SN) stores flags `0x0001` (Reverse 0), a **left** one
+(odd SN) `0x0003` (Reverse 1). The firmware still assumes one direction per
+model (RS00 = Reverse 0) and auto-calibration writes back whatever direction it
+used, so a new left-hand RS00 calibrates backwards and stays that way -- the
+normalized position is mirrored, a closed jaw reads ~1.0 and `set_target(0.0)`
+opens it. `FollowerGripper` warns on open when the stored bit disagrees with
+the side; `t.expected_open_reverse(model_id, side)` gives the right bit. Fix it
+with `g.set_gripper_config()` (change the flags only) and cut 24 V so
+calibration re-runs. Follower 1.2.15 does this by itself: calibration takes the
+direction from the SN's side and corrects a stored bit that disagrees, and a
+model-record change keeps the side's direction. EL05 has no rule yet.
+
+**RS00 followers need motor CAN ID 17 (left) / 18 (right), not the factory
+127.** Byte 0 of an MIT motion frame is the target position's high byte, and the
+motor takes a frame whose byte 0 equals its own CAN ID for another command.
+127 is 0x7F, the byte for -0.098..0 rad -- a left-hand RS00's closed end -- so
+on 127 force-position cannot close to 0. The IDs are written by the factory
+config tool (`g.motor.set_can_id()`, then cut 24 V); nothing changes them
+silently. `FollowerGripper` warns on open when they disagree with the SN's side,
+and `t.expected_motor_can_id(model_id, side)` gives the right one. EL05 is not
+handed and keeps its ID.
+
 ### By task
 
 **Control.** Both controllers take the same two non-blocking calls,
@@ -436,6 +460,13 @@ non-blocking, safe to stream every frame. Swap in
 same two calls — when you want to *follow a position* rather than grasp.
 `with t.ForcePositionController(g, cfg) as c:` does the `start()` / `stop()`
 pair for you.
+
+Streaming at any rate is fine, and does not have to match the status stream:
+`ForcePositionController` timestamps each `set_target()` on your thread and
+follows consecutive targets (less than 0.1 s apart) along a time-indexed
+reference played back a little over one interval behind them, enough to absorb
+timer jitter — about 15 ms at 100 Hz, 20 ms at 50 Hz. A lone
+target, or one after a pause, is a step at `close_speed_radps`.
 
 Always build the config with `for_spec()`. A bare default config carries EL05
 numbers: on an RS00 it caps the grip at 1.1 of the 3.6 N·m available, and once

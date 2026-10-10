@@ -63,6 +63,25 @@ void bind_gripper(py::module_& m) {
                    ", role=" + discovery::to_string(p.role) +
                    ", valid=" + (p.valid ? "True" : "False") + ")";
         });
+    m.def("expected_open_reverse",
+          [](std::uint8_t model_id, discovery::Side side) {
+              return xense::taccap::detail::expected_open_reverse(model_id, side);
+          },
+          py::arg("model_id"), py::arg("side"),
+          "The Reverse bit a follower of this motor model id and side should store,\n"
+          "or None when there is no rule. RS00 (id 1) followers are handed -- the gear\n"
+          "train is mirror-mounted: Left -> True (Reverse 1, flags 0x0003),\n"
+          "Right -> False (Reverse 0, flags 0x0001). EL05 is not covered yet.\n"
+          "FollowerGripper warns on open when the stored bit disagrees.");
+    m.def("expected_motor_can_id",
+          [](std::uint8_t model_id, discovery::Side side) {
+              return xense::taccap::detail::expected_motor_can_id(model_id, side);
+          },
+          py::arg("model_id"), py::arg("side"),
+          "The motor CAN ID a follower of this model id and side must have, or None\n"
+          "when there is no rule. RS00 (id 1): Left -> 17, Right -> 18 (the factory 127\n"
+          "collides with a left-hand closed-end position byte). EL05 is not covered.\n"
+          "FollowerGripper warns on open when the motor's ID disagrees.");
     m.def("parse_serial", &discovery::parse_serial, py::arg("serial"),
           "Parse a TacCap SN into its fields.\n\n"
           "Never raises: a string that does not match the grammar comes back with\n"

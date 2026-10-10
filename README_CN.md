@@ -108,7 +108,7 @@ USB 线可以不拔 —— 从爪的 MCU 和电机都靠 24V 运行,只拔 USB �
 主爪没有 24V:拔插它的 USB 即可。`gripper.device.heartbeat().uptime_ms` 从接近 0
 重新计起,就说明真的断过电了。bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却在悄悄丢状态帧。
 
-**主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.6、从爪是 1.2.14,
+**主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.6、从爪是 1.2.16,
 谁也不比谁旧;一对夹爪的两半 `gripper.firmware_version` 读出不同的数是正常的。
 **只在同一个角色内部比较版本号** —— 上面那些门槛都是从爪的数。**报 1.2.6 的主爪
 可能是两个不同的镜像**:当前的这个带控制串口接收修复;两个角色曾被强行同号那段
@@ -265,6 +265,22 @@ python python/examples/force_position_control.py left --grasp-torque 1.1
 `g.motor.set_startup_limit_torque(14.0)` 调上去,再拔插一次 24V。细节见
 [`firmware/README.md`](firmware/README.md)。
 
+**RS00 从爪分左右手。** 夹爪内部齿轮对称安装,同一款电机张开时转向相反:**右**
+从爪(SN 末位偶数)存 flags `0x0001`(Reverse 0),**左**从爪(奇数)存 `0x0003`
+(Reverse 1)。固件仍按型号只认一个方向(RS00 = Reverse 0),自动标定又会把实际用的
+方向原样写回,所以新的左手 RS00 第一次标定一定标反、而且不会自己纠正 —— 开度整个
+颠倒，合着读成接近 1,`set_target(0.0)` 会张开。`FollowerGripper` 打开时若存的方向
+与左右不符会告警;`t.expected_open_reverse(model_id, side)` 给出应有的值。修法：用
+`g.set_gripper_config()` 只改 flags,再拔插 24V 让标定按新方向重跑。从爪 1.2.15 起固件
+自己会做：标定按 SN 左右定方向、纠正存反的方向，改型号记录也保留左右方向。EL05 暂无规则。
+
+**RS00 从爪的电机 CAN ID 要设成左 17 / 右 18,不能用出厂的 127。** MIT 运动帧第 0
+字节是目标位置的高字节，电机会把第 0 字节等于自身 CAN ID 的帧当成别的命令。127 =
+0x7F,对应 -0.098..0 rad,正是左手 RS00 的闭合端 —— 所以 ID 为 127 时力位闭合不到 0。
+ID 由产线配置工具写入(`g.motor.set_can_id()`,再拔插 24V),不会被悄悄改写。
+`FollowerGripper` 打开时若与 SN 左右不符会告警，`t.expected_motor_can_id(model_id,
+side)` 给出应有的值。EL05 不分左右，保持原 ID。
+
 ### 按任务分
 
 **控制。** 两个控制器都只用同样两个非阻塞调用 —— `set_target(0..1)` 和
@@ -388,6 +404,12 @@ finally:
 `t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))` 即可 ——
 还是这两个调用。`with t.ForcePositionController(g, cfg) as c:` 会替你配好
 `start()` / `stop()` 这一对。
+
+按什么频率流式下发都可以,不必和状态流对齐:`ForcePositionController` 在你的线程上
+给每次 `set_target()` 打时间戳,相邻目标间隔小于 0.1 s 就当作一条流,沿一条按时间
+插值的参考轨迹跟随,比目标晚略多于一个间隔,用来吸收定时器抖动 —— 100 Hz 时约
+15 ms,50 Hz 时 20 ms。单个目标
+或停顿之后的目标仍是一次阶跃,按 `close_speed_radps` 走。
 
 配置一律用 `for_spec()` 构造。裸的默认配置带的是 EL05 的数:在 RS00 上它把夹持力
 卡在 3.6 N·m 里的 1.1,而一旦 RS00 的 `0x700B` 限值是 14,
