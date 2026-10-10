@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
+from version_status import device_summary
 
 HERE = Path(__file__).resolve().parent
 
@@ -531,11 +532,12 @@ class App(QMainWindow):
                 self.current_info = info
                 self.model_row.setVisible(not info["recorded"])
                 self.model_combo.setCurrentIndex(0)
-                text = f"型号 {info['model']}（{'已记录' if info['recorded'] else '未配置'}）  MCU {info['mcu']}\n电机 {info['motor']}"
                 role = core.role_from_sn(identity[0])
-                if role == "master":
-                    text = f"主爪 · MCU {info['mcu']}\n仅更新主爪 MCU，无电机固件"
-                self.info.setText(text)
+                html, text, tone, status = device_summary(info, role, self.catalog)
+                self.info.setText(html)
+                self.info.setToolTip(
+                    "最新以本安装包内置审核固件为准；Flash 存档不等于实时验证。"
+                )
                 self.safety.setText(
                     "主爪：刷写时勿拔 USB，完成后按提示拔插 USB。"
                     if role == "master"
@@ -544,8 +546,8 @@ class App(QMainWindow):
                 self.fit_contents()
                 self.log(text)
                 self.apply_defaults()
-                self.set_tone("success")
-                self.status.setText("已连接 · 核对固件后点击开始更新")
+                self.set_tone(tone)
+                self.status.setText(status)
             elif kind == "connection_error":
                 self.scan_timer.stop()
                 self.model_row.hide()

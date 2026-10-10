@@ -59,6 +59,33 @@ class UpdaterUiTests(unittest.TestCase):
         )
         self.assertIn("build ", self.window.windowTitle())
 
+    def test_version_colors_and_compact_layout(self):
+        identity = ("TCGU01A25Z0017s", "test")
+        self.window.selected_identity = identity
+        self.window.emit(
+            "info",
+            (
+                identity,
+                dict(
+                    model="EL05",
+                    recorded=True,
+                    mcu="1.2.14",
+                    motor="1.0.5.0.4（Flash 存档，非实时）",
+                ),
+            ),
+        )
+        self.window.drain()
+        self.app.processEvents()
+        self.assertIn("#B42318", self.window.info.text())
+        self.assertIn("#146448", self.window.info.text())
+        self.assertIn("请更新至", self.window.info.text())
+        self.assertIn("建议", self.window.status.text())
+        self.assertLessEqual(self.window.width(), 700)
+        self.assertLess(
+            self.window.info.geometry().bottom(),
+            self.window.file_labels["mcu"].geometry().top(),
+        )
+
     def test_dark_system_palette_is_overridden(self):
         from PySide6.QtGui import QColor, QPalette
 
