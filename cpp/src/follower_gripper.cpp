@@ -235,14 +235,36 @@ FollowerGripper::FollowerGripper(const Config& cfg)
                     ? (gc.flags | protocol::GripperConfigFlag::Reverse)
                     : (gc.flags & ~protocol::GripperConfigFlag::Reverse);
                 logger()->warn(
-                    "FollowerGripper: 开合方向与左右不符 —— {} {} 侧从爪应为 Reverse {},"
-                    "存的是 {}(flags=0x{:04x})。开度会整个颠倒:合着读成接近 1,"
-                    "set_target(0.0) 会张开。修:set_gripper_config 把 flags 改为 0x{:04x},"
-                    "再拔插 24V 让自动标定按新方向重跑。 (open direction does not match "
-                    "the {} hand of this {} follower: Reverse should be {}, stored {})",
-                    name, *side == discovery::Side::Left ? "左" : "右",
-                    *want ? 1 : 0, have ? 1 : 0, gc.flags, fixed,
-                    discovery::to_string(*side), name, *want ? 1 : 0, have ? 1 : 0);
+                    "FollowerGripper: open direction does not match the {} hand of this "
+                    "{} follower: Reverse should be {}, stored {} (flags=0x{:04x}). The "
+                    "normalized position is mirrored: a closed jaw reads ~1.0 and "
+                    "set_target(0.0) opens it. Fix: set_gripper_config with flags "
+                    "0x{:04x}, then cut 24 V so auto-calibration re-runs.",
+                    discovery::to_string(*side), name, *want ? 1 : 0, have ? 1 : 0,
+                    gc.flags, fixed);
+            }
+        }
+    } catch (...) {}
+
+    // Motor CAN ID against the side (see detail::expected_motor_can_id). Warn
+    // only: the ID is a factory-tool write, not something to change on open.
+    try {
+        const auto m = motor_.get_model(std::chrono::milliseconds{300});
+        const auto side = discovery::parse_serial(fw_sn_).side;
+        const auto want = (m.from_flash && side)
+                              ? detail::expected_motor_can_id(m.id, *side)
+                              : std::nullopt;
+        if (want) {
+            const std::uint8_t have = motor_.get_can_id();
+            if (have != *want) {
+                const std::string name(m.name, ::strnlen(m.name, sizeof(m.name)));
+                logger()->warn(
+                    "FollowerGripper: motor CAN ID {} does not match the {} hand of this "
+                    "{} follower: expected {}. On the factory ID 127 a left-hand motor "
+                    "takes motion frames near the closed end for another command, and "
+                    "force-position cannot close to 0. Write {} with the factory config "
+                    "tool, then cut 24 V for ~2 s.",
+                    have, discovery::to_string(*side), name, *want, *want);
             }
         }
     } catch (...) {}
@@ -382,6 +404,15 @@ std::optional<bool> expected_open_reverse(std::uint8_t model_id,
     if (model_id != kRs00) return std::nullopt;
     if (side == discovery::Side::Left)  return true;
     if (side == discovery::Side::Right) return false;
+    return std::nullopt;
+}
+
+std::optional<std::uint8_t> expected_motor_can_id(std::uint8_t model_id,
+                                                  discovery::Side side) noexcept {
+    constexpr std::uint8_t kRs00 = 1;
+    if (model_id != kRs00) return std::nullopt;
+    if (side == discovery::Side::Left)  return std::uint8_t{17};
+    if (side == discovery::Side::Right) return std::uint8_t{18};
     return std::nullopt;
 }
 

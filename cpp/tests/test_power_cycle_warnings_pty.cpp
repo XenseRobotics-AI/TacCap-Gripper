@@ -119,3 +119,41 @@ TEST(OpenDirectionWarning, El05IsNotChecked) {
     auto g = open_follower(pty);
     EXPECT_EQ(log.count("open direction does not match"), 0u);
 }
+
+// RS00 followers carry CAN ID 17 (left) / 18 (right): the factory 127 is the
+// position byte of a left-hand closed end, and the motor takes such a motion
+// frame for another command. Opening warns on a mismatch; it never rewrites.
+TEST(CanIdWarning, AnRs00StillOnTheFactoryIdWarns) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_model_rs00(true);
+    fw.set_sn("TCGU01A28Z0089s");
+    fw.set_reverse(true);
+    CaptureLog log;
+    auto g = open_follower(pty);
+    EXPECT_EQ(log.count("motor CAN ID 127 does not match the Left hand"), 1u);
+}
+
+TEST(CanIdWarning, CorrectIdsOpenQuietlyAndEl05IsNotChecked) {
+    for (const bool left : {true, false}) {
+        Pty pty;
+        ASSERT_GE(pty.master(), 0);
+        FakeFollower fw(pty);
+        fw.set_model_rs00(true);
+        fw.set_sn(left ? "TCGU01A28Z0089s" : "TCGU01A28Z0094s");
+        fw.set_reverse(left);
+        fw.set_can_id(left ? 17 : 18);
+        CaptureLog log;
+        auto g = open_follower(pty);
+        EXPECT_EQ(log.count("does not match the"), 0u) << (left ? "left" : "right");
+    }
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);               // EL05, CAN ID 127
+    fw.set_sn("TCGU01A28Z0089s");
+    fw.set_reverse(true);
+    CaptureLog log;
+    auto g = open_follower(pty);
+    EXPECT_EQ(log.count("motor CAN ID"), 0u);
+}

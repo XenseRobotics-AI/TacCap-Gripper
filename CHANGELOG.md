@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Force-position could not close a left-hand RS00 follower to 0.0.** Root
+  cause (0089s, diagnostic firmware, 2026-10-10): a RobStride motor takes an MIT
+  motion frame whose byte 0 equals its own CAN ID for another command and
+  answers on 0xFD with the frame's first four bytes and zeros. Byte 0 is the
+  target position's high byte; the factory ID 127 is 0x7F, the byte for
+  -0.098..0 rad, i.e. a left-hand RS00's closed end (a right-hand one is at
+  0x80). Commanding 0.07 / 0.05 / 0.03 drew ~1000 echoes per 2 s, 0.10 none.
+  Follower firmware <= 1.2.15 decoded each echo as status (temperature 0.0,
+  torque -t_max, position clamped to the far end), its envelope dragged the
+  target toward the open end and the jaw was thrown open at 4-7 rad/s.
+  `Motor::on_status` now drops such frames (a backstop for units not yet
+  fixed), with a rate-limited warning.
+
+### Added
+
+- **RS00 followers use motor CAN ID 17 (left) / 18 (right).**
+  `detail::expected_motor_can_id(model_id, side)` (Python
+  `expected_motor_can_id`) is the rule; `FollowerGripper` warns on open when the
+  motor's ID disagrees. The SDK never writes it -- the factory config tool does.
+  Both IDs are below 0x60, clear of every position byte within +-pi of zero and
+  inside the follower's discovery scan. EL05 is not covered. With 17 / 18 the
+  echo count at the closed end is 0 and force-position closes to 0 on both
+  units.
+
+### Changed
+
+- Shipped follower image is now **1.2.16**: it no longer decodes those echo
+  frames as status. Leader image unchanged (1.2.6).
+- The open-direction and CAN-ID warnings are English only.
+
 ### Added
 
 - **RS00 followers are handed; `FollowerGripper` warns when the stored open
