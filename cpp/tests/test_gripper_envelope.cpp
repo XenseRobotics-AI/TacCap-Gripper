@@ -370,3 +370,19 @@ TEST(OpenDirection, Rs00IsHandedAndNothingElseIsChecked) {
     EXPECT_EQ(expected_open_reverse(kEl05, Side::Right), std::nullopt);
     EXPECT_EQ(expected_open_reverse(7, Side::Left), std::nullopt);
 }
+
+TEST(MotorCanId, Rs00IsSeventeenLeftEighteenRightAndNothingElse) {
+    using xense::taccap::detail::expected_motor_can_id;
+    using xense::taccap::discovery::Side;
+    EXPECT_EQ(expected_motor_can_id(1, Side::Left),  std::optional<std::uint8_t>(17));
+    EXPECT_EQ(expected_motor_can_id(1, Side::Right), std::optional<std::uint8_t>(18));
+    EXPECT_EQ(expected_motor_can_id(1, Side::Unknown), std::nullopt);
+    EXPECT_EQ(expected_motor_can_id(0, Side::Left), std::nullopt);   // EL05
+    // Neither may be a motion-frame position byte anywhere within +-pi of zero.
+    for (const std::uint8_t id : {17, 18}) {
+        for (float p = -3.1416f; p <= 3.1416f; p += 0.0005f) {
+            const int raw = static_cast<int>((p + 12.57f) / 25.14f * 65535.0f + 0.5f);
+            ASSERT_NE(raw >> 8, id) << "position " << p;
+        }
+    }
+}

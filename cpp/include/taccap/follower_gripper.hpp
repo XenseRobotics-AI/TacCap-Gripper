@@ -199,6 +199,21 @@ protocol::GripperEnvelope repair_envelope(const EnvelopeAudit& audit);
 std::optional<bool> expected_open_reverse(std::uint8_t model_id,
                                           discovery::Side side) noexcept;
 
+// The motor CAN ID an RS00 follower of this side must have: 17 left, 18 right.
+// std::nullopt = no rule (EL05 and other models, or no side): check nothing.
+//
+// WHY NOT THE FACTORY 127. Byte 0 of an MIT motion frame is the high byte of
+// the target position, and the motor takes a frame whose byte 0 equals its CAN
+// ID for another command (see detail::is_stray_fault_reply_frame in motor.hpp).
+// 127 is 0x7F, the byte for -0.098..0 rad: a left-hand RS00's closed end
+// (0089s, 2026-10-10). Positions within +-pi of zero use 0x60..0x9F, and the
+// follower's discovery fallback scans 1..0x7F, so an ID must be below 0x60:
+// 17 / 18, odd/even like the SN's side digit. Written by the factory config
+// tool (Motor::set_can_id, then a 24 V power cycle); never changed silently.
+// EL05 is not covered: its followers are not handed.
+std::optional<std::uint8_t> expected_motor_can_id(std::uint8_t model_id,
+                                                  discovery::Side side) noexcept;
+
 }  // namespace detail
 
 class FollowerGripper {

@@ -324,10 +324,12 @@ Motor::SubId Motor::on_status(Callback cb) {
                     const std::uint64_t n = ++*dropped;
                     if ((n & (n - 1)) == 0) {
                         logger()->warn(
-                            "Motor::on_status: dropped {} status frame(s) decoded from a "
-                            "late motor fault reply (temperature 0.0, pos {:.4f} rad, "
-                            "torque {:.2f} N*m) -- follower firmware decodes these as "
-                            "status; fixed in 1.2.16", n, s.actual_pos, s.actual_torque);
+                            "Motor::on_status: dropped {} status frame(s) that were not "
+                            "status (temperature 0.0, pos {:.4f} rad, torque {:.2f} N*m): "
+                            "the motor answers motion frames whose position byte equals "
+                            "its CAN ID. Set an RS00 follower's CAN ID to 17 (left) / 18 "
+                            "(right); follower firmware >= 1.2.16 also drops these.",
+                            n, s.actual_pos, s.actual_torque);
                     }
                     return;
                 }

@@ -136,6 +136,7 @@ public:
     void set_model_from_flash(bool on) { model_from_flash_.store(on); }
     // What 0x59 names: id 0 "EL05" (default) or id 1 "RS00".
     void set_model_rs00(bool on) { model_rs00_.store(on); }
+    void set_can_id(uint8_t id) { can_id_.store(id); }
     void set_sn(const std::string& sn) {
         std::lock_guard<std::mutex> lk(mu_);
         sn_ = sn;
@@ -258,7 +259,13 @@ private:
                 pty_.send_response(f.seq, f.cmd, {});
                 return;
             case tp::Cmd::MotorSetStartupLimitTorque:
+            case tp::Cmd::MotorGetCanId:
+                pty_.send_response(f.seq, f.cmd, {can_id_.load()});
+                return;
             case tp::Cmd::MotorSetCanId:
+                if (!f.payload.empty()) can_id_.store(f.payload[0]);
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
             case tp::Cmd::MotorSwitchProtocol:
             case tp::Cmd::SetMotorModel:
                 pty_.send_response(f.seq, f.cmd, {});
@@ -353,6 +360,7 @@ private:
     std::atomic<bool> corrupt_sn_writes_{false};
     std::atomic<bool> model_from_flash_{true};
     std::atomic<bool> model_rs00_{false};
+    std::atomic<uint8_t> can_id_{0x7F};
     std::atomic<uint8_t> dev_type_{0xFF};
     std::string sn_ = "TCGU01A28Z0001s";
     mutable std::mutex mu_;

@@ -210,6 +210,7 @@ Role = _taccap_native.Role
 ParsedSerial = _taccap_native.ParsedSerial
 parse_serial = _taccap_native.parse_serial
 expected_open_reverse = _taccap_native.expected_open_reverse
+expected_motor_can_id = _taccap_native.expected_motor_can_id
 scan_grippers = _taccap_native.scan_grippers
 find_one = _taccap_native.find_one
 find_left = _taccap_native.find_left
@@ -351,6 +352,7 @@ __all__ = [
     "ParsedSerial",
     "parse_serial",
     "expected_open_reverse",
+    "expected_motor_can_id",
     "scan_grippers",
     "find_one",
     "find_left",
