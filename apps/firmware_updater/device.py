@@ -57,6 +57,21 @@ class Device:
                 "motor": label,
             }
 
+    def record_model(self, name):
+        ids = {"EL05": 0, "RS00": 1}
+        if name not in ids:
+            raise ValueError("不支持的电机型号")
+        with self.opened() as g:
+            if g.motor.get_model().from_flash:
+                raise RuntimeError("设备已有型号记录，用户版不覆盖已有型号")
+            flow._prepare_motor_admin(g)
+            g.motor.set_model(ids[name])
+        self.power_cycle("应用电机型号；重新上电可能触发自动标定")
+        info = self.inspect()
+        if not info["recorded"] or info["model"] != name:
+            raise RuntimeError("重启后电机型号读回不一致，停止更新")
+        return info
+
     def power_cycle(self, reason):
         # Observe a baseline before displaying the nonblocking instructions.
         ep = self.endpoint()

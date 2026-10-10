@@ -22,6 +22,7 @@ def main():
 
         gui(args)
         return
+    import bundled
     import core
     import xense.taccap as sdk
     from PySide6.QtCore import qVersion
@@ -29,6 +30,7 @@ def main():
 
     assert hasattr(native, "expected_open_reverse")
     assert core.catalog_at(HERE / "catalog.json")["schema"] == 1
+    bundled_versions = bundled.verify_all(core.catalog_at(HERE / "catalog.json"))
     external = []
     if getattr(sys, "frozen", False):
         bundle = Path(sys._MEIPASS).resolve()
@@ -52,6 +54,7 @@ def main():
                 "python": sys.version,
                 "frozen": bool(getattr(sys, "frozen", False)),
                 "qt": qVersion(),
+                "bundled_firmware": bundled_versions,
                 "external_non_system_libraries": external,
             }
         )

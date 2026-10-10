@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
-VERSION = "0.1.1-1"
+VERSION = "0.1.1-2"
 
 
 def main():
@@ -36,6 +36,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix="taccap-updater-build-") as temp:
         temp = Path(temp)
         app = ROOT / "apps/firmware_updater"
+        sys.path.insert(0, str(app))
+        import bundled
+        import core
+
+        bundled.verify_all(core.catalog_at(app / "catalog.json"), ROOT / "firmware")
+        firmware_args = []
+        for relative in bundled.FILES.values():
+            path = ROOT / "firmware" / relative
+            firmware_args.extend(
+                ["--add-data", f"{path}:firmware/{Path(relative).parent}"]
+            )
         env = os.environ.copy()
         for key in ("PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "LD_LIBRARY_PATH"):
             env.pop(key, None)
@@ -73,6 +84,7 @@ def main():
                 "tkinter",
                 "--exclude-module",
                 "PyQt5",
+                *firmware_args,
                 str(app / "entry.py"),
             ],
             cwd=ROOT,
