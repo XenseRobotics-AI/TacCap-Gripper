@@ -158,6 +158,27 @@ Notes:
 
 ### Motor firmware (RobStride) over USB-C
 
+For a guided **motor-only** update to an explicit version, use:
+
+```bash
+python python/examples/motor_firmware_update.py firmware/motor/EL05_1.0.5.0.4.bin --target-version 1.0.5.0.4
+```
+
+Pass a firmware SN after the image when multiple devices are connected. The
+script requires a recorded matching model and follower >= 1.2.14. It guides
+PRIVATE switching and manual 24 V cycles, flashes only the motor, requires a
+live version match (not a flash cache), records the verified version, then
+restores MIT with another cycle. It does not change the MCU image, motor model,
+direction or torque parameters. Restoring MIT may trigger power-on homing;
+keep the travel clear and inspect the physical endpoints before use.
+`--dry-run` validates the image and device without switching protocols or
+querying a live motor version. Downgrades require `--allow-downgrade` plus an
+interactive confirmation; EL05 below 1.0.5.0.4 is for comparison tests only
+because of known velocity-feedback issues. Same-version reflashes also ask.
+On failure it stops without automatic transfer retries or motion restoration;
+the device may remain in PRIVATE. A filename/embedded string check is not a
+cryptographic authenticity check: use only trusted vendor images.
+
 The motor module runs its own firmware, separate from the gripper's. It can be
 flashed through the follower's USB-C port — no RobStride USB-CAN adapter, no
 removing the motor — with `python/examples/motor_ota_update.py`, built on
