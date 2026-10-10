@@ -126,7 +126,7 @@ worked. The bank-swap reboot is a soft reset that leaves the device looking heal
 while quietly dropping status frames.
 
 **The two roles carry independent version numbers.** At the time of writing the
-leader is 1.2.6 and the follower 1.2.14; neither is behind the other, and
+leader is 1.2.6 and the follower 1.2.15; neither is behind the other, and
 `gripper.firmware_version` returning different numbers for the two halves of a
 pair is normal. Compare versions only within a role — the floors above are
 follower numbers. **A leader reporting 1.2.6 may be either of two images**: the
@@ -309,8 +309,9 @@ normalized position is mirrored, a closed jaw reads ~1.0 and `set_target(0.0)`
 opens it. `FollowerGripper` warns on open when the stored bit disagrees with
 the side; `t.expected_open_reverse(model_id, side)` gives the right bit. Fix it
 with `g.set_gripper_config()` (change the flags only) and cut 24 V so
-calibration re-runs. A model-record change resets the bit to the model default
-again. EL05 has no rule yet.
+calibration re-runs. Follower 1.2.15 does this by itself: calibration takes the
+direction from the SN's side and corrects a stored bit that disagrees, and a
+model-record change keeps the side's direction. EL05 has no rule yet.
 
 ### By task
 

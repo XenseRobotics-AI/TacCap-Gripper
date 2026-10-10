@@ -7,7 +7,7 @@ of this SDK.
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.14.bin` | follower (SN ends **`s`**) | **1.2.14** | V2.8 + 运动安全包络 | 167,168 B | `0x267d7f67` |
+| `tc-gu-01-slave-1.2.15.bin` | follower (SN ends **`s`**) | **1.2.15** | V2.8 + 运动安全包络 | 167,464 B | `0xbdbb2b4b` |
 
 Only the current release is kept here. Older images come from this directory's
 git history rather than from extra files.
@@ -35,8 +35,8 @@ sources bumps that role alone.
 this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
-The leader is at 1.2.6 while the follower is at 1.2.14 for that reason: 1.2.7,
-1.2.8, 1.2.10, 1.2.12, 1.2.13 and 1.2.14 touched only follower code, and 1.2.9 changed the shared
+The leader is at 1.2.6 while the follower is at 1.2.15 for that reason: 1.2.7,
+1.2.8, 1.2.10, 1.2.12, 1.2.13, 1.2.14 and 1.2.15 touched only follower code, and 1.2.9 changed the shared
 `storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
 in its behaviour.
 
@@ -75,6 +75,11 @@ is in force. When the model record changes, 0x700B, the calibration torque and
 the direction are reset to the new model's defaults; a stored calibration torque
 still at exactly the old 0.35 migrates on boot. A gripper OTA also no longer
 refuses when the motor is not on the bus.
+
+**Follower 1.2.15 sets an RS00's open direction from its side.** The gear train
+is mirror-mounted, so a left follower (odd SN) needs Reverse 1 and a right one
+(even) Reverse 0; auto-calibration now uses that and corrects a stored bit that
+disagrees. Requires the SN to be burned correctly. Verified on 0089s / 0094s.
 
 **Follower 1.2.14 records the motor's firmware version in flash** (0x5C to
 write it, 0x58 falls back to it under MIT) -- see the SDK README, *RobStride
