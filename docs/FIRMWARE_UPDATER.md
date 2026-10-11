@@ -1,6 +1,6 @@
 # Ubuntu 用户版固件升级与回滚
 
-提供 Ubuntu 24.04 amd64 构建和 Ubuntu 22.04 ARM64 / Jetson 构建入口（ARM64 产物及实机验收尚待完成），面向普通用户，支持主爪 MCU 更新，以及从爪 MCU 与 EL05/RS00 电机固件单独或组合更新。
+提供 Ubuntu 24.04 amd64 构建和 Ubuntu 22.04 ARM64 / Jetson 构建入口（Jetson 实机验收须单独完成），面向普通用户，支持主爪 MCU 更新，以及从爪 MCU 与 EL05/RS00 电机固件单独或组合更新。
 回滚指重新刷入指定的旧版本镜像，不是恢复配置备份，也不是保证升级失败后可自动恢复。
 首版需要现场硬件验收后再向最终用户分发；模拟测试不能证明断电时序和机械安全。
 
@@ -10,8 +10,10 @@
 本目标固定为 Ubuntu 22.04、aarch64、glibc 2.35；Qt 使用 PySide6 6.7.3（ARM64 wheel 为 manylinux_2_31），
 不复用 Ubuntu 24.04 的 Qt/SDK 二进制，不安装或替换 CUDA、JetPack、NVIDIA 驱动。
 
-当前已补齐原生构建入口和架构校验，但尚未生成/验收 ARM64 包。x86_64 构建机的 ARM64 容器
-执行探测报 exec format error，不能据此声称 Jetson 兼容性已验证。
+也可在 Docker Engine Community 中使用 Ubuntu 22.04 ARM64 容器进行构建。x86_64 主机须先经管理员
+许可注册 ARM64 QEMU/binfmt 执行支持，否则容器启动会报 exec format error。只读挂载源码，
+在容器内独立 checkout 中以普通用户运行构建入口，不覆盖宿主机 SDK。Docker 和模拟器只用于构建，
+客户运行安装包不需要它们。模拟环境自检不代表已完成 Jetson 真机的图形驱动、串口及 OTA 验收。
 
 ### 在专用 ARM64 构建机或 Jetson 上构建
 
