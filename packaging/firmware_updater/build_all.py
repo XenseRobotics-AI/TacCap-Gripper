@@ -10,7 +10,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from build_appimage import RUNTIME_SHA, TOOL_SHA, verify_file
+from build_appimage import verify_file
+from platform_config import native_target
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -43,16 +44,20 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--tools-dir", type=Path, default=ROOT / "build/appimage-tools")
     args = parser.parse_args()
+    target = native_target()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     tool = dependency(
         args.tools_dir.resolve(),
-        "appimagetool-x86_64.AppImage",
+        f"appimagetool-{target['machine']}.AppImage",
         "appimagetool",
-        TOOL_SHA,
+        target["tool_sha"],
     )
     runtime = dependency(
-        args.tools_dir.resolve(), "runtime-x86_64", "type2-runtime", RUNTIME_SHA
+        args.tools_dir.resolve(),
+        f"runtime-{target['machine']}",
+        "type2-runtime",
+        target["runtime_sha"],
     )
     with tempfile.TemporaryDirectory(prefix="taccap-all-") as temp:
         staging = Path(temp)
@@ -60,7 +65,7 @@ def main():
             [sys.executable, str(HERE / "build_deb.py"), "--output", str(staging)],
             check=True,
         )
-        (deb,) = staging.glob(f"{PACKAGE}_*_amd64.deb")
+        (deb,) = staging.glob(f"{PACKAGE}_*_{target['deb_arch']}.deb")
         subprocess.run(
             [
                 sys.executable,

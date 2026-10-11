@@ -1,8 +1,62 @@
-# Ubuntu 24.04 用户版固件升级与回滚
+# Ubuntu 用户版固件升级与回滚
 
-面向 Ubuntu 24.04 amd64 普通用户，支持主爪 MCU 更新，以及从爪 MCU 与 EL05/RS00 电机固件单独或组合更新。
+提供 Ubuntu 24.04 amd64 构建和 Ubuntu 22.04 ARM64 / Jetson 构建入口（ARM64 产物及实机验收尚待完成），面向普通用户，支持主爪 MCU 更新，以及从爪 MCU 与 EL05/RS00 电机固件单独或组合更新。
 回滚指重新刷入指定的旧版本镜像，不是恢复配置备份，也不是保证升级失败后可自动恢复。
 首版需要现场硬件验收后再向最终用户分发；模拟测试不能证明断电时序和机械安全。
+
+## Jetson AGX Orin / Ubuntu 22.04 ARM64
+
+不能在 Jetson 原生运行现有的 x86_64 / amd64 安装包。赋予执行权限或修改文件名都不能转换架构。
+本目标固定为 Ubuntu 22.04、aarch64、glibc 2.35；Qt 使用 PySide6 6.7.3（ARM64 wheel 为 manylinux_2_31），
+不复用 Ubuntu 24.04 的 Qt/SDK 二进制，不安装或替换 CUDA、JetPack、NVIDIA 驱动。
+
+当前已补齐原生构建入口和架构校验，但尚未生成/验收 ARM64 包。x86_64 构建机的 ARM64 容器
+执行探测报 exec format error，不能据此声称 Jetson 兼容性已验证。
+
+### 在专用 ARM64 构建机或 Jetson 上构建
+
+使用本分支的独立干净 checkout，不要复用含 x86_64 扩展或其他 Python ABI 扩展的源码目录。
+准备清单中对应的两份电机镜像到 firmware/motor/（它们不在 Git 中），先提交本次源码修改。
+以下依赖只需在构建机安装；最终用户不需要编译环境或 conda：
+
+```bash
+uname -m
+cat /etc/os-release
+sudo apt update
+sudo apt install build-essential cmake ninja-build git python3-dev python3-venv libopencv-dev libspdlog-dev patchelf binutils fonts-noto-cjk libxcb-cursor0 libxkbcommon-x11-0 libgl1 libegl1
+python3 packaging/firmware_updater/build_jetson.py --jobs 2
+```
+
+入口在 build/jetson-updater/ 中创建隔离 venv 并重编译当前 SDK，默认两路编译以控制内存。
+不会联网更新固件，构建依赖下载需要网络。缺失/错误架构扩展、固件哈希不符或未提交源码均不能作为完成的发布包。
+构建成功后 dist/ 应包含：
+
+- taccap-firmware-updater_0.1.0_arm64.deb
+- taccap-firmware-updater_0.1.0_arm64.run
+- taccap-firmware-updater_0.1.0_aarch64.AppImage
+
+与 amd64 产物使用不同文件名，不互相覆盖。构建自检不操作夹爪；Qt X11 界面、串口权限、
+设备发现、真实断电与 OTA 必须在目标 Jetson 上另做验收，不能以 x86_64 单元测试替代。
+
+### 用户端启动（取得已验收的 ARM64 包后）
+
+优先使用 deb，由 apt 补齐系统图形库：
+
+```bash
+sudo apt install ./taccap-firmware-updater_0.1.0_arm64.deb
+sudo usermod -aG dialout "$USER"
+```
+
+注销并重新登录，以普通用户从应用菜单启动。便携包仍需要系统图形库和串口权限：
+
+```bash
+chmod +x taccap-firmware-updater_0.1.0_aarch64.AppImage
+./taccap-firmware-updater_0.1.0_aarch64.AppImage --appimage-extract-and-run --self-test
+./taccap-firmware-updater_0.1.0_aarch64.AppImage --appimage-extract-and-run --ui-smoke-test
+```
+
+extract-and-run 可避免依赖 FUSE。若文件管理器显示“没有应用可打开 AppImage”，先检查架构与执行权限，
+不要到软件商店寻找能把 x86_64 应用变成 ARM64 的打开程序。禁止 sudo 运行界面。
 
 ## 安装与权限
 

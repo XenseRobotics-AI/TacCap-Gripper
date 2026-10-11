@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from platform_config import check_elf, native_target
+
 PACKAGE = "taccap-firmware-updater"
 # Official AppImage GitHub asset digests reviewed on 2026-10-11.
 TOOL_SHA = "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
@@ -63,15 +65,21 @@ def main():
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("dist"))
     args = parser.parse_args()
+    target = native_target()
+    deb_arch = subprocess.check_output(
+        ["dpkg-deb", "-f", str(args.deb.resolve()), "Architecture"], text=True
+    ).strip()
+    if deb_arch != target["deb_arch"]:
+        raise ValueError(f"Wrong deb architecture: {deb_arch}")
     tool, runtime = args.tool.resolve(), args.runtime.resolve()
-    verify_file(tool, TOOL_SHA)
-    verify_file(runtime, RUNTIME_SHA)
+    verify_file(tool, target["tool_sha"])
+    verify_file(runtime, target["runtime_sha"])
     tool.chmod(0o755)
     args.output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     for key in ("PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH", "LD_PRELOAD"):
         env.pop(key, None)
-    env.update(ARCH="x86_64", APPIMAGE_EXTRACT_AND_RUN="1")
+    env.update(ARCH=target["machine"], APPIMAGE_EXTRACT_AND_RUN="1")
     with tempfile.TemporaryDirectory(prefix="taccap-appimage-") as temp:
         temp = Path(temp)
         extracted, appdir = temp / "deb", temp / "TacCap.AppDir"
@@ -79,8 +87,13 @@ def main():
             ["dpkg-deb", "-x", str(args.deb.resolve()), str(extracted)], check=True
         )
         metadata = prepare_appdir(extracted, appdir)
+        check_elf(appdir / "usr/lib" / PACKAGE / PACKAGE, target)
+        if metadata.get("architecture", target["machine"]) != target["machine"]:
+            raise ValueError("Build metadata architecture mismatch")
         version = metadata["package_version"]
-        output = args.output.resolve() / f"{PACKAGE}_{version}_x86_64.AppImage"
+        output = (
+            args.output.resolve() / f"{PACKAGE}_{version}_{target['machine']}.AppImage"
+        )
         if output.exists():
             raise FileExistsError(f"Preserve the existing artifact first: {output}")
         subprocess.run(

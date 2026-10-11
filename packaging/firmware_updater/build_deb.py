@@ -8,7 +8,6 @@ SDK. No build-environment Python is invoked by the installed application.
 import argparse
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -19,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "taccap-firmware-updater"
 sys.path.insert(0, str(ROOT / "apps/firmware_updater"))
 from build_info import PACKAGE_VERSION, VERSION  # noqa: E402
+from platform_config import check_elf, native_target  # noqa: E402
 from portable import build_portable  # noqa: E402
 
 
@@ -54,11 +54,11 @@ def main():
     patcher = shutil.which("patchelf")
     if not patcher:
         raise SystemExit("Build dependency missing: patchelf")
-    os_release = Path("/etc/os-release").read_text()
-    if 'VERSION_ID="24.04"' not in os_release or platform.machine() != "x86_64":
-        raise SystemExit("Build on Ubuntu 24.04 amd64, not a newer glibc host")
-    if not list((ROOT / "python/xense/taccap").glob("_taccap_native*.so")):
-        raise SystemExit("Build the current checkout's native SDK first")
+    target = native_target()
+    natives = list((ROOT / "python/xense/taccap").glob("_taccap_native*.so"))
+    if len(natives) != 1:
+        raise SystemExit("Build exactly one current checkout native SDK first")
+    check_elf(natives[0], target)
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="taccap-updater-build-") as temp:
         temp = Path(temp)
@@ -109,6 +109,8 @@ def main():
                     "package_version": PACKAGE_VERSION,
                     "sha": sha,
                     "dirty": dirty,
+                    "architecture": target["machine"],
+                    "ubuntu": target["ubuntu"],
                 }
             )
         )
@@ -195,6 +197,7 @@ def main():
             with binary.open("rb") as stream:
                 elf = stream.read(4) == b"\x7fELF"
             if elf:
+                check_elf(binary, target)
                 relative = os.path.relpath(internal, binary.parent)
                 subprocess.run(
                     [
@@ -228,7 +231,8 @@ def main():
         shutil.copy2(
             "/usr/share/doc/fonts-noto-cjk/copyright", frozen / "Noto-CJK-copyright"
         )
-        portable = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_amd64.run"
+        arch = target["deb_arch"]
+        portable = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_{arch}.run"
         build_portable(frozen, portable)
         print(portable)
         package = temp / "deb"
@@ -239,9 +243,9 @@ def main():
         control = package / "DEBIAN"
         control.mkdir()
         (control / "control").write_text(
-            f"Package: {PACKAGE}\nVersion: {PACKAGE_VERSION}\nArchitecture: amd64\n"
+            f"Package: {PACKAGE}\nVersion: {PACKAGE_VERSION}\nArchitecture: {arch}\n"
             "Maintainer: TacCap firmware updater maintainers\nSection: utils\nPriority: optional\n"
-            "Depends: libc6 (>= 2.39), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libgl1, libegl1\n"
+            f"Depends: libc6 (>= {target['glibc']}), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libgl1, libegl1\n"
             "Description: TacCap follower firmware update and rollback assistant\n"
             " Bundled Python, Qt, CJK font and native SDK. Runs as a normal user.\n"
         )
@@ -272,7 +276,7 @@ def main():
         shutil.copy2(
             "/usr/share/doc/fonts-noto-cjk/copyright", docs / "Noto-CJK-copyright"
         )
-        out = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_amd64.deb"
+        out = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_{arch}.deb"
         subprocess.run(
             ["dpkg-deb", "--root-owner-group", "--build", str(package), str(out)],
             check=True,

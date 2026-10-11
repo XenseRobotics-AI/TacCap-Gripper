@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 SOURCE = (
     Path(__file__).resolve().parents[2] / "packaging/firmware_updater/build_appimage.py"
 )
+sys.path.insert(0, str(SOURCE.parent))
 spec = importlib.util.spec_from_file_location("updater_appimage", SOURCE)
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
