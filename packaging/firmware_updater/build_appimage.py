@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,6 +22,29 @@ RUNTIME_SHA = "156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074"
 def verify_file(path, expected):
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
         raise ValueError(f"Unreviewed build dependency: {path}")
+
+
+def extract_appimage(image, destination):
+    """Extract a verified type-2 ELF64 AppImage without executing its runtime."""
+    with image.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:7] != b"\x7fELF\x02\x01\x01":
+            raise ValueError("Expected little-endian ELF64 AppImage")
+        if header[8:11] != b"AI\x02":
+            raise ValueError("Expected type-2 AppImage")
+        section_offset = struct.unpack_from("<Q", header, 40)[0]
+        section_size, section_count = struct.unpack_from("<HH", header, 58)
+        offset = section_offset + section_size * section_count
+        if not section_size or not section_count or offset < 64:
+            raise ValueError("Invalid AppImage section table")
+        stream.seek(offset)
+        if stream.read(4) != b"hsqs":
+            raise ValueError("AppImage SquashFS offset is invalid")
+    subprocess.run(
+        ["unsquashfs", "-quiet", "-o", str(offset), "-d", str(destination), str(image)],
+        check=True,
+    )
+    return destination
 
 
 def prepare_appdir(extracted, appdir):
@@ -65,7 +89,9 @@ def main():
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("dist"))
     parser.add_argument(
-        "--emulator", type=Path, help="Explicit user-mode emulator for AppImage tools"
+        "--extract-appimages",
+        action="store_true",
+        help="Extract AppImages before running (QEMU build environments)",
     )
     args = parser.parse_args()
     target = native_target()
@@ -99,9 +125,19 @@ def main():
         )
         if output.exists():
             raise FileExistsError(f"Preserve the existing artifact first: {output}")
+        tool_command = (
+            extract_appimage(tool, temp / "tool") / "AppRun"
+            if args.extract_appimages
+            else tool
+        )
         subprocess.run(
-            ([str(args.emulator.resolve())] if args.emulator else [])
-            + [str(tool), "--runtime-file", str(runtime), str(appdir), str(output)],
+            [
+                str(tool_command),
+                "--runtime-file",
+                str(runtime),
+                str(appdir),
+                str(output),
+            ],
             env=env,
             check=True,
         )

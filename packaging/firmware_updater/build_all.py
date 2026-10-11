@@ -11,7 +11,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from build_appimage import verify_file
+from build_appimage import extract_appimage, verify_file
 from platform_config import native_target
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +45,9 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--tools-dir", type=Path, default=ROOT / "build/appimage-tools")
     parser.add_argument(
-        "--emulator", type=Path, help="Explicit user-mode emulator for AppImages"
+        "--extract-appimages",
+        action="store_true",
+        help="Extract AppImages before running (QEMU build environments)",
     )
     args = parser.parse_args()
     target = native_target()
@@ -81,11 +83,7 @@ def main():
                 str(runtime),
                 "--output",
                 str(staging),
-                *(
-                    ["--emulator", str(args.emulator.resolve())]
-                    if args.emulator
-                    else []
-                ),
+                *(["--extract-appimages"] if args.extract_appimages else []),
             ],
             check=True,
         )
@@ -99,8 +97,13 @@ def main():
             env = os.environ.copy()
             if artifact.suffix == ".AppImage":
                 env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
-                if args.emulator:
-                    command.insert(0, str(args.emulator.resolve()))
+                if args.extract_appimages:
+                    command = [
+                        str(
+                            extract_appimage(artifact, staging / "appimage-self-test")
+                            / "AppRun"
+                        )
+                    ]
             result = subprocess.check_output(
                 command + ["--self-test"], text=True, env=env
             )
