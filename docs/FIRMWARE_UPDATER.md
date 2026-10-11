@@ -25,7 +25,7 @@
 uname -m
 cat /etc/os-release
 sudo apt update
-sudo apt install build-essential cmake ninja-build git python3-dev python3-venv libopencv-dev libspdlog-dev patchelf binutils fonts-noto-cjk libxcb-cursor0 libxkbcommon-x11-0 libgl1 libegl1
+sudo apt install build-essential cmake ninja-build git python3-dev python3-venv libopencv-dev libspdlog-dev patchelf binutils fonts-noto-cjk libxcb-cursor0 libxkbcommon-x11-0 libsm6 libice6 libxcb-shape0 libxcb-icccm4 libxcb-keysyms1 libgl1 libegl1
 python3 packaging/firmware_updater/build_jetson.py --jobs 2
 ```
 

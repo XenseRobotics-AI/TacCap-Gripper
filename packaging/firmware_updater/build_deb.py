@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a self-contained frozen updater on Ubuntu 24.04 amd64.
+"""Build a self-contained frozen updater for supported Ubuntu architectures.
 
 Run with a build-only Python containing PyInstaller, PySide6 and a matching built
 SDK. No build-environment Python is invoked by the installed application.
@@ -170,6 +170,11 @@ def main():
         frozen = temp / "frozen" / PACKAGE
         # Replace build-machine RPATHs in every bundled ELF, not only Python.
         internal = frozen / "_internal"
+        # The UI uses PNG only. Qt 6.7 ARM wheels ship a WebP plugin linked
+        # against libwebp.so.6, unavailable on Ubuntu 22.04 (ABI 7).
+        # Do not ship an unusable optional plugin or fake an ABI symlink.
+        for plugin in internal.glob("PySide6/Qt/plugins/imageformats/libqwebp.so"):
+            plugin.unlink()
         native = next((ROOT / "python/xense/taccap").glob("_taccap_native*.so"))
         # Preserve the exact SDK dependency closure, rather than accidentally
         # selecting different OpenCV/BLAS builds from the freezing environment.
@@ -245,7 +250,7 @@ def main():
         (control / "control").write_text(
             f"Package: {PACKAGE}\nVersion: {PACKAGE_VERSION}\nArchitecture: {arch}\n"
             "Maintainer: TacCap firmware updater maintainers\nSection: utils\nPriority: optional\n"
-            f"Depends: libc6 (>= {target['glibc']}), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libgl1, libegl1\n"
+            f"Depends: libc6 (>= {target['glibc']}), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libsm6, libice6, libxcb-shape0, libxcb-icccm4, libxcb-keysyms1, libgl1, libegl1\n"
             "Description: TacCap follower firmware update and rollback assistant\n"
             " Bundled Python, Qt, CJK font and native SDK. Runs as a normal user.\n"
         )
