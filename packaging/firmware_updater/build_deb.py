@@ -283,7 +283,14 @@ def main():
         )
         out = args.output.resolve() / f"{PACKAGE}_{PACKAGE_VERSION}_{arch}.deb"
         subprocess.run(
-            ["dpkg-deb", "--root-owner-group", "--build", str(package), str(out)],
+            [
+                "dpkg-deb",
+                "--root-owner-group",
+                *(["-Zgzip", "-z3"] if arch == "arm64" else []),
+                "--build",
+                str(package),
+                str(out),
+            ],
             check=True,
         )
         print(out)

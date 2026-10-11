@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--tools-dir", type=Path, default=ROOT / "build/appimage-tools")
+    parser.add_argument(
+        "--emulator", type=Path, help="Explicit user-mode emulator for AppImages"
+    )
     args = parser.parse_args()
     target = native_target()
     output = args.output.resolve()
@@ -77,6 +81,11 @@ def main():
                 str(runtime),
                 "--output",
                 str(staging),
+                *(
+                    ["--emulator", str(args.emulator.resolve())]
+                    if args.emulator
+                    else []
+                ),
             ],
             check=True,
         )
@@ -87,9 +96,14 @@ def main():
         reports = []
         for artifact in artifacts[1:]:
             command = [str(artifact)]
+            env = os.environ.copy()
             if artifact.suffix == ".AppImage":
-                command.append("--appimage-extract-and-run")
-            result = subprocess.check_output(command + ["--self-test"], text=True)
+                env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+                if args.emulator:
+                    command.insert(0, str(args.emulator.resolve()))
+            result = subprocess.check_output(
+                command + ["--self-test"], text=True, env=env
+            )
             reports.append(json.loads(result))
         if reports[0]["build"] != reports[1]["build"]:
             raise RuntimeError("Artifacts have different build identities")

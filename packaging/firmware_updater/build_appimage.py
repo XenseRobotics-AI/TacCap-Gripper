@@ -64,6 +64,9 @@ def main():
     parser.add_argument("--tool", type=Path, required=True)
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("dist"))
+    parser.add_argument(
+        "--emulator", type=Path, help="Explicit user-mode emulator for AppImage tools"
+    )
     args = parser.parse_args()
     target = native_target()
     deb_arch = subprocess.check_output(
@@ -97,7 +100,8 @@ def main():
         if output.exists():
             raise FileExistsError(f"Preserve the existing artifact first: {output}")
         subprocess.run(
-            [str(tool), "--runtime-file", str(runtime), str(appdir), str(output)],
+            ([str(args.emulator.resolve())] if args.emulator else [])
+            + [str(tool), "--runtime-file", str(runtime), str(appdir), str(output)],
             env=env,
             check=True,
         )

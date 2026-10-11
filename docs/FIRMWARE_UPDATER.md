@@ -15,6 +15,10 @@
 在容器内独立 checkout 中以普通用户运行构建入口，不覆盖宿主机 SDK。Docker 和模拟器只用于构建，
 客户运行安装包不需要它们。模拟环境自检不代表已完成 Jetson 真机的图形驱动、串口及 OTA 验收。
 
+若默认 binfmt 不识别 AppImage 的特殊 ELF 文件头，在 SDK 编译后使用
+`build/jetson-updater/venv/bin/python packaging/firmware_updater/build_all.py --emulator /path/to/qemu-aarch64`
+显式运行用户态模拟器；无需新增主机注册规则。ARM64 deb 使用 gzip 压缩，缩短模拟构建耗时。
+
 ### 在专用 ARM64 构建机或 Jetson 上构建
 
 使用本分支的独立干净 checkout，不要复用含 x86_64 扩展或其他 Python ABI 扩展的源码目录。
