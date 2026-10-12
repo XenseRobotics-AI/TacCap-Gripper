@@ -101,6 +101,37 @@ class UpdaterUiTests(unittest.TestCase):
             self.window.file_labels["mcu"].geometry().top(),
         )
 
+    def test_rs00_can_id_status_fits_without_overlap(self):
+        identity = ("TCGU01A00Z0001s", "test")
+        self.window.selected_identity = identity
+        self.window.emit(
+            "info",
+            (
+                identity,
+                dict(
+                    model="RS00",
+                    recorded=True,
+                    mcu="1.2.16",
+                    motor="0.0.3.32（Flash 存档，非实时）",
+                    can_id=127,
+                    can_id_expected=17,
+                    can_id_side="左",
+                ),
+            ),
+        )
+        self.window.drain()
+        self.app.processEvents()
+        self.assertIn("CAN ID 127", self.window.info.text())
+        self.assertIn("确认修正", self.window.status.text())
+        self.assertLessEqual(self.window.width(), 700)
+        self.assertGreaterEqual(
+            self.window.info.height(), self.window.info.sizeHint().height()
+        )
+        self.assertLess(
+            self.window.info.geometry().bottom(),
+            self.window.file_labels["mcu"].geometry().top(),
+        )
+
     def test_dark_system_palette_is_overridden(self):
         from PySide6.QtGui import QColor, QPalette
 

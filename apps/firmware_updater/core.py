@@ -117,9 +117,11 @@ def execute(device, mcu, motor, ask, emit):
     plan = f"设备 {info['sn']}\n型号 {info['model']}\n"
     plan += f"MCU: {info['mcu']} → {mcu.version if mcu else '不修改'}\n"
     plan += f"电机: {info['motor']} → {motor.version if motor else '不修改'}\n"
-    plan += "\n请放下物体、清空活动范围并关闭其他控制程序。不会修改型号、方向、CAN ID 或力矩参数。"
+    plan += "\n请放下物体、清空活动范围并关闭其他控制程序。不会修改型号、方向或力矩参数。RS00 的 CAN ID 不符时将另行确认修正。"
     if not ask("开始升级/回滚", plan):
         raise RuntimeError("用户取消，未修改设备")
+    if info["model"] == "RS00":
+        device.ensure_can_id()
     mcu_first = not mcu or version_key(mcu.version) >= version_key(info["mcu"])
 
     def flash_mcu():
@@ -159,6 +161,8 @@ def execute(device, mcu, motor, ask, emit):
     if not mcu_first:
         flash_mcu()
     device.protocol("Mit")
+    if info["model"] == "RS00":
+        device.check_can_id()
     device.check_homing()
     if not ask(
         "确认机械标定",

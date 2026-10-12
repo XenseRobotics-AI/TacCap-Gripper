@@ -64,6 +64,22 @@ def device_summary(info, role, catalog):
         motor_html, motor_text = line(
             "电机", info["motor"], target("motor", model) if recorded else None
         )
+        can_problem = None
+        if model == "RS00" and "can_id" in info:
+            actual, expected = info["can_id"], info.get("can_id_expected")
+            if expected is None:
+                can_problem = "CAN ID 无法匹配 · 请核对型号记录和固件 SN"
+                can_text, color = f"CAN ID {actual} · 待核实", colors["unknown"]
+            elif actual != expected:
+                can_problem = f"CAN ID 不符 · 开始更新后确认修正为 {expected}"
+                can_text, color = (
+                    f"CAN ID {actual} → {expected} · 待修正",
+                    colors["outdated"],
+                )
+            else:
+                can_text, color = f"CAN ID {actual} · 符合", colors["current"]
+            motor_html += f' · <span style="color:{color}">{escape(can_text)}</span>'
+            motor_text += f" · {can_text}"
         html = f"{escape(prefix)}　{mcu_html}<br>{motor_html}"
         plain = f"{prefix}  {mcu_text}\n{motor_text}"
     if "outdated" in states:
@@ -72,4 +88,6 @@ def device_summary(info, role, catalog):
         tone, status = "success", "版本与内置最新一致 · 可按需重刷或选择其他版本"
     else:
         tone, status = "warning", "版本信息待核实 · 请核对后再选择固件"
+    if role != "master" and can_problem:
+        tone, status = "error", can_problem
     return html, plain, tone, status

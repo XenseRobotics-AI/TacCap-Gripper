@@ -71,7 +71,81 @@ class Device:
                 "recorded": m.from_flash,
                 "mcu": flow._version_text(flow._version_tuple(g.firmware_version)),
                 "motor": label,
+                **self.can_id_state(g),
             }
+
+    def can_id_state(self, g):
+        # Use the same SDK mapping as the production calibration tool.
+        from xense.taccap import expected_motor_can_id, parse_serial
+
+        model = g.motor.get_model()
+        if self.role != "slave" or model.name != "RS00":
+            return {}
+        parsed = parse_serial(self.identity[0])
+        side = getattr(parsed.side, "name", "")
+        expected = None
+        if (
+            model.from_flash
+            and model.id == 1
+            and getattr(parsed.role, "name", "") == "Follower"
+            and side in ("Left", "Right")
+        ):
+            expected = expected_motor_can_id(model.id, parsed.side)
+        return {
+            "can_id": g.motor.get_can_id(),
+            "can_id_expected": int(expected) if expected is not None else None,
+            "can_id_side": {"Left": "左", "Right": "右"}.get(side, "未知"),
+        }
+
+    def required_can_id_state(self, g):
+        model = g.motor.get_model()
+        if model.name != "RS00" or not model.from_flash or model.id != 1:
+            raise RuntimeError("RS00 型号记录变化或未确认，停止 CAN ID 操作")
+        state = self.can_id_state(g)
+        if state.get("can_id_expected") is None:
+            raise RuntimeError("无法从固件 SN 确认 RS00 左右手，拒绝猜测 CAN ID")
+        return state
+
+    def check_can_id(self):
+        with self.opened() as g:
+            state = self.required_can_id_state(g)
+        if state["can_id"] != state["can_id_expected"]:
+            raise RuntimeError(
+                f"CAN ID 读回不符：期望 {state['can_id_expected']}，"
+                f"实际 {state['can_id']}；停止，不自动重写，请联系支持"
+            )
+        self.emit(
+            "log", f"RS00 CAN ID 已核验：{state['can_id']}（{state['can_id_side']}爪）"
+        )
+
+    def ensure_can_id(self):
+        if self.role != "slave":
+            raise RuntimeError("主爪不提供电机 CAN ID 设置")
+        with self.opened() as g:
+            state = self.required_can_id_state(g)
+        current, expected = state["can_id"], state["can_id_expected"]
+        if current == expected:
+            self.emit("log", f"CAN ID 已是 {expected}，跳过写入和断电")
+            return
+        if not self.ask or not self.ask(
+            "确认修正 RS00 CAN ID",
+            f"设备 {self.identity[0]}\n{state['can_id_side']}爪 RS00："
+            f"CAN ID {current} → {expected}。\n"
+            "目标由固件 SN 和 SDK 规则确定，不允许任意填写。\n"
+            "写入后必须按提示断开整只从爪 24 V 至少 2 秒再上电；"
+            "重新上电可能触发标定，请清空活动范围。取消将停止更新。",
+        ):
+            raise RuntimeError("用户取消 CAN ID 修正，未开始固件刷写")
+        # Re-open and revalidate after the confirmation; never trust a stale UI.
+        with self.opened() as g:
+            if self.required_can_id_state(g) != state:
+                raise RuntimeError("确认期间 CAN ID 或型号状态变化，停止，请刷新设备")
+            self.emit("stage", "等待设备空闲并失能电机，准备修正 CAN ID")
+            flow._prepare_motor_admin(g)
+            g.motor.set_can_id(expected)
+            self.emit("log", f"CAN ID {expected} 已请求写入，待断开 24 V 生效")
+        self.power_cycle(f"应用 RS00 CAN ID {expected}，重连后必须读回核验")
+        self.check_can_id()
 
     def mcu_version(self):
         # Do not spend up to three seconds querying an unrelated motor version.
