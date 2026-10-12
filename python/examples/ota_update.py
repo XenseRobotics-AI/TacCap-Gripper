@@ -23,7 +23,7 @@ The released images ship in this repo under `firmware/`, and their filenames
 carry the version (tc-gu-01-slave-1.2.16.bin). Prefer the role selectors below:
 they read the current filename from firmware/manifest.json, so they keep
 working across releases, while a literal filename goes stale the next time the
-firmware is bumped. A name you do pass resolves against firmware/ from any
+firmware is bumped. A name you do pass resolves against firmware/gripper/ from any
 working directory, including a parent repo that vendors this one.
 
 Usage:
@@ -326,11 +326,11 @@ def _resolve_firmware(path: str) -> Optional[str]:
     """Find the image whether `path` is relative to the cwd or to this repo.
 
     The images ship inside this repo, but the repo is usually vendored as a
-    submodule of something else — so `firmware/tc-gu-01-master-1.2.6.bin`, the path
+    submodule of something else — so `firmware/gripper/tc-gu-01-master-1.2.6.bin`, the path
     our docs print because it works from the SDK root, is not the path that
     works from the parent repo's root. Rather than making every downstream
     README carry its own prefix, accept both: the literal path first, then the
-    same path and the bare filename under our own firmware/.
+    same path and the bare filename under our own firmware/gripper/.
 
     Note the shipped names carry a version, so a hard-coded one from an older
     README will simply not be found; the caller reports what is actually in
@@ -340,6 +340,7 @@ def _resolve_firmware(path: str) -> Optional[str]:
         return path
     for cand in (
         os.path.join(_sdk_root(), path),
+        os.path.join(_firmware_dir(), "gripper", os.path.basename(path)),
         os.path.join(_firmware_dir(), os.path.basename(path)),
     ):
         if os.path.isfile(cand):
@@ -350,9 +351,10 @@ def _resolve_firmware(path: str) -> Optional[str]:
 def _resolve_or_report(path: str) -> Optional[str]:
     resolved = _resolve_firmware(path)
     if resolved is None:
+        gripper_dir = os.path.join(_firmware_dir(), "gripper")
         shipped = (
-            sorted(n for n in os.listdir(_firmware_dir()) if n.endswith(".bin"))
-            if os.path.isdir(_firmware_dir())
+            sorted(n for n in os.listdir(gripper_dir) if n.endswith(".bin"))
+            if os.path.isdir(gripper_dir)
             else []
         )
         hint = (
@@ -362,7 +364,7 @@ def _resolve_or_report(path: str) -> Optional[str]:
         )
         print(
             f"[ERROR] firmware file not found: {path}\n"
-            f"        shipped images live in {_firmware_dir()}\n"
+            f"        shipped images live in {gripper_dir}\n"
             f"{hint}\n"
             f"        release filenames carry the version, so a name from an "
             f"older README will not resolve — prefer the role selectors "

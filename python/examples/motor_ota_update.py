@@ -40,10 +40,28 @@ KNOWN_MODELS = ("RS00", "EL05")
 MIN_FW = (1, 2, 8)
 
 
+def version_bytes(text):
+    parts = tuple(int(p) for p in text.split("."))
+    if len(parts) == 5:
+        if parts[0] != 1 or not 0 <= parts[1] <= 9:
+            raise ValueError(f"invalid vendor version: {text}")
+        parts = (10 + parts[1], *parts[2:])
+    if len(parts) != 4 or any(p < 0 or p > 255 for p in parts):
+        raise ValueError(f"invalid motor version: {text}")
+    return parts
+
+
+def version_text(parts):
+    parts = tuple(parts)
+    if 10 <= parts[0] <= 19:
+        return ".".join(map(str, (1, parts[0] - 10, *parts[1:])))
+    return ".".join(map(str, parts))
+
+
 def image_facts(path: str, data: bytes, model_arg: str | None):
     """(model, version) from the filename, cross-checked against the image."""
     name = os.path.basename(path)
-    m = re.match(r"(?i)(rs00|el05)[-_](\d+\.\d+\.\d+\.\d+)\.bin$", name)
+    m = re.match(r"(?i)(rs00|el05)[-_](\d+(?:\.\d+){3,4})\.bin$", name)
     model = (model_arg or (m.group(1) if m else "")).upper()
     if model not in KNOWN_MODELS:
         sys.exit(
@@ -51,7 +69,14 @@ def image_facts(path: str, data: bytes, model_arg: str | None):
             f"({'/'.join(KNOWN_MODELS)})"
         )
     version = m.group(2) if m else None
-    embedded = sorted({v.decode() for v in re.findall(rb"\d+\.\d+\.\d+\.\d+", data)})
+    embedded = sorted(
+        {
+            version_text(version_bytes(v.decode()))
+            for v in re.findall(rb"(?<![\d.])\d+(?:\.\d+){3,4}(?![\d.])", data)
+        }
+    )
+    if version is not None:
+        version = version_text(version_bytes(version))
     if version is not None and embedded and version not in embedded:
         sys.exit(f"error: filename says {version}, the image contains {embedded}")
     return model, version or (embedded[0] if len(embedded) == 1 else None)
@@ -65,7 +90,7 @@ def read_version(motor, timeout_s: float = 20.0):
             # Live reads only: follower >= 1.2.14 answers from its flash record
             # when the motor is silent, and that would be the OLD version.
             if v.valid and not getattr(v, "from_flash", False):
-                return ".".join(str(x) for x in v.version)
+                return version_text(v.version)
         except Exception:  # the motor is restarting; keep asking
             pass
         time.sleep(1.0)

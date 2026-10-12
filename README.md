@@ -180,8 +180,18 @@ looking merely odd rather than broken.
 relays the motor's own OTA through the MCU, so the motor stays mounted:
 
 ```bash
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+# Complete follower MCU + motor workflow (recommended)
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
+
+# Lower-level motor-only updater
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
+
+The combined command locks the target by firmware SN and CH343 serial, owns the
+MIT/private ordering and version readback, then checks the final homing travel.
+It cannot switch the physical supply: whenever a hard restart is required it
+asks the operator to cut 24 V and automatically waits for the selected device
+to disappear and return.
 
 (`MotorOtaSession` from code.) The motor must be on the **private** protocol
 first — `motor.switch_protocol(MotorProtocol.Private)`, then cut 24 V for
@@ -359,8 +369,9 @@ python python/examples/leader_normalized_position.py left
 **Firmware:**
 
 ```bash
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # follower MCU + motor
 python python/examples/ota_update.py slave left   # then power-cycle (follower: cut 24 V)
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # the motor itself; private protocol
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # the motor itself; private protocol
 ```
 
 ### What each one does to the device
@@ -374,6 +385,7 @@ Check this column before running anything on a rig that matters.
 | **Writes flash** | `calibrate`, `fisheye_cal set-*`, `--set-envelope` on `impedance_control` / `gripper_console` |
 | **Flashes firmware** | `ota_update` — destructive; afterwards power-cycle — follower: cut 24 V for ~2 s (USB may stay in); leader: replug USB |
 | **Flashes motor firmware** | `motor_ota_update` — flashes the RobStride motor's own firmware; needs the motor on the private protocol and follower firmware 1.2.8+ |
+| **Flashes both in order** | `full_ota_update` — follower MCU → motor, including protocol/model checks, version readback, and final homing validation; the operator still performs each physical 24 V cycle |
 
 ### Two shared modules, not runnable
 

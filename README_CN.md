@@ -151,8 +151,15 @@ USB 线可以不拔 —— 从爪的 MCU 和电机都靠 24V 运行,只拔 USB �
 电机不用拆:
 
 ```bash
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
+# 从爪 MCU + 电机固件完整升级(推荐)
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
+
+# 只刷电机固件的底层工具
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin TCGU01A28Z0086s
 ```
+
+(完整升级脚本会锁定固件 SN 与 CH343,编排 MIT/私有协议切换、版本回读与最终标定
+检查。它不能控制物理电源;每次需要硬重启时会提示断 24V,并自动等待目标掉线后重连。)
 
 (在代码里用 `MotorOtaSession`。)电机必须先切到**私有**协议 ——
 `motor.switch_protocol(MotorProtocol.Private)`,然后断 24V 约 2 秒再插回(USB 可以不拔)。
@@ -310,8 +317,9 @@ python python/examples/leader_normalized_position.py left
 **固件:**
 
 ```bash
+python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # 从爪 MCU + 电机一条命令
 python python/examples/ota_update.py slave left   # 之后要断电重启(从爪:断 24V)
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本身;需私有协议
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin left   # 电机本身;需私有协议
 ```
 
 ### 每个脚本对设备做了什么
@@ -325,6 +333,7 @@ python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本�
 | **会写 flash** | `calibrate`、`fisheye_cal set-*`、`impedance_control` / `gripper_console` 上的 `--set-envelope` |
 | **会刷固件** | `ota_update` —— 破坏性操作;之后要断电重启 —— 从爪断 24V 约 2 秒(USB 可不拔),主爪拔插 USB |
 | **会刷电机固件** | `motor_ota_update` —— 刷 RobStride 电机自己的固件;需要电机在私有协议下、从爪固件 1.2.8+ |
+| **会依次刷两者** | `full_ota_update` —— 从爪 MCU → 电机,自动编排协议、型号/限矩、版本回读与最终标定检查;物理断 24V 仍由操作员完成 |
 
 ### 两个共享模块,不能直接运行
 

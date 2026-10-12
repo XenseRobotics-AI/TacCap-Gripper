@@ -1,5 +1,19 @@
 # Prebuilt TC-GU-01 firmware
 
+Directory layout:
+
+```text
+firmware/
+├── manifest.json       # paths relative to firmware/
+├── gripper/            # released leader + follower MCU images
+└── motor/              # local EL05 / RS00 images, not committed
+```
+
+The table below lists files in `gripper/`. Store vendor motor images directly
+in `motor/`, keeping their original filenames. See [motor/README.md](motor/README.md).
+Role selectors (`master`, `slave`, `--all`) still read `manifest.json`; explicit
+gripper image basenames remain supported from outside the repository root.
+
 The current firmware images, so you can upgrade a gripper without access to the
 firmware source — which is a separate, internal repository and is **not** part
 of this SDK.
@@ -32,7 +46,7 @@ sources bumps that role alone.
 
 **A leader reporting 1.2.6 may be the old aligned-number image** (same code as
 1.2.4, no receive fix) rather than the shipped one. The number collides; reflash
-this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
+this directory's `gripper/tc-gu-01-master-1.2.6.bin` if you are not sure. See
 docs/FIRMWARE.md.
 
 The leader is at 1.2.6 while the follower is at 1.2.16 for that reason: 1.2.7,
@@ -166,7 +180,7 @@ The manifest's CRC32 is the same value `ota_update.py` prints and sends in
 ```bash
 python -c "
 from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/gripper/tc-gu-01-master-1.2.6.bin','rb').read())))"
 # -> 0x885b8706
 ```
 
