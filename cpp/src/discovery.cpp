@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <optional>
 #include <regex>
+#include <set>
 #include <system_error>
 
 namespace xense::taccap::discovery {
@@ -94,18 +95,23 @@ std::string parse_ch343_serial(const std::string& path) {
 
 std::vector<McuEndpoint> scan_mcus() {
     std::vector<McuEndpoint> out;
-    std::error_code ec;
-    fs::path by_id = "/dev/serial/by-id";
-    if (!fs::is_directory(by_id, ec)) return out;
-    for (auto& e : fs::directory_iterator(by_id, ec)) {
-        if (ec) break;
-        const std::string p = e.path().string();
-        // Only the if02 interface of the CH343 dual-serial is the MCU control
-        // link. The chip SN is kept for identification only — it is NOT used to
-        // decide the side (that comes from the firmware SN / GetDevType later).
-        const auto sn = parse_ch343_serial(p);
-        if (sn.empty()) continue;
-        out.push_back({p, sn});
+    std::set<std::string> seen;
+
+    // Prefer stable by-id links, but keep the raw tty fallback used by
+    // SerialBus::list_ports(). Jetson images commonly omit udev's
+    // /dev/serial/by-id directory, even though /dev/ttyACM* is usable.
+    for (const auto& p : bus::SerialBus::list_ports()) {
+        const auto chip_sn = parse_ch343_serial(p);
+        std::error_code ec;
+        const auto canonical = fs::weakly_canonical(p, ec).string();
+        const auto key = ec || canonical.empty() ? p : canonical;
+        if (!seen.insert(key).second) continue;
+
+        // by-id entries must be the CH343 dual-serial MCU interface. Raw tty
+        // nodes have no chip serial in their name; scan_all() will identify
+        // them from the firmware SN / protocol probe below.
+        if (p.find("/dev/serial/by-id/") == 0 && chip_sn.empty()) continue;
+        out.push_back({p, chip_sn});
     }
     return out;
 }

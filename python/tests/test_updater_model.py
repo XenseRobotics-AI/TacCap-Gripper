@@ -101,6 +101,7 @@ class ModelTests(unittest.TestCase):
         flow._read_uptime = Mock(return_value=200)
         flow._scan_for = Mock(return_value=None)
         flow._RestartDetector = Mock()
+        flow._RestartDetector.return_value.reset_from = "stale-candidate"
         self.device.endpoint = Mock(return_value="endpoint")
         with (
             patch.object(self.module.time, "monotonic", side_effect=[0, 1, 4, 4, 181]),
@@ -109,6 +110,7 @@ class ModelTests(unittest.TestCase):
         ):
             type(self.device).power_cycle(self.device, "test")
         flow._RestartDetector.return_value.observe.assert_not_called()
+        self.assertIsNone(flow._RestartDetector.return_value.reset_from)
         self.assertTrue(
             any(c.args[0] == "power_status" for c in self.device.emit.call_args_list)
         )

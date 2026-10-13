@@ -190,6 +190,10 @@ class Device:
                 try:
                     ep = flow._scan_for(self.identity)
                     if ep is None:
+                        # A vanished USB node is a sampling gap, not an
+                        # observed low uptime. Do not carry a pre-gap rollback
+                        # candidate into a newly enumerated port.
+                        detector.reset_from = None
                         detail = "未发现目标 USB 设备，请检查 USB 连接和设备供电"
                     else:
                         uptime = flow._read_uptime(ep, self.identity)
