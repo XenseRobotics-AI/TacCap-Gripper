@@ -70,6 +70,13 @@ class App(QMainWindow):
         super().__init__()
         self.events = queue.Queue()
         self.busy = False
+        self.updating = False
+        self.task_serial = 0
+        self.active_task = None
+        self.discard_read = False
+        self.pending_scan = None
+        self.previous_identity = None
+        self.emit_context = threading.local()
         self.activity = Activity()
         self.popup = None
         self.devices = []
@@ -96,7 +103,7 @@ class App(QMainWindow):
 
     def auto_scan(self):
         if self.auto_connect and not self.busy and not self.devices:
-            self.scan()
+            self.scan(follow_single=False)
 
     def effective_role(self):
         if self.selected_identity:
@@ -116,7 +123,7 @@ class App(QMainWindow):
         self.set_tone("running")
         self.info.setText("正在查找匹配设备…")
         self.fit_contents()
-        self.scan()
+        self.scan(follow_single=False)
 
     def update_actions(self):
         self.start.setEnabled(
@@ -238,7 +245,7 @@ class App(QMainWindow):
         self.text.appendPlainText(line)
 
     def emit(self, kind, value):
-        self.events.put((kind, value))
+        self.events.put((kind, value, getattr(self.emit_context, "task", None)))
 
     def ask(self, title, text):
         reply = queue.Queue()
@@ -249,6 +256,10 @@ class App(QMainWindow):
         if self.busy:
             return
         self.busy = True
+        self.updating = updating
+        self.task_serial += 1
+        task = self.active_task = self.task_serial
+        self.discard_read = False
         self.activity.begin("准备更新，请稍候" if updating else self.status.text())
         self.progress.setRange(0, 0)
         self.status.setText(self.activity.stage)
@@ -258,8 +269,11 @@ class App(QMainWindow):
         self.refresh_activity()
         for control in self.controls:
             control.setEnabled(False)
+        # Read-only refresh can be queued; a firmware/model write keeps it locked.
+        self.refresh.setEnabled(not updating)
 
         def work():
+            self.emit_context.task = task
             try:
                 fn()
             except Exception as exc:
@@ -275,8 +289,25 @@ class App(QMainWindow):
 
         threading.Thread(target=work, daemon=False).start()
 
-    def scan(self, *_):
+    def scan(self, *_, follow_single=True):
+        if self.updating:
+            return
+        if self.selected_identity is not None:
+            self.previous_identity = self.selected_identity
+        self.selected_identity = None
+        self.current_info = None
+        self.devices = []
+        self.combo.clear()
+        self.model_row.hide()
+        self.info.setText("重新扫描设备，请稍候…")
+        self.update_actions()
+        if self.auto_connect:
+            self.scan_timer.start(5000)
         if self.busy:
+            # Finish/close the old handle before opening another; drop its results.
+            self.discard_read = True
+            self.pending_scan = follow_single
+            self.status.setText("等待旧读取结束，随后重新扫描设备…")
             return
         self.set_tone("running")
         self.status.setText("正在扫描设备…")
@@ -288,24 +319,32 @@ class App(QMainWindow):
 
             devices = discover()
             if role:
-                devices = [
+                matched = [
                     e
                     for e in devices
                     if core.role_from_sn(e[0]) == ("slave" if role == 1 else "master")
                 ]
+                if not matched and follow_single and len(devices) == 1:
+                    self.emit("detected_role", core.role_from_sn(devices[0][0]))
+                else:
+                    devices = matched
             self.emit("devices", devices)
 
         self.launch(work)
 
     def inspect(self, index=None):
+        if self.busy:
+            return
         index = self.combo.currentIndex()
-        if index < 0:
+        if index < 0 or index >= len(self.devices):
             return
         identity = self.devices[index]
         if identity != self.selected_identity:
             self.selected_identity = identity
             self.current_info = None
-            self.overrides.clear()
+            if identity != self.previous_identity:
+                self.overrides.clear()
+            self.previous_identity = None
             self.apply_defaults()
         self.status.setText("正在连接并读取设备信息…")
 
@@ -454,9 +493,13 @@ class App(QMainWindow):
     def drain(self):
         for _ in range(200):
             try:
-                kind, value = self.events.get_nowait()
+                kind, value, task = self.events.get_nowait()
             except queue.Empty:
                 return
+            if task is not None and (
+                task != self.active_task or (self.discard_read and kind != "idle")
+            ):
+                continue
             if kind == "progress":
                 self.activity.update(value["done"], value["total"], value["unit"])
                 if value["total"] > 0:
@@ -500,8 +543,18 @@ class App(QMainWindow):
                     self.popup.accept()
                     self.popup = None
                 self.set_stage("断电检测结束，继续检查结果")
+            elif kind == "detected_role":
+                self.role_filter.blockSignals(True)
+                self.role_filter.setCurrentIndex(2 if value == "master" else 1)
+                self.role_filter.blockSignals(False)
+                self.log(
+                    "检测到新连接的"
+                    + ("主爪" if value == "master" else "从爪")
+                    + "，已切换设备类型"
+                )
+                self.apply_defaults()
             elif kind == "devices":
-                previous = self.selected_identity
+                previous = self.previous_identity or self.selected_identity
                 self.devices = value
                 self.combo.clear()
                 self.combo.addItems([f"{sn}  ·  USB {usb}" for sn, usb in value])
@@ -553,7 +606,12 @@ class App(QMainWindow):
                 self.set_tone(tone)
                 self.status.setText(status)
             elif kind == "connection_error":
-                self.scan_timer.stop()
+                self.previous_identity = self.selected_identity
+                self.selected_identity = None
+                self.devices = []
+                self.combo.clear()
+                if self.auto_connect:
+                    self.scan_timer.start(5000)
                 self.model_row.hide()
                 self.current_info = None
                 if "motor" not in self.overrides:
@@ -574,9 +632,16 @@ class App(QMainWindow):
                     self.progress.setValue(0)
                     self.progress.setFormat("等待下一步")
                 self.busy = False
+                self.updating = False
+                self.active_task = None
+                self.discard_read = False
                 for control in self.controls:
                     control.setEnabled(True)
                 self.update_actions()
+                if self.pending_scan is not None:
+                    follow_single = self.pending_scan
+                    self.pending_scan = None
+                    QTimer.singleShot(0, lambda: self.scan(follow_single=follow_single))
             else:
                 if kind != "stage":
                     self.log(value)

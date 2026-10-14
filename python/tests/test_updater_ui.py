@@ -362,6 +362,122 @@ class UpdaterUiTests(unittest.TestCase):
             self.window.close()
         self.assertTrue(self.window.isVisible())
 
+    def wait_for_ui(self, condition, timeout=2):
+        import time
+
+        deadline = time.monotonic() + timeout
+        while not condition() and time.monotonic() < deadline:
+            self.app.processEvents()
+            time.sleep(0.01)
+        self.app.processEvents()
+
+    def fake_devices(self, devices, info=None):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        return SimpleNamespace(
+            discover=Mock(return_value=devices),
+            Device=Mock(return_value=SimpleNamespace(inspect=Mock(return_value=info))),
+        )
+
+    def test_refresh_follows_single_follower_after_master_unplug(self):
+        old = ("TCGU01A00Z0001m", "old-usb")
+        new = ("TCGU01A00Z0002s", "new-usb")
+        info = dict(model="EL05", recorded=True, mcu="1.2.16", motor="未知")
+        with patch.object(self.window, "scan"):
+            self.window.role_filter.setCurrentIndex(2)
+        self.window.devices = [old]
+        self.window.combo.addItem("old master")
+        self.window.selected_identity = old
+        self.window.current_info = dict(model="主爪", recorded=True)
+        with patch.dict(sys.modules, {"device": self.fake_devices([new], info)}):
+            self.window.scan()
+            self.wait_for_ui(lambda: self.window.current_info == info)
+        self.assertEqual(self.window.selected_identity, new)
+        self.assertEqual(self.window.role_filter.currentIndex(), 1)
+        self.assertEqual(self.window.current_info, info)
+        self.assertTrue(self.window.file_labels["motor"].isVisible())
+        self.assertTrue(self.window.start.isEnabled())
+
+    def test_refresh_queues_after_old_read_and_discards_its_error(self):
+        import threading
+
+        old = ("TCGU01A00Z0001m", "old-usb")
+        new = ("TCGU01A00Z0002s", "new-usb")
+        info = dict(model="EL05", recorded=True, mcu="1.2.16", motor="未知")
+        release = threading.Event()
+        self.window.devices = [old]
+        self.window.selected_identity = old
+        self.window.current_info = dict(model="主爪", recorded=True)
+        self.window.auto_connect = True
+        self.window.scan_timer.start(5000)
+
+        def old_read():
+            release.wait(2)
+            self.window.emit("connection_error", "old device disconnected")
+            self.window.emit(
+                "info",
+                (old, dict(model="主爪", recorded=True, mcu="1.2.6", motor="不适用")),
+            )
+
+        with patch.dict(sys.modules, {"device": self.fake_devices([new], info)}):
+            self.window.launch(old_read)
+            try:
+                self.assertTrue(self.window.refresh.isEnabled())
+                self.window.scan()
+                self.assertIsNone(self.window.current_info)
+                self.assertIsNone(self.window.selected_identity)
+                self.assertEqual(self.window.devices, [])
+                self.assertFalse(self.window.start.isEnabled())
+            finally:
+                release.set()
+                self.wait_for_ui(lambda: self.window.current_info == info)
+        self.assertEqual(self.window.selected_identity, new)
+        self.assertEqual(self.window.current_info, info)
+        self.assertTrue(self.window.scan_timer.isActive())
+        self.assertNotIn("old device disconnected", self.window.text.toPlainText())
+        self.assertFalse(self.window.busy)
+
+    def test_refresh_during_update_preserves_target_and_blocks_refresh(self):
+        import threading
+
+        identity = ("TCGU01A00Z0002s", "target-usb")
+        info = dict(model="EL05", recorded=True)
+        release = threading.Event()
+        self.window.devices = [identity]
+        self.window.selected_identity = identity
+        self.window.current_info = info
+        module = self.fake_devices([identity], info)
+        with patch.dict(sys.modules, {"device": module}):
+            self.window.launch(lambda: release.wait(2), updating=True)
+            try:
+                self.assertFalse(self.window.refresh.isEnabled())
+                self.window.scan()
+                self.assertEqual(self.window.selected_identity, identity)
+                self.assertIs(self.window.current_info, info)
+                module.discover.assert_not_called()
+            finally:
+                release.set()
+                self.wait_for_ui(lambda: not self.window.busy)
+
+    def test_failed_read_clears_cache_and_restores_auto_discovery(self):
+        identity = ("TCGU01A00Z0001m", "old-usb")
+        self.window.auto_connect = True
+        self.window.scan_timer.stop()
+        self.window.devices = [identity]
+        self.window.selected_identity = identity
+        self.window.current_info = dict(model="主爪", recorded=True)
+        self.window.emit("connection_error", "device disappeared")
+        self.window.drain()
+        self.assertEqual(self.window.devices, [])
+        self.assertIsNone(self.window.selected_identity)
+        self.assertIsNone(self.window.current_info)
+        self.assertTrue(self.window.scan_timer.isActive())
+        self.assertFalse(self.window.start.isEnabled())
+        with patch.object(self.window, "scan") as scan:
+            self.window.auto_scan()
+            scan.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
