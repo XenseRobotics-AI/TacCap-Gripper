@@ -12,6 +12,9 @@ if not getattr(sys, "frozen", False):
 
 
 def main():
+    from fontconfig_runtime import configure_fontconfig
+
+    configure_fontconfig()
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(

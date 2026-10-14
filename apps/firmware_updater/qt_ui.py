@@ -13,6 +13,7 @@ import core
 from activity import Activity
 from compact_layout import STYLE, build, palette
 from desktop_integration import desktop_id, integrate_appimage
+from fontconfig_runtime import configure_fontconfig
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
@@ -692,6 +693,7 @@ class App(QMainWindow):
 def main(args):
     if os.geteuid() == 0:
         raise SystemExit("请以普通用户运行，禁止 sudo 启动升级界面。")
+    configure_fontconfig()
     app = QApplication(sys.argv[:1])
     family = configure(app)
     integration_error = None

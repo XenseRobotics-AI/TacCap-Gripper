@@ -77,6 +77,9 @@ sudo usermod -aG dialout "$USER"
 应用菜单、窗口和任务栏使用用户提供的夹爪图片图标。
 软件包内含冻结的 Python 解释器、Qt、Noto 中文字体与匹配的原生 SDK，不使用用户 conda 或用户
 site-packages。启动器清除 Python/动态库路径注入变量；系统图形库由 apt 依赖提供。
+在 Qt 初始化字体之前，Linux 启动入口使用 `/etc/fonts/fonts.conf` 和 `/etc/fonts`
+作为进程内 Fontconfig 配置，避免冻结库寻找构建机的 conda 路径。显式设置的
+`FONTCONFIG_FILE` 或 `FONTCONFIG_PATH` 保持不变；不会修改系统字体配置或隐藏加载错误。
 不自动添加用户到组、不更改全局串口权限。随包包含主爪 MCU 1.2.6、从爪 MCU 1.2.16、
 EL05 1.0.5.0.4、RS00 0.0.3.32，四份镜像构建和加载时都按 SHA-256 校验。
 这是本次仓库/本地审核清单的版本快照，不会联网自动下载更高版本。
