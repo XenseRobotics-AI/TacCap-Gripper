@@ -6,7 +6,7 @@ impedance_control.py / force_position_control.py 验的是「到位」和「到�
 可分」,那是功能。功能对了控制仍然可以很难看:爪子一边走一边抖,平均速度只有命令
 的七成。那正是重构前的实测状态。
 
-指标和 `docs/CONTROL_REFACTOR.md` §1.2 的基线表一致,好直接对比:
+指标和重构前的基线表一致,好直接对比:
 
     相对速度纹波 = σ(|v|) / 均值(|v|)     行进段,掐掉加减速两头
     峰峰         = max(|v|) - min(|v|)
@@ -217,7 +217,7 @@ def main() -> int:
         imp_speed = imp_cfg.max_position_torque_nm / imp_cfg.kd
         bad += run("ImpedanceController", mk_imp, imp_speed, g, args.rounds)
 
-    print("\n基线(docs/CONTROL_REFACTOR.md §1.2,重构前,10 轮):")
+    print("\n基线(重构前,10 轮):")
     print("    闭合 纹波 37%  峰峰 0.59  12-13Hz  均速/命令 77%")
     print("    张开 纹波 24%  峰峰 0.51  20Hz     均速/命令 94%")
     return 1 if bad else 0

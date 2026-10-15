@@ -25,8 +25,9 @@ they do **share USB bandwidth**; see [Running all three at once](#4-running-all-
 > `right`** (or with a serial number directly). There is no `--sn` / `--side` /
 > `--device` flag — see [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right).
 
-Installation, device permissions and the `PYTHONPATH` / `LD_LIBRARY_PATH` traps are
-covered in [docs/INSTALL.md](INSTALL.md). Everything below assumes the `xense-taccap`
+Installation is covered in [docs/INSTALL.md](INSTALL.md); complete the one-time
+[host setup](../README.md#host-setup-one-time) (`dialout` group, ModemManager udev
+rule, MJPEG camera format) first. Everything below assumes the `taccap`
 env is activated and `import xense.taccap` works.
 
 ---
@@ -348,16 +349,6 @@ Also, `grasp_torque_nm` is **not a hard ceiling**: during a steady hold the meas
 feedback runs 5~7% above the budget. The budget shapes the command; what actually
 constrains the output is the firmware's motion envelope.
 
-> Before 2026-09 what ran here was a host-side contact state machine (`kp=0`
-> velocity-damped close → stall decision → pure `tau_ff` hold). It was removed for
-> three reasons: it duplicated what the MCU already does at 500 Hz
-> (`task_canmotor_is_stalled()`, and `docs/CONTROL_LAYERING.md` §3 had long since
-> assigned contact detection to the firmware); to keep the stall signature clean, the
-> travel phase was made `kp=0` **deliberately**, which measured out at 37% velocity
-> ripple and a mean speed only 77% of the commanded value; and its most central
-> judgement — telling "arrived" apart from "blocked" — is physically continuous in the
-> empty-jaw case and therefore unreliable. See `docs/CONTROL_REFACTOR.md`.
-
 **State here is an observation, not a control state.** `snapshot()` derives, every
 frame:
 
@@ -468,7 +459,7 @@ Examples:
 python python/examples/impedance_control.py right
 python python/examples/force_position_control.py right --grasp-torque 0.35
 
-# motion-safety envelope (the firmware's torque and thermal protection; off by default, written once per device)
+# motion-safety envelope (the firmware's torque and thermal protection; written once per device, see 1.5)
 python python/examples/impedance_control.py --show-envelope
 python python/examples/impedance_control.py --set-envelope
 ```
@@ -516,6 +507,48 @@ control the ACK round-trip corrupts telemetry frames.
 Runnable examples: `impedance_control.py`, `force_position_control.py` (above), and
 `gripper_console.py` (interactive console, both modes).
 
+### 1.5 Motion-safety envelope, LEDs and diagnostics
+
+**Motion-safety envelope.** The firmware's torque and thermal protection, stored in
+the follower's flash and enforced on every motion command — including MIT frames
+not sent by this SDK. Follower firmware 1.2.12+ enforces a model default until one
+is written; older firmware enforces nothing. Write it once per follower; there are
+no numbers to choose, the SDK derives them from the motor the device reports:
+
+```python
+a = g.audit_envelope()      # stored / effective / recommended, never writes
+g.ensure_envelope()         # writes only when the stored record is not at spec
+# call both before a controller starts or after it stops, never while it runs
+```
+
+| Field | Value |
+| --- | --- |
+| `peak_torque_nm` | motor's rated torque (EL05 1.8, RS00 5.0 N·m) — transient ceiling during motion |
+| `cont_torque_nm` | motor's continuous stall rating (EL05 1.1, RS00 3.6 N·m) — what a blocked jaw may hold indefinitely |
+| temperature | derate from 90 °C, wall at 100 °C |
+
+The grip force a hold actually delivers is lowered by the firmware as the motor
+heats, so `grasp_torque_nm` is an upper bound, not a constant.
+
+**LEDs and power-on auto-calibration:**
+
+```python
+g.led.set(t.Ws2812Mode.Override, 0, 255, 0, brightness=120)   # solid green
+g.led.effect(t.Ws2812EffectType.ColorBreathe, 0, 0, 255)      # blue breathe
+g.led.off()
+
+cfg = g.get_auto_cal_config()     # when enabled, the follower finds its closed
+g.set_auto_cal_config(cfg)        # and open stops by itself on power-up
+```
+
+**Diagnostics** (either role). `g.diagnostics.uart_stats()` returns the firmware's
+own UART counters (`tx_calls_ok`, `tx_fail_timeout`, `rx_overflow`, `rx_errors`,
+`rx_rearms`, ...). Compare `tx_calls_ok` with what the host decoded over the same
+window: if the counts agree but data is missing, the loss happened after the MCU
+(cable or USB bridge). Firmware logging (`g.diagnostics.set_log_config(...)`) goes to
+a debug UART that is not routed over USB and costs real-time performance — leave it
+off unless asked to enable it.
+
 ---
 
 ## 2. Vision: the wrist camera
@@ -532,7 +565,7 @@ from xense.taccap import Camera, ColorMode
 cam = Camera(device="/dev/video2", width=640, height=480, fps=30.0,
              use_mjpg=True, color_mode=ColorMode.BGR)
 
-frame = cam.read(timeout_ms=500)      # synchronous one-shot read; returns None on failure
+frame = cam.read()                    # synchronous one-shot read; returns None on failure
 print(frame.frame_index, frame.image.shape)
 
 cam.start(lambda f: handle(f.image))  # or asynchronously: a callback on a background thread
@@ -691,11 +724,15 @@ orchestration), see `lerobot/cameras/xense/camera_xense.py` on the `lerobot` sid
 
 They are independent, but running them together has a few known traps:
 
-- **USB bandwidth is shared.** Two OG sensors plus a wrist camera all running MJPG at
-  full frame rate already eat a substantial share of the bus. The gripper is on a
-  serial port and is unaffected, but the cameras squeeze each other. If you really
-  intend to collect with the full set, measure the actual frame rate first; do not
-  assume the nominal one.
+- **USB bandwidth is shared — every camera must run MJPEG.** The cameras share a
+  USB 2.0 link; a single uncompressed YUYV stream (640×480 @ 30 fps ≈ 147 Mbit/s)
+  is enough to make the next camera fail with `No space left on device` or drop
+  frames. Keep `use_mjpg=True`, and confirm with
+  `v4l2-ctl -d <device> --get-fmt-video` (see the README's
+  [Host setup](../README.md#3-wrist-camera-always-mjpeg)). Even in MJPEG, two OG
+  sensors plus a wrist camera use a substantial share of the bus, so measure the
+  actual frame rate on a full rig rather than assuming the nominal one. The gripper
+  itself is on a serial port and is unaffected.
 - **Who holds the UVC device.** In production an external camera service holds
   `/dev/video*`, and in that case do **not** open the same node again with
   `open_cameras=True` or a bare `Camera` — it will either fail or grab the device
@@ -722,14 +759,16 @@ They are independent, but running them together has a few known traps:
 
 | Symptom | Most likely |
 | --- | --- |
-| `scan_grippers()` returns nothing | Serial port permissions (see [INSTALL.md](INSTALL.md)), or a cable that is not seated |
+| `scan_grippers()` returns nothing, or `role=Unknown` | Not in the `dialout` group (see the README's [Host setup](../README.md#host-setup-one-time)), or a cable that is not seated |
+| `Device or resource busy` right after plugging in | ModemManager is probing the port — add the udev rule from [Host setup](../README.md#2-keep-modemmanager-off-the-gripper-serial-port) |
+| Camera fails with `No space left on device`, or drops frames | Not streaming MJPEG — see [Host setup](../README.md#3-wrist-camera-always-mjpeg) |
 | `fw_sn` empty / `Side.Unknown` | The firmware has no SN burned, or predates V1.6 |
 | Rectified image is all black | The all-zero record from `read_fisheye()` — use `resolve_fisheye()` instead |
 | Rectified image looks off-centre | Not necessarily wrong; the principal point was never guaranteed to be at the image centre |
 | Recorded colours are inverted | A bare `Camera` is BGR and `wrist_camera` is RGB; they got mixed up |
 | Motor status frames lost in blocks | Submission phase (use one of the two controllers, don't send frames yourself), or a firmware flash without a power-cycle and replug |
 | A C++/bindings change has no effect in Python | The consuming env was not reinstalled; see [INSTALL.md](INSTALL.md) |
-| `import xense.taccap` complains about `libopencv_core.so` | Missing `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` |
+| `import xense.taccap` complains about `libopencv_core.so` | Install not done from the activated env — reinstall per [INSTALL.md](INSTALL.md); do not set `LD_LIBRARY_PATH` |
 
 More detail by topic: [INSTALL.md](INSTALL.md) · [CALIBRATION.md](CALIBRATION.md) ·
 [FIRMWARE.md](FIRMWARE.md) · [EXAMPLES.md](EXAMPLES.md) ·

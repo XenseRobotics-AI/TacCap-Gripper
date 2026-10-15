@@ -56,7 +56,7 @@ FORCE_POSITION_REMOVED = [
     "startup_guard_ms",
     "contact_samples",
     "close_position",
-    # 接触状态机随 2026-09 重构一并删除,见 docs/CONTROL_REFACTOR.md
+    # 接触状态机随 2026-09 重构一并删除
     "arrival_band_rad",
     "brake_distance_rad",
     "startup_guard_ms",

@@ -51,8 +51,7 @@
 // got the contact state machine deleted from ForcePositionController:
 //
 //  1. It duplicated the MCU. task_canmotor_is_stalled() runs an equivalent test
-//     at 500 Hz and docs/CONTROL_LAYERING.md section 3 assigns contact
-//     detection to the firmware. Two copies of one physical event drift apart.
+//     at 500 Hz, and contact detection belongs to the firmware. Two copies of one physical event drift apart.
 //  2. Its central judgement was unmeasurable. "Blocked" and "grasping" are the
 //     same observation -- a jaw that stopped moving with the clamp binding --
 //     and nothing in position or velocity separates them. The guard resolved

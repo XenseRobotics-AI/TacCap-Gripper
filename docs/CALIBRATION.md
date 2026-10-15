@@ -1,7 +1,5 @@
 # 标定
 
-<!-- 从 README.md 拆出，保持内容不变；README 只保留入门路径。 -->
-
 ## Calibration
 
 Mechanical slop and small post-zero drift can make the encoder report

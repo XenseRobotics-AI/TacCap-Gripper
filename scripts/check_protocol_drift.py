@@ -336,7 +336,7 @@ def main() -> int:
     if not cmd_h.is_file() or not data_h.is_file():
         msg = (
             f"no firmware headers under {fw_dir} — clone tc-gu-01 there "
-            f"(see README 'Firmware / PC GUI reference repos')"
+            f"(see docs/FIRMWARE.md 'Firmware / PC GUI reference repos')"
         )
         if args.require:
             die(msg)

@@ -2,7 +2,7 @@
 //
 // ForcePositionPolicy is ONE CONTROL LAW plus guards. These tests exercise the
 // law's bounds and the observations derived from it. The contact state machine
-// they used to cover is gone -- see docs/CONTROL_REFACTOR.md and the header.
+// they used to cover is gone -- see the header.
 
 #include <gtest/gtest.h>
 

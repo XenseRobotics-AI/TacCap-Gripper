@@ -1,833 +1,303 @@
 # taccap-gripper
 
-> 本文是 [README.md](README.md) 的中文翻译,英文版为准。
+[English](README.md)
 
-面向 **TacCap-Gripper** 的 C++17 / Python SDK —— 这是 XenseRobotics 的多模态
-触觉数据采集夹爪。只有一个命名空间:C++ 里是 `xense::taccap::`,Python 里是
-`xense.taccap`。
+**TacCap-Gripper** 的 C++17 / Python SDK —— XenseRobotics 的多模态触觉数据采集夹爪。
+统一命名空间:C++ 为 `xense::taccap::`,Python 为 `xense.taccap`。
 
-## 它是怎么搭起来的
+SDK 只用 C++ 实现一次,Python 包是同一份代码的 pybind11 绑定,两种语言行为完全一致。
+上位机通过 TC-GU-01 串口协议与夹爪 MCU 通信,由 MCU 驱动电机 —— 实时安全(运动安全包络、
+堵转与过热保护)在固件里执行,上位机无法绕过。
 
-**一套实现,两种语言。** 整个 SDK 都是 C++17;Python 包是在同一份代码之上的
-pybind11 绑定,不是第二份移植。修一次两边都修好,你从 Python 上量到的行为就是
-C++ 的行为。
+## 功能
 
-上位机从不直接碰电机:它用 TC-GU-01 串口协议和夹爪的 MCU 通信,再由 MCU 通过
-FDCAN 转发给 RobStride 电机。
-所以本 SDK 里每一次 `Motor` 调用都是发给 MCU 的一条命令,而不是一次 CAN 写入
-—— 这正是 MCU 能施加上位机绕不过去的限制的原因。
+- **主爪与从爪** —— `LeaderGripper`(手持主爪:编码器、IMU、按键)与
+  `FollowerGripper`(带 RobStride 电机的执行夹爪)。
+- **控制器** —— `ImpedanceController` 跟随位置,`ForcePositionController` 以有界力抓取。
+  两者接口相同,只有两个非阻塞调用:`set_target(0..1)` 和 `snapshot()`。
+- **归一化开口度** —— `0` = 闭合,`1` = 张开,单次读取和流式数据都提供。
+- **传感器** —— IMU、编码器、LED、按键、上电自动标定。
+- **腕部相机** —— V4L2 采集,使用设备自身存储的内参做鱼眼去畸变。
+- **零配置发现** —— 左右与主从角色由固件烧录的序列号决定,无需逐台配置。
+- **OTA 升级** —— 夹爪 MCU 固件与从爪电机固件均可通过 USB 升级。
 
-**四层,每一层都能单独用。** L1 是 TC-GU-01 线上协议 —— 字节填充组帧、CRC、
-带类型的载荷编解码。L2 是异步传输层,它持有串口,按序列号把 ACK 匹配回对应
-命令,并把 DATA 帧分发给按命令订阅的订阅者。L3 是带类型的组件(`Motor`、
-`Encoder`、`IMU`、`Camera`、`Led`、`Calibration`、`Diagnostics`)。L4 把它们
-聚合成 `LeaderGripper` / `FollowerGripper`,并加上后台控制器。你可以打开一个
-`Transport` 直接收发帧,也可以打开一台夹爪、自始至终不见一帧。参见
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-
-**两个线程,而用户代码一个关键线程都不占。** 传输层的读线程只做读取、解析、
-交付这三件事;订阅回调跑在另一个独立的分发线程上。这个拆分是承重的:Python
-回调要拿 GIL,而一个卡住读线程的回调会卡住 `read()`,进而把内核 tty 缓冲冲满。
-控制器再加一个线程,它每收到一帧电机状态就恰好提交一条命令 —— 写在已知 MCU
-空闲的那个窗口里,而不是按一个自由运行的时钟去写。
-
-**实时安全归固件管,上位机不再留第二份副本。** MCU 以 500 Hz 跑运动安全包络和
-堵转判定,它是 MIT 命令通路上唯一一层谁都绕不过去的。所以本 SDK 没有上位机侧的
-接触检测,也没有第二道堵转保护 —— 把控制器的力矩预算跑饱和,*那就是*接触。
-两者一旦可能分歧,以设备为准。参见
-[docs/CONTROL_LAYERING.md](docs/CONTROL_LAYERING.md)。
-
-**驱动电机要通过控制器。** `ImpedanceController` 用来跟随位置,
-`ForcePositionController` 用来抓取;两者都只暴露同样两个非阻塞调用 ——
-`set_target(0..1)` 和 `snapshot()`。原始的 `submit_*` 电机原语仍然在,但它们是
-裸的 MIT 帧,通路上没有任何上位机侧的保护。
-
-**没有任何东西需要按单台配置。** 左右、主从角色和标定都是从设备上读出来的:
-发现流程读的是固件烧录的序列号(绝不是 CH343 USB 芯片的序列号),鱼眼内参和
-行程量程存在 MCU flash 里,所以一台夹爪换到哪个工位都自带自己的身份和标定。
-
-**哪些是刻意不做的。** 视触觉(OG)采集属于 `xensesdk` wheel,不在这里 ——
-`xense.taccap` 只覆盖夹爪协议加腕部相机。遥操作回路、抓取策略和 episode 录制都
-属于上层应用;本 SDK 提供实时原语,不提供策略。腕部 `Camera` 默认不开也是同一个
-道理:V4L2 设备通常被外部的相机服务占着,所以除非你传 `open_cameras=True`,
-夹爪聚合类不会去打开它。
-
-`lerobot-xense` 的一个 fork 通过 `taccap_gripper` 机器人类来消费本 SDK。它只是
-*import* `xense.taccap`,没有重新实现任何设备访问;用本 SDK 并不需要它。
-
-## 包含什么
-
-- **TC-GU-01 协议** —— 异步传输层、ACK 匹配、按命令订阅 DATA、字节填充组帧。
-- **`Motor`** —— 使能 / 失能 / 清故障,四种控制模式,阻塞的 `set_*` 和不等 ACK
-  的 `submit_*`。
-- **`ImpedanceController`** —— 跟随位置(遥操作、主从随动)。
-- **`ForcePositionController`** —— 抓取,力和速度是仅有的两个旋钮。
-- **归一化位置**,主从两种角色都有:`[0, 1]`,0 = 闭合,1 = 张开,单次读取和
-  每一个流式样本上都带。
-- **IMU、编码器、LED、按键**,以及上电自动标定。
-- **腕部相机**,用本机自己存的内参做鱼眼去畸变。
-- **`Calibration`** —— 持久化在 flash 里的鱼眼记录和编码器最大值记录。
-  参见 [docs/CALIBRATION.md](docs/CALIBRATION.md)。
-- **`Diagnostics`** —— 固件自己的 UART 计数器,能把「MCU 根本没发出去的帧」和
-  「发出去却在路上丢了的帧」区分开。
-- **电机型号与电机 OTA**(从爪)—— `Motor.get_model` / `set_model` 记录装的是哪款
-  RobStride 电机(固件 1.2.7+),`Motor.can_ext_xfer` 把扩展 CAN 帧转发给电机
-  (1.2.8+),`MotorOtaSession` 借这条转发通道刷电机自己的固件。
-- **OTA**,以及按固件烧录 SN 的零配置设备发现。
-
-视触觉(OG)采集在 Python 层通过 `xensesdk` wheel 完成 —— `xense.taccap` 只暴露
-夹爪协议 + 腕部相机这一层接口。
-
-逐条提交的完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+不在本 SDK 范围内:视触觉(OG)采集由 `xensesdk` wheel 提供;遥操作、策略与数据录制属于
+上层应用(例如 LeRobot 集成)。
 
 ---
 
-## 固件
+## 环境要求
 
-夹爪跑自己的固件,而本 SDK 要求固件足够新。
-
-**`FollowerGripper` 拒绝打开固件低于 1.2.5 的从爪** —— 它是直接抛异常,而不是
-给个警告,因为旧固件在控制通路上没有堵转保护,而且会把归一化的 0.0 放在闭合
-限位以外的地方。`Config::allow_outdated_firmware=True` 可以在不驱动的前提下
-查看这类设备。主爪不设这个门槛。里面的电机自己还有一条下限,见
-[RobStride 电机固件](#robstride-电机固件)。
-
-**可刷写的固件镜像放在 [`firmware/`](firmware/)** —— 固件源码不在。按夹爪的
-角色选镜像,角色是固件 SN 的最后一个字符(`m` 主 / `s` 从),而不是看它装在
-哪只手上:
-
-```bash
-python python/examples/ota_update.py slave left    # 角色选择器决定用哪个镜像
-python python/examples/ota_update.py --all         # 所有已连接的夹爪
-```
-
-刷错角色的镜像会把 MCU 刷成砖,只能靠 SWD 探针恢复,所以刷之前先核对 SN。
-
-**任何一次刷写之后都要断电重启。** 从爪:拔掉 **24V 电源线**,等约 2 秒再插回,
-USB 线可以不拔 —— 从爪的 MCU 和电机都靠 24V 运行,只拔 USB 复位不了从爪。
-主爪没有 24V:拔插它的 USB 即可。`gripper.device.heartbeat().uptime_ms` 从接近 0
-重新计起,就说明真的断过电了。bank-swap 重启只是一次软复位,它会让设备看上去一切正常,却在悄悄丢状态帧。
-
-**主从两个角色的版本号是各自独立的。** 写这段时主爪是 1.2.6、从爪是 1.2.16,
-谁也不比谁旧;一对夹爪的两半 `gripper.firmware_version` 读出不同的数是正常的。
-**只在同一个角色内部比较版本号** —— 上面那些门槛都是从爪的数。**报 1.2.6 的主爪
-可能是两个不同的镜像**:当前的这个带控制串口接收修复;两个角色曾被强行同号那段
-时期刷的也报 1.2.6,但那是 1.2.4 的代码,不带修复。版本号分不出来,
-`g.diagnostics.uart_stats()` 应答 44 字节(`rx_errors` / `rx_rearms` 有意义)的
-才是当前镜像,拿不准就重刷。从爪这边,1.2.7 加了电机型号记录,1.2.8 加了电机 OTA
-用的 CAN 扩展帧转发,1.2.9 让电机的量程和限值跟随记录下来的型号,1.2.10 在新电机
-第一次上电时按电机固件版本自动识别并记录型号,1.2.11 修了控制串口一次溢出后命令
-通道永久失联(打开更旧的从爪时 SDK 会告警),1.2.12/1.2.13 让标定力矩、开合方向和
-默认运动包络跟随型号。
-
-[`firmware/README.md`](firmware/README.md) 里有镜像对照表、CRC32 值,以及其余的
-刷写细节。
-
-### RobStride 电机固件
-
-这说的是从爪**内部**那台 RobStride 电机 —— EL05 或 RS00 —— 不是夹爪的 MCU,
-而且 SDK **不会**强制检查电机版本:读电机版本需要从爪固件 1.2.6+
-(`motor.motor_version()`,命令 `0x58`),而实测 MIT 协议下电机根本不应答扩展帧,
-所以版本只能在私有协议下读到,开机检查没有可靠的立足点。
-
-**从爪固件 1.2.14 起,电机版本记在从爪 flash 里,MIT 下也读得到**:电机答不了时
-`motor.motor_version()` 返回这份记录,`from_flash` / `source` 标明来源(1 = 主机写入,
-2 = 私有协议开机时固件自动记下)。电机以私有协议开机时固件自己会记(新电机一定如此)。
-已经在 MIT 下的设备,由产线 SOP 用 `motor.set_motor_fw_version(...)` 写入,照铭牌
-填厂家写法即可 —— EL05 `"1.0.5.0.4"`、RS00 `"0.0.3.32"`;电机 OTA 之后也要再写一次。
-`MotorVersion.vendor_str` 按同样的写法显示。写入会回显 flash 记录,不一致就抛异常;读取从不写 flash。更旧的
-从爪固件在 MIT 下仍是 `valid == 0`。
-
-**电机固件要求:EL05 1.0.5.0.4 或更新,RS00 0.0.3.32 或更新。** 两条版本线各自
-编号、不可互比。低于下限的设备产线测试判失败(SDK 本身不强制,由产线测试工具判定)。
-
-同一台设备升级前后的实测:在 1.0.5.0.2 上,速度反馈读出来是一个不跟随运动的
-常值,运动纹波 117%;换到 1.0.5.0.4,同一台设备表现正常。因为这是同一台设备的
-前后对照,所以不是机器间差异 —— 但因果未获证实,真正值得记住的是速度反馈被
-破坏这件事:`snapshot().observation.velocity` 以及一切由它派生的量都会出错,
-而表面上只是看着有点怪,不像坏掉。
-
-**经夹爪的 USB-C 刷电机固件。** 从爪固件 1.2.8+ 会经 MCU 转发电机自己的 OTA,
-电机不用拆:
-
-```bash
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
-```
-
-(在代码里用 `MotorOtaSession`。)电机必须先切到**私有**协议 ——
-`motor.switch_protocol(MotorProtocol.Private)`,然后断 24V 约 2 秒再插回(USB 可以不拔)。
-RobStride 的 OTA 协议**不校验型号**,所以 `preflight()` 会拒绝型号与夹爪上记录的
-型号不一致的镜像。刷完后电机重启回 MIT,要再切回私有才能读版本。夹爪 OTA 也会
-把电机切回 MIT,所以先刷夹爪、再刷电机。在一台 RS00 上实测:0.0.3.22 → 0.0.3.32
-消除了运动抖动,`ForcePositionController` 在 1.1 rad/s 下的纹波约 5% —— 这就是
-RS00 下限定为 0.0.3.32 的依据(一台设备的升级前后对照,没做回刷复现)。
+| | |
+| --- | --- |
+| 操作系统 | Linux(Ubuntu 22.04+)。相机走 V4L2,不支持 macOS / Windows |
+| Python | 3.12 |
+| 构建 | `mamba` / `conda`(推荐 —— `environment.yml` 锁定了完整工具链) |
+| 固件 | 从爪 **≥ 1.2.5**(SDK 强制检查),见 [固件](#固件) |
 
 ## 安装
 
 ```bash
+git clone https://github.com/XenseRobotics-AI/TacCap-Gripper.git
+cd TacCap-Gripper
 mamba env create -f environment.yml && mamba activate taccap
 uv pip install -e . --no-build-isolation
 python -c "import xense.taccap as t; print(t.__version__)"
 ```
 
-`uv` 随环境一起装好,并且会自己认准当前激活的 conda 环境。用 `pip` 也行 ——
-参数完全一样。
+请保留 `--no-build-isolation`:它保证用环境里锁定的 `pybind11` 编译。修改 C++ 代码后需要
+重新安装 —— 可编辑安装仍会从 `site-packages` 加载已编译的扩展。纯 C++ 构建、测试与环境
+陷阱见 [docs/INSTALL.md](docs/INSTALL.md)。
 
-然后把检查挂上去,一次即可,这样它们在提交时就跑,而不是只在 CI 里跑:
+## 主机配置(一次性)
+
+第一次插上夹爪之前,先完成以下三步。
+
+### 1. 串口与相机权限
+
+夹爪 MCU 枚举为 `/dev/ttyACM*`(属 `dialout` 组),腕部相机为 `/dev/video*`(属 `video` 组)。
+用户不在 `dialout` 组时,SDK 能列出夹爪但打不开串口读固件 SN,于是 `scan_grippers()` 返回
+`role=Unknown` / 空 `firmware_sn`,打开时报 `Permission denied`。
 
 ```bash
-pre-commit install
+sudo usermod -aG dialout,video "$USER"
+# 注销后重新登录(或重启),然后重新插拔夹爪
 ```
 
-**为什么必须 `--no-build-isolation`。** `environment.yml` 把构建依赖
-(`pybind11`、`scikit-build-core`)和 C++ 依赖(`libopencv`、`spdlog`)钉在
-一起,这个参数的意思是「就按环境里钉住的版本来编」。不加它,安装器会在一个
-用完即弃的环境里、对着从 PyPI 拉下来的 `pybind11` 编译 —— 实测确认过:此时
-`pybind11_DIR` 指向 `~/.cache/uv/builds-v0/...` 而不是这个环境。pybind11 是
-纯头文件库,构建时在场的是哪一份,编进扩展里的就是哪一份,而本代码库在这里对
-版本敏感(见 `python/tests/test_numpy_views.py`)。
+### 2. 让 ModemManager 不要占用夹爪串口
 
-两个坑,每个都让人搭进去过一个下午:
+MCU 是 CH343 USB 转串口芯片(`1a86:55d2`)。每次热插拔,Ubuntu 默认安装的
+**ModemManager** 会用 AT 指令探测新串口并占用几秒,在这段时间内打开夹爪会失败:
 
-- 要在**已激活**的环境里安装,不要用绝对路径调用。否则 cmake 会在 `PATH` 上
-  找到一个其实是 GNU Make 的 `ninja`,然后报一个让人摸不着头脑的版本错误。
-- C++ 或绑定层的改动**在你没有到那个消费方环境里重装之前是不生效的** ——
-  editable 安装会把 Python 源码重定向到这个 checkout,但编译出来的扩展仍然是从
-  `site-packages` 提供的。
+```
+IoError: SerialBus: open(/dev/serial/by-id/usb-1a86_USB_Dual_Serial_...-if02): Device or resource busy
+```
 
-前置依赖、设备权限、纯 C++ 构建、重新构建 / 清理,以及 `PYTHONPATH` /
-`LD_LIBRARY_PATH` 的坑:**[docs/INSTALL.md](docs/INSTALL.md)**。
+典型现象:第一次启动正常,拔插后立即重启就报 *busy*。添加 udev 规则让 ModemManager
+忽略这类设备(不影响真正的调制解调器):
+
+```bash
+sudo tee /etc/udev/rules.d/99-taccap-ignore-modemmanager.rules >/dev/null <<'EOF'
+# TacCap-Gripper MCUs are CH343 USB-serial (1a86:55d2) — keep ModemManager off them
+ACTION=="add|change", SUBSYSTEMS=="usb", ATTRS{idVendor}=="1a86", ENV{ID_MM_DEVICE_IGNORE}="1"
+EOF
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+插上夹爪后验证:
+
+```bash
+udevadm info -q property -n /dev/ttyACM0 | grep ID_MM_DEVICE_IGNORE   # -> ID_MM_DEVICE_IGNORE=1
+```
+
+如果是没有蜂窝模块的专用机器人主机,也可以直接 `sudo systemctl disable --now ModemManager`。
+若装有 `brltty`(盲文驱动),它同样会抢占 `1a86` 设备,用 `sudo apt remove brltty` 卸载。
+
+### 3. 腕部相机:必须使用 MJPEG
+
+> [!IMPORTANT]
+> 腕部相机**必须**以 **MJPEG**(`MJPG`)格式出流。未压缩的 YUYV 在 640×480 @ 30 fps 下
+> 需要预留约 147 Mbit/s 的等时带宽;夹爪上的相机共用一条 **USB 2.0** 链路,两路 YUYV
+> 就会把它占满。结果是 `VIDIOC_STREAMON: No space left on device`、相机打不开,或者
+> 静默丢帧。
+
+SDK 的 `Camera` 默认请求 MJPEG(`use_mjpg=True`)—— 整套设备采集时不要关掉它
+(`use_mjpg=False`、`wrist_camera.py --no-mjpg`)。其他打开相机的程序(OpenCV、ffmpeg、
+GStreamer、相机服务)必须自己请求 MJPEG;OpenCV 中要在设置宽高**之前**把
+`CAP_PROP_FOURCC` 设为 `MJPG`。
+
+用 `v4l2-ctl`(`v4l-utils` 包)检查和设置格式:
+
+```bash
+CAM=/dev/v4l/by-id/<腕部相机>-video-index0       # 用 ls /dev/v4l/by-id/ 查看
+
+v4l2-ctl -d $CAM --list-formats-ext              # 列表中必须有 'MJPG'
+v4l2-ctl -d $CAM --set-fmt-video=width=640,height=480,pixelformat=MJPG
+v4l2-ctl -d $CAM --set-parm=30
+v4l2-ctl -d $CAM --get-fmt-video                 # -> Pixel Format : 'MJPG'
+```
+
+V4L2 格式是驱动状态:重新插拔或重启后会复位,应用打开设备时也可能重新设置。
+`v4l2-ctl` 用来设置和确认格式,同时要保证每个采集程序都请求 MJPEG。
 
 ---
 
-## 用法
+## 快速上手
 
-`python/examples/` 下的十三个脚本是上手本 SDK 最快的路径:每一个都是把某一项
-能力跑通的最小程序,同时也是我们自己做硬件 bring-up 用的工具。先把它们跑一遍,
-再照着同样的调用写你自己的程序。
-
-### 到处都是同一个选择器
-
-每个脚本都接受同一个**位置参数**:
+所有示例脚本都只接受一个位置参数:`left`、`right` 或固件 SN。只接了一台夹爪时可省略。
 
 ```bash
-python python/examples/follower_status.py left      # 按左右
-python python/examples/follower_status.py right
-python python/examples/follower_status.py TCGU01A28Z0015s   # 按固件 SN
-python python/examples/follower_status.py           # 只插了一台时可以省略
-```
-
-没有 `--side` / `--sn` / `--device` 这类开关 —— 一套整机上什么都有左右两份,
-而「左右」是唯一一个对夹爪、它的腕部相机和它那对触觉传感器都表示同一件事的
-抓手。左右来自**固件烧录的 SN**(`Cmd::GetSn`),绝不是 CH343 USB 芯片的 SN。
-插了两台夹爪又不给参数时,脚本会直接拒绝,而不去猜你指的是整机的哪半边;
-`calibrate.py` 则永远要求给出参数,因为它要写入。
-
-### 按顺序把一台夹爪带起来
-
-```bash
-# 1. 它在不在,它是什么?  (只读)
+# 1. 接了什么?(只读)
 python -c "from xense.taccap import scan_grippers
 for g in scan_grippers(): print(g.side, g.role, g.firmware_sn, g.mcu_device)"
 
-# 2. 读它的状态。每个字段在脚本头部都有说明。  (只读)
+# 2. 读状态(只读)
 python python/examples/follower_status.py left
 
-# 3. 写入固件的运动安全包络。从爪 >= 1.2.12 在没存包络时执行型号默认包络,
-#    更旧的固件则什么都不执行。
-python python/examples/impedance_control.py left --show-envelope
+# 3. 写入固件运动安全包络(每台从爪一次,写 flash)
 python python/examples/impedance_control.py left --set-envelope
 
-# 4. 第一次运动,用 j/k/o/c 按键交互进行。
+# 4. 首次运动,键盘交互(j/k/o/c)
 python python/examples/gripper_console.py left
 
-# 5. 抓个东西。
-python python/examples/force_position_control.py left --grasp-torque 1.1
+# 5. 抓取
+python python/examples/force_position_control.py left
 ```
 
-第 3 步要排在第 4 步之前,这个顺序是承重的 —— 它防的是什么、以及写入之前从爪
-执行的是什么,见[运动安全包络](#运动安全包络)。
-
-**电机型号**(EL05 或 RS00)从从爪固件 1.2.10 起由固件自己记录:新电机出厂是私有
-协议,第一次上电时固件读电机固件版本、记下型号、再把电机切到 MIT。用
-`g.motor.get_model()` 核对。1.2.10 之前就已经在 MIT 下运行的设备沿用原记录;若它
-报的是编译期默认值(SDK 打开时会告警),执行一次 `g.motor.set_model(1)`
-(0 = EL05,1 = RS00)并拔插 24V 约 2 秒。从 1.2.12 起,型号记录一旦改变,`0x700B`、
-自动标定力矩和开合方向会一起重置为新型号的默认值。型号记录**本来就是** RS00 的
-设备不会触发重置,会保留原来存的 `0x700B`(从 1.2.8 或更早升上来的是 6.0);用
-`g.motor.set_startup_limit_torque(14.0)` 调上去,再拔插一次 24V。细节见
-[`firmware/README.md`](firmware/README.md)。
-
-**RS00 从爪分左右手。** 夹爪内部齿轮对称安装,同一款电机张开时转向相反:**右**
-从爪(SN 末位偶数)存 flags `0x0001`(Reverse 0),**左**从爪(奇数)存 `0x0003`
-(Reverse 1)。固件仍按型号只认一个方向(RS00 = Reverse 0),自动标定又会把实际用的
-方向原样写回,所以新的左手 RS00 第一次标定一定标反、而且不会自己纠正 —— 开度整个
-颠倒，合着读成接近 1,`set_target(0.0)` 会张开。`FollowerGripper` 打开时若存的方向
-与左右不符会告警;`t.expected_open_reverse(model_id, side)` 给出应有的值。修法：用
-`g.set_gripper_config()` 只改 flags,再拔插 24V 让标定按新方向重跑。从爪 1.2.15 起固件
-自己会做：标定按 SN 左右定方向、纠正存反的方向，改型号记录也保留左右方向。EL05 暂无规则。
-
-**RS00 从爪的电机 CAN ID 要设成左 17 / 右 18,不能用出厂的 127。** MIT 运动帧第 0
-字节是目标位置的高字节，电机会把第 0 字节等于自身 CAN ID 的帧当成别的命令。127 =
-0x7F,对应 -0.098..0 rad,正是左手 RS00 的闭合端 —— 所以 ID 为 127 时力位闭合不到 0。
-ID 由产线配置工具写入(`g.motor.set_can_id()`,再拔插 24V),不会被悄悄改写。
-`FollowerGripper` 打开时若与 SN 左右不符会告警，`t.expected_motor_can_id(model_id,
-side)` 给出应有的值。EL05 不分左右，保持原 ID。
-
-### 按任务分
-
-**控制。** 两个控制器都只用同样两个非阻塞调用 —— `set_target(0..1)` 和
-`snapshot()`:
-
-```bash
-python python/examples/impedance_control.py left                  # 跟随位置
-python python/examples/impedance_control.py left --targets 1.0,0.5,0.0
-python python/examples/force_position_control.py left             # 抓取:力矩有上限
-python python/examples/gripper_console.py left --mode force-position
-python python/examples/control_and_read.py left                   # 控制的同时读状态
-python python/examples/control_ripple.py left --controller both   # 测量跟随质量
-```
-
-`control_and_read.py` 回答的是每个人第二个会撞上的问题:控制期间要读
-`snapshot()` —— 绝不要用 `motor.read_status()`,它的 ACK 会在同一条串口链路上
-和控制帧撞车。
-
-**标定** —— 归一化的 `0..1` 位置要有意义,必须先做这一步:
-
-```bash
-python python/examples/calibrate.py left          # 主爪:编码器零位 + 行程量程
-python python/examples/fisheye_cal.py show left   # 查看持久化在 flash 里的记录
-python python/examples/read_intrinsics.py left --out cal.json    # 只读,输出 JSON
-```
-
-**相机与主爪:**
-
-```bash
-python python/examples/wrist_camera.py left --undistort
-python python/examples/leader_normalized_position.py left
-```
-
-**固件:**
-
-```bash
-python python/examples/ota_update.py slave left   # 之后要断电重启(从爪:断 24V)
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left   # 电机本身;需私有协议
-```
-
-### 每个脚本对设备做了什么
-
-在一台出不得事的整机上跑任何东西之前,先看这一栏。
-
-| | 脚本 |
-|---|---|
-| **只读** | `follower_status`、`read_intrinsics`、`wrist_camera`、`leader_normalized_position`、`fisheye_cal show` |
-| **会让电机动** | `impedance_control`、`force_position_control`、`control_and_read`、`control_ripple`、`gripper_console` |
-| **会写 flash** | `calibrate`、`fisheye_cal set-*`、`impedance_control` / `gripper_console` 上的 `--set-envelope` |
-| **会刷固件** | `ota_update` —— 破坏性操作;之后要断电重启 —— 从爪断 24V 约 2 秒(USB 可不拔),主爪拔插 USB |
-| **会刷电机固件** | `motor_ota_update` —— 刷 RobStride 电机自己的固件;需要电机在私有协议下、从爪固件 1.2.8+ |
-
-### 两个共享模块,不能直接运行
-
-`_target.py` 就是上面那个选择器,外加版本 / 颜色辅助函数,除 `wrist_camera.py`
-之外每个脚本都会 import 它。`_calib_flow.py` 是带引导的标定流程,被那三个可能
-碰到未标定设备的脚本使用。两者都刻意留在 `xense.taccap` 之外:它们会在 stdin
-上提示输入,而一个会阻塞在 stdin 上的库会把每一个无头运行的使用方都搞坏。
-
-每个脚本的细节,包括每个参数各自测的是什么,都在
-**[docs/EXAMPLES.md](docs/EXAMPLES.md)**。C++ 示例默认会构建到
-`build/cpp/examples/`(加 `-DTACCAP_BUILD_EXAMPLES=OFF` 可以跳过);wheel 构建
-会自己把它们关掉。
-
-## 写你自己的程序
-
-上面那些示例只是下面这些调用的薄封装。**你手上是哪一半,决定了用哪套 API**:
-*主爪*是手持的主端,你**读**它 —— 编码器、IMU、张开角度。*从爪*是带驱动的
-夹爪,你**驱动**它 —— 一台藏在控制器后面的电机。角色由固件 SN 的最后一个字符
-决定(`m` 主 / `s` 从),而不是看它装在哪只手上。
-
-### 主爪 —— 读它
+### 主爪 —— 读数
 
 ```python
 import xense.taccap as t
 
-g = t.LeaderGripper.open()          # 唯一连接的那台夹爪;只开 MCU,相机不开
+g = t.LeaderGripper.open(normalize_position=True)   # 唯一接入的夹爪
+g.encoder.on_data(lambda s: print(s.position_rad, s.position))   # position: 0..1
+g.imu.on_data(lambda s: print(s))
 g.start_streaming(imu_hz=100, encoder_hz=100)
-
-enc = g.encoder.on_data(lambda s: print("enc", s.position_rad, s.position))
-imu = g.imu.on_data(lambda s: print(s))
-# ... 干活 ...
+# ...
 g.stop_streaming()
 ```
 
-`LeaderGripper.open()` 在连接的夹爪不是恰好一台时会抛 `IoError` —— 双臂整机上
-要显式指定设备(见下)。`s.position` 要有意义,这台设备必须标定过行程量程;见
-[主爪的归一化位置](#主爪的归一化位置0--闭合1--张开)。
+### 从爪 —— 驱动
 
-### 从爪 —— 驱动它
-
-绝不要用原始的 `submit_*` 原语去驱动电机:它们是裸的 MIT 帧,通路上没有任何
-上位机侧的保护。请用控制器。
+始终通过控制器驱动电机,并用 `for_spec()` 构造配置,使限值与实际电机(EL05 或 RS00)匹配。
 
 ```python
 import xense.taccap as t
 
-eps = t.find_follower()                       # 或 t.find_left() / t.find_right()
-g = t.FollowerGripper(eps.mcu_device)
+g = t.FollowerGripper(t.find_follower().mcu_device)
+cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())
+c = t.ForcePositionController(g, cfg)
 
-cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())   # 按本机电机取值
-c = t.ForcePositionController(g, cfg)         # 抓取:力矩有上限
 g.motor.clear_fault()
-c.start()                                     # 必须先 START 再 ENABLE —— start()
-g.motor.enable()                              # 会校验电机里存着的限值
+c.start()                       # 先启动控制器,再使能电机
+g.motor.enable()
 try:
-    c.set_target(0.0)                         # 0 = 闭合,1 = 张开;非阻塞
+    c.set_target(0.0)           # 0 = 闭合,1 = 张开;非阻塞
     while True:
-        s = c.snapshot()                      # 一份一致的视图,不占总线
-        print(s.state, s.observation.position, s.commanded_torque_nm)
+        s = c.snapshot()        # 一致的状态快照,不占总线
         if s.holding or s.arrived:
             break
 finally:
-    c.stop()                                   # 力矩置零,然后会让电机失能
+    c.stop()                    # 力矩归零后失能电机
 ```
 
-整个接口就两个调用:`set_target(0..1)` 和 `snapshot()`,都是非阻塞的,每帧都调
-也没问题。想*跟随位置*而不是抓取时,换成
-`t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))` 即可 ——
-还是这两个调用。`with t.ForcePositionController(g, cfg) as c:` 会替你配好
-`start()` / `stop()` 这一对。
+要跟随位置而不是抓取,换成
+`t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))`,接口相同。
+控制器运行期间从 `snapshot()` 读状态,不要调用 `motor.read_status()`。
 
-按什么频率流式下发都可以,不必和状态流对齐:`ForcePositionController` 在你的线程上
-给每次 `set_target()` 打时间戳,相邻目标间隔小于 0.1 s 就当作一条流,沿一条按时间
-插值的参考轨迹跟随,比目标晚略多于一个间隔,用来吸收定时器抖动 —— 100 Hz 时约
-15 ms,50 Hz 时 20 ms。单个目标
-或停顿之后的目标仍是一次阶跃,按 `close_speed_radps` 走。
+| `ForcePositionConfig` | 默认值 | 含义 |
+| --- | --- | --- |
+| `grasp_torque_nm` | 电机持续堵转额定(EL05 1.1 N·m,RS00 3.6 N·m) | 夹爪被挡住时稳定的夹持力 |
+| `close_speed_radps` | 1.1 rad/s | 行进速度 |
 
-配置一律用 `for_spec()` 构造。裸的默认配置带的是 EL05 的数:在 RS00 上它把夹持力
-卡在 3.6 N·m 里的 1.1,而一旦 RS00 的 `0x700B` 限值是 14,
-`ForcePositionController.start()` 会直接抛异常。
+### 腕部相机
 
-第一次驱动一台从爪之前,先把固件的运动安全包络写一次(写之前,从爪 1.2.12+ 执行
-型号默认包络,更旧的固件什么都不执行)。见
-[运动安全包络](#运动安全包络)和[从爪控制](#从爪控制mit-力位混合)。
+```python
+from xense.taccap import Camera
 
-### 在一个进程里同时用左右两侧
+cam = Camera(device="/dev/v4l/by-id/<腕部相机>-video-index0",
+             width=640, height=480, fps=30.0)       # 默认 MJPEG
+cam.start(lambda f: print(f.frame_index, f.image.shape))
+```
+
+也可以在夹爪对象上通过 `open_cameras=True, wrist_video=...` 打开(加 `undistort_wrist=True`
+直接输出去畸变图像)。夹爪对象默认不打开相机,因为相机通常由相机服务占用。
+
+### 一个进程内同时用左右两台
 
 ```python
 from xense.taccap import FollowerGripper, scan_grippers, Side
 
-eps = scan_grippers()                          # 一次 USB 扫描,不会有重复探测的竞态
-left  = next(e for e in eps if e.side == Side.Left)
-right = next(e for e in eps if e.side == Side.Right)
-
-g_left  = FollowerGripper(left.mcu_device)     # 按角色也可能是 LeaderGripper
-g_right = FollowerGripper(right.mcu_device)
+eps = {e.side: e for e in scan_grippers()}
+left, right = FollowerGripper(eps[Side.Left].mcu_device), FollowerGripper(eps[Side.Right].mcu_device)
 ```
 
-每台夹爪各自持有自己的串口链路和后台线程,所以两者互不影响 —— 但要给每台配
-各自的控制器;绝不要让两个控制器指向同一台夹爪。
+每台夹爪各自持有串口和线程;每台配一个独立的控制器。
 
-### 腕部相机
-
-`open()` 不会碰相机:V4L2 设备通常被外部的相机服务占着。要用就显式要求,或者
-用 `t.Camera` 单独打开它。
-
-```python
-g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True)
-g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
-```
-
-视触觉(OG)传感器通过 `xensesdk` wheel 读取,不走本 SDK。
-
-上面这些的可运行版本,就是前面[用法](#用法)一节里的那些脚本。
-
-### 序列号(TacCap SN 规则)
-
-固件烧录的 SN 同时编码了左右和主 / 从角色:
+### 序列号规则
 
 ```
-  TCGU01 A24 Z 0001 m        夹爪         GSPS01 A24 Z 0001   视触觉传感器
-  └─┬──┘ └┬┘ │ └┬─┘ │                                          (没有 patch 后缀)
- product batch│  seq patch    product : TCGU01 夹爪 / GSPS01 传感器
-              line            line    : Z = 研发 / 测试,A = 量产
-                              seq     : 末位数字为奇数 → 左,偶数 → 右
-                              patch   : m = Master(主爪),s = Slave(从爪)
+TCGU01 A24 Z 0001 m
+└─┬──┘ └┬┘ │ └┬─┘ └ 角色:m = 主爪(master),s = 从爪(slave)
+ 产品  批次 产线 流水号  末位:奇数 = 左,偶数 = 右
 ```
 
-`scan_grippers()` 会为每台夹爪解析这个 SN;每个 `GripperEndpoints` 都带
-`.side`(`Side.Left/Right`)和 `.role`(`Role.Leader/Follower/Unknown`)。
-按左右**或**按角色挑一台:
+腕部相机(`XC…`)与所在夹爪的流水号相同,因此一个 `left` / `right` 能同时选中两者。
 
-```python
-from xense.taccap import find_left, find_right, find_leader, find_follower, parse_serial
+## 示例脚本
 
-eps = find_leader()              # SN 的 patch 后缀是 'm' 的那台
-p   = parse_serial("TCGU01A24Z0001m")
-print(p.side, p.role, p.valid)   # Side.Left  Role.Leader  True
-```
+| 脚本 | 作用 | 对设备的影响 |
+| --- | --- | --- |
+| `follower_status.py` | 读取从爪状态 | 只读 |
+| `leader_normalized_position.py` | 流式输出主爪开口度 0..1 | 只读 |
+| `wrist_camera.py` | 查看 / 列出腕部相机(`--undistort`、`--list`) | 只读 |
+| `read_intrinsics.py` | 以 JSON 导出标定数据 | 只读 |
+| `impedance_control.py` | 位置跟随;`--show-envelope` / `--set-envelope` | 驱动电机 / 写 flash |
+| `force_position_control.py` | 有界力抓取 | 驱动电机 |
+| `gripper_console.py` | 键盘交互控制 | 驱动电机 |
+| `control_and_read.py` | 控制同时读状态 | 驱动电机 |
+| `control_ripple.py` | 测量跟踪质量 | 驱动电机 |
+| `calibrate.py` | 编码器零点 + 行程 | 写 flash |
+| `fisheye_cal.py` | 查看 / 设置鱼眼与编码器最大值记录 | 只读 / 写 flash |
+| `ota_update.py` | 升级夹爪固件 | **刷固件** |
+| `motor_ota_update.py` | 升级从爪电机固件 | **刷固件** |
 
-`parse_serial()` 会优雅降级:遇到老格式(`SN000002`)或空 SN,仍然会尽力给出
-`side`(按末位数字),同时 `role = Role.Unknown`、`valid = False`。
+详见 [docs/EXAMPLES.md](docs/EXAMPLES.md)。C++ 示例构建在 `build/cpp/examples/`。
 
-### 编码器零位标定
+## 固件
 
-```python
-# 先把夹爪保持在想设为零位的姿态(通常是完全闭合)。
-g_right.encoder.set_zero()                      # 收到 NACK 会抛 ProtocolError
-s = g_right.encoder.read_once()
-print(s.position_rad, s.raw_position_rad)       # 处理后的值(钳到 >= 0)与原始值
-```
-
-完整的交互式流程见 `python/examples/calibrate.py`(按 SN 选左右、标定前后的漂移
-显示、全开角度合理性检查、实时读数)。
-
-### 主爪的归一化位置(0 = 闭合,1 = 张开)
-
-`normalize_position=True` 会在 open() 时读取固件的编码器最大值标定
-(`Cmd::EncoderMaxCal`,需固件 ≥ V2.1),并把换算器装到编码器上,于是每个样本都
-带一个落在 `[0,1]` 里的 `.position`:
-
-```python
-g = LeaderGripper(mcu_device=dev, normalize_position=True)
-
-s = g.encoder.read_once()
-s.position_rad      # 0.65  —— 永远是弧度,含义从不改变
-s.position          # 0.50  —— 归一化值;开关关闭时为 float('nan')
-
-g.position()        # 0.50  —— 单次读取 + 换算
-g.pos_to_rad(1.0)   # 1.30  —— 完全张开,原始弧度
-g.rad_to_pos(0.325) # 0.25
-
-# 流式样本同样会被归一化,包括在映射存在之前就注册好的订阅者。
-g.encoder.on_data(lambda s: print(s.position))
-g.start_streaming(imu_hz=0, encoder_hz=100)
-```
-
-行程量程指的是完全张开时的编码器轴角,从编码器零位(完全闭合)算起 —— 所以要
-**先给编码器置零**,再存量程。`measure-encoder-max` 会带你把这两步都走一遍:
+预编译镜像在 [`firmware/`](firmware/)。按**角色**选镜像(固件 SN 最后一个字符:`m` 主爪,
+`s` 从爪)—— 刷错角色的镜像会让 MCU 变砖。
 
 ```bash
-python python/examples/fisheye_cal.py measure-encoder-max
+python python/examples/ota_update.py slave left     # 或:--all
 ```
 
-如果量程从未标定过(固件会回 `CalNotSet`,而不是返回一个假的零值),或者固件
-早于 V2.1,构造时会抛 `ProtocolError`。传 `encoder_max_rad=<rad>` 可以从上位机
-直接给出量程,完全跳过读固件这一步。
+**每次刷写后都要断电重启。** 从爪:拔掉 **24 V** 电源线约 2 秒(USB 可以不拔)。
+主爪:重新插拔 USB。不断电的话,设备看起来正常但会丢状态帧。
 
-`position()` / `pos_to_rad()` / `rad_to_pos()` / `position_map` 不开这个开关也
-能用 —— 开关只决定 `EncoderSample.position` 会不会被填上。重新标定之后要调
-`reload_position_map()`。
+`FollowerGripper` 拒绝打开固件低于 1.2.5 的从爪。主爪与从爪固件版本号相互独立。
+电机固件要求:EL05 ≥ 1.0.5.0.4,RS00 ≥ 0.0.3.32。镜像列表、电机型号、RS00 配置与电机
+升级见 [firmware/README.md](firmware/README.md)。
 
-### 鱼眼相机标定
+## 常见问题
 
-鱼眼内参 + 畸变参数存在 MCU flash 里,主爪和从爪都能读:
+| 现象 | 处理 |
+| --- | --- |
+| `role=Unknown`、`firmware_sn` 为空、`Permission denied` | 把用户加入 `dialout`([第 1 步](#1-串口与相机权限)) |
+| 插上后立即打开报 `Device or resource busy` | ModemManager 规则([第 2 步](#2-让-modemmanager-不要占用夹爪串口)) |
+| `No space left on device`、相机打不开、丢帧 | 相机没用 MJPEG([第 3 步](#3-腕部相机必须使用-mjpeg)) |
+| 刷固件后丢状态帧 | 断电重启(从爪:断 24 V) |
+| 改了 C++ / 绑定但没生效 | 在使用方环境里重新安装 |
+| 归一化开口度为 NaN 或报错 | 先标定:`calibrate.py`,见 [docs/CALIBRATION.md](docs/CALIBRATION.md) |
 
-```python
-from xense.taccap import CameraFisheyeCal, FisheyeUndistorter
-
-cal = g.calibration.read_fisheye()     # 从未标定过时为 None
-if cal is not None:
-    # 优先用 FisheyeUndistorter,而不是自己拿 cal.K / cal.D 去手工调
-    # cv2.fisheye.undistortImage:它只建一次 remap 表,用 INTER_CUBIC 重采样,
-    # 并且采用和 PC 标定工具相同的焦距 balance,所以在这里矫正出来的一帧和
-    # 在那边矫正出来的是一致的。
-    # `cal.K` / `cal.D` 仍然暴露着,留给必须自己处理的代码。
-    undistorter = FisheyeUndistorter(cal, width=640, height=480, balance=0.0)
-    undistorted = undistorter.apply(img)
-
-g.calibration.write_fisheye(CameraFisheyeCal(
-    fx=320.5, fy=321.0, cx=319.5, cy=240.2,
-    k1=-0.031, k2=0.0072, k3=-0.0013, k4=0.0002))
-```
-
-固件原样存储这些值 —— 不做单位换算,不做钳位,只拒绝 NaN/Inf。
-`python/examples/fisheye_cal.py show` 会把两条记录都打印出来;
-`set-fisheye --from-npz` 可以直接从 OpenCV 的标定文件里读 `K`/`D`。
-
-### 从爪控制(MIT 力位混合)
-
-从爪驱动的是一台 FDCAN 电机。控制用的是 **MIT 阻抗帧** —— 也就是力位混合
-原语:`kp`/`kd` 项负责跟踪目标位置,前馈力矩叠加出力的分量。SDK 提供了三种
-用法。
-
-```python
-import xense.taccap as t
-g = t.FollowerGripper.open()
-g.motor.clear_fault()
-g.motor.enable()                 # 任何动作之前都必须先做
-
-# 运动要走控制器。原始的 `submit_*` 原语也是暴露的,但它们会把控制帧直接写到
-# 线上,没有误差钳位,也没有力矩上限 —— 这时固件包络就是你唯一的保护。
-c = t.ImpedanceController(g, t.ImpedanceConfig.for_spec(g.motor.get_spec()))
-c.start()                        # 用当前位置给目标打底
-c.set_target(0.35)               # 归一化 [0,1],0 = 闭合
-s = c.snapshot()                 # 状态 + 观测 + 指令,非阻塞
-c.stop()
-```
-
-**归一化位置** —— 用 `[0, 1]`(0 = 闭合,1 = 张开)代替原始弧度。要求夹爪已经
-标定过(`GripperConfig` 为 Valid),否则抛异常。
-
-```python
-print(g.position())                       # -> 0.97   (接近张开)
-g.pos_to_rad(0.5), g.rad_to_pos(-0.59)    # 显式换算
-```
-
-一次性的 `FollowerGripper::set_position(0..1)` **只有 C++ 有** —— 在 Python 里,
-归一化目标一律通过控制器的 `set_target()` 下发。原始的 `Motor.submit_*` 倒是暴露给
-Python 了,参数也确实是弧度,但主机侧不对它们做任何钳位,见上面的警告。
-
-**`ImpedanceController`** —— 要**跟随位置**就用这个。一个 C++ 后台线程
-**与电机状态流同相位地**提交最新的归一化目标,同时这条流把一份线程安全的观测
-保持在最新。你的策略只需要碰 `set_target(0..1)` 和 `snapshot()`,两者都是
-非阻塞的(不抢 GIL,也不轮询状态)。
-
-```python
-cfg = t.ImpedanceConfig.for_spec(g.motor.get_spec())   # 在 cfg 上调 kp/kd/预算
-c = t.ImpedanceController(g, cfg)
-c.start()                                 # 目标先置为当前位置(不会突跳)
-try:
-    while running:
-        s = c.snapshot()                  # 一次加锁,一份一致的视图
-        if s.state == t.ImpedanceState.FAULT:
-            break                         # s.fault_reason 说明原因;c.reset() 可恢复
-        obs = s.observation               # .position [0,1], .velocity, .torque, .age_ms
-        c.set_target(policy(obs))         # 你的动作,0..1
-finally:
-    c.stop()                              # 力矩置零,然后让电机保持失能
-```
-
-夹爪被挡住在这里不算故障:误差钳位会在 `max_position_torque_nm`(`for_spec()`
-取设备的连续堵转额定,EL05 上 1.1 Nm,RS00 上 3.6)上饱和并保持住。接触不需要检测;饱和就是接触的样子。
-
-**`ForcePositionController`** —— 用来**抓取**的那一个。它在每条命令里带上夹持力
-(`set_target(p, grasp_torque_nm)`),并报告 `holding`,所以被挡住的夹爪会稳定在
-你要求的那个力上。
-
-```python
-fp = t.ForcePositionController(g, t.ForcePositionConfig.for_spec(g.motor.get_spec()))
-fp.start()
-try:
-    fp.set_target(0.0)                    # 闭合;0 = 闭合,1 = 张开
-    while True:
-        s = fp.snapshot()
-        if s.holding: break               # 已经夹住物体
-        if s.arrived: break               # 到达目标,那里什么都没有
-finally:
-    fp.stop()                             # 下发零力矩并失能
-```
-
-**两个参数,而且只有这两个是跟任务相关的:**
-
-| | 默认值 | 它是什么 |
-|---|---|---|
-| `grasp_torque_nm` | **设备自报的连续堵转额定** | 夹持力。空行程不用它;被挡住的夹爪会稳定在这个值上。EL05 上 1.1 Nm,RS00 上 3.6 —— 用 `ForcePositionConfig.for_spec(g.motor.get_spec())` 取,别写死 |
-| `close_speed_radps` | **1.1 rad/s**,经 `for_spec()`(裸结构体默认 0.5) | 行进速度 |
-
-```python
-cfg = t.ForcePositionConfig.for_spec(g.motor.get_spec())
-cfg.grasp_torque_nm = 0.4        # 更轻柔的夹持
-fp = t.ForcePositionController(g, cfg)
-```
-
-其余的量对这台夹爪只有一个正确答案,所以没有暴露出来:位置增益、行进阻尼、
-到位半径。它们是在这套硬件上实测出来的,不是猜的,改它们让夹爪发抖的可能性
-远大于把它改好。
-
-**是两个观测量,不是状态。** `snapshot().holding` 的意思是设定点已经在力预算
-允许的范围内尽可能跑到夹爪前面去了,而夹爪没跟上 —— 夹住*本来就是*这么回事。
-`snapshot().arrived` 的意思是它到达了指令位置。除此之外没有别的需要解读。
-
-> **能夹多紧,能夹多久。** 1.1 Nm 是 EL05 的连续堵转额定(RS00:3.6);下面的
-> 温升数据只在 EL05 上测过。在 24 V 下对着真实工件实测:一次 600 s 的持续夹持把绕组温度从 36 °C 带到 70 °C,升温速率从
-> 8 °C/min 衰减到 1 °C/min,拟合下来平台在 75 °C 附近,比固件的温度墙低约
-> 15 °C —— 没有故障,没有掉链接,没有漂移。几秒到几分钟的夹持完全在这个范围
-> 之内。如果要按*几十分钟*计的长时间夹持,或者机柜偏热,就把力降下来:0.6 Nm
-> 会平稳停在 49 °C。夹持力矩超过设备的连续堵转额定时,`start()` 会直接拒绝
-> (抛 `ValueError`)。
-
-**LED 与上电自动标定(V1.9):**
-
-```python
-g.led.set(t.Ws2812Mode.Override, 0, 255, 0, brightness=120)   # 常亮绿色
-g.led.effect(t.Ws2812EffectType.ColorBreathe, 0, 0, 255)      # 蓝色呼吸
-g.led.off()
-
-cfg = g.get_auto_cal_config()             # 若启用,固件会在上电时自己找零位
-g.set_auto_cal_config(cfg)                # (闭合到堵转),并记录 max_open
-                                          # (张开到堵转)
-```
-
-### 运动安全包络
-
-**先把运动安全包络写进去。** 它是固件的力矩与热保护。出厂设备上没存包络
-(`GripperConfig.reserved` 全为零),这时的行为取决于固件:**从爪 1.2.12+ 执行型号
-默认包络**(cont = 堵转额定、peak = 旋转额定、温度墙 90/100 °C;
-`g.motor.get_model().default_envelope == 1`,`audit_envelope()` 把它报成 `effective`
-并置 `firmware_default`),**更旧的固件则什么都不执行**。两种情况都建议写入明确的记录:
-
-```bash
-python python/examples/impedance_control.py right --show-envelope   # 只读,不写
-python python/examples/impedance_control.py right --set-envelope    # 修复,写 flash
-```
-
-**没有数要你来挑。** 设备自己知道它装的电机额定多少,而固件无论写进去什么都按那个
-额定钳,所以 SDK 直接读(`0x56`)并推出这条记录:
-
-| 字段 | 取值 | 含义 |
-|---|---|---|
-| `peak_torque_nm` | 电机的**额定**力矩(EL05 为 1.8 N·m,RS00 为 5.0) | 运动瞬态上限,以位置误差钳位的形式生效。**它同时决定接近速度**,大致是 `peak/kd` |
-| `cont_torque_nm` | 电机的连续**堵转**额定(EL05 为 1.1 N·m,RS00 为 3.6) | 被挡住的爪子可以无限期维持的力矩,也是 I²t 降额的下限。**不是**额定力矩 —— 那是*旋转*额定,而夹爪的主工况就是堵住不放 |
-| `temp_derate_start_c` | 0 → 固件取 90 °C | 热降额从哪里开始 |
-| `temp_wall_c` | 0 → 固件取 100 °C | 温度墙;超过之后只剩 0.30 N·m |
-
-**设备存的不等于它执行的。** 固件把 `cont` 钳到堵转额定,而这件事只记在一条没接到
-USB 的 UART 上,读回来的则是 flash。我们台架上有一台存着 `cont=1.800`、按 `1.100`
-跑了几周。`audit_envelope()` 把 `stored` / `effective` / `recommended` 分开报,
-`effective` 为 `None` 表示固件什么都不执行;`ensure_envelope()` 负责修,只在需要时
-写。设备能报出规格时,它把 `cont` 设成堵转额定、`peak` 设成额定力矩,严格相等,
-存的值偏低也改、偏高也改(`GRIPPER_ENVELOPE_ISSUE_NOT_AT_SPEC`);只有在报不出规格
-的设备上,才保留比推荐值更严的记录。
-
-包络存在 `GripperConfig` 记录里(命令 `0x66`/`0x67`,**不改协议**),断电不丢,
-每台设备写一次即可。它在固件的 MIT 分支里强制执行 —— 那是每条运动命令都必须
-经过的唯一一个点 —— 所以**哪怕 MIT 帧不是由本 SDK 发出的,它同样成立**。这正是
-它该放在固件里而不是放在这里的原因。
-
-不写它的话,用 `kp=20` 把夹爪顶到刚性物体上,会要到大约 12 N·m;在 24 V 下这个
-电流需求会把电源轨拉垮,电机的欠压保护动作,夹持随之丢失。启用包络之后,同样的
-测试能稳稳保持 25 s。参见
-[`docs/CONTROL_LAYERING.md`](docs/CONTROL_LAYERING.md)。
-
-**两个值得知道的行为:**
-
-- **夹持力不是恒定的。** I²t 降额和温度墙对纯力矩保持同样适用。
-  `grasp_torque_nm` 是你要求的值;随着电机发热,固件会把实际输出降下来。
-- **控制期间不要轮询 `read_status()`。** 锁相到数据流上保护的是遥测帧,不是
-  ACK:请求可能正好落在 MCU 正在发送的窗口里而毁掉一帧遥测,而它自己的回复也
-  可能被控制回路的提交破坏。位置、速度、力矩、状态位和温度全都在 `snapshot()`
-  里 —— 没有哪一项需要动总线。
-
-可运行的演示:`python/examples/impedance_control.py`、
-`python/examples/force_position_control.py`,以及
-`python/examples/gripper_console.py`(交互式,两个控制器都有)。
-
-## 诊断
-
-`g.diagnostics` 封装了固件自己的 UART 计数器(固件 1.1.3+)和一个运行时日志
-开关(1.1.4+)。两者在两种夹爪角色上都能用。
-
-```python
-s = g.diagnostics.uart_stats()
-# tx_calls_ok / tx_bytes_ok  —— 固件的发送调用接受了多少,
-#                               也就是真正进到 MCU TX 寄存器里的量
-# tx_fail_timeout            —— 固件自己把帧截断了
-# rx_overflow                —— 固件的命令任务跟不上上位机
-# debug_tx_bytes             —— 从 DEBUG UART 发出的字节数;用来量化日志开销
-```
-
-`tx_calls_ok` 的意义在于定责。把它和上位机在同一时间窗里解出来的量作对比:
-如果计数对得上但字节少了,那丢失发生在字节离开 MCU **之后**(线缆或 USB 转
-串口桥),改固件够不着它。
-
-```python
-from xense.taccap import LogLevel, LOG_OUTPUT_UART
-g.diagnostics.set_log_config(LogLevel.DEBUG, LOG_OUTPUT_UART)   # 打开
-g.diagnostics.disable_logging()                                  # 再关掉
-```
-
-> **日志是一个诊断手段,不是一项设置。** 固件 1.1.4 出厂就是关着的,因为日志
-> 输出端是阻塞式的轮询 UART 写(921600 下每行约 0.5 ms),会把发出这行日志的
-> 那个任务卡住 —— 当初就是「每收到一条命令都打日志」把命令通道搞成了活锁。
-> 输出还是走 MCU 的 DEBUG UART,而它**没有引到 USB 上**:不在那个引脚上接
-> 探头,你就是付了实时性的代价却什么也看不到。
-
-## 日志
-
-SDK 使用**一个单例 logger**,名字是 `"xense.taccap"` —— 注册在 spdlog 上,
-所有 C++ 编译单元和 Python 绑定共用同一个。不要在别处自己构造
-`std::make_shared<spdlog::logger>`,也不要用 `std::cout` / `print` / `printf`
-来输出诊断信息 —— 它们绕过了文件 sink。
-
-- **C++**:`#include <taccap/log.hpp>`,然后 `xense::taccap::logger()->info(...)`。
-- **Python**:`from xense.taccap import log; log.info(...)` /
-  `log.set_level("debug")` / `log.set_pattern(...)`。`set_level` 和
-  `set_pattern` **只影响控制台 sink** —— 文件 sink 保持它的归档格式,以便
-  grep 的结果长期稳定。
-
-默认挂上两个 sink:
-
-| Sink               | 级别                              | 格式                                  |
-| ------------------ | --------------------------------- | ------------------------------------- |
-| stderr(彩色)       | 用户可控,默认 `INFO`              | `[%D %T.%e] [%n] [%^%l%$] %v`         |
-| 文件(每会话一个)   | 始终 `DEBUG`                      | `[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v` |
-
-文件 sink 的行为:
-
-- 目录:设置了 `$TACCAP_LOG_DIR` 就用它,否则用 `~/.taccaplogs/`。
-- 文件名:`session_YYYYMMDD_HHMMSS.log` —— 每次进程启动新建一个。
-- 最多保留 **10** 个会话日志;启动时按 mtime 把最旧的删掉。
-- 文件 sink 创建失败(磁盘满 / 权限不足)不是致命错误 —— 控制台 sink 照常
-  工作。
-
-## 目录结构
-
-```
-taccap-gripper/
-├── cpp/
-│   ├── include/taccap/        # 公开的 C++ 头文件
-│   ├── src/                   # SDK 实现(协议、总线、组件等)
-│   ├── examples/              # C++ 示例程序(leader_demo、follower_status、
-│   │                          #   follower_impedance、follower_force_position)
-│   └── tests/                 # gtest 单元测试
-├── python/
-│   ├── bindings/              # pybind11 模块源码
-│   ├── examples/              # Python 示例
-│   └── xense/taccap/          # Python 包(`xense` 下的 PEP 420 命名空间)
-├── third_party/
-│   └── firmware/              # 按需 clone 的参考仓库(已 gitignore)
-│       ├── tc-gu-01/          #   跑在夹爪上的 STM32 固件
-│       └── tc-gu-01-pc/       #   PyQt 调试 GUI(操作端)
-├── docs/                      # 架构与 API 文档
-├── environment.yml            # mamba 环境(Python 3.12,仅 conda-forge)
-├── pyproject.toml             # scikit-build-core wheel 配置
-└── CMakeLists.txt             # 顶层构建编排
-```
-
+日志:每个进程都会把 DEBUG 日志写到 `~/.taccaplogs/session_*.log`(可用 `$TACCAP_LOG_DIR`
+修改)。出问题时先看这个文件。
 
 ## 文档
 
-- **[docs/USAGE_CN.md](docs/USAGE_CN.md)** —— 端到端使用说明:把三条数据通路
-  都带起来 —— 触觉(OG)、腕部相机,以及夹爪的读取 / 控制。英文版见
-  [docs/USAGE.md](docs/USAGE.md)。
-- **[docs/INSTALL.md](docs/INSTALL.md)** —— 前置依赖、纯 C++ 构建、设备权限、
-  重新构建 / 清理、环境陷阱。
-- **[docs/CALIBRATION.md](docs/CALIBRATION.md)** —— 编码器零位 + 行程量程、
-  持久化在 flash 里的记录、漂移处理。
-- **[docs/FIRMWARE.md](docs/FIRMWARE.md)** —— 参考仓库、固件构建,以及通过 OTA
-  刷写。**刷写之后、测量任何东西之前,先读那条关于断电重启的说明。**
-- **[docs/EXAMPLES.md](docs/EXAMPLES.md)** —— 每个示例脚本各自做什么。
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** —— 分层结构、模块地图、
-  线程模型,以及本 SDK 与下游使用方之间的边界。
+- [docs/USAGE_CN.md](docs/USAGE_CN.md)([English](docs/USAGE.md))—— 夹爪、腕部相机、视触觉传感器的完整上手流程
+- [docs/INSTALL.md](docs/INSTALL.md) —— 构建选项、纯 C++ 构建、环境陷阱
+- [docs/CALIBRATION.md](docs/CALIBRATION.md) —— 编码器零点、行程、鱼眼内参
+- [docs/EXAMPLES.md](docs/EXAMPLES.md) —— 每个示例脚本与控制器参数
+- [firmware/README.md](firmware/README.md) —— 固件镜像、刷写、电机配置
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 分层、线程模型、模块划分
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## 引用
 
-如果本 SDK 支撑了公开发表的工作,请引用你**实际使用的那个版本** —— 文档描述的
-行为是跟版本走的,好几个默认值在不同版本之间变过。
-
 ```bibtex
 @software{taccap_gripper,
-  title        = {taccap-gripper: an SDK for the TacCap multimodal tactile gripper},
-  author       = {{XenseRobotics Co., Ltd.}},
-  year         = {2026},
-  url          = {https://github.com/XenseRobotics-AI/TacCap-Gripper},
-  version      = {VERSION},
-  license      = {Apache-2.0}
+  title   = {taccap-gripper: an SDK for the TacCap multimodal tactile gripper},
+  author  = {{XenseRobotics Co., Ltd.}},
+  year    = {2026},
+  url     = {https://github.com/XenseRobotics-AI/TacCap-Gripper},
+  version = {VERSION},
+  license = {Apache-2.0}
 }
 ```
 
-把 `VERSION` 换成你构建时用的 tag —— `python -c "import xense.taccap as t;
-print(t.__version__)"` 会打印当前装的是哪个版本。固件同样要写:一次测量取决于
-夹爪固件的程度不亚于取决于本 SDK,所以把固件版本也一并注明
+把 `VERSION` 换成实际安装的版本(`xense.taccap.__version__`),并同时注明夹爪固件版本
 (`g.firmware_version`)。
 
 ## 许可证

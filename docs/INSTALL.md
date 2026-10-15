@@ -1,7 +1,5 @@
 # 安装与构建
 
-<!-- 从 README.md 拆出，保持内容不变；README 只保留入门路径。 -->
-
 ## Install
 
 The SDK has two consumable surfaces — the C++ shared library
@@ -26,8 +24,8 @@ to build.
 ### 2. Clone
 
 ```bash
-git clone <repo-url> taccap-gripper
-cd taccap-gripper
+git clone https://github.com/XenseRobotics-AI/TacCap-Gripper.git
+cd TacCap-Gripper
 ```
 
 There are no git submodules — the SDK builds standalone.
@@ -52,16 +50,13 @@ which python    # → .../envs/taccap/bin/python
 gcc --version   # → 14.x
 ```
 
-### 4. Device permissions (one-time)
+### 4. Host setup (one-time)
 
-Plugged-in TacCap devices appear as `/dev/ttyACM*` (MCU) and
-`/dev/video*` (UVC cameras). Your user needs to be in the matching
-groups:
-
-```bash
-sudo usermod -aG dialout,video "$USER"
-# log out and back in (or `newgrp dialout && newgrp video`) for it to apply
-```
+Three things must be in place before a gripper works on a new host — serial
+and camera permissions (`dialout`, `video`), a udev rule that keeps
+ModemManager off the gripper's serial port, and the wrist camera running in
+**MJPEG** (YUYV exhausts the USB 2.0 bandwidth). The commands are in the
+README: **[Host setup (one-time)](../README.md#host-setup-one-time)**.
 
 ### 5a. Python install (recommended for most users)
 

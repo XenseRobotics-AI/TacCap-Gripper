@@ -4,7 +4,7 @@
 以及力位混合控制器的完整调参说明。
 
 **想先跑起来看** README 的
-[Bringing up a gripper, in order](../README.md#bringing-up-a-gripper-in-order) —— 那里是按顺序的上手路径(扫描 → 读状态 →
+[Quick start](../README.md#quick-start) —— 那里是按顺序的上手路径(扫描 → 读状态 →
 配包络 → 试运动 → 夹持)。这里是逐脚本的细节。
 
 C++ 示例默认构建进 `build/cpp/examples/`。它们到 2026-09-22 之前一直是关的,
@@ -69,7 +69,7 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 | `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 的用法:同样两个调用。**全程一条有界力矩控制律,不检测接触** —— 钳位饱和就是接触;闭合端点另有有界前馈预压把爪子坐死在机械止点。输出里 `cmd` 与实测力矩的差就是固件的热降额。|
 | `gripper_console.py` | 动电机 + 夹持力 | 单夹爪键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个 UI,并内置**运动安全包络**的配置入口。表头常驻 `ENFORCED` / `*** INACTIVE ***`。见 [力位混合控制器](#力位混合控制器)。|
 | `control_and_read.py` | 动电机 | **边控制边读**:控制器跑着的时候状态从哪里拿。`snapshot()` 非阻塞、一把锁一致视图,读侧不发任何命令 —— 控制期间调 `read_status()` 会让 ACK 和控制帧在串口上撞车。读侧频率与控制无关,示例里控制 100 Hz、读 10 Hz。|
-| `control_ripple.py` | 动电机 | 量**控制质量**而不是功能:行进段的相对速度纹波、峰峰、均速/命令、逆向帧。指标与 `docs/CONTROL_REFACTOR.md` §1.2 的基线表一致,可直接对比重构前后。两个控制器都能测。|
+| `control_ripple.py` | 动电机 | 量**控制质量**而不是功能:行进段的相对速度纹波、峰峰、均速/命令、逆向帧。脚本会打印重构前的基线,可直接对比。两个控制器都能测。|
 
 ### 状态与诊断
 
@@ -123,8 +123,7 @@ C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper:
 每次 `set_target(p, grasp_torque_nm)` 给的值钳位,被挡住时命令**恰好**停在那个值,
 另外还有时间基准斜坡调速和 `holding` 观测。
 
-接触不需要判定:钳位饱和就是接触。2026-09 之前这里跑的是主机侧接触状态机,
-删除原因见 `docs/CONTROL_REFACTOR.md`。
+接触不需要判定:钳位饱和就是接触。
 
 ### 0. 先写运动安全包络(每台设备一次,掉电保持)
 
@@ -261,15 +260,13 @@ python python/examples/force_position_control.py right --grasp-torque 0.8
 判定),2026-09 删除,三个原因:
 
 1. **重复 MCU。** `task_canmotor_is_stalled()` 在 500 Hz 上跑同一套判据,而
-   `docs/CONTROL_LAYERING.md` §3 早就把接触判定划给固件。两份拷贝会各自漂移。
+   接触判定本就属于固件。两份拷贝会各自漂移。
 2. **它逼着控制变软。** 为了让堵转特征干净,行进段被**刻意**写成 `kp=0` 的纯速度
    阻尼(增益 `grasp/close_speed`,旧默认下只有 0.7 N·m/(rad/s))。实测代价:闭合
    方向 37% 的相对速度纹波、0.59 rad/s 峰峰、12 Hz 极限环,均速只有命令值的 77%。
    四组对照证明纹波跟增益走而不跟速度走,是环太软而非机械共振。
 3. **它最核心的判断不可测。** 区分"到位"与"被挡住"要在距目标距离上切一刀,而空爪
    场景下这两者物理上本就连续。
-
-完整推导与实测数据见 `docs/CONTROL_REFACTOR.md`。
 
 ### 5. 状态机
 

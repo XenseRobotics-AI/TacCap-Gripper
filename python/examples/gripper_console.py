@@ -14,7 +14,7 @@ RS00 14 Nm),24 V 母线被电流拉垮:松手
     --mode impedance       ImpedanceController —— 误差钳位 + 力矩天花板 + 堵转保持
     --mode force-position  ForcePositionController —— 全程一条有界力矩控制律,饱和即接触
 
-三层的分工见 docs/CONTROL_LAYERING.md。要记住的一条:**固件包络是唯一在 MIT
+要记住的一条:**固件包络是唯一在 MIT
 路径上、谁都绕不过的一层**,而它出厂默认不启用(GripperConfig.reserved 全 0)。
 不开就没有,主机侧这两个控制器也替代不了它 —— 100 Hz 相位锁的链路,主机反应
 下限几十毫秒,8 rad/s 下就是 0.24 rad。用 --set-envelope 写一次,掉电保持。

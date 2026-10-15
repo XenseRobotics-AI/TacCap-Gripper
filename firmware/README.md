@@ -1,218 +1,125 @@
 # Prebuilt TC-GU-01 firmware
 
-The current firmware images, so you can upgrade a gripper without access to the
-firmware source — which is a separate, internal repository and is **not** part
-of this SDK.
+Current firmware images for the TacCap-Gripper MCU. The firmware source is not
+part of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.16.bin` | follower (SN ends **`s`**) | **1.2.16** | V2.8 + 运动安全包络 | 167,544 B | `0x4a8cd360` |
+| `tc-gu-01-slave-1.2.16.bin` | follower (SN ends **`s`**) | **1.2.16** | V2.8 | 167,544 B | `0x4a8cd360` |
 
-Only the current release is kept here. Older images come from this directory's
-git history rather than from extra files.
+Only the current release is kept here; older images are in git history.
+[`manifest.json`](manifest.json) carries the same data machine-readably —
+`ota_update.py` picks the file through it and verifies the image by CRC32.
 
-`manifest.json` carries the same data machine-readably, and it is load-bearing
-rather than descriptive: `ota_update.py` resolves which file to send through it,
-and checks the image by **CRC32** rather than trusting the filename. Bumping a
-version therefore means replacing the `.bin` *and* updating the manifest in the
-same change — `python/tests/test_ota_update_all.py` fails if they disagree.
-
-**The two roles carry independent version numbers**, so the table above will
-usually show two different values. Each role has its own definition in the
-firmware's `protocol_handler.c`.
-
-They were briefly forced onto one number: 1.2.3 aligned the digits and 1.2.5
-collapsed the two definitions into one, because a shared-layer change had once
-been bumped on the follower and forgotten on the leader — two leaders then ran
-binaries 17,809 bytes apart while both reporting 1.2.1. That guard was dropped on
-2026-09-24 in favour of a rule the firmware repo states explicitly: **a change to
-shared code bumps both roles**, and only a change confined to one role's own
-sources bumps that role alone.
-
-**A leader reporting 1.2.6 may be the old aligned-number image** (same code as
-1.2.4, no receive fix) rather than the shipped one. The number collides; reflash
-this directory's `tc-gu-01-master-1.2.6.bin` if you are not sure. See
-docs/FIRMWARE.md.
-
-The leader is at 1.2.6 while the follower is at 1.2.16 for that reason: 1.2.7,
-1.2.8, 1.2.10, 1.2.12, 1.2.13, 1.2.14, 1.2.15 and 1.2.16 touched only follower code, and 1.2.9 changed the shared
-`storage.c`, which is what moved the leader from 1.2.4 to 1.2.5 — with no change
-in its behaviour.
-
-**Follower 1.2.11 fixes a command channel that could go silent for good.** The
-control UART (3 Mbaud, one interrupt per byte) stopped receiving after a single
-overrun, because the error callback never restarted reception: the status
-stream kept flowing, every command went unanswered, and 300 ms later the
-host-timeout safe hold dropped the grip to 0.35 N·m. Measured on 0086s after
-about 3 minutes of a 3 N·m ForcePosition hold; gone on 1.2.11. Reception is now
-restarted, `g.diagnostics.uart_stats()` reports `rx_errors` / `rx_rearms`
-(`rx_rearms > 0` means it happened and was recovered), and a host-timeout
-disable keeps `stop_reason == HostTimeout`. The receive path is shared, so the
-leader got the same fix as **1.2.6**, verified on 0115m and 0116m: 15 minutes
-each of a 100 Hz stream plus a 100 Hz acknowledged command, ~87,000 commands, no
-failures.
-
-**Follower 1.2.12 makes the model-dependent settings follow the model.** Before
-it, a follower upgraded from 1.1.x kept EL05-era values after the model was
-identified as RS00: 0x700B at 6.0, the auto-calibration stall torque at 0.35 N·m
-(too little to move an RS00, so calibration stopped short of the stops and could
-record the open direction backwards -- 0094s did), the open direction defaulting
-to "reverse" (right for EL05, wrong for RS00), and no motion envelope at all
-unless someone ran `ensure_envelope()`. Now:
-
-| | EL05 | RS00 |
-|---|---|---|
-| auto-cal stall torque default | 0.5 N·m | 1.8 N·m |
-| default open direction | reverse | not reverse |
-| envelope when none stored | cont 1.1 / peak 1.8 | cont 3.6 / peak 5.0 |
-
-Peak is the rated torque since 1.2.13 (1.2.12 used `t_max`, which left the
-position-error clamp with nothing to do). The envelope default has the 90/100 °C temperature wall, measured on EL05; RS00
-is not separately characterised. It is computed at run time, never written, so a
-stored envelope still wins; `get_model().default_envelope == 1` says the default
-is in force. When the model record changes, 0x700B, the calibration torque and
-the direction are reset to the new model's defaults; a stored calibration torque
-still at exactly the old 0.35 migrates on boot. A gripper OTA also no longer
-refuses when the motor is not on the bus.
-
-**Follower 1.2.16 no longer decodes the motor's echo frames as status.** A motor
-takes an MIT motion frame whose byte 0 (the target position's high byte) equals
-its own CAN ID for another command; on the factory ID 127 that is a left-hand
-RS00's closed end. The fix is the CAN ID -- RS00 followers left 17, right 18,
-written by the factory config tool -- and 1.2.16 is the backstop.
-
-**Follower 1.2.15 sets an RS00's open direction from its side.** The gear train
-is mirror-mounted, so a left follower (odd SN) needs Reverse 1 and a right one
-(even) Reverse 0; auto-calibration now uses that and corrects a stored bit that
-disagrees. Requires the SN to be burned correctly. Verified on 0089s / 0094s.
-
-**Follower 1.2.14 records the motor's firmware version in flash** (0x5C to
-write it, 0x58 falls back to it under MIT) -- see the SDK README, *RobStride
-motor firmware*. Verified on 0094s: written, read back under MIT, kept across a
-24 V power cycle.
-
-Not verified on hardware: OTA with the motor off the bus, and calibration from an
-invalid config using the model's default direction.
-
-## Follower: the motor model
-
-Every MIT frame is quantised against the motor model's torque and velocity
-ranges, so the wrong model is not an error — it is a constant factor on every
-frame (EL05 ±6 N·m vs RS00 ±14 N·m). The model is recorded per device in MCU
-flash; the image's compile-time *fallback* is the **EL05**.
-
-**Since 1.2.10 the record fills itself in.** When the motor is on the private
-protocol at boot — which a new motor is, since RobStride ships them that way — the
-firmware reads the motor's firmware version and maps its raw bytes to a model
-(`{10,5,…}` = EL05, which RobStride writes `1.0.5.x`; `{0,0,3,…}` = RS00),
-records it, and switches the motor to MIT. So a new or replaced motor needs
-nothing. `g.motor.get_model().autodetected == 1` on the boot that did it.
-
-A unit that was already on MIT before 1.2.10 never passes that point. If
-`get_model()` reports the compile-time default on one (the SDK warns when it opens
-such a follower), write it once and cut 24 V for ~2 s:
-
-```python
-g.motor.set_model(1)          # 0 = EL05, 1 = RS00
-g.motor.get_model()           # -> MotorModel(RS00, ..., from flash, t_max=14.0Nm, ...)
-```
-
-A device upgraded from 1.2.8 or earlier keeps the 0x700B startup torque limit it
-had stored (6.0 N·m on every unit so far). 1.2.9 defaults a device that never
-stored one to its model's range, but will not overwrite a stored value — on an
-RS00 raise it once with `g.motor.set_startup_limit_torque(14.0)` and power-cycle.
+Leader and follower firmware are **versioned independently**; different numbers
+on the two halves of a pair are normal. The SDK refuses to drive a follower
+below **1.2.5**.
 
 ## Flashing
 
 ```bash
-# 1. What is attached, and what is it running?
+# 1. What is attached, and which role is it?
 python -c "from xense.taccap import scan_grippers
 for g in scan_grippers(): print(g.side, g.role, g.firmware_sn)"
 
-# 2. Flash, by role. The script finds the image in this directory.
-python python/examples/ota_update.py slave left
+# 2. Flash by role. The script finds the image in this directory.
+python python/examples/ota_update.py slave left      # or: master right / --all
 
-# 3. POWER-CYCLE the gripper. Not optional — see below.
+# 3. Power-cycle (see below).
 
-# 4. Confirm. GetVersion returns the compiled-in constant, so what you read
-#    back is proof of what actually landed.
+# 4. Confirm the version that actually landed.
 python python/examples/follower_status.py left
 ```
 
-The transfer takes about a second; the MCU reboots and re-enumerates over USB in
-roughly 1–3 s.
+The transfer takes about a second; the MCU reboots and re-enumerates in 1–3 s.
+The image is written to the inactive flash bank and activated only after a
+CRC check, so a failed transfer leaves the running image intact. No SWD probe
+is needed.
 
-### Pick the image by ROLE, not by side
+> [!WARNING]
+> **Pick the image by role, not by side.** The role is the last character of
+> the firmware SN (`m` = master/leader, `s` = slave/follower). Flashing the
+> wrong role's image bricks the MCU and needs an SWD probe to recover.
 
-A gripper's role is the **last character of its firmware SN**, not which hand it
-is on — `…0023m` → `m` → master. Two grippers on opposite sides of the same rig
-are often both masters.
-
-Flashing the wrong role's image bricks the MCU and needs an SWD probe to
-recover, so check first:
-
-```bash
-python -c "from xense.taccap import scan_grippers
-for g in scan_grippers():
-    print(g.firmware_sn, '->', 'master' if g.firmware_sn.endswith('m') else 'slave')"
-```
-
-### Verify an image before you flash it
-
-The manifest's CRC32 is the same value `ota_update.py` prints and sends in
-`OtaStart`, so it is worth checking if the file has travelled:
+To verify an image file before flashing:
 
 ```bash
-python -c "
-from xense.taccap import crc32_iso_hdlc
+python -c "from xense.taccap import crc32_iso_hdlc
 print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
-# -> 0x885b8706
+# -> 0x350393b5
 ```
 
-## ⚠️ Power-cycle the gripper after flashing
+### Power-cycle after every flash
 
-The bank-swap reboot is a **soft** reset: it restarts the MCU but never powers
-the USB-serial bridge down. The device comes back in a degraded state that is
-indistinguishable from a healthy one — right version string, stream running,
-`uart_stats()` counters all clean — while quietly dropping status frames.
+The post-flash reboot is a soft reset that does not restart the USB-serial
+bridge; the device then looks healthy while quietly dropping status frames.
 
-Measured on the same unit, same firmware, same cable, 60-second runs:
+- **Follower:** unplug the **24 V** power cable, wait ~2 s, plug it back. USB
+  can stay connected — unplugging only USB does *not* reset a follower.
+- **Leader:** unplug and replug its USB cable.
 
-| | status frames lost |
+`gripper.device.heartbeat().uptime_ms` restarting near 0 confirms it worked.
+
+## Follower motor setup
+
+A follower carries a RobStride motor, either an **EL05** or an **RS00**. These
+settings are stored in the follower's flash and normally done once at the
+factory; after changing any of them, cut 24 V for ~2 s.
+
+**Motor model.** Since firmware 1.2.10 the follower detects the model itself the
+first time a new motor boots. Check it with `g.motor.get_model()`. If the SDK
+warns that the model is the compile-time default, set it once:
+
+```python
+g.motor.set_model(1)                         # 0 = EL05, 1 = RS00
+g.motor.set_startup_limit_torque(14.0)       # RS00 upgraded from firmware <= 1.2.8 only
+```
+
+**RS00 handedness.** The RS00 gear train is mirror-mounted, so left and right
+followers open in opposite directions: left (odd SN) stores flags `0x0003`
+(Reverse 1), right (even SN) `0x0001` (Reverse 0). Firmware 1.2.15+ sets this
+from the SN during auto-calibration. `FollowerGripper` warns on open when the
+stored direction disagrees with the side; `t.expected_open_reverse(model_id,
+side)` gives the correct value, and `g.set_gripper_config()` writes it.
+
+**RS00 CAN ID.** RS00 followers need motor CAN ID **17 (left) / 18 (right)**,
+not the factory default 127 — with 127, force-position control cannot close a
+left-hand gripper fully. Set it with `g.motor.set_can_id()`;
+`t.expected_motor_can_id(model_id, side)` gives the correct value, and
+`FollowerGripper` warns on open when it disagrees. EL05 is not affected.
+
+### Motor firmware
+
+The motor runs its own firmware, separate from the gripper MCU.
+
+| Motor | Required firmware |
 | --- | --- |
-| after OTA alone | 35–39 per run, three runs |
-| after unplug + replug | **0**, three runs |
+| EL05 | ≥ 1.0.5.0.4 |
+| RS00 | ≥ 0.0.3.32 |
 
-**Any measurement taken before the power cycle is suspect.**
+Older motor firmware produces wrong velocity feedback (EL05) or motion jitter
+(RS00). Read the version with `g.motor.motor_version()`. The motor answers it
+only under its private protocol; with follower 1.2.14+ a version stored in flash
+is returned under MIT as well — record it after each motor update with
+`g.motor.set_motor_fw_version("0.0.3.32")`.
 
-"Power-cycle" on a **follower** means **unplug the 24 V power cable, wait
-~2 s, and plug it back in**; the USB cable can stay connected. The follower's
-MCU and motor run on 24 V, so cutting it restarts both — while pulling only USB
-leaves the MCU running on 24 V and resets nothing. Measured on an EL05 follower:
-cutting 24 V drops the whole on-board USB hub (serial bridge included) within
-0.3 s and restarts the MCU — 15 of 15 cycles, from the quickest tap to 10 s off —
-and after an OTA plus one such cycle a 60 s status stream lost 0 of 6000 frames. A **leader** has no 24 V
-rail: unplug and replug its USB. To confirm the cycle really happened,
-`gripper.device.heartbeat().uptime_ms` restarts near 0. The `/dev/serial/by-id/`
-timestamp usually moves too, but uptime is the direct evidence that the MCU restarted.
+**Updating the motor over the gripper's USB-C** (follower firmware ≥ 1.2.8; the
+motor stays mounted):
 
-## How OTA works, briefly
+```bash
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left
+```
 
-The image is written to the **inactive** flash bank and activated with the
-STM32H5 bank swap, so a plain `.bin` serves both banks — it always links at
-`0x08000000`, and the swap remaps the target bank there. Nothing is overwritten
-until `OtaApply`, and the firmware refuses to swap on a CRC mismatch, so a failed
-transfer leaves the running image intact.
+1. Flash the gripper firmware first — a gripper OTA switches the motor back to
+   MIT.
+2. Switch the motor to the private protocol:
+   `g.motor.switch_protocol(t.MotorProtocol.Private)`, then cut 24 V for ~2 s.
+3. Run `motor_ota_update.py`. It refuses an image whose model does not match
+   the model recorded on the gripper (RobStride's own OTA does not check).
+4. Cut 24 V again. The motor comes back on MIT.
 
-No SWD probe is involved; it goes over the same serial link as sensor I/O.
+## Building from source
 
-## Rebuilding these
-
-These are build artifacts of the firmware source repository. See
-[docs/FIRMWARE.md](../docs/FIRMWARE.md) for the toolchain and the two traps
-(conda's exported host `CFLAGS` breaking the ARM cross-compile, and the 456 KB
-single-bank OTA cap).
-
-When you refresh these files, regenerate `manifest.json` in the same change —
-its CRC32 is what `ota_update.py` verifies against.
+See [docs/FIRMWARE.md](../docs/FIRMWARE.md) (requires access to the firmware
+repository).

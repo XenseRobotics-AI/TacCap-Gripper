@@ -22,8 +22,9 @@
 > `--sn` / `--side` / `--device` 之类的开关 —— 见
 > [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right)。
 
-前置的安装、设备权限、`PYTHONPATH` / `LD_LIBRARY_PATH` 陷阱见
-[docs/INSTALL.md](INSTALL.md)。下文假定 `xense-taccap` 环境已激活、
+安装见 [docs/INSTALL.md](INSTALL.md);请先完成一次性的
+[主机配置](../README_CN.md#主机配置一次性)(`dialout` 组、ModemManager udev 规则、
+相机 MJPEG 格式)。下文假定 `taccap` 环境已激活、
 `import xense.taccap` 能成功。
 
 ---
@@ -300,13 +301,6 @@ command(target, kp, kd, 力矩预算 = grasp_torque_nm)
 另外 `grasp_torque_nm` **不是硬上限**:稳定保持时实测反馈比预算高 5~7%。预算塑造
 命令,真正约束输出的是固件的运动包络。
 
-> 2026-09 之前这里跑的是一套主机侧接触状态机(`kp=0` 速度阻尼闭合 → 堵转判定 →
-> 纯 `tau_ff` 保持)。删掉的原因有三:它重复了 MCU 已经在 500 Hz 做的事
-> (`task_canmotor_is_stalled()`,而 `docs/CONTROL_LAYERING.md` §3 早已把接触判定
-> 划给固件);为了让堵转特征干净,行进段被**刻意**做成 `kp=0`,实测代价是 37% 的
-> 速度纹波和只有命令值 77% 的均速;而它最核心的判断——区分「到位」与「被挡住」
-> ——在空爪场景下物理上本就连续,不可靠。详见 `docs/CONTROL_REFACTOR.md`。
-
 **状态是观测量,不是控制状态。** `snapshot()` 每帧导出:
 
 | 观测 | 含义 |
@@ -401,7 +395,7 @@ finally:
 python python/examples/impedance_control.py right
 python python/examples/force_position_control.py right --grasp-torque 0.35
 
-# 运动安全包络(固件侧的力矩与热保护,默认不启用,每台设备配一次)
+# 运动安全包络(固件侧的力矩与热保护,每台设备配一次,见 1.5)
 python python/examples/impedance_control.py --show-envelope
 python python/examples/impedance_control.py --set-envelope
 ```
@@ -439,6 +433,43 @@ python python/examples/impedance_control.py --set-envelope
 可跑的示例:`impedance_control.py`、`force_position_control.py`(见上)、
 `gripper_console.py`(交互控制台,两种模式)。
 
+### 1.5 运动安全包络、LED 与诊断
+
+**运动安全包络。** 固件侧的力矩与热保护,存在从爪 flash 里,对每一条运动命令生效 ——
+包括不是本 SDK 发出的 MIT 帧。从爪固件 1.2.12+ 在未写入时按电机型号使用默认值;更早的
+固件则完全不保护。每台从爪写一次即可;无需选数值,SDK 按设备自报的电机推导:
+
+```python
+a = g.audit_envelope()      # stored / effective / recommended,只读
+g.ensure_envelope()         # 仅当存储值与规格不符时才写入
+# 两者都在控制器 start() 之前或 stop() 之后调用,不要在控制运行中调用
+```
+
+| 字段 | 取值 |
+| --- | --- |
+| `peak_torque_nm` | 电机额定力矩(EL05 1.8,RS00 5.0 N·m)—— 运动中的瞬态上限 |
+| `cont_torque_nm` | 电机持续堵转额定(EL05 1.1,RS00 3.6 N·m)—— 堵住时可无限期保持的力矩 |
+| 温度 | 90 °C 开始降额,100 °C 为温度墙 |
+
+电机升温时固件会降低实际输出,所以 `grasp_torque_nm` 是上限,不是恒定值。
+
+**LED 与上电自动标定:**
+
+```python
+g.led.set(t.Ws2812Mode.Override, 0, 255, 0, brightness=120)   # 常亮绿
+g.led.effect(t.Ws2812EffectType.ColorBreathe, 0, 0, 255)      # 蓝色呼吸
+g.led.off()
+
+cfg = g.get_auto_cal_config()     # 启用后,从爪上电时自行找到
+g.set_auto_cal_config(cfg)        # 闭合与张开止点
+```
+
+**诊断**(主从均可)。`g.diagnostics.uart_stats()` 返回固件自己的 UART 计数
+(`tx_calls_ok`、`tx_fail_timeout`、`rx_overflow`、`rx_errors`、`rx_rearms` 等)。把
+`tx_calls_ok` 与上位机同一时间窗口内解出的帧数对比:数目一致但数据缺失,说明丢在 MCU
+之后(线缆或 USB 桥)。固件日志(`g.diagnostics.set_log_config(...)`)输出到没有接到 USB
+的调试串口,而且会影响实时性 —— 除非被要求,否则保持关闭。
+
 ---
 
 ## 2. 视觉:腕部相机
@@ -454,7 +485,7 @@ from xense.taccap import Camera, ColorMode
 cam = Camera(device="/dev/video2", width=640, height=480, fps=30.0,
              use_mjpg=True, color_mode=ColorMode.BGR)
 
-frame = cam.read(timeout_ms=500)      # 同步一次性读;失败返回 None
+frame = cam.read()                    # 同步一次性读;失败返回 None
 print(frame.frame_index, frame.image.shape)
 
 cam.start(lambda f: handle(f.image))  # 或者异步:后台线程回调
@@ -590,9 +621,13 @@ finally:
 
 各自独立,但同时开有几个已知的坑:
 
-- **USB 带宽是共享的。** 两个 OG + 一个腕相机同时 MJPG 满帧,已经吃掉相当一部分
-  总线;夹爪走的是串口,不受影响,但相机之间会互相挤。真要满配采集,
-  先测一遍实际帧率,别假设标称值。
+- **USB 带宽是共享的 —— 所有相机都必须用 MJPEG。** 相机共用一条 USB 2.0 链路,
+  一路未压缩的 YUYV(640×480 @ 30 fps ≈ 147 Mbit/s)就足以让下一台相机报
+  `No space left on device` 或丢帧。保持 `use_mjpg=True`,并用
+  `v4l2-ctl -d <设备> --get-fmt-video` 确认(见 README 的
+  [主机配置](../README_CN.md#3-腕部相机必须使用-mjpeg))。即使是 MJPEG,两个 OG + 一个
+  腕相机也会占掉相当一部分总线,满配采集时先实测帧率,别假设标称值。夹爪本身走串口,
+  不受影响。
 - **谁持有 UVC 设备。** 生产环境里外部相机服务持有 `/dev/video*`,这时
   **不要**再用 `open_cameras=True` 或裸 `Camera` 去开同一个节点 —— 会失败或抢到
   半路。SDK 默认不开相机,就是为了这个。
@@ -613,14 +648,16 @@ finally:
 
 | 现象 | 多半是 |
 | --- | --- |
-| `scan_grippers()` 返回空 | 串口权限(见 [INSTALL.md](INSTALL.md))或线没插好 |
+| `scan_grippers()` 返回空,或 `role=Unknown` | 用户不在 `dialout` 组(见 README 的[主机配置](../README_CN.md#主机配置一次性)),或线没插好 |
+| 插上后立即打开报 `Device or resource busy` | ModemManager 在探测串口 —— 添加[主机配置](../README_CN.md#2-让-modemmanager-不要占用夹爪串口)里的 udev 规则 |
+| 相机报 `No space left on device` 或丢帧 | 没用 MJPEG —— 见[主机配置](../README_CN.md#3-腕部相机必须使用-mjpeg) |
 | `fw_sn` 为空 / `Side.Unknown` | 固件没烧 SN,或固件早于 V1.6 |
 | 矫正后画面全黑 | 用了 `read_fisheye()` 的全零记录 —— 改用 `resolve_fisheye()` |
 | 矫正后画面偏心 | 未必是错的,主点本来就不一定在画面中心 |
 | 录下来的颜色是反的 | 裸 `Camera` 是 BGR、`wrist_camera` 是 RGB,搞混了 |
 | 电机状态帧成片丢失 | 提交相位(用两个控制器之一,别自己发帧),或刷完固件没断电重插 |
 | 改了 C++/bindings 但 Python 里没生效 | 消费端的环境没重装,见 [INSTALL.md](INSTALL.md) |
-| `import xense.taccap` 报 `libopencv_core.so` | 缺 `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` |
+| `import xense.taccap` 报 `libopencv_core.so` | 没在激活的环境里安装 —— 按 [INSTALL.md](INSTALL.md) 重装;不要设 `LD_LIBRARY_PATH` |
 
 更细的专题:[INSTALL.md](INSTALL.md) · [CALIBRATION.md](CALIBRATION.md) ·
 [FIRMWARE.md](FIRMWARE.md) · [EXAMPLES.md](EXAMPLES.md) ·
