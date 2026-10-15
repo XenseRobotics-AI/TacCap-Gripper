@@ -23,7 +23,7 @@ they do **share USB bandwidth**; see [Running all three at once](#4-running-all-
 
 > **Every example script selects a device with the positional argument `left` /
 > `right`** (or with a serial number directly). There is no `--sn` / `--side` /
-> `--device` flag — see [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right).
+> `--device` flag — see [EXAMPLES.md](EXAMPLES.md#选择设备统一用-left--right).
 
 Installation is covered in [docs/INSTALL.md](INSTALL.md); complete the one-time
 [host setup](../README.md#host-setup-one-time) (`dialout` group, ModemManager udev

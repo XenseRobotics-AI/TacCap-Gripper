@@ -20,7 +20,7 @@
 
 > **示例脚本一律用位置参数 `left` / `right` 选设备**(或直接给序列号),没有
 > `--sn` / `--side` / `--device` 之类的开关 —— 见
-> [EXAMPLES.md](EXAMPLES.md#选谁统一用-left--right)。
+> [EXAMPLES.md](EXAMPLES.md#选择设备统一用-left--right)。
 
 安装见 [docs/INSTALL.md](INSTALL.md);请先完成一次性的
 [主机配置](../README_CN.md#主机配置一次性)(`dialout` 组、ModemManager udev 规则、

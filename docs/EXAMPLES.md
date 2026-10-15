@@ -1,26 +1,22 @@
 # 示例脚本
 
-`python/examples/` 下 13 个可运行脚本的参考手册:每个脚本做什么、对设备做什么、
-以及力位混合控制器的完整调参说明。
+`python/examples/` 下 13 个可运行脚本的参考手册:每个脚本做什么、对设备做什么,
+以及力位混合控制器的调参说明。按顺序的上手路径见 README 的
+[Quick start](../README.md#quick-start)。
 
-**想先跑起来看** README 的
-[Quick start](../README.md#quick-start) —— 那里是按顺序的上手路径(扫描 → 读状态 →
-配包络 → 试运动 → 夹持)。这里是逐脚本的细节。
+C++ 示例默认构建进 `build/cpp/examples/`,`-DTACCAP_BUILD_EXAMPLES=OFF` 可跳过;
+wheel 构建不包含它们。
 
-C++ 示例默认构建进 `build/cpp/examples/`。它们到 2026-09-22 之前一直是关的,
-意味着没人编译它们 —— SDK 改个签名就能把它们全弄坏而 CI 照样绿。
-`-DTACCAP_BUILD_EXAMPLES=OFF` 可以跳过;wheel 构建本来就关着。
+> [!WARNING]
+> **不要直接用电机原语控制。** `submit_position` / `submit_velocity` /
+> `submit_torque` / `submit_impedance` 是裸 MIT 帧,没有主机侧的误差钳位和力矩上限。
+> 拿它们顶住硬物体时,`kp × 位置误差` 会一直涨到电机自身上限(EL05 6 N·m /
+> RS00 14 N·m),24 V 母线被拉垮、报 `EN|FAULT|UNDER_VOLT`,之后必须重新上电。
+> 请使用下面的两个控制器。
 
-**刻意不提供电机原语的示例。** `submit_position` / `submit_velocity` /
-`submit_torque` / `submit_impedance` 是裸 MIT 帧,不经过主机侧的误差钳位、力矩
-天花板和堵转保护 —— 直接拿它们顶硬物体,`kp x 位置误差` 会一路涨到电机自己的
-0x700B 上限(电机型号的 `t_max`:EL05 6 Nm / RS00 14 Nm),24 V 母线被电流拉垮、打出 `EN|FAULT|UNDER_VOLT`,此后无力矩、
-必须重新上电。要控制就用下面两个控制器。
-
-## 选谁:统一用 `left` / `right`
+## 选择设备:统一用 `left` / `right`
 
 所有需要指定设备的示例都用**同一个位置参数**:`left` / `right`,或直接给序列号。
-没有 `--sn` / `--side` / `--device` 这类各写各的开关。
 
 ```bash
 python python/examples/calibrate.py right
@@ -31,112 +27,87 @@ python python/examples/ota_update.py master right
 python python/examples/ota_update.py --get-status right
 ```
 
-只插了一台时可以省略(`calibrate.py` 除外 —— 它会改硬件状态,所以要求显式指定)。
-侧别一律来自**固件烧录的 SN**(`Cmd::GetSn`),不是 CH343 芯片 SN;腕相机的序号
-与它所在夹爪一致,所以 `left` 在哪个示例里都指同一半设备。解析逻辑只有一份,在
-`_target.resolve_target()` 里。
+只接了一台时可以省略;`calibrate.py` 例外,它会写设备,所以必须显式指定。
+接了多台又没指定时,脚本会报错而不是猜。左右一律来自**固件烧录的 SN**,腕部相机
+的流水号与所在夹爪一致,所以 `left` 在任何脚本里都指同一侧设备。C++ 示例使用同样的
+选择规则。
 
 `python/examples/` 下有两个下划线开头的共享模块,不能单独运行:
 
-- **`_target.py`** —— 上面这个选择器,加版本渲染和终端颜色。除 `wrist_camera.py`
-  之外每个示例都导入它。
-- **`_calib_flow.py`** —— 引导式 encoder-max 标定流程(关到底取零 → 开到底取跨度
-  → 写 flash),只有 `calibrate.py` / `fisheye_cal.py` /
-  `leader_normalized_position.py` 用。它在 stdin 上等输入,所以刻意不放进
-  `xense.taccap`:库里阻塞 stdin 会弄坏所有无头消费方。
-
-这两者原本是一个文件,叫 `_calib_flow.py`。拆开的理由是名字不对:里面被用得最多
-的是设备选择那几个函数,而 `impedance_control.py` 之类只为拿一个 `left|right|SN`
-参数就得导入一个叫「标定流程」的模块 —— 看起来像写错了。
-
-`wrist_camera.py` 是唯一不用 `_target` 的:它选的是**腕相机**(`XC` 序列号),
-不是夹爪,而它按 side+role 找夹爪读内参那段刻意保留自己的实现 —— 那里失败必须是
-可捕获的异常(调用方要降级到参考内参),而 `resolve_target()` 是 `sys.exit()`。
-
-C++ 示例用同一套选择。工位上常年插着四台,而 `FollowerGripper::open()` 走
-`find_one()` —— 多于一台直接抛 `IoError`,不猜。
+- **`_target.py`** —— 上述设备选择器,以及版本显示和终端颜色。
+- **`_calib_flow.py`** —— 引导式行程标定流程(闭合取零 → 张开取跨度 → 写 flash),
+  由 `calibrate.py` / `fisheye_cal.py` / `leader_normalized_position.py` 使用。
+  它会在 stdin 上等待输入,所以不放进 `xense.taccap` 库。
 
 ## 脚本一览
 
-按任务分组。**「对设备做什么」这一列先看** —— 上真机之前它决定这条命令值不值得
-现在跑。
+上真机前先看「对设备做什么」一列。
 
 ### 控制
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `impedance_control.py` | 动电机 | `ImpedanceController` 的用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列,并检查「到位」与「被挡住」可分。同时是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope`,值从设备读,没有数值参数)。|
-| `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 的用法:同样两个调用。**全程一条有界力矩控制律,不检测接触** —— 钳位饱和就是接触;闭合端点另有有界前馈预压把爪子坐死在机械止点。输出里 `cmd` 与实测力矩的差就是固件的热降额。|
-| `gripper_console.py` | 动电机 + 夹持力 | 单夹爪键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个 UI,并内置**运动安全包络**的配置入口。表头常驻 `ENFORCED` / `*** INACTIVE ***`。见 [力位混合控制器](#力位混合控制器)。|
-| `control_and_read.py` | 动电机 | **边控制边读**:控制器跑着的时候状态从哪里拿。`snapshot()` 非阻塞、一把锁一致视图,读侧不发任何命令 —— 控制期间调 `read_status()` 会让 ACK 和控制帧在串口上撞车。读侧频率与控制无关,示例里控制 100 Hz、读 10 Hz。|
-| `control_ripple.py` | 动电机 | 量**控制质量**而不是功能:行进段的相对速度纹波、峰峰、均速/命令、逆向帧。脚本会打印重构前的基线,可直接对比。两个控制器都能测。|
+| `impedance_control.py` | 动电机 | `ImpedanceController` 用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列。也是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope`)。|
+| `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 用法。一条有界力矩控制律,饱和即接触;闭合端点有小的前馈预压。输出中 `cmd` 与实测力矩之差就是固件的热降额。|
+| `gripper_console.py` | 动电机 + 夹持力 | 键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个界面,内置包络配置。表头显示包络是否生效(`ENFORCED` / `*** INACTIVE ***`)。|
+| `control_and_read.py` | 动电机 | **边控制边读**:控制器运行时从 `snapshot()` 读状态,不发任何命令。控制期间调用 `read_status()` 会让 ACK 和控制帧在串口上冲突。|
+| `control_ripple.py` | 动电机 | 测量控制质量:行进段速度纹波、峰峰值、均速/命令速度比、逆向帧。两个控制器都能测。|
 
 ### 状态与诊断
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `follower_status.py` | 只读 | 从爪状态:一次性读(位置/速度/力矩/温度/状态位/故障)、归一化开度、开流读速率,以及**新鲜度判据** —— 用固件的 `status_timestamp_ms` 而不是「帧还在到」,后者在状态冻结时照样推进。|
+| `follower_status.py` | 只读 | 从爪状态:一次性读取(位置/速度/力矩/温度/状态位/故障)、归一化开口度、流式速率。用固件的 `status_timestamp_ms` 判断数据是否新鲜。|
 
 ### 标定
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `calibrate.py` | 写 flash | Per-gripper encoder calibration CLI, selected by `left` / `right` (or an explicit SN) — latches the zero **and stores the measured travel span** (`Cmd::EncoderMaxCal`), which is what unlocks normalized position. Shows raw + cooked side-by-side, then a live `raw \| cooked \| position 0..1` readout. Checks firmware support before writing anything. See [标定](CALIBRATION.md#calibration). |
-| `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | Read/write the flash-persisted calibration records (V2.0/V2.1): `show`, `set-fisheye` (flags or an OpenCV `.npz` holding `K`/`D`), `set-encoder-max`, and `measure-encoder-max` — the guided close-zero → open-sample → store flow that unlocks normalized leader position. |
-| `read_intrinsics.py` | 只读 | 腕相机内参,输出 JSON。走 `resolve_fisheye()` 而不是 `read_fisheye()` —— 没标定过的机器对读请求回的是**全零记录而不是 NACK**,直接拿去矫正会把每一帧变全黑。输出的 `source` 字段标明内参来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败退出。JSON 走 stdout、诊断走日志,可以直接 `> cal.json` 或管道给 `jq`。记录里**不存图像尺寸**,所以 `assumed_image_size` 把 640x480 这个假设显式写出来。|
+| `calibrate.py` | 写 flash | 编码器零点 + 行程跨度标定;完成后归一化开口度才可用。写入前检查固件支持,写入后实时显示 `raw \| cooked \| 0..1`。见 [CALIBRATION.md](CALIBRATION.md)。|
+| `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | 读写 flash 中的标定记录:`show`、`set-fisheye`(命令行参数或含 `K`/`D` 的 OpenCV `.npz`)、`set-encoder-max`、`measure-encoder-max`(引导式行程标定)。|
+| `read_intrinsics.py` | 只读 | 以 JSON 输出腕部相机内参。`source` 字段标明来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败。JSON 输出到 stdout,可以 `> cal.json` 或管道给 `jq`。|
 
 ### 相机与主爪
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `wrist_camera.py` | 只读 | Stand-alone wrist-camera viewer, selected by `left` / `right` (or an XC serial) like every other example. **XC wrist cameras only** — a GSPS visuotactile serial or a raw `/dev/videoN` path is refused, since those sensors belong to `xensesdk`. Fisheye undistortion on a switch, **off by default like the SDK itself**: `--undistort` / `--compare` (raw \| rectified side by side), `--balance`, and `u` / `[` `]` to cycle live. Intrinsics come from the same-side gripper via `resolve_fisheye()`, from a `.npz`, or from the SDK reference values with `--no-mcu`. Headless with `--no-display` (+ `--save-dir` for one PNG/s). |
-| `leader_normalized_position.py` | 只读 | Streams a leader gripper's opening as `0..1` via `normalize_position=True`, with a live bar. Needs the encoder-max record (or `--encoder-max-rad` to bypass the firmware read). |
+| `wrist_camera.py` | 只读 | 腕部相机查看器,按 `left` / `right` 或 XC 序列号选择;`--list` 列出设备。只接受 XC 腕部相机(视触觉传感器归 `xensesdk`)。鱼眼去畸变默认关闭:`--undistort`、`--compare`(原图与矫正图并排)、`--balance`,运行时按 `u` / `[` `]` 切换。无界面模式 `--no-display`(配合 `--save-dir` 每秒存一张 PNG)。默认 MJPEG,整套采集时不要用 `--no-mjpg`。|
+| `leader_normalized_position.py` | 只读 | 以 `0..1` 流式显示主爪开口度。需要已标定行程(或用 `--encoder-max-rad` 直接指定)。|
 
 ### 固件
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `ota_update.py` | **刷固件** — 刷完断电重启(从爪断 24V,主爪拔插 USB) | 固件 OTA:带进度条,刷完探一次状态。**错镜像会让 MCU 起不来。** |
-| `motor_ota_update.py` | **刷电机固件** — 刷完断 24V 重启(USB 可不拔) | 经从爪 USB-C 刷 RobStride 电机模组自己的程序(`MotorOtaSession`,每帧经 `can_ext_xfer` 0x5B 转发)。需要从爪固件 >= 1.2.8、电机在**私有协议**下(切协议要断 24V);RobStride 协议不校验型号,脚本先核对本机记录的型号与镜像一致。刷完电机回到 MIT。夹爪 OTA 会把电机切回 MIT,所以先刷夹爪再刷电机。|
+| `ota_update.py` | **刷固件** | 夹爪固件 OTA,带进度条。**按角色选镜像,刷错会让 MCU 无法启动。** 刷完断电重启(从爪断 24 V,主爪拔插 USB)。|
+| `motor_ota_update.py` | **刷电机固件** | 通过从爪 USB-C 升级 RobStride 电机固件。需要从爪固件 ≥ 1.2.8、电机处于私有协议;脚本会核对镜像与设备记录的电机型号。先刷夹爪再刷电机。详见 [firmware/README.md](../firmware/README.md#motor-firmware)。|
 
 ### C++ 示例
 
-构建进 `build/cpp/examples/`。
-
 | 示例 | 说明 |
 |---|---|
-| `leader_demo` | Reports streaming rates for a single leader gripper over 5 seconds. |
-| `follower_status` | `follower_status.py` 的 C++ 对应物,同样的字段与新鲜度判据。|
-| `follower_impedance` | 阻抗控制 **+ 边控边读**:C++ 侧把这两件事放在一个示例里,因为 `snapshot()` 就是答案,拆成两个文件只会重复。|
-| `follower_force_position` | 力位混合控制,带那条不变式检查:报告 holding 时爪子必须明显没到命令位置。|
+| `leader_demo` | 单台主爪 5 秒流式采集,报告各路速率。|
+| `follower_status` | `follower_status.py` 的 C++ 版本。|
+| `follower_impedance` | 阻抗控制 + 边控制边读。|
+| `follower_force_position` | 力位混合控制,检查 `holding` 时爪子确实没到达命令位置。|
 
 ## 力位混合控制器
 
-`ForcePositionController` 和纯阻抗的区别在被挡住之后:
+`ForcePositionController` 全程只有一条控制律:PD 请求被钳位在每次
+`set_target(p, grasp_torque_nm)` 给定的力矩上。爪子被挡住时命令**恰好**停在这个值,
+所以它就是夹持力;饱和本身就是接触,不需要另外的接触判定(堵转判定由固件以 500 Hz
+执行)。阻抗模式被挡住时也会饱和,但饱和值是固定的配置常数 `max_position_torque_nm`。
+需要逐次设定夹持力时用力位混合。
 
-    一条有界力矩的控制律,全程不变 —— 误差钳位饱和在 grasp_torque_nm
+### 0. 先写运动安全包络(每台从爪一次,掉电保持)
 
-**要逐次设定夹持力就用它。** 阻抗模式被挡住时同样饱和在误差钳位上并保持,但那个
-值是 `max_position_torque_nm`,为跟随调的配置期常数。(失速守卫删除之前连这一点都
-不成立:守卫把命令目标钳在判定成立那一刻夹爪所在的位置,误差 ~ 0,残余力矩只是
-物体回弹留下的那点 —— 实测同一物体两次落在 0.30 / 0.40 Nm。)力位混合把 PD 请求按
-每次 `set_target(p, grasp_torque_nm)` 给的值钳位,被挡住时命令**恰好**停在那个值,
-另外还有时间基准斜坡调速和 `holding` 观测。
-
-接触不需要判定:钳位饱和就是接触。
-
-### 0. 先写运动安全包络(每台设备一次,掉电保持)
-
-包络在**固件侧**,是 MIT 路径上唯一谁都绕不过的一层,出厂默认不启用
-(`GripperConfig.reserved` 全 0 → `flags=0`)。主机侧的控制器替代不了它:链路
-100 Hz 相位锁,主机反应下限几十毫秒,8 rad/s 下就是 0.24 rad。
+包络在**固件**里,是 MIT 路径上谁都绕不过的一层;主机侧控制器无法替代它。从爪固件
+1.2.12+ 未写入时使用电机型号默认值,更早的固件则完全不保护。
 
 ```bash
-# 修好并启用后退出(set 在 show 之前执行)。没有数值参数 —— 值从设备自报的
-# 电机额定推出来;已经正确就什么都不写
+# 写入并显示(值由设备自报的电机额定推出,已正确则不写)
 python python/examples/gripper_console.py right --set-envelope --show-envelope
 
-# 写完直接进控制台
+# 写入后直接进控制台
 python python/examples/gripper_console.py right --set-envelope --mode force-position
 
 # 只看不写
@@ -146,41 +117,34 @@ python python/examples/gripper_console.py right --show-envelope
 python python/examples/impedance_control.py right --set-envelope
 ```
 
-读回 `flags=0x2003` 即生效(高 4 位 layout 2 | `VALID` | `ENFORCE`)。
+读回 `flags=0x2003` 即生效(layout 2 | `VALID` | `ENFORCE`)。
 
-> **控制器的力矩参数也按电机走。** `ImpedanceConfig.for_spec()` /
-> `ForcePositionConfig.for_spec()` 从 `motor.get_spec()` 推默认值,所有例子默认
-> 用它。连带的一条:**接近速度是 `预算/kd`**,所以 `kd` 也由预算推出,目标
-> 1.1 rad/s(EL05 kd = 1.0,RS00 约 3.27)—— 只提夹持力不提 kd,爪子会夹得更紧
-> **也撞得更快**。
-
-**这些值没有命令行参数,这是有意的。** 包络该填什么不是使用者要回答的问题:设备
-自己知道它装的电机额定多少,而固件无论写进去什么都按那个额定钳。SDK 读 `0x56` 把
-记录推出来:
+包络没有命令行数值参数:设备知道自己的电机额定,SDK 读出后推导记录:
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `peak_torque_nm` | 电机**额定**力矩(EL05 = 1.8 Nm,RS00 = 5.0 Nm) | 运动瞬态上限,**同时决定接近速度**(约 `peak/kd`) |
-| `cont_torque_nm` | 电机连续**堵转**额定(EL05 1.1 Nm,RS00 3.6 Nm) | 可持续上限,I²t 降额的下限 —— **长期保持的实际天花板**。不是额定力矩:那是*旋转*额定 |
-| `temp_derate_start_c` | 0 → 固件 90 °C | 温度降额起点 |
-| `temp_wall_c` | 0 → 固件 100 °C | 温度墙,之上只留 0.30 Nm |
+| `peak_torque_nm` | 电机**额定**力矩(EL05 1.8,RS00 5.0 N·m) | 运动瞬态上限,同时决定接近速度(约 `peak/kd`) |
+| `cont_torque_nm` | 电机持续**堵转**额定(EL05 1.1,RS00 3.6 N·m) | 长期保持的上限,也是 I²t 降额的下限 |
+| `temp_derate_start_c` | 0 → 固件默认 90 °C | 温度降额起点 |
+| `temp_wall_c` | 0 → 固件默认 100 °C | 温度墙,超过后只保留 0.30 N·m |
 
-温度传 0 和传 90/100 等价:0 表示"用固件默认",而固件默认就是 90/100。
-
-**存的不等于执行的。** 固件把 `cont` 钳到堵转额定,只记在一条没接到 USB 的 UART
-上,而读回的是 flash。所以 `--show-envelope` 把两者分开打印:
+**存储值不等于生效值。** 固件会把 `cont` 钳到堵转额定,而读回的是 flash 中的原值。
+`--show-envelope` 因此分开打印:
 
 ```
 [envelope] stored    GripperEnvelope(cont=1.800 Nm, peak=3.000 Nm, ...)
 [envelope] effective GripperEnvelope(cont=1.100 Nm, peak=3.000 Nm, ...)
 ```
 
-`effective` 显示为"固件什么都不执行"时,位置误差钳位、I²t、温度墙**一条都没有**
-—— 不是"保护弱一点"。
+`effective` 显示固件不执行任何保护时,位置误差钳位、I²t、温度墙都不存在。
 
-包络**不是** `start()` 的前提 —— `start()` 校验的是设备持久化的 0x700B 启动上限
-(必须 <= `motion_torque_limit_nm`)和设备额定(见下)。包络没开照样启动,只是长时间保持没有 I²t
-和温度墙兜底。
+包络不是 `start()` 的前提:`start()` 校验的是设备的 0x700B 启动上限(必须
+≤ `motion_torque_limit_nm`)和电机额定。没写包络也能启动,只是长时间夹持没有 I²t 和
+温度墙保护。
+
+> 控制器的力矩参数同样按电机推导:`ImpedanceConfig.for_spec()` /
+> `ForcePositionConfig.for_spec()` 从 `motor.get_spec()` 取默认值,示例都使用它。
+> 接近速度约为 `预算 / kd`,所以只调高夹持力而不调 `kd`,爪子会夹得更紧,也撞得更快。
 
 ### 1. 启动
 
@@ -190,7 +154,7 @@ python python/examples/gripper_console.py right --mode force-position --grasp-to
 python python/examples/gripper_console.py right --mode force-position \
        --grasp-torque 0.8 --close-speed 0.5
 
-# 非交互版本:同一个控制器,跑一遍固定 target 序列
+# 非交互版本:同一个控制器,跑一遍固定目标序列
 python python/examples/force_position_control.py right --grasp-torque 0.8
 ```
 
@@ -198,102 +162,63 @@ python python/examples/force_position_control.py right --grasp-torque 0.8
 
 | 开关 | 映射到 | 默认 | 说明 |
 |---|---|---|---|
-| `--grasp-torque` | `grasp_torque_nm` | 设备连续堵转额定(`for_spec`:EL05 1.1 / RS00 3.6) | **力矩预算,就是夹持力设定值。**自由行程用不到,被挡住时停在这个值。上限是设备的连续堵转额定 |
-| `--close-speed` | `close_speed_radps` | 1.1(`for_spec`,`MOTOR_APPROACH_SPEED_RADPS`) | 闭合速度 rad/s |
+| `--grasp-torque` | `grasp_torque_nm` | 电机持续堵转额定(EL05 1.1 / RS00 3.6) | 夹持力设定值。自由行程不使用,被挡住时停在这个值 |
+| `--close-speed` | `close_speed_radps` | 1.1 | 闭合速度 rad/s |
 | `--step` | — | 0.05 | `j`/`k` 步进量,归一化 0..1 |
 
-`--kp` / `--kd` 只喂 `--mode impedance`(`ImpedanceController`)。force-position 模式的
-位置增益不再可配 —— 见下。
+`--kp` / `--kd` 只用于 `--mode impedance`。
 
-`--grasp-torque` 的硬上限是设备的**连续堵转额定**(EL05 1.1 Nm,RS00 3.6 Nm),
-超了 `start()` 对照 `motor.get_spec()` 直接抛 `invalid_argument` —— 所以 EL05 上
-1.2、1.4 这类值会被拒,RS00 上最多到 3.6。这个界和包络的 `cont_torque_nm` 是同一
-个数:持续保持超过它本来就会被 I²t 降额拉回来,设更大的数不会让夹得更紧,只会让
-请求值和实际保持值对不上。
+`--grasp-torque` 上限是电机持续堵转额定,超过时 `start()` 抛 `ValueError`(EL05 上
+1.2 这类值会被拒)。它和包络的 `cont_torque_nm` 是同一个数:更大的设定值只会被 I²t
+降额拉回,不会夹得更紧。
 
-### 3. `ForcePositionConfig` 完整字段(API 用户)
+### 3. `ForcePositionConfig` 字段
 
-一共 7 个,**真正需要按任务标定的只有前两个**。用
-`ForcePositionConfig.for_spec(motor.get_spec())` 构造,下表「for_spec」一列是它按
-设备给的值;裸构造 `ForcePositionConfig()` 拿的是编译期的 EL05 兜底值,
-`close_speed_radps` 是 0.5。
+真正需要按任务调整的只有前两个。请用 `ForcePositionConfig.for_spec(motor.get_spec())`
+构造;直接 `ForcePositionConfig()` 得到的是 EL05 默认值,且 `close_speed_radps` 为 0.5。
 
 | 字段 | for_spec(EL05 / RS00) | 说明 |
 |---|---|---|
-| `grasp_torque_nm` | 1.1 / 3.6 | 力矩预算,**就是夹持力**;= 连续堵转额定。EL05 上 600s 实测平台 ≈75℃ |
-| `close_speed_radps` | 1.1 / 1.1 | 闭合斜坡速度 rad/s |
-| `hold_torque_limit_nm` | 1.8 / 5.0 | 无限期保持上限 = 电机**额定**力矩 |
-| `motion_torque_limit_nm` | 6.0 / 14.0 | 运动瞬态上限 = 电机**力矩量程** `t_max` |
-| `close_preload_nm` | 0.25 / 0.25 | 只在闭合端点叠加的前馈,把爪子坐实在机械止点;不随电机推导,不得超过 `grasp_torque_nm` |
-| `status_timeout_ms` | 350 | 状态流超时 → 零命令 + `FAULT` |
+| `grasp_torque_nm` | 1.1 / 3.6 | 夹持力,= 持续堵转额定 |
+| `close_speed_radps` | 1.1 / 1.1 | 闭合速度 rad/s |
+| `hold_torque_limit_nm` | 1.8 / 5.0 | 无限期保持上限 = 电机额定力矩 |
+| `motion_torque_limit_nm` | 6.0 / 14.0 | 运动瞬态上限 = 电机力矩量程 `t_max` |
+| `close_preload_nm` | 0.25 / 0.25 | 仅在闭合端点叠加的前馈,使爪子贴紧机械止点;不得超过 `grasp_torque_nm` |
+| `status_timeout_ms` | 350 | 状态流超时 → 零力矩 + `FAULT` |
 | `motor_stream_hz` | 100 | 状态流速率 |
 
-构造时只做合理性检查(力矩类 (0, 20] N·m、`grasp <= hold <= motion`);对照设备
-的检查在 `start()`:`hold_torque_limit_nm` 超过额定、`motion_torque_limit_nm` 超过
-`t_max`、`grasp_torque_nm` 超过连续堵转额定,都直接抛异常。
+构造时做合理性检查(力矩在 (0, 20] N·m、`grasp ≤ hold ≤ motion`);`start()` 再对照
+设备检查:`hold_torque_limit_nm` 超过额定、`motion_torque_limit_nm` 超过 `t_max`、
+`grasp_torque_nm` 超过持续堵转额定,都会抛异常。
 
-前两个现在是**独立的**。2026-09 之前有一条耦合规则(闭合阻尼增益曾经就是
-`grasp_torque_nm / close_speed_radps`,所以速度太低会让增益饱和、夹持力悄悄变软),
-随着行进段改用斜坡跟随而失效 —— 慢速闭合现在就只是慢,不会变软。
+位置增益、阻尼和到位半径是针对这款硬件实测确定的,不对外开放配置。
 
-#### 不再可配的字段
+### 4. 观测量
 
-位置增益(`position_kp`;`position_kd` 自 0.4.0 起不再使用)、阻尼(`travel_kd`)与到位半径
-(`arrival_eps_rad`)是在这台硬件上实测
-出来的,对这台夹爪只有一个正确答案,所以留在 C++ 侧的
-`detail::ForcePositionTuning`,只有单元测试构造得到。
-
-接触判定的那一批常数(`contact_torque_nm`、`contact_vel_radps`、
-`contact_vel_ratio`、`contact_moved_rad`、`stall_hold_ms`、`startup_guard_ms`)
-以及 `brake_distance_rad`、`arrival_band_rad` 随接触状态机一并**删除**。MCU 在
-500 Hz 上已经在跑同一套判据,主机不该有第二份。
-
-`close_position` 已删除:它从来没有被任何控制路径读过,目标位置一律由
-`set_target()` 传入。
-
-### 4. 为什么不再做接触判定
-
-饱和就是接触。被挡住时误差钳位把 PD 请求压在 `grasp_torque_nm` 上,这既是夹持力
-也是接触信号,不需要第二套判据去"发现"它。
-
-主机侧曾经有一套完整的堵转判定(力矩下限 + 运动停止 + 连续 30 ms 确认 + 到位优先
-判定),2026-09 删除,三个原因:
-
-1. **重复 MCU。** `task_canmotor_is_stalled()` 在 500 Hz 上跑同一套判据,而
-   接触判定本就属于固件。两份拷贝会各自漂移。
-2. **它逼着控制变软。** 为了让堵转特征干净,行进段被**刻意**写成 `kp=0` 的纯速度
-   阻尼(增益 `grasp/close_speed`,旧默认下只有 0.7 N·m/(rad/s))。实测代价:闭合
-   方向 37% 的相对速度纹波、0.59 rad/s 峰峰、12 Hz 极限环,均速只有命令值的 77%。
-   四组对照证明纹波跟增益走而不跟速度走,是环太软而非机械共振。
-3. **它最核心的判断不可测。** 区分"到位"与"被挡住"要在距目标距离上切一刀,而空爪
-   场景下这两者物理上本就连续。
-
-### 5. 状态机
-
-**状态是观测量,不是控制状态** —— `step()` 永远下发同一条控制律,状态每帧从结果
-导出,只用于显示。`FAULT` 是唯一真正的状态(它必须锁存)。
+状态是观测量而不是控制状态:控制律始终不变,状态每帧从结果导出,只用于判断和显示。
+`FAULT` 是唯一会锁存的状态。
 
 | 观测 | 含义 |
 |---|---|
-| `arrived` | `\|位置误差\| <= arrival_eps_rad` |
-| `holding` | 设定点已跑到预算允许的最前面(前导量 ≥ 一半上限)**且**爪子没跟上(速度 ≤ 命令速度的 25%) |
+| `arrived` | 到达命令位置 |
+| `holding` | 设定点已领先到力矩预算允许的程度,且爪子没有跟上 —— 即正在夹持 |
 
-夹住的判据是 `holding`。控制台底部状态行:
+控制台底部状态行:
 
 ```
 state=HOLDING_FORCE   hold=Y arr=N  cmd=1.100Nm  grasp=1.100Nm  limit hold=1.80/motion=6.00/dev=6.00Nm
 ```
 
-`cmd` / `grasp` 是**设定值**,实测力矩看 `Torq(Nm)` 那一列 —— 两者之差就是固件的
-I²t 与温度墙降额。`dev` 是设备持久化的 0x700B,`start()` 会校验它。
+`cmd` / `grasp` 是**设定值**,实测力矩看 `Torq(Nm)` 列,两者之差就是固件的 I²t 与温度
+降额。`dev` 是设备的 0x700B 启动上限,`start()` 会校验它。
 
-### 6. 按键(与阻抗模式的差别)
+### 5. 按键
 
-| 键 | 力位混合下的行为 |
+| 键 | 力位混合模式下的行为 |
 |---|---|
-| `j` / `k` / `c` | `set_target()` —— 开合两个方向是同一条有界力矩控制律;被挡住时停在夹持预算上(饱和即接触,没有单独的接触判定) |
-| `o` | `release()` —— 有界速度阻尼张开,不是位置阶跃 |
-| `h` | `hold_position()` —— 取消运动/夹持,停在当前位置 |
-| `f` | `motor.clear_fault()` **然后** `reset()` 退出 `FAULT` 态(顺序是硬性的) |
-| `e` / `d` | 恢复控制 / 失能；`d` 会先停控制器并发送零力矩 |
-| `q` / ESC | 退出。退出路径必定先 `stop()` 下发零力矩,再 `disable()` |
+| `j` / `k` / `c` | `set_target()`;被挡住时停在夹持力上 |
+| `o` | `release()` —— 以有界速度张开 |
+| `h` | `hold_position()` —— 取消运动或夹持,停在当前位置 |
+| `f` | `motor.clear_fault()` 然后 `reset()`,退出 `FAULT`(顺序不能反) |
+| `e` / `d` | 恢复控制 / 失能;`d` 会先停控制器并下发零力矩 |
+| `q` / ESC | 退出:先 `stop()` 下发零力矩,再 `disable()` |

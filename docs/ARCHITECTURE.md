@@ -1,15 +1,9 @@
 # TacCap-Gripper SDK — Architecture
 
-This document describes the SDK as it is now. Where it once carried a banner
-warning that the diagrams below were historical, the diagrams have been brought
-up to date instead: the visuotactile path removed in 0.1.4 is gone from them,
-and the follower motor stack and wrist rectification added since are in.
-
 The SDK in this repository is the **C++ / Python device-access layer
 only**. Higher-level products that build on top of it — dataset recording
-tools and lerobot adapters — live in their own repositories and are out of
-scope here. The follower gripper's motor stack is
-*not* one of them: it lives here (see §8), because it is a device primitive
+tools and LeRobot adapters — live in their own repositories. The follower
+gripper's motor stack *is* here (see §8), because it is a device primitive
 rather than a policy.
 
 **Protocol tracked:** wire framing **V1.8** (the body between HEAD and TAIL
@@ -20,7 +14,7 @@ params; V2.0/V2.1 fisheye-camera and leader-encoder-max calibration; V2.2
 startup limit torque and motor fault / extended status; then 0x56 motor spec,
 0x57 homing diagnostics, 0x58 motor firmware version, 0x59/0x5A motor model,
 0x5B CAN extended-frame relay). Discovery is MCU-only;
-cameras are owned by an external camera service. Side/role come from the
+cameras are usually owned by an external camera service. Side/role come from the
 firmware SN (`parse_serial`) with a GetDevType fallback.
 
 **Worker threads outlive Python.** The transport reader, the transport
@@ -32,12 +26,12 @@ worker mid-teardown, and no callback can be entered once the stop flag is up),
 and every binding that calls into Python from a worker thread first checks
 whether the interpreter is finalizing and drops the event if so. That second
 rule lives in `python/bindings/gil_safe.hpp` — `make_gil_safe_callback()` to
-own the callable and `call_into_python()` to invoke it — because a binding that
-hand-rolled its own ownership got it wrong and segfaulted on every `stop()`.
+own the callable and `call_into_python()` to invoke it. Every binding that calls Python from a
+worker thread must go through these helpers.
 The gripper `__exit__` handlers call `transport().stop()` so a `with` block
 leaves nothing running.
 
-**Firmware error wire path — a seam worth knowing.** Only handler *dispatch*
+**Firmware error wire path.** Only handler *dispatch*
 failures take the `cmd == 0` wire path that `AckResponse::is_nack` detects. A
 handler that returns non-OK goes through `protocol_send_response(seq, cmd,
 err, NULL, 0)`: the command byte is *echoed* and the error is the whole
@@ -118,8 +112,8 @@ for the single-threaded OTA flow, which is the only user.
 │     reader thread   │  │                     undistorter is installed) │
 │   - ACK matching    │  │                                              │
 │     (seq → promise)│  │   The visuotactile (OG) path is NOT here: it  │
-│   - subscribe(cmd)  │  │   left this SDK in 0.1.4 and lives at the     │
-│   - send_cmd_no_ack │  │   Python level via the `xensesdk` wheel.      │
+│   - subscribe(cmd)  │  │   is provided at the Python level by          │
+│   - send_cmd_no_ack │  │   the `xensesdk` wheel.                       │
 │   - host-side retry │  │                                              │
 └──────────┬──────────┘  └──────────────────────────────────────────────┘
            │                                                  │
@@ -147,9 +141,10 @@ for the single-threaded OTA flow, which is the only user.
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                  TC-GU-01 GRIPPER HARDWARE                             │
-│   STM32H562 + ThreadX  ──── USART3 (3 Mbps) ────  IMU / Encoder /      │
-│                                                   Eskin (G2+) / Motor │
-│                        ──── FDCAN1 (1 Mbps) ────  灵足 motor (follower) │
+│   STM32H562 + ThreadX  ──── USART3 (3 Mbps) ────  host (CH343 bridge) │
+│                        ──── on-board ───────────  IMU / Encoder / LED │
+│                        ──── FDCAN1 (1 Mbps) ────  RobStride motor     │
+│                                                   (follower only)     │
 │                                                                        │
 │   2× OG-series planar visuotactile sensors  ──── UVC                   │
 │   1× XC-series wrist UVC camera              ──── UVC                  │
@@ -216,18 +211,15 @@ taccap-gripper/
 │   ├── src/                                      mirrors include/, plus
 │   │                                              stream_rate.hpp and
 │   │                                              wrist_fisheye.hpp (internal)
-│   ├── examples/
-│   │   └── leader_demo.cpp                       5-second multistream on
-│   │                                              real hardware
-│   └── tests/                                    32 gtest files — codec per
-│                                                  command set (V1.6/1.7/2.1/
-│                                                  2.2), CRC, framing, byte
-│                                                  stuffing, PTY-based fake
-│                                                  firmware (transport,
-│                                                  calibration, OTA retry),
-│                                                  fisheye rectification,
-│                                                  stream rate, discovery,
-│                                                  C++ vs GUI Python parity
+│   ├── examples/                                 leader_demo, follower_status,
+│   │                                              follower_impedance,
+│   │                                              follower_force_position
+│   └── tests/                                    gtest suite — codecs, CRC,
+│                                                  framing, byte stuffing,
+│                                                  PTY-based fake firmware
+│                                                  (transport, calibration,
+│                                                  OTA retry), fisheye
+│                                                  rectification, discovery
 │
 ├── python/
 │   ├── bindings/
@@ -255,8 +247,7 @@ taccap-gripper/
 │                                                  hand-written protocol
 │                                                  drifts from the firmware
 │
-├── docs/
-│   └── ARCHITECTURE.md                           ← you are here
+├── docs/                                         user documentation
 │
 ├── environment.yml                               mamba env (Python 3.12,
 │                                                  conda-forge only,
@@ -331,13 +322,11 @@ taccap-gripper/
 ```
 
 > **Why two threads.** A subscriber callback is user code, and a Python one
-> must take the GIL. With callbacks inline on the reader, that GIL acquire sat
-> in the read loop: CPython's 5 ms default switch interval is ~3x the per-frame
-> budget of a 200 Hz three-source stream (~1.67 ms), so a busy main thread
-> stalled `read()`, overflowed the 4 KB n_tty buffer and lost *bytes* — frames
-> corrupted, not merely delayed, and the stream silently ran at a fraction of
-> its configured rate. The split makes callback cost pay in latency and queue
-> depth instead of in data. `Transport::stats()` tells the two apart:
+> must take the GIL. If callbacks ran on the reader, a busy Python main thread
+> would stall `read()` (CPython's 5 ms switch interval is several times the
+> per-frame budget of a 200 Hz stream), overflow the kernel tty buffer and
+> corrupt frames. With the split, a slow callback costs latency and queue
+> depth instead of data. `Transport::stats()` tells the two apart:
 > `crc_errors` / `resync_bytes` mean loss upstream of the parser,
 > `queue_dropped` means the subscriber could not keep up, and
 > `callback_max_us` names it.
@@ -349,6 +338,11 @@ taccap-gripper/
 > external service already has the V4L2 device.
 
 ### 3.3 Camera (wrist, V4L2)
+
+`Camera` opens the device with `cv::CAP_V4L2` and requests **MJPEG** before
+setting size and rate. Keep it that way: the cameras share a USB 2.0 link and
+uncompressed YUYV exhausts its isochronous bandwidth (see the README's
+[Host setup](../README.md#3-wrist-camera-always-mjpeg)).
 
 ```
   user → camera.start(callback)
@@ -404,10 +398,10 @@ does.
 
 ## 4. Discovery (zero-config, MCU-only)
 
-Discovery is MCU-only. The wrist camera and OG visuotactile sensors are
-owned by an external camera service now, so the scanner no longer
-enumerates them — one CH343 MCU board = one gripper unit, and there is no
-USB-hub grouping step any more.
+Discovery is MCU-only: one CH343 MCU board = one gripper unit. The wrist
+camera and OG visuotactile sensors are not enumerated here — they are usually
+owned by an external camera service, and are told apart by serial number
+under `/dev/v4l/by-id/`.
 
 The firmware SN follows the TacCap scheme and encodes both side and role:
 
@@ -462,10 +456,11 @@ g->stop_streaming();
 
 // Follower control (see follower_gripper.hpp / impedance_controller.hpp):
 //   auto f = xense::taccap::FollowerGripper::open();
-//   f->motor().enable();
-//   f->set_position(/*0..1*/ 0.5f, /*kp=*/8, /*kd=*/1);   // normalized, no-ACK
 //   xense::taccap::ImpedanceController c(*f);
-//   c.start(); c.set_target(0.3f); auto s = c.snapshot();
+//   f->motor().clear_fault();
+//   c.start(); f->motor().enable();
+//   c.set_target(0.3f); auto s = c.snapshot();
+//   c.stop();
 ```
 
 ### Python
@@ -475,8 +470,8 @@ import time
 from xense.taccap import LeaderGripper
 
 with LeaderGripper.open() as g:          # MCU-only; cameras off by default
-    g.imu.on_data           (lambda s: print(s.accel_mps2, s.temperature_c))
-    g.encoder.on_data       (lambda s: print(s.position_rad))
+    g.imu.on_data(lambda s: print(s.accel_mps2, s.temperature_c))
+    g.encoder.on_data(lambda s: print(s.position_rad))
 
     g.start_streaming(imu_hz=100, encoder_hz=100)
     time.sleep(5)
@@ -508,17 +503,17 @@ fire on their own capture thread. Python callbacks reacquire the GIL via
 `py::gil_scoped_acquire`; exceptions inside callbacks are reported via
 `discard_as_unraisable` so a buggy callback never tears down the producer.
 
-A slow callback no longer costs data, but it is not free: it costs queue depth
+A slow callback does not cost data, but it is not free: it costs queue depth
 and staleness, and once the queue is full the oldest frames are dropped. Poll
 `Transport::stats()` (`queue_dropped`, `queue_high_water`, `callback_max_us`)
 rather than assuming.
 
 Lifetime contract:
-- `LeaderGripper` is *not* copyable / movable — its members own
-  threads / mutexes. Construct once via `open()` (returns
-  `std::unique_ptr`).
-- `~LeaderGripper` calls `stop_streaming()` and component destructors,
-  joining all threads. Idempotent.
+- `LeaderGripper` / `FollowerGripper` are *not* copyable / movable — their
+  members own threads / mutexes. `open()` returns a `std::unique_ptr`.
+- The destructor calls `stop_streaming()` and the component destructors,
+  joining all threads. Idempotent. In Python, a `with` block does the same
+  on exit.
 
 ---
 
@@ -536,7 +531,7 @@ build-time:
 runtime (linked into libtaccap_core.so):
    libopencv_core.so / imgproc / imgcodecs / video / videoio / calib3d
                     (calib3d + imgproc are what FisheyeUndistorter needs)
-   spdlog (fetched via FetchContent, header-only)
+   spdlog (from the conda env)
    pthread
 
 NOT linked in (deliberately): any ML inference runtime, ROS, lerobot.
@@ -547,43 +542,15 @@ This is a hardware-access SDK, not a model server.
 
 ## 8. What this SDK is **not**
 
-The following live in their own repositories on top of this SDK and
-will be implemented later:
+| Concern | Where it lives |
+|---|---|
+| Visuotactile (OG) capture | the `xensesdk` wheel |
+| Dataset recording (time alignment, episodes) | downstream tools |
+| LeRobot integration | `lerobot-xense`, where TacCap is a gripper backend |
+| Leader→follower teleoperation, grasp policy, episode orchestration | downstream applications |
 
-| Concern                  | Where it lives                          |
-|--------------------------|-----------------------------------------|
-| Dataset recording (hdf5 / mcap, time alignment, episode markers) | a separate tool / script repo         |
-| lerobot integration       | `lerobot-xense`, where TacCap is a **gripper backend** (`type: taccap_follower`) that any arm can mount — not a Robot class of its own |
-| Master→slave follow / teleop loop, grasp state machine (contact/latch), episode orchestration | downstream apps — this SDK gives the realtime primitives (`ImpedanceController`, `ForcePositionController`, `submit_*`, normalized position), not the policy |
-| Higher-level orchestration (episode controller, replay, visualisation) | downstream applications |
-
-The follower motor stack **is** in this repo now (`Motor`, `FollowerGripper`,
-`GripperPosition`, `ImpedanceController`, `ForcePositionController`, `Led`) and hardware-validated — what stays
-out is the *policy* layer above the primitives.
-
-Keeping this SDK narrow lets each downstream consumer pick exactly the
-hardware it needs — a teleoperation loop may want only IMU + Encoder DATA
-streams and no cameras — and assemble its own data-flow on top.
-
----
-
-## 9. Verified end-to-end (real hardware)
-
-The unit suite is ~400 gtest cases across 32 files, PTY-based fake-firmware
-tests included; it runs on any host, with no gripper attached. What follows is
-a hardware run, which is a different claim.
-
-5-second multistream capture on the lab leader (`OGXXXXXX` /
-`OGXXXXXX` / `XCXXXXXX`, MCU `5CXXXXXXXX`). This historical run was taken
-with the cameras opened (`open_cameras=true`); the default gripper
-lifecycle is now MCU-only (IMU + encoder):
-
-```
-IMU         : 506 frames | 101.2 fps   (firmware caps at ~100 Hz)
-Encoder     : 506 frames | 101.2 fps
-Tactile L   : 156 frames |  31.2 fps   (OGXXXXXX)
-Tactile R   : 153 frames |  30.6 fps   (OGXXXXXX)
-Wrist cam   : 149 frames |  29.8 fps   (XCXXXXXX)
-
-discovery  : side=Right (MCU SN '5CXXXXXXXX' last digit 8 → even)
-```
+This SDK provides the real-time primitives — `Motor`, `FollowerGripper`,
+`ImpedanceController`, `ForcePositionController`, normalized position, sensor
+streams — not the policy above them. Keeping it narrow lets each consumer open
+only the hardware it needs (a teleoperation loop may want only the IMU and
+encoder streams) and build its own data flow on top.
