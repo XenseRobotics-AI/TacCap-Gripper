@@ -75,6 +75,14 @@ sudo usermod -aG dialout,video "$USER"
 # log out and back in (or reboot), then replug the gripper
 ```
 
+Verify the MCU is fully readable — `role` must be `Leader` / `Follower` (not
+`Unknown`) and `firmware_sn` non-empty:
+
+```bash
+python -c "from xense.taccap import scan_grippers
+for g in scan_grippers(): print(g.side.name, g.role.name, repr(g.firmware_sn))"
+```
+
 ### 2. Keep ModemManager off the gripper serial port
 
 The MCU is a CH343 USB-serial bridge (`1a86:55d2`). On every hot-plug,
@@ -287,7 +295,22 @@ firmware are versioned independently. Required motor firmware: EL05 ≥ 1.0.5.0.
 RS00 ≥ 0.0.3.32. Image table, motor model, RS00 setup and motor OTA:
 [firmware/README.md](firmware/README.md).
 
+### Checking versions
+
+`follower_status.py` prints the gripper firmware, the motor model and the
+motor's own firmware, checked against the required minimum. It is read-only:
+
+```bash
+python python/examples/follower_status.py left
+# [fw] FirmwareVersion(1.2.16.0)
+# [motor] MotorModel(RS00, id=1, from flash, t_max=14.0Nm, v_max=33.0rad/s)
+# [motor fw] 0.0.3.32  (...)  OK
+```
+
 ## Troubleshooting
+
+When reporting a problem, include the output of `follower_status.py` for each
+follower and the latest log from `~/.taccaplogs/`.
 
 | Symptom | Fix |
 | --- | --- |

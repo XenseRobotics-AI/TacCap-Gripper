@@ -64,6 +64,14 @@ sudo usermod -aG dialout,video "$USER"
 # 注销后重新登录(或重启),然后重新插拔夹爪
 ```
 
+确认 MCU 能完整读取 —— `role` 必须是 `Leader` / `Follower`(不是 `Unknown`),
+`firmware_sn` 不为空:
+
+```bash
+python -c "from xense.taccap import scan_grippers
+for g in scan_grippers(): print(g.side.name, g.role.name, repr(g.firmware_sn))"
+```
+
 ### 2. 让 ModemManager 不要占用夹爪串口
 
 MCU 是 CH343 USB 转串口芯片(`1a86:55d2`)。每次热插拔,Ubuntu 默认安装的
@@ -260,7 +268,21 @@ python python/examples/ota_update.py slave left     # 或:--all
 电机固件要求:EL05 ≥ 1.0.5.0.4,RS00 ≥ 0.0.3.32。镜像列表、电机型号、RS00 配置与电机
 升级见 [firmware/README.md](firmware/README.md)。
 
+### 查看版本
+
+`follower_status.py` 会打印夹爪固件、电机型号和电机自身固件版本,并对照最低要求。
+该脚本只读:
+
+```bash
+python python/examples/follower_status.py left
+# [fw] FirmwareVersion(1.2.16.0)
+# [motor] MotorModel(RS00, id=1, from flash, t_max=14.0Nm, v_max=33.0rad/s)
+# [motor fw] 0.0.3.32  (...)  OK
+```
+
 ## 常见问题
+
+反馈问题时,请附上每台从爪的 `follower_status.py` 输出,以及 `~/.taccaplogs/` 下最新的日志。
 
 | 现象 | 处理 |
 | --- | --- |

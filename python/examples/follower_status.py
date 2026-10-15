@@ -2,6 +2,9 @@
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 """读从爪的状态:一次性读、开流读、以及状态里每个字段的意思。
 
+开头先打印三个版本:夹爪固件、电机型号、电机自身固件(对照最低要求)。
+排查问题时把这个脚本的完整输出发给我们,就包含了需要的全部版本信息。
+
 从爪**只流电机状态**这一种数据。固件在这个角色上把 IMU / 编码器 / 电子皮肤的
 流编译掉了,所以 `start_streaming()` 只有 `motor_hz` 一个参数。
 
@@ -42,6 +45,48 @@ def describe_status(s) -> str:
     return f"status=0x{s.status:04X} stop={reason}"
 
 
+# 电机固件最低版本,按 MotorVersion.version 的原始四字节比较(高位在前)。
+# 两条产品线各自编号,互不可比。低于它的电机过不了出厂测试:
+# EL05 1.0.5.0.2 速度反馈是常数,RS00 0.0.3.22 运动抖动。
+MOTOR_FW_MIN = {
+    "EL05": ((10, 5, 0, 4), "1.0.5.0.4"),
+    "RS00": ((0, 0, 3, 32), "0.0.3.32"),
+}
+
+
+def print_motor_versions(g) -> None:
+    """电机型号 + 电机自身固件版本(不是夹爪固件),并对照最低要求。"""
+    model = g.motor.get_model()
+    print(f"[motor] {model!r}")
+    if not model.from_flash:
+        print(
+            "  型号是编译期默认值,不是本机记录 —— 见 firmware/README.md「Follower motor setup」"
+        )
+
+    try:
+        v = g.motor.motor_version()
+    except Exception as e:  # 从爪固件 < 1.2.6 没有 0x58
+        print(f"[motor fw] 读不到 ({e}) —— 需要从爪固件 >= 1.2.6")
+        return
+    if not v.valid:
+        print(
+            "[motor fw] 读不到 —— 电机在 MIT 协议下不应答版本,且 flash 里没有记录"
+            "(从爪固件 >= 1.2.14 才有);按铭牌用 g.motor.set_motor_fw_version() 记录"
+        )
+        return
+    src = "flash 记录" if v.from_flash else "电机实时读取"
+    line = f"[motor fw] {v.vendor_str}  ({src})"
+    floor = MOTOR_FW_MIN.get(model.name)
+    if floor is not None:
+        ok = tuple(v.version) >= floor[0]
+        line += (
+            f"  {'OK' if ok else '**低于最低要求 ' + floor[1] + ',需要升级电机固件**'}"
+        )
+    print(line)
+    if v.motor_stopped:
+        print("  这次读取让电机执行了一次停止(RobStride 通信类型 4),运动前重新使能即可")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -54,6 +99,7 @@ def main() -> int:
     log.set_level("warn")
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
+    print_motor_versions(g)
 
     # ── 一次性读 ──────────────────────────────────────────────────────────────
     s = g.motor.read_status()

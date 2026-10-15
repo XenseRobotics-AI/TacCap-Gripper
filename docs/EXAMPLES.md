@@ -57,7 +57,7 @@ python python/examples/ota_update.py --get-status right
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
-| `follower_status.py` | 只读 | 从爪状态:一次性读取(位置/速度/力矩/温度/状态位/故障)、归一化开口度、流式速率。用固件的 `status_timestamp_ms` 判断数据是否新鲜。|
+| `follower_status.py` | 只读 | 夹爪固件、电机型号与电机固件版本(对照最低要求);从爪状态:一次性读取(位置/速度/力矩/温度/状态位/故障)、归一化开口度、流式速率。用固件的 `status_timestamp_ms` 判断数据是否新鲜。|
 
 ### 标定
 
