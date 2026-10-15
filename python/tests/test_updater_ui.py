@@ -11,7 +11,7 @@ sys.path.insert(0, str(APP_DIR))
 HAS_QT = importlib.util.find_spec("PySide6") is not None
 if HAS_QT:
     import qt_ui
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    from PySide6.QtWidgets import QApplication
 
 
 @unittest.skipUnless(HAS_QT, "Qt UI tests require the packaging environment")
@@ -153,7 +153,7 @@ class UpdaterUiTests(unittest.TestCase):
 
     def test_missing_selection_does_not_launch(self):
         with (
-            patch.object(QMessageBox, "information"),
+            patch.object(qt_ui, "notice"),
             patch.object(self.window, "launch") as launch,
         ):
             self.window.run()
@@ -227,7 +227,7 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.selected_identity = ("one-s", "usb1")
         self.window.model_combo.setCurrentText("RS00")
         with (
-            patch.object(QMessageBox, "question", return_value=QMessageBox.No),
+            patch.object(qt_ui, "confirm", return_value=False),
             patch.object(self.window, "launch") as launch,
         ):
             self.window.set_model()
@@ -358,7 +358,7 @@ class UpdaterUiTests(unittest.TestCase):
 
     def test_busy_blocks_close(self):
         self.window.busy = True
-        with patch.object(QMessageBox, "warning"):
+        with patch.object(qt_ui, "notice"):
             self.window.close()
         self.assertTrue(self.window.isVisible())
 

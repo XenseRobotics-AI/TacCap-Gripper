@@ -41,6 +41,18 @@ QPushButton#primary:hover { background: #1D4ED8; }
 QPushButton#primary:disabled { background: #A6BAE5; border-color: #A6BAE5; }
 QPushButton#link { border: none; background: transparent; color: #626B78; padding: 4px 0; }
 QPushButton#link:hover { color: #2563EB; }
+QMessageBox QPushButton[actionTone="neutral"]:enabled { background: #F3F4F6; color: #374151; border-color: #CBD5E1; }
+QMessageBox QPushButton[actionTone="neutral"]:hover { background: #E5E7EB; }
+QMessageBox QPushButton[actionTone="success"]:enabled { background: #15803D; color: #FFFFFF; border-color: #15803D; font-weight: 600; }
+QMessageBox QPushButton[actionTone="success"]:hover { background: #166534; border-color: #166534; }
+QMessageBox QPushButton[actionTone="success"]:pressed { background: #14532D; }
+QMessageBox QPushButton[actionTone="warning"]:enabled { background: #FBBF24; color: #422006; border-color: #D99A0B; font-weight: 600; }
+QMessageBox QPushButton[actionTone="warning"]:hover { background: #F59E0B; border-color: #B45309; }
+QMessageBox QPushButton[actionTone="warning"]:pressed { background: #D99A0B; }
+QMessageBox QPushButton[actionTone="danger"]:enabled { background: #B42318; color: #FFFFFF; border-color: #B42318; font-weight: 600; }
+QMessageBox QPushButton[actionTone="danger"]:hover { background: #912018; border-color: #912018; }
+QMessageBox QPushButton[actionTone="danger"]:pressed { background: #7A1B16; }
+QMessageBox QPushButton[actionTone]:focus { border: 2px solid #172B46; padding: 4px 11px; }
 QComboBox { background: #FAFBFC; color: #252A32; border: 1px solid #D7DBE1; border-radius: 5px; padding: 6px 10px; }
 QComboBox QAbstractItemView { background: white; color: #252A32; selection-background-color: #E8EFFD; selection-color: #252A32; }
 QLabel#file { background: #FAFBFC; border: 1px solid #E1E5EB; border-radius: 5px; padding: 6px 10px; color: #626B78; }

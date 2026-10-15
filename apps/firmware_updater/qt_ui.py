@@ -13,6 +13,7 @@ import core
 from activity import Activity
 from compact_layout import STYLE, build, palette
 from desktop_integration import desktop_id, integrate_appimage
+from dialogs import confirm, notice
 from fontconfig_runtime import configure_fontconfig
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
@@ -362,21 +363,19 @@ class App(QMainWindow):
             return
         name = self.model_combo.currentText()
         if name not in ("EL05", "RS00"):
-            QMessageBox.information(
+            notice(
                 self,
                 "请选择实物型号",
                 "请根据电机标签确认 EL05 或 RS00，不要按固件默认值猜测。",
             )
             return
         identity = self.selected_identity
-        answer = QMessageBox.question(
+        answer = confirm(
             self,
             "确认电机型号",
             f"设备 {identity[0]}\n实物电机确认为 {name} 吗？\n\n选错型号会导致力矩/速度解释错误。请放下物体并清空活动范围。写入后必须按提示断开 24 V。已有行程配置不代表重新标定正确。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if not answer:
             return
 
         def work():
@@ -401,9 +400,7 @@ class App(QMainWindow):
             and self.selected_identity
             and core.role_from_sn(self.selected_identity[0]) == "master"
         ):
-            QMessageBox.information(
-                self, "主爪固件", "主爪仅支持 MCU 更新，无需选择电机固件。"
-            )
+            notice(self, "主爪固件", "主爪仅支持 MCU 更新，无需选择电机固件。")
             return
         path, _ = QFileDialog.getOpenFileName(self, "选择固件", "", "固件 (*.bin)")
         if not path:
@@ -419,19 +416,15 @@ class App(QMainWindow):
             self.overrides.add(kind)
             self.set_image(kind, path, image)
         except Exception as exc:
-            QMessageBox.critical(self, "文件校验失败", str(exc))
+            notice(self, "文件校验失败", str(exc), QMessageBox.Critical)
 
     def run(self):
         index = self.combo.currentIndex()
         if index < 0 or not any(self.paths.values()):
-            QMessageBox.information(
-                self, "还差一步", "请先选择夹爪，并至少选择一个固件文件。"
-            )
+            notice(self, "还差一步", "请先选择夹爪，并至少选择一个固件文件。")
             return
         if not self.current_info or not self.current_info["recorded"]:
-            QMessageBox.information(
-                self, "尚未就绪", "请等待连接；型号未记录时，先确认实物并设置型号。"
-            )
+            notice(self, "尚未就绪", "请等待连接；型号未记录时，先确认实物并设置型号。")
             return
         identity, paths = self.devices[index], self.paths.copy()
         self.progress.setValue(0)
@@ -514,15 +507,7 @@ class App(QMainWindow):
                 title, text, reply = value
                 self.set_stage("等待确认：" + title)
                 self.log(title + ": " + text)
-                box = QMessageBox(QMessageBox.Question, title, text, parent=self)
-                same = "重复刷写" in title
-                yes = box.addButton(
-                    "仍要重刷" if same else "确认继续", QMessageBox.YesRole
-                )
-                no = box.addButton("跳过此项" if same else "取消", QMessageBox.NoRole)
-                box.setDefaultButton(no)
-                box.exec()
-                answer = box.clickedButton() == yes
+                answer = confirm(self, title, text)
                 self.log("用户确认: " + str(answer))
                 self.set_stage("继续处理确认结果")
                 reply.put(answer)
@@ -657,7 +642,7 @@ class App(QMainWindow):
                     self.progress.setFormat("已停止")
                     self.status.setText("操作已停止 · 请查看详细日志")
                     self.toggle.setChecked(True)
-                    QMessageBox.critical(self, "需要处理", value)
+                    notice(self, "需要处理", value, QMessageBox.Critical)
                 elif kind == "success":
                     self.set_tone("success")
                     self.activity_detail.setText(self.activity.detail())
@@ -666,7 +651,7 @@ class App(QMainWindow):
                     self.progress.setFormat("完成")
                     self.status.setText("更新完成 · 所选固件已核验")
                     self.progress.setValue(100)
-                    QMessageBox.information(self, "更新完成", value)
+                    notice(self, "更新完成", value, success=True)
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -678,13 +663,16 @@ class App(QMainWindow):
                     "\n".join(self.log_lines) + "\n", encoding="utf-8"
                 )
             except OSError as exc:
-                QMessageBox.critical(self, "导出失败", str(exc))
+                notice(self, "导出失败", str(exc), QMessageBox.Critical)
 
     def closeEvent(self, event):
         if self.busy:
             event.ignore()
-            QMessageBox.warning(
-                self, "操作尚未结束", "请等待完成或超时，刷写中请勿拔线。"
+            notice(
+                self,
+                "操作尚未结束",
+                "请等待完成或超时，刷写中请勿拔线。",
+                QMessageBox.Warning,
             )
         else:
             event.accept()
