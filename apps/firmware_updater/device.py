@@ -12,6 +12,7 @@ from xense.taccap import (
     MotorOtaSession,
     MotorProtocol,
     OtaTargetVersion,
+    Ws2812EffectType,
     scan_grippers,
 )
 
@@ -33,6 +34,9 @@ class Device:
         self.transfer_unit = "B"
         self.last_progress_emit = 0.0
         self.last_progress_log = -1
+        self._ota_indicator_active = False
+        self._ota_indicator_disabled = False
+        self._last_mcu_device = None
 
     def endpoint(self):
         return flow._wait_ready(self.identity, 12, "查找所选夹爪")
@@ -44,7 +48,66 @@ class Device:
         with cls(mcu_device=ep.mcu_device) as g:
             if g.device.get_sn() != self.identity[0]:
                 raise RuntimeError("串口设备身份变化，停止")
-            yield g
+            self._last_mcu_device = ep.mcu_device
+            if self._ota_indicator_active:
+                self._indicator(g, "OtaBlink")
+            try:
+                yield g
+            except Exception:
+                if self._ota_indicator_active:
+                    self._indicator(g, "FaultBlink")
+                raise
+
+    def _indicator(self, g, name):
+        if self.role != "slave" or self._ota_indicator_disabled:
+            return False
+        try:
+            # Firmware presets reset old effects; a generic additive blue
+            # effect could otherwise leave a white base looking white.
+            g.led.effect(getattr(Ws2812EffectType, name), 0, 0, 0)
+        except Exception as exc:
+            self._ota_indicator_disabled = True
+            self.emit("log", f"警告：灯效 {name} 设置失败：{exc}；不代表固件升级结果")
+            return False
+        return True
+
+    def _begin_ota_indicator(self, g):
+        if self.role != "slave" or self._ota_indicator_active:
+            return
+        self._ota_indicator_active = True
+        if self._indicator(g, "OtaBlink"):
+            self.emit("log", "已请求 OTA 蓝灯闪烁；刷写期间请勿拔线")
+            # Existing MCU firmware renders effects in a 50 ms monitor tick.
+            # Give the first blue frame time to reach the LEDs before the
+            # high-priority flash transfer can occupy the MCU.
+            time.sleep(0.06)
+
+    @contextmanager
+    def update_indication(self):
+        try:
+            yield
+        except Exception:
+            if self._ota_indicator_active:
+                self.emit("log", "升级未完成：不会请求正常白灯，请以错误日志为准")
+            raise
+        else:
+            if (
+                self._ota_indicator_active
+                and not self._ota_indicator_disabled
+                and self._last_mcu_device
+            ):
+                try:
+                    # Cosmetic cleanup must not launch another discovery loop.
+                    # Recheck SN even on the last verified path before writing.
+                    with LeaderGripper(mcu_device=self._last_mcu_device) as g:
+                        if g.device.get_sn() != self.identity[0]:
+                            raise RuntimeError("设备身份变化，未恢复灯效")
+                        if self._indicator(g, "NormalSolid"):
+                            self.emit("log", "固件与标定核验完成，已请求恢复正常白灯")
+                except Exception as exc:
+                    self.emit("log", f"警告：升级已核验，但正常灯效未恢复：{exc}")
+        finally:
+            self._ota_indicator_active = False
 
     def inspect(self):
         self.emit("stage", "读取设备身份、型号与固件版本（版本查询最多等待 3 秒）")
@@ -295,6 +358,7 @@ class Device:
             raise ValueError("MCU 镜像与设备主/从角色不匹配")
         with self.opened(leader=True) as g:
             target = OtaTargetVersion(*map(int, image.version.split(".")), 0)
+            self._begin_ota_indicator(g)
             self.begin_transfer("MCU 刷写：启动会话并传输固件，请勿拔线", "B")
             g.ota.update_from_bytes(image.data, target, self.progress)
         self.emit("stage", "MCU 已提交，等待设备重启和版本读回（上限约 33 秒）")
@@ -312,6 +376,7 @@ class Device:
             session.preflight(image.model)
             uid = session.read_uid()
             self.emit("log", f"电机 UID: {uid.hex()}；镜像 SHA256: {image.sha256}")
+            self._begin_ota_indicator(g)
             self.begin_transfer("电机刷写：等待握手并传输固件，请勿拔线", "包")
             session.update_from_bytes(image.data, self.progress)
         self.emit("log", "电机结束帧已确认；仍需断电、版本核验和恢复协议")

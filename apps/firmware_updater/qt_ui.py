@@ -436,13 +436,15 @@ class App(QMainWindow):
                 k: core.load_image(p, k, self.catalog) if p else None
                 for k, p in paths.items()
             }
-            core.execute(
-                Device(identity, self.emit, ask=self.ask),
-                images["mcu"],
-                images["motor"],
-                self.ask,
-                self.emit,
-            )
+            device = Device(identity, self.emit, ask=self.ask)
+            with device.update_indication():
+                core.execute(
+                    device,
+                    images["mcu"],
+                    images["motor"],
+                    self.ask,
+                    self.emit,
+                )
 
         self.launch(work, updating=True)
 

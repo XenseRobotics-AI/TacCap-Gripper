@@ -159,6 +159,43 @@ class UpdaterUiTests(unittest.TestCase):
             self.window.run()
         launch.assert_not_called()
 
+    def test_update_worker_owns_indicator_context_on_success_and_failure(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, Mock
+
+        identity = ("test-s", "usb")
+        self.window.devices = [identity]
+        self.window.combo.addItem("test-s")
+        self.window.combo.setCurrentIndex(0)
+        self.window.current_info = {"recorded": True}
+        self.window.paths = {"mcu": "test.bin", "motor": ""}
+        for error in (None, RuntimeError("original failure")):
+            with self.subTest(error=error):
+                device = MagicMock()
+                context = device.update_indication.return_value
+                context.__exit__.return_value = False
+                with (
+                    patch.dict(
+                        sys.modules,
+                        {"device": SimpleNamespace(Device=Mock(return_value=device))},
+                    ),
+                    patch.object(qt_ui.core, "load_image", return_value="image"),
+                    patch.object(qt_ui.core, "execute", side_effect=error) as execute,
+                    patch.object(
+                        self.window, "launch", side_effect=lambda fn, **_: fn()
+                    ),
+                ):
+                    if error:
+                        with self.assertRaisesRegex(RuntimeError, "original failure"):
+                            self.window.run()
+                    else:
+                        self.window.run()
+                context.__enter__.assert_called_once()
+                context.__exit__.assert_called_once()
+                execute.assert_called_once_with(
+                    device, "image", None, self.window.ask, self.window.emit
+                )
+
     def test_power_popup_cannot_acknowledge_restart(self):
         self.window.emit("power", "等待真实断电")
         self.window.drain()

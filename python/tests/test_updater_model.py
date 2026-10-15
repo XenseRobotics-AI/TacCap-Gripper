@@ -22,6 +22,7 @@ class ModelTests(unittest.TestCase):
                     "MotorOtaSession",
                     "MotorProtocol",
                     "OtaTargetVersion",
+                    "Ws2812EffectType",
                     "scan_grippers",
                 )
             }

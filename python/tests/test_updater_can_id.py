@@ -28,6 +28,7 @@ def rig():
                 "MotorOtaSession",
                 "MotorProtocol",
                 "OtaTargetVersion",
+                "Ws2812EffectType",
                 "scan_grippers",
             )
         },
