@@ -52,6 +52,8 @@ kCuTtoUT = "kCuTtoUT"
 [tool.typos.default.extend-words]
 # "mis-set" as in wrongly configured, used in the impedance backstop comments.
 mis = "mis"
+# v4l2-ctl --set-parm (set frame rate), used in the README camera setup.
+parm = "parm"
 
 [tool.scikit-build]
 wheel.packages = ["python/xense"]
