@@ -10,8 +10,9 @@ import pytest
 
 
 @pytest.fixture
-def rig():
+def rig(monkeypatch):
     path = Path(__file__).resolve().parents[2] / "apps/firmware_updater/device.py"
+    monkeypatch.syspath_prepend(str(path.parent))
     spec = importlib.util.spec_from_file_location("ota_indicator_driver", path)
     module = importlib.util.module_from_spec(spec)
     leader, follower = MagicMock(), MagicMock()
@@ -104,18 +105,66 @@ def test_preflight_failure_never_claims_an_active_ota(rig):
     rig.session.update_from_bytes.assert_not_called()
 
 
-def test_reconnect_reapplies_blue_and_success_restores_white_only_at_end(rig):
+def test_serial_reopens_do_not_reset_blink_and_white_is_restored_only_at_end(rig):
     with rig.device.update_indication():
         rig.device.flash_motor(rig.image)
         assert effects(rig.follower) == [3]
-        with rig.device.opened():
-            pass
-        assert effects(rig.follower) == [3, 3]
+        for _ in range(6):
+            with rig.device.opened():
+                pass
+        assert effects(rig.follower) == [3]
         rig.sdk.LeaderGripper.assert_not_called()
     assert effects(rig.leader) == [1]
     rig.sdk.LeaderGripper.assert_called_once_with(mcu_device="/dev/test-verified")
-    assert rig.device.endpoint.call_count == 2  # cleanup does not rediscover
+    assert rig.device.endpoint.call_count == 7  # cleanup does not rediscover
     assert not rig.device._ota_indicator_active
+
+
+def test_confirmed_power_cycle_rearms_blue_once_on_next_verified_connection(rig):
+    with rig.device.update_indication():
+        rig.device.flash_motor(rig.image)
+        rig.flow._read_uptime.side_effect = [5000, 100]
+        rig.flow._RestartDetector.return_value.observe.return_value = True
+        rig.device.power_cycle("test restart")
+        assert effects(rig.follower) == [3]  # no LED command while disconnected
+        for _ in range(4):
+            with rig.device.opened():
+                pass
+        assert effects(rig.follower) == [3, 3]
+        assert not rig.device._ota_indicator_pending
+
+
+def test_mcu_soft_reboot_rearms_blue_without_extra_uptime_queries(rig):
+    with rig.device.update_indication():
+        rig.device.flash_mcu(rig.image)
+        assert effects(rig.leader) == [3]
+        for _ in range(4):
+            with rig.device.opened():
+                pass
+        assert effects(rig.follower) == [3]
+        rig.flow._read_uptime.assert_not_called()
+
+
+def test_restart_timeout_does_not_rearm_or_reset_existing_blue(rig):
+    with rig.device.update_indication():
+        rig.device.flash_motor(rig.image)
+        with patch.object(rig.module.time, "monotonic", side_effect=[0, 181]):
+            with pytest.raises(RuntimeError, match="等待断电重启超时"):
+                rig.device.power_cycle("test timeout")
+        with rig.device.opened():
+            pass
+        assert effects(rig.follower) == [3]
+
+
+def test_rearmed_led_failure_is_not_retried_on_each_serial_open(rig):
+    with rig.device.update_indication():
+        rig.device.flash_mcu(rig.image)
+        rig.follower.led.effect.side_effect = RuntimeError("LED no ACK")
+        for _ in range(4):
+            with rig.device.opened():
+                pass
+        rig.follower.led.effect.assert_called_once()
+        assert effects(rig.leader) == [3]  # no white cleanup after LED failure
 
 
 def test_flash_failure_requests_red_without_masking_original_error_or_reopening(rig):

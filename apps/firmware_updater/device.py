@@ -35,6 +35,7 @@ class Device:
         self.last_progress_emit = 0.0
         self.last_progress_log = -1
         self._ota_indicator_active = False
+        self._ota_indicator_pending = False
         self._ota_indicator_disabled = False
         self._last_mcu_device = None
 
@@ -49,7 +50,7 @@ class Device:
             if g.device.get_sn() != self.identity[0]:
                 raise RuntimeError("串口设备身份变化，停止")
             self._last_mcu_device = ep.mcu_device
-            if self._ota_indicator_active:
+            if self._ota_indicator_active and self._ota_indicator_pending:
                 self._indicator(g, "OtaBlink")
             try:
                 yield g
@@ -69,6 +70,8 @@ class Device:
             self._ota_indicator_disabled = True
             self.emit("log", f"警告：灯效 {name} 设置失败：{exc}；不代表固件升级结果")
             return False
+        if name == "OtaBlink":
+            self._ota_indicator_pending = False
         return True
 
     def _begin_ota_indicator(self, g):
@@ -108,6 +111,7 @@ class Device:
                     self.emit("log", f"警告：升级已核验，但正常灯效未恢复：{exc}")
         finally:
             self._ota_indicator_active = False
+            self._ota_indicator_pending = False
 
     def inspect(self):
         self.emit("stage", "读取设备身份、型号与固件版本（版本查询最多等待 3 秒）")
@@ -261,6 +265,10 @@ class Device:
                     else:
                         uptime = flow._read_uptime(ep, self.identity)
                         if detector.observe(uptime):
+                            # A serial reopen alone does not reset MCU effects.
+                            # Reapply once only after the existing restart
+                            # detector confirms a reboot; no extra clock reads.
+                            self._ota_indicator_pending = self._ota_indicator_active
                             self.emit(
                                 "log",
                                 f"MCU 时钟重置已确认：uptime={uptime} ms；"
@@ -361,6 +369,9 @@ class Device:
             self._begin_ota_indicator(g)
             self.begin_transfer("MCU 刷写：启动会话并传输固件，请勿拔线", "B")
             g.ota.update_from_bytes(image.data, target, self.progress)
+            # Applying MCU firmware resets its LED state. Arm one restore on
+            # the next identity-verified connection, not every status query.
+            self._ota_indicator_pending = self._ota_indicator_active
         self.emit("stage", "MCU 已提交，等待设备重启和版本读回（上限约 33 秒）")
         time.sleep(3)
         flow._wait_follower_version(
