@@ -145,6 +145,38 @@ def test_mcu_soft_reboot_rearms_blue_without_extra_uptime_queries(rig):
         rig.flow._read_uptime.assert_not_called()
 
 
+def test_mcu_blue_is_restored_on_version_ready_before_waiting_for_user_power(rig):
+    def version_ready(*args, **kwargs):
+        assert effects(rig.leader) == [3]
+        kwargs["on_ready"](rig.leader)
+        assert effects(rig.leader) == [3, 3]
+
+    rig.flow._wait_follower_version.side_effect = version_ready
+    with rig.device.update_indication():
+        rig.device.flash_mcu(rig.image)
+        for _ in range(4):
+            with rig.device.opened():
+                pass
+        rig.follower.led.effect.assert_not_called()
+        rig.flow._read_uptime.assert_not_called()
+        rig.sdk.LeaderGripper.assert_called_once()  # no extra LED connection
+    assert effects(rig.leader) == [3, 3, 1]
+
+
+def test_version_ready_led_failure_does_not_retry_or_reclassify_mcu_result(rig):
+    rig.leader.led.effect.side_effect = [None, TimeoutError("restore LED no ACK")]
+    rig.flow._wait_follower_version.side_effect = lambda *args, **kwargs: kwargs[
+        "on_ready"
+    ](rig.leader)
+    with rig.device.update_indication():
+        rig.device.flash_mcu(rig.image)
+        with rig.device.opened():
+            pass
+    assert effects(rig.leader) == [3, 3]
+    rig.follower.led.effect.assert_not_called()
+    rig.flow._wait_follower_version.assert_called_once()
+
+
 def test_restart_timeout_does_not_rearm_or_reset_existing_blue(rig):
     with rig.device.update_indication():
         rig.device.flash_motor(rig.image)

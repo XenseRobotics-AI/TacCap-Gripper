@@ -50,8 +50,7 @@ class Device:
             if g.device.get_sn() != self.identity[0]:
                 raise RuntimeError("串口设备身份变化，停止")
             self._last_mcu_device = ep.mcu_device
-            if self._ota_indicator_active and self._ota_indicator_pending:
-                self._indicator(g, "OtaBlink")
+            self._restore_ota_indicator(g)
             try:
                 yield g
             except Exception:
@@ -73,6 +72,13 @@ class Device:
         if name == "OtaBlink":
             self._ota_indicator_pending = False
         return True
+
+    def _restore_ota_indicator(self, g):
+        if self._ota_indicator_active and self._ota_indicator_pending:
+            if self._indicator(g, "OtaBlink"):
+                self.emit(
+                    "log", "MCU 重启后已请求恢复 OTA 蓝闪；后续状态查询不重置节奏"
+                )
 
     def _begin_ota_indicator(self, g):
         if self.role != "slave" or self._ota_indicator_active:
@@ -372,10 +378,19 @@ class Device:
             # Applying MCU firmware resets its LED state. Arm one restore on
             # the next identity-verified connection, not every status query.
             self._ota_indicator_pending = self._ota_indicator_active
-        self.emit("stage", "MCU 已提交，等待设备重启和版本读回（上限约 33 秒）")
+        self.emit(
+            "stage",
+            "MCU 已提交，正在重启（可能短暂白灯/熄灭）；版本读回后恢复蓝闪（上限约 33 秒）",
+        )
         time.sleep(3)
         flow._wait_follower_version(
-            self.identity, flow._parse_version_text(image.version), 30
+            self.identity,
+            flow._parse_version_text(image.version),
+            30,
+            on_ready=self._restore_ota_indicator if self.role == "slave" else None,
+        )
+        self.emit(
+            "log", "MCU 版本已读回；接下来仍须按提示完成物理断电，不代表升级全流程结束"
         )
 
     def flash_motor(self, image):

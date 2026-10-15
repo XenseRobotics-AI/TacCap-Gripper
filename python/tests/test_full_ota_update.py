@@ -2,7 +2,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -17,6 +17,60 @@ SPEC = importlib.util.spec_from_file_location(
 )
 mod = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mod)
+
+
+def test_version_ready_callback_uses_open_verified_handle(monkeypatch):
+    g = MagicMock()
+    g.__enter__.return_value = g
+    g.device.get_sn.return_value = "TESTs"
+    g.firmware_version = SimpleNamespace(major=1, minor=2, patch=16)
+    ep = SimpleNamespace(mcu_device="/dev/test-only")
+    opener = Mock(return_value=g)
+    monkeypatch.setattr(mod, "LeaderGripper", opener)
+    monkeypatch.setattr(mod, "_scan_for", lambda _: ep)
+
+    def ready(handle):
+        assert handle is g
+        g.__exit__.assert_not_called()
+        g.device.get_sn.assert_called_once()
+
+    callback = Mock(side_effect=ready)
+    assert (
+        mod._wait_follower_version(("TESTs", "USB"), (1, 2, 16), 30, on_ready=callback)
+        is ep
+    )
+    callback.assert_called_once_with(g)
+    opener.assert_called_once_with(mcu_device=ep.mcu_device)
+
+
+@pytest.mark.parametrize("version,sn", [(15, "TESTs"), (16, "OTHERs")])
+def test_version_ready_never_writes_on_wrong_version_or_changed_sn(
+    monkeypatch, version, sn
+):
+    g = MagicMock()
+    g.__enter__.return_value = g
+    g.device.get_sn.return_value = sn
+    g.firmware_version = SimpleNamespace(major=1, minor=2, patch=version)
+    ep = SimpleNamespace(mcu_device="/dev/test-only")
+    monkeypatch.setattr(mod, "LeaderGripper", Mock(return_value=g))
+    monkeypatch.setattr(mod, "_scan_for", lambda _: ep)
+    monkeypatch.setattr(mod.time, "monotonic", Mock(side_effect=[0, 0, 31]))
+    monkeypatch.setattr(mod.time, "sleep", Mock())
+    callback = Mock()
+    with pytest.raises(RuntimeError, match="MCU rebooted"):
+        mod._wait_follower_version(("TESTs", "USB"), (1, 2, 16), 30, on_ready=callback)
+    callback.assert_not_called()
+
+
+def test_legacy_version_wait_keeps_callback_optional(monkeypatch):
+    g = MagicMock()
+    g.__enter__.return_value = g
+    g.firmware_version = SimpleNamespace(major=1, minor=2, patch=16)
+    ep = SimpleNamespace(mcu_device="/dev/test-only")
+    monkeypatch.setattr(mod, "LeaderGripper", Mock(return_value=g))
+    monkeypatch.setattr(mod, "_scan_for", lambda _: ep)
+    assert mod._wait_follower_version(("TESTs", "USB"), (1, 2, 16), 30) is ep
+    g.device.get_sn.assert_not_called()
 
 
 def test_image_only_defaults_to_model_direction():

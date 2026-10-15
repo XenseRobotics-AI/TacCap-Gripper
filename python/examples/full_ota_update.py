@@ -431,7 +431,7 @@ def _flash_follower(ep, image_path: str, no_progress: bool) -> None:
             pass
 
 
-def _wait_follower_version(identity, expected, timeout_s: float):
+def _wait_follower_version(identity, expected, timeout_s: float, *, on_ready=None):
     deadline = time.monotonic() + timeout_s
     last_version = None
     last_error = None
@@ -443,6 +443,12 @@ def _wait_follower_version(identity, expected, timeout_s: float):
                 continue
             with LeaderGripper(mcu_device=ep.mcu_device) as gripper:
                 last_version = _version_tuple(gripper.firmware_version)
+                if last_version == expected and on_ready is not None:
+                    # Reuse the version probe's live handle, not a second
+                    # discovery/open cycle just to restore a cosmetic effect.
+                    if gripper.device.get_sn() != identity[0]:
+                        raise RuntimeError("版本读回时设备 SN 已变化，拒绝继续")
+                    on_ready(gripper)
             if last_version == expected:
                 print(f"[MCU 校验] follower firmware {_version_text(last_version)}")
                 return ep
