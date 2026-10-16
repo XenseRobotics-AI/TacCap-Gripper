@@ -30,6 +30,12 @@ from PySide6.QtWidgets import (
 STYLE = """
 QWidget { color: #252A32; font-size: 13px; }
 QWidget#surface { background: #F5F8FC; }
+QDialog QPushButton[actionTone="success"]:enabled { background: #15803D; color: #FFFFFF; border-color: #15803D; }
+QDialog QPushButton[actionTone="danger"]:enabled { background: #B42318; color: #FFFFFF; border-color: #B42318; }
+QSlider::groove:horizontal { height: 6px; background: #DCE5F2; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: #2563EB; border-radius: 3px; }
+QSlider::handle:horizontal { background: #FFFFFF; border: 2px solid #2563EB; width: 16px; margin: -6px 0; border-radius: 8px; }
+QSlider:disabled { background: #EDF0F4; }
 QDialog, QMessageBox { background: #FFFFFF; }
 QLabel { background: transparent; }
 QLabel#title { font-size: 18px; font-weight: 600; color: #163C65; }
@@ -249,6 +255,8 @@ def build(window):
     window.clear_logs.clicked.connect(window.clear_log_view)
     footer.addWidget(window.clear_logs)
     footer.addStretch(1)
+    window.test_button = window.button("功能测试", window.open_control_test)
+    footer.addWidget(window.test_button)
     window.start = window.button("开始更新", window.run)
     window.start.setObjectName("primary")
     window.start.setMinimumWidth(110)
