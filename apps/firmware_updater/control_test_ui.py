@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -36,6 +37,9 @@ class ControlTestDialog(QDialog):
         box = QVBoxLayout(self)
         box.setContentsMargins(24, 20, 24, 20)
         box.setSpacing(12)
+        # A compact modal follows visible fields instead of retaining the
+        # expanded page's height and distributing it between basic rows.
+        box.setSizeConstraint(QLayout.SetFixedSize)
         box.addWidget(QLabel(self.identity[0]))
         self.warning = QLabel()
         set_text(

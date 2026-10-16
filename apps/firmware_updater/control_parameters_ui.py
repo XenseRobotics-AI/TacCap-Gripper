@@ -2,6 +2,7 @@
 
 from control_parameters import FIELDS
 from i18n import add_items, set_text, set_tooltip, tr
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -9,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -48,6 +50,8 @@ class ParameterPanel(QWidget):
         self.mode.setItemData(1, "impedance")
         row.addWidget(self.mode, 1)
         self.restore = QPushButton()
+        # Enter commits a spin-box edit, never restores/toggles parameters.
+        self.restore.setAutoDefault(False)
         set_text(self.restore, "恢复保守参数")
         self.restore.clicked.connect(self.reset)
         row.addWidget(self.restore)
@@ -56,11 +60,13 @@ class ParameterPanel(QWidget):
         self.detail.setWordWrap(True)
         box.addWidget(self.detail)
         self.stack = CurrentPageStack()
+        self.stack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.advanced = []
         for mode, fields in FIELDS.items():
             page = QWidget()
             grid = QGridLayout(page)
             grid.setContentsMargins(0, 0, 0, 0)
+            grid.setAlignment(Qt.AlignTop)
             self.inputs[mode] = {}
             advanced = []
             for row_index, field in enumerate(fields):
@@ -87,6 +93,7 @@ class ParameterPanel(QWidget):
             self.stack.addWidget(page)
         box.addWidget(self.stack)
         self.more = QPushButton()
+        self.more.setAutoDefault(False)
         set_text(self.more, "高级参数")
         self.more.setCheckable(True)
         self.more.toggled.connect(self.show_advanced)
@@ -129,13 +136,27 @@ class ParameterPanel(QWidget):
         for group in self.advanced:
             for widget in group:
                 widget.setVisible(show)
-        if self.window().layout():
-            self.window().adjustSize()
+        self.fit_contents()
 
     def change_mode(self, index):
         self.stack.setCurrentIndex(index)
         self.refresh_hint()
-        self.window().adjustSize()
+        self.fit_contents()
+
+    def fit_contents(self):
+        # QStackedLayout retains the largest page's minimum height. Recompute
+        # after visibility changes, before asking the dialog to shrink.
+        page = self.stack.currentWidget()
+        page.layout().invalidate()
+        page.layout().activate()
+        self.stack.setFixedHeight(page.sizeHint().height())
+        self.layout().invalidate()
+        self.layout().activate()
+        window = self.window()
+        if window is not self and window.layout():
+            window.layout().invalidate()
+            window.layout().activate()
+            window.adjustSize()
 
     def refresh_hint(self):
         mode = self.selected_mode()

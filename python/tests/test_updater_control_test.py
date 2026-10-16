@@ -622,3 +622,100 @@ def test_mode_specific_fields_reset_and_lock_while_running(ui, rig):
     panel.mode.setCurrentIndex(0)
     dialog.close()
     dialog.deleteLater()
+
+
+@pytest.mark.parametrize("mode", ["force_position", "impedance"])
+@pytest.mark.parametrize("commit_key", ["return", "enter", "tab"])
+def test_parameter_keyboard_edit_commits_without_reset_or_action(
+    ui, rig, mode, commit_key
+):
+    from control_test_ui import ControlTestDialog
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    window, app = ui
+    dialog = ControlTestDialog(rig.session.identity, window)
+    panel = dialog.parameters
+    panel.load(prepared(rig))
+    panel.lock(False)
+    panel.mode.setCurrentIndex(0 if mode == "force_position" else 1)
+    panel.more.setChecked(True)
+    dialog.show()
+    app.processEvents()
+    edits = (
+        {
+            "grasp_torque_nm": "0.85",
+            "close_speed_radps": "0.4",
+            "status_timeout_ms": "250",
+        }
+        if mode == "force_position"
+        else {
+            "kp": "30.5",
+            "kd": "2.5",
+            "feedforward_torque": "-0.1",
+            "status_timeout_ms": "250",
+        }
+    )
+    key = {"return": Qt.Key_Return, "enter": Qt.Key_Enter, "tab": Qt.Key_Tab}[
+        commit_key
+    ]
+    try:
+        with (
+            patch("control_test_ui.confirm") as confirm,
+            patch("control_test_ui.ControlSession") as session,
+        ):
+            for name, text in edits.items():
+                spin = panel.inputs[mode][name]
+                spin.setFocus()
+                QTest.keyClick(spin, Qt.Key_A, Qt.ControlModifier)
+                QTest.keyClicks(spin, text)
+                QTest.keyClick(spin, key)
+                app.processEvents()
+                assert spin.value() == pytest.approx(float(text))
+                assert dialog.isVisible()
+                assert panel.more.isChecked()
+            confirm.assert_not_called()
+            session.assert_not_called()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_parameter_layout_shrinks_after_repeated_mode_and_advanced_changes(
+    ui, rig, lang
+):
+    import i18n
+    from control_test_ui import ControlTestDialog
+
+    window, app = ui
+    i18n.set_language(lang)
+    dialog = ControlTestDialog(rig.session.identity, window)
+    panel = dialog.parameters
+    panel.load(prepared(rig))
+    panel.lock(False)
+    dialog.show()
+    app.processEvents()
+    compact_height = dialog.height()
+    try:
+        for _ in range(3):
+            for mode in (1, 0):
+                panel.mode.setCurrentIndex(mode)
+                panel.more.setChecked(True)
+                app.processEvents()
+                assert panel.stack.geometry().bottom() < panel.more.geometry().top()
+                panel.more.setChecked(False)
+                app.processEvents()
+                fields = panel.inputs[panel.selected_mode()]
+                visible = [w for w in fields.values() if w.isVisible()]
+                for before, after in zip(visible, visible[1:]):
+                    assert 0 < after.y() - before.geometry().bottom() <= 12
+                assert panel.stack.height() <= sum(
+                    w.height() for w in visible
+                ) + 12 * len(visible)
+                if mode == 0:
+                    assert dialog.height() <= compact_height + 2
+        assert dialog.width() <= 720
+    finally:
+        dialog.close()
+        dialog.deleteLater()
