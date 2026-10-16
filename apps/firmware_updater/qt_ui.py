@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -94,6 +95,7 @@ class App(QMainWindow):
         self.popup = None
         self.devices = []
         self.paths = {"mcu": "", "motor": ""}
+        self.mcu_target = None
         self.overrides = set()
         self.current_info = None
         self.selected_identity = None
@@ -158,6 +160,7 @@ class App(QMainWindow):
             and bool(self.current_info and self.current_info["recorded"])
             and any(self.paths.values())
         )
+        self.refresh_mcu_hint()
 
     def use_defaults(self):
         self.overrides.clear()
@@ -211,11 +214,77 @@ class App(QMainWindow):
         )
         set_text(self.file_labels[kind], f"{model_name} · {image.version}（{source}）")
         set_tooltip(self.file_labels[kind], str(path))
+        if kind == "mcu":
+            self.mcu_target = image
         if changed:
             self.log(
                 f"{source} {kind}: {image.model} {image.version} SHA256={image.sha256}"
             )
         self.update_actions()
+
+    def refresh_mcu_hint(self):
+        current = self.current_info.get("mcu") if self.current_info else None
+        target = self.mcu_target
+        try:
+            downgrade = bool(
+                current
+                and target
+                and self.paths["mcu"]
+                and target.model == self.effective_role()
+                and core.version_key(target.version) < core.version_key(current)
+            )
+        except (ValueError, TypeError):
+            downgrade = (
+                False  # An unknown current version never proves downgrade safety.
+            )
+        self.mcu_hint.setVisible(downgrade)
+        if downgrade:
+            set_text(
+                self.mcu_hint,
+                f"MCU 降级：{current} → {target.version}。只更换固件，不恢复旧配置；刷写前需再次确认。",
+            )
+        self.fit_contents()
+
+    def make_mcu_menu(self):
+        menu = QMenu(self)
+        role = self.effective_role()
+        entries = bundled.mcu_entries(self.catalog, role)
+        for index, entry in enumerate(entries):
+            label = "内置最新" if index == 0 else "历史版本"
+            action = menu.addAction(f"{entry['version']} ({tr(label)})")
+            action.setData(entry["version"])
+            if entry["warning"]:
+                action.setToolTip(tr(entry["warning"]))
+            action.triggered.connect(
+                lambda _=False, e=entry: self.select_mcu_version(e)
+            )
+        menu.setToolTipsVisible(True)
+        menu.addSeparator()
+        action = menu.addAction(tr("选择 .bin 文件…"))
+        action.setData("file")
+        action.triggered.connect(lambda: self.choose("mcu"))
+        return menu
+
+    def open_mcu_menu(self):
+        if self.busy:
+            return
+        menu = self.make_mcu_menu()
+        try:
+            menu.exec(self.mcu_choose.mapToGlobal(self.mcu_choose.rect().bottomLeft()))
+        finally:
+            menu.deleteLater()
+
+    def select_mcu_version(self, entry):
+        if self.busy:
+            return
+        try:
+            if entry["model"] != self.effective_role():
+                raise ValueError("镜像主/从角色与当前设备不匹配")
+            path, image = bundled.mcu_image(entry, self.catalog)
+            self.overrides.add("mcu")
+            self.set_image("mcu", path, image, builtin=True)
+        except Exception as exc:
+            notice(self, "文件校验失败", str(exc), QMessageBox.Critical)
 
     def refresh_activity(self):
         if not self.activity.active:
@@ -418,13 +487,19 @@ class App(QMainWindow):
         self.launch(work, updating=True)
 
     def clear(self, kind):
+        if self.busy:
+            return
         self.overrides.add(kind)
         self.paths[kind] = ""
         set_text(self.file_labels[kind], "未选择")
         set_tooltip(self.file_labels[kind], "")
+        if kind == "mcu":
+            self.mcu_target = None
         self.update_actions()
 
     def choose(self, kind):
+        if self.busy:
+            return
         if (
             kind == "motor"
             and self.selected_identity
@@ -451,6 +526,8 @@ class App(QMainWindow):
                 and image.model != core.role_from_sn(self.selected_identity[0])
             ):
                 raise ValueError("镜像主/从角色与当前设备不匹配")
+            if kind == "mcu":
+                core.validate_mcu_target(image, image.model)
             self.overrides.add(kind)
             self.set_image(kind, path, image)
         except Exception as exc:

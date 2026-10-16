@@ -9,6 +9,15 @@ CJK = re.compile(r"[\u3400-\u9fff]")
 # Chinese remains the source language. Keep decisions based on the original
 # messages; translate only at the GUI/log/dialog boundary, never in OTA policy.
 WORDS = {
+    "选择版本": "Select version",
+    "历史版本": "historical",
+    "内置最新": "bundled latest",
+    "选择 .bin 文件…": "Browse for a .bin file...",
+    "旧版不含 1.2.6 的控制串口接收错误恢复修复，仅用于回退对比。": "This older release lacks the 1.2.6 control-UART receive-error recovery fix. Use only for downgrade comparison testing.",
+    "旧版不含 1.2.16 的电机回显帧过滤与后续修复。RS00 还缺少 1.2.15 的按 SN 确定开合方向修复；降级后必须检查实际开合方向，不要直接恢复生产运行。": "This release lacks the 1.2.16 motor-echo filtering and later fixes. For RS00, it also lacks the 1.2.15 SN-based direction fix. Check the physical opening/closing direction after downgrade; do not resume production directly.",
+    "回滚只更换固件，不恢复旧配置；请先导出日志。完成后须重新验收，不保证旧版兼容现有配置。": "Downgrade replaces firmware only, not previous configuration. Export logs first. Revalidate before use; compatibility with existing configuration is not guaranteed.",
+    "用户取消，未执行本项刷写；若此前已更新其他项目或切换协议，请先核对设备状态。": "Cancelled; this item was not flashed. If earlier items or the protocol changed, check the device state before use.",
+    "MCU 版本在确认后发生变化，停止刷写，请刷新设备": "MCU version changed after confirmation. Flashing stopped; refresh the device.",
     "语言": "Language",
     "重复刷写": "reflash",
     "等待确认：": "Awaiting confirmation: ",
@@ -227,6 +236,8 @@ WORDS = {
 }
 
 TEMPLATES = {
+    "MCU 目标低于工具支持下限 {0}，请联系技术支持": "MCU target is below the tool's supported minimum {0}. Contact support.",
+    "MCU 降级：{0} → {1}。只更换固件，不恢复旧配置；刷写前需再次确认。": "MCU downgrade: {0} -> {1}. Firmware only; previous configuration is not restored. Confirmation is required before flashing.",
     "等待电机协议 {0} 稳定超时，最后读回 {1}。停止后续步骤；确认断开的是 24 V（仅拔 USB 不够），保持至少 2 秒，再重新运行。若仍失败，保留日志排查协议切换。": "Timed out waiting for stable motor protocol {0}; last readback: {1}. Subsequent steps stopped. Disconnect 24 V (USB alone is insufficient), wait at least 2 seconds, then restart the workflow. If it still fails, retain the log for protocol diagnosis.",
     "{0} 等待设备空闲超时: {1}；停止后续升级，请检查标定状态及是否有其他控制程序运行。": "Timed out waiting for idle during {0}: {1}. Update stopped. Check calibration and other running control applications.",
     "{0} 失败: {1}": "{0} failed: {1}",

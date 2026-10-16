@@ -45,6 +45,14 @@ def version_key(value):
     return parts
 
 
+def validate_mcu_target(image, role):
+    if image.kind != "mcu" or image.model != role:
+        raise RuntimeError("MCU 镜像与设备主/从角色不匹配")
+    minimum = {"master": "1.2.5", "slave": "1.2.14"}[role]
+    if version_key(image.version) < version_key(minimum):
+        raise RuntimeError(f"MCU 目标低于工具支持下限 {minimum}，请联系技术支持")
+
+
 def confirm_change(ask, label, current, image):
     if not current:
         raise RuntimeError(f"无法确认{label}当前版本，停止，不能凭存档推断电机实际版本")
@@ -56,12 +64,14 @@ def confirm_change(ask, label, current, image):
         )
     action = "回滚" if b < a else "升级"
     warning = image.warning or "刷写过程中不可断电；重新上电可能触发自动标定。"
+    if b < a and image.kind == "mcu":
+        warning += "\n回滚只更换固件，不恢复旧配置；请先导出日志。完成后须重新验收，不保证旧版兼容现有配置。"
     if not ask(
         f"确认{label}{action}",
         f"{current} → {image.version}\n\n{warning}\n\n确认继续？",
     ):
         raise RuntimeError(
-            "用户取消；如已切换协议，设备可能仍处于 Private，请联系支持或重新完成升级流程。"
+            "用户取消，未执行本项刷写；若此前已更新其他项目或切换协议，请先核对设备状态。"
         )
 
     return True
@@ -78,6 +88,7 @@ def role_from_sn(sn):
 def execute_master(device, info, mcu, motor, ask, emit):
     if motor or not mcu or mcu.model != "master":
         raise ValueError("主爪只允许主爪 MCU 镜像，不支持从爪或电机固件")
+    validate_mcu_target(mcu, "master")
     if not ask(
         "开始主爪更新",
         f"设备 {info['sn']}\nMCU {info['mcu']} → {mcu.version}\n更新后需拔插 USB。",
@@ -112,22 +123,36 @@ def execute(device, mcu, motor, ask, emit):
         raise RuntimeError("此用户版仅支持从爪 MCU >= 1.2.14，旧设备请由技术支持初始化")
     if motor and motor.model != info["model"]:
         raise RuntimeError("电机型号与镜像不匹配，禁止刷写")
-    if mcu and (mcu.model != "slave" or version_key(mcu.version) < (1, 2, 14)):
-        raise RuntimeError("不支持此 MCU 回滚目标")
+    if mcu:
+        validate_mcu_target(mcu, "slave")
     plan = f"设备 {info['sn']}\n型号 {info['model']}\n"
     plan += f"MCU: {info['mcu']} → {mcu.version if mcu else '不修改'}\n"
     plan += f"电机: {info['motor']} → {motor.version if motor else '不修改'}\n"
     plan += "\n请放下物体、清空活动范围并关闭其他控制程序。不会修改型号、方向或力矩参数。RS00 的 CAN ID 不符时将另行确认修正。"
     if not ask("开始升级/回滚", plan):
         raise RuntimeError("用户取消，未修改设备")
+    mcu_first = not mcu or version_key(mcu.version) >= version_key(info["mcu"])
+    confirmed_mcu = None
+    if not mcu_first:
+        # Obtain consent for the downgrade before any motor/CAN-ID write.
+        # The actual MCU transfer still runs last, while newer MCU features
+        # remain available for motor update and version-record verification.
+        confirmed_mcu = device.mcu_version()
+        if not confirmed_mcu or version_key(confirmed_mcu) != version_key(info["mcu"]):
+            raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
+        confirm_change(ask, "夹爪 MCU", confirmed_mcu, mcu)
     if info["model"] == "RS00":
         device.ensure_can_id()
-    mcu_first = not mcu or version_key(mcu.version) >= version_key(info["mcu"])
 
     def flash_mcu():
         if not mcu:
             return
-        if not confirm_change(ask, "夹爪 MCU", device.mcu_version(), mcu):
+        current = device.mcu_version()
+        if confirmed_mcu is not None and version_key(current) != version_key(
+            confirmed_mcu
+        ):
+            raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
+        if confirmed_mcu is None and not confirm_change(ask, "夹爪 MCU", current, mcu):
             emit("log", f"跳过同版本 MCU：{mcu.version}；无需刷写或为它断电")
             return
         device.protocol("Mit")

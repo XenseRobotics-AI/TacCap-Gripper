@@ -1,5 +1,15 @@
 {
   "schema": 1,
+  "history": {
+    "gripper/tc-gu-01-master-1.2.5.bin": {
+      "commit": "6ea41f7cef9c755652a071e0659c04cefaee7e6c",
+      "path": "firmware/tc-gu-01-master-1.2.5.bin"
+    },
+    "gripper/tc-gu-01-slave-1.2.14.bin": {
+      "commit": "9f4ef96e1446d4ce6c5fa2099b933affa96e43e0",
+      "path": "firmware/tc-gu-01-slave-1.2.14.bin"
+    }
+  },
   "images": [
     {
       "kind": "mcu",
@@ -8,6 +18,14 @@
       "sha256": "dfeeeab6bd76c480efbdcd0d19e0cc7c05b3031cc81a84c0b55ca95ce4005282",
       "warning": "",
       "file": "gripper/tc-gu-01-master-1.2.6.bin"
+    },
+    {
+      "kind": "mcu",
+      "model": "master",
+      "version": "1.2.5",
+      "sha256": "1c975598d5c8076ea69a50b3a9d3f8f8b16e0339c732df0c30aada602e5dce3d",
+      "warning": "旧版不含 1.2.6 的控制串口接收错误恢复修复，仅用于回退对比。",
+      "file": "gripper/tc-gu-01-master-1.2.5.bin"
     },
     {
       "kind": "mcu",
@@ -22,7 +40,7 @@
       "model": "slave",
       "version": "1.2.14",
       "sha256": "f777774a8b4ac8dd7ac4cd1cc3b0d284d9cfb2103cf45fc0a9f2cd7921f53858",
-      "warning": "旧版不含 1.2.16 的电机回显帧过滤与后续修复。回滚后不要直接恢复生产运行。",
+      "warning": "旧版不含 1.2.16 的电机回显帧过滤与后续修复。RS00 还缺少 1.2.15 的按 SN 确定开合方向修复；降级后必须检查实际开合方向，不要直接恢复生产运行。",
       "file": "gripper/tc-gu-01-slave-1.2.14.bin"
     },
     {

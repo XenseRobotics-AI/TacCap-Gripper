@@ -40,6 +40,10 @@ QLabel#status[tone="warning"] { color: #815000; background: #FFF0CE; }
 QLabel#status[tone="error"] { color: #9A2836; background: #FCE4E8; }
 QLabel#muted { color: #626B78; }
 QLabel#notice { color: #815000; padding: 4px 6px; background: #FFF0CE; border-radius: 4px; }
+QLabel#rollback { color: #B42318; padding: 4px 6px; background: #FCE4E8; border-radius: 4px; }
+QMenu { background: #FFFFFF; border: 1px solid #D7DBE1; padding: 4px; }
+QMenu::item { padding: 7px 14px; }
+QMenu::item:selected { background: #E8EFFD; }
 QLabel#heading { font-size: 15px; font-weight: 600; }
 QPushButton { background: #FFFFFF; border: 1px solid #D7DBE1; border-radius: 5px; padding: 5px 12px; }
 QPushButton:hover { background: #F3F5F8; border-color: #AAB2BF; }
@@ -172,10 +176,13 @@ def build(window):
         form.addWidget(field, row, 1)
         window.file_labels[kind] = field
         choose = window.button(
-            "选择文件", lambda checked=False, k=kind: window.choose(k)
+            "选择版本" if kind == "mcu" else "选择文件",
+            window.open_mcu_menu if kind == "mcu" else lambda: window.choose("motor"),
         )
         choose.setFixedHeight(36)
         form.addWidget(choose, row, 2)
+        if kind == "mcu":
+            window.mcu_choose = choose
         clear = window.button("清除", lambda checked=False, k=kind: window.clear(k))
         clear.setObjectName("link")
         form.addWidget(clear, row, 3)
@@ -200,6 +207,9 @@ def build(window):
     defaults.setObjectName("link")
     options.addWidget(defaults)
     box.addLayout(options)
+    window.mcu_hint = text("", "rollback")
+    window.mcu_hint.hide()
+    box.addWidget(window.mcu_hint)
     line = QFrame()
     line.setFixedHeight(1)
     line.setStyleSheet("background: #E8EBEF;")

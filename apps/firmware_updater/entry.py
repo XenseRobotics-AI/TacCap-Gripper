@@ -83,6 +83,9 @@ def main():
                 "qt": qVersion(),
                 "language": language(),
                 "bundled_firmware": bundled_versions,
+                "mcu_versions": bundled.verify_mcu_versions(
+                    core.catalog_at(HERE / "catalog.json")
+                ),
                 "external_non_system_libraries": external,
             }
         )
