@@ -201,16 +201,37 @@ def _role_selector(target: str | None) -> str | None:
 
 
 def _normalize_cli_target(args: argparse.Namespace) -> argparse.Namespace:
-    """Interpret bare role names as a target selector, not a firmware path."""
+    """Interpret bare role names as a target selector, not a firmware path.
+
+    `slave right` is a role AND a side: flash the right gripper with the slave
+    image, after checking that it really is a slave. The role lands in
+    `args.role` so the side keeps its own slot; `right slave` means the same.
+    """
+    args.role = getattr(args, "role", None)
     if args.target is not None and args.target.strip().lower() in {"all", "both"}:
         args.all = True
         args.target = None
 
-    if args.firmware is not None and args.target is None:
+    if args.firmware is not None:
         role = _role_selector(args.firmware)
         if role is not None:
-            args.target = args.firmware
+            if args.target is None:
+                args.target = args.firmware
+            elif _role_selector(args.target) is None:
+                args.role = role
+            else:
+                raise SystemExit(
+                    f"error: two roles given ({args.firmware!r}, {args.target!r}); "
+                    "pass one role and, optionally, a side or SN."
+                )
             args.firmware = None
+        elif args.target is not None and _role_selector(args.target) is not None:
+            if args.firmware.strip().lower() in _target.SIDE_ALIASES:
+                args.firmware, args.target, args.role = (
+                    None,
+                    args.firmware,
+                    _role_selector(args.target),
+                )
 
     if args.get_status and args.firmware and not args.target:
         args.firmware, args.target = None, args.firmware
@@ -218,7 +239,11 @@ def _normalize_cli_target(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _build_upgrade_jobs(
-    target: str | None, firmware: str | None, all_grippers: bool, scan_grippers
+    target: str | None,
+    firmware: str | None,
+    all_grippers: bool,
+    scan_grippers,
+    role: str | None = None,
 ):
     """Return a list of {eps, role, firmware_path} jobs.
 
@@ -268,6 +293,18 @@ def _build_upgrade_jobs(
         return [{"eps": eps, "role": role_target, "firmware": resolved}]
 
     eps, _by_side, _all = _target.resolve_target(target)
+    if role is not None:
+        have = _gripper_role(eps)
+        if have != role:
+            raise SystemExit(
+                f"error: {target!r} is gripper {eps.firmware_sn!r}, whose SN says "
+                f"role={have!r}, not {role!r}. Flashing the wrong role's image "
+                "bricks the MCU; check the selector."
+            )
+        resolved = _resolve_or_report(firmware or _default_firmware_for_role(role))
+        if resolved is None:
+            raise SystemExit(f"firmware image not found for role {role!r}")
+        return [{"eps": eps, "role": role, "firmware": resolved}]
     if firmware is None:
         role = _gripper_role(eps)
         if role == "unknown":
@@ -671,7 +708,9 @@ def main(argv=None) -> int:
         finally:
             del g
 
-    jobs = _build_upgrade_jobs(args.target, args.firmware, False, _target.scan_grippers)
+    jobs = _build_upgrade_jobs(
+        args.target, args.firmware, False, _target.scan_grippers, role=args.role
+    )
     if len(jobs) != 1:
         raise SystemExit(f"error: expected exactly one target gripper, got {len(jobs)}")
     job = jobs[0]
