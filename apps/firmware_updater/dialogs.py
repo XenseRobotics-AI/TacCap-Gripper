@@ -1,9 +1,11 @@
 """Semantic dialog actions; colors never replace labels or safe defaults."""
 
+from i18n import tr
 from PySide6.QtWidgets import QMessageBox
 
 
 def action_button(box, text, role, tone):
+    text = tr(text)
     button = box.addButton(text, role)
     button.setProperty("actionTone", tone)
     button.setMinimumHeight(34)
@@ -21,7 +23,7 @@ def confirmation_box(parent, title, text):
     downgrade = "回滚" in title and title != "开始升级/回滚"
     tone = "success" if calibration else "danger" if downgrade else "warning"
     icon = QMessageBox.Question if calibration else QMessageBox.Warning
-    box = QMessageBox(icon, title, text, parent=parent)
+    box = QMessageBox(icon, tr(title), tr(text), parent=parent)
     yes_text = (
         "方向与标定正常"
         if calibration
@@ -51,7 +53,7 @@ def confirm(parent, title, text):
 
 
 def notice(parent, title, text, icon=QMessageBox.Information, *, success=False):
-    box = QMessageBox(icon, title, text, parent=parent)
+    box = QMessageBox(icon, tr(title), tr(text), parent=parent)
     tone = (
         "success"
         if success

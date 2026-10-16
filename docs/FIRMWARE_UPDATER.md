@@ -125,6 +125,15 @@ EL05 1.0.5.0.4、RS00 0.0.3.32，四份镜像构建和加载时都按 SHA-256 �
    故障时导出日志联系支持。此前某项固件可能已经更新、协议可能仍为 Private，
    不要直接运行夹取。没有自动重试、自动回滚或自动运动恢复。
 
+### 界面语言 / Interface language
+
+- 顶部“语言 / Language”选择 `English` 或 `简体中文`，空闲时即时生效并记住当前用户的选择，无需重装。升级、读取设备或型号设置期间禁用切换，避免打断流程。
+- 主从爪界面、版本状态、确认/回滚警告、断电步骤、进度、日志显示及导出均随语言切换。设备 SN、版本、CAN ID 和实际文件路径保持原值；切换不会访问设备或更改刷写判断。
+- 保留原始日志供重新显示/导出；清空显示后切换语言不会重新露出已清空的记录。未知的第三方中文诊断在英文模式下以无损 Unicode 转义保留，不猜测其含义；工具自身提示必须有英文译文。
+- 临时指定启动语言（不覆盖保存的选择）：`taccap-firmware-updater --language en` 或 `--language zh`。AppImage 接受相同参数。
+
+Choose **English** in the **Language** selector for an English interface. The choice applies immediately while idle and is saved per user. Switching is disabled during operations. Confirmations keep the same safe defaults and color meanings; no firmware, model, direction, torque or OTA policy changes are made by switching languages.
+
 MCU 升级先于电机更新；MCU 回滚放在电机核验之后。电机必须实时读回目标版本才
 写 Flash 版本记录，存档不能充当升级成功证据。从爪 MCU 当前/目标版本均须
 >= 1.2.14。未记录型号可通过上述入口初始化；RS00 从爪在更新预检中按固件 SN 调用 SDK 规则核对 CAN ID（左 17、右 18）。

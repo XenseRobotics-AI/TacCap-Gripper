@@ -1,6 +1,15 @@
 """Compact updater form with explicit, theme-independent surface colors."""
 
 from build_info import window_title
+from i18n import (
+    add_items,
+    language,
+    set_format,
+    set_placeholder,
+    set_text,
+    set_title,
+    set_tooltip,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
@@ -84,14 +93,15 @@ def palette():
 
 
 def text(value, name="muted"):
-    widget = QLabel(value)
+    widget = QLabel()
+    set_text(widget, value)
     widget.setObjectName(name)
     widget.setWordWrap(True)
     return widget
 
 
 def build(window):
-    window.setWindowTitle(window_title())
+    set_title(window, window_title())
     window.resize(680, 430)
     window.setMinimumWidth(680)
     surface = QWidget()
@@ -103,7 +113,7 @@ def build(window):
     box.setSpacing(4)
     box.setAlignment(Qt.AlignTop)
     window.role_filter = QComboBox()
-    window.role_filter.addItems(["全部夹爪", "从爪", "主爪"])
+    add_items(window.role_filter, ["全部夹爪", "从爪", "主爪"])
     window.role_filter.setMinimumHeight(36)
     window.role_filter.setMaximumWidth(160)
     window.role_filter.currentIndexChanged.connect(window.change_role)
@@ -117,15 +127,28 @@ def build(window):
     form.setColumnStretch(1, 1)
     window.role_label = text("设备类型", "label")
     form.addWidget(window.role_label, 0, 0)
-    form.addWidget(window.role_filter, 0, 1, alignment=Qt.AlignLeft)
+    type_controls = QHBoxLayout()
+    type_controls.setSpacing(8)
+    type_controls.addWidget(window.role_filter)
+    type_controls.addWidget(text("语言", "label"))
+    form.addLayout(type_controls, 0, 1)
     window.match_hint = text("自动匹配固件", "label")
     window.match_hint.setWordWrap(False)
     window.match_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     form.addWidget(window.match_hint, 0, 2, 1, 2)
+    window.language_combo = QComboBox()
+    add_items(window.language_combo, ["简体中文", "English"])
+    window.language_combo.setItemData(0, "zh")
+    window.language_combo.setItemData(1, "en")
+    window.language_combo.setCurrentIndex(1 if language() == "en" else 0)
+    window.language_combo.currentIndexChanged.connect(window.change_language)
+    window.controls.append(window.language_combo)
+    type_controls.addWidget(window.language_combo)
+    type_controls.addStretch(1)
     form.addWidget(text("连接设备", "label"), 1, 0)
     window.combo = QComboBox()
     window.combo.setMinimumHeight(36)
-    window.combo.setPlaceholderText("选择已连接的夹爪")
+    set_placeholder(window.combo, "选择已连接的夹爪")
     window.combo.activated.connect(window.inspect)
     form.addWidget(window.combo, 1, 1, 1, 2)
     window.refresh = window.button("刷新", window.scan)
@@ -164,7 +187,7 @@ def build(window):
     model_box.setContentsMargins(0, 0, 0, 0)
     model_box.addWidget(text("型号未记录，请确认实物："))
     window.model_combo = QComboBox()
-    window.model_combo.addItems(["选择电机型号", "EL05", "RS00"])
+    add_items(window.model_combo, ["选择电机型号", "EL05", "RS00"])
     model_box.addWidget(window.model_combo, 1)
     window.model_save = window.button("设置型号", window.set_model)
     model_box.addWidget(window.model_save)
@@ -191,25 +214,28 @@ def build(window):
     window.progress.setRange(0, 100)
     window.progress.setValue(0)
     window.progress.setTextVisible(True)
-    window.progress.setFormat("%p%")
+    set_format(window.progress, "%p%")
     window.progress.setFixedHeight(18)
     box.addWidget(window.progress)
     window.activity_detail = text("百分比仅表示当前固件传输；完成后还需重启和校验。")
     box.addWidget(window.activity_detail)
     footer = QHBoxLayout()
     footer.setSpacing(16)
-    window.toggle = QPushButton("查看日志")
+    window.toggle = QPushButton()
+    set_text(window.toggle, "查看日志")
     window.toggle.setObjectName("link")
     window.toggle.setCheckable(True)
     window.toggle.toggled.connect(window.toggle_log)
     footer.addWidget(window.toggle)
-    export = QPushButton("导出日志")
+    export = QPushButton()
+    set_text(export, "导出日志")
     export.setObjectName("link")
     export.clicked.connect(window.export)
     footer.addWidget(export)
-    window.clear_logs = QPushButton("清空日志")
+    window.clear_logs = QPushButton()
+    set_text(window.clear_logs, "清空日志")
     window.clear_logs.setObjectName("link")
-    window.clear_logs.setToolTip("仅清空窗口显示；导出日志仍包含完整记录")
+    set_tooltip(window.clear_logs, "仅清空窗口显示；导出日志仍包含完整记录")
     window.clear_logs.clicked.connect(window.clear_log_view)
     footer.addWidget(window.clear_logs)
     footer.addStretch(1)

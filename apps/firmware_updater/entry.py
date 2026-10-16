@@ -16,6 +16,9 @@ def main():
 
     configure_fontconfig()
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--language", choices=("zh", "en"), help="UI language for this run"
+    )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
         "--install-desktop",
@@ -25,16 +28,19 @@ def main():
     parser.add_argument("--ui-smoke-test", action="store_true")
     parser.add_argument("--screenshot", help="Save a hardware-free UI preview")
     args = parser.parse_args()
+    from i18n import initialize, language, tr
+
+    initialize(args.language)
     if args.install_desktop:
         import os
 
         from desktop_integration import integrate_appimage
 
         if os.geteuid() == 0:
-            raise SystemExit("请以普通用户注册应用菜单")
+            raise SystemExit(tr("请以普通用户注册应用菜单"))
         if not integrate_appimage(HERE / "icon.png"):
-            raise SystemExit("此选项仅适用于 AppImage")
-        print("AppImage 菜单入口与图标已注册")
+            raise SystemExit(tr("此选项仅适用于 AppImage"))
+        print(tr("AppImage 菜单入口与图标已注册"))
         return
     if not args.self_test:
         from qt_ui import main as gui
@@ -75,6 +81,7 @@ def main():
                 "python": sys.version,
                 "frozen": bool(getattr(sys, "frozen", False)),
                 "qt": qVersion(),
+                "language": language(),
                 "bundled_firmware": bundled_versions,
                 "external_non_system_libraries": external,
             }

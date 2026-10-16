@@ -15,6 +15,16 @@ from compact_layout import STYLE, build, palette
 from desktop_integration import desktop_id, integrate_appimage
 from dialogs import confirm, notice
 from fontconfig_runtime import configure_fontconfig
+from i18n import (
+    language,
+    retranslate,
+    set_format,
+    set_language,
+    set_text,
+    set_title,
+    set_tooltip,
+    tr,
+)
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
@@ -54,7 +64,8 @@ def configure(app):
 
 
 def label(text, name=None):
-    item = QLabel(text)
+    item = QLabel()
+    set_text(item, text)
     item.setWordWrap(True)
     if name:
         item.setObjectName(name)
@@ -88,6 +99,7 @@ class App(QMainWindow):
         self.selected_identity = None
         self.auto_connect = auto_connect
         self.log_lines = []
+        self.visible_log_lines = []
         self.catalog = core.catalog_at(HERE / "catalog.json")
         build(self)
         self.timer = QTimer(self)
@@ -102,6 +114,18 @@ class App(QMainWindow):
         if auto_connect:
             self.scan_timer.start(5000)
             QTimer.singleShot(0, self.auto_scan)
+
+    def change_language(self, *_):
+        code = self.language_combo.currentData()
+        if self.busy:
+            self.language_combo.blockSignals(True)
+            self.language_combo.setCurrentIndex(1 if language() == "en" else 0)
+            self.language_combo.blockSignals(False)
+            return
+        set_language(code, persist=True)
+        retranslate(self)
+        self.text.setPlainText("\n".join(tr(line) for line in self.visible_log_lines))
+        self.fit_contents()
 
     def auto_scan(self):
         if self.auto_connect and not self.busy and not self.devices:
@@ -123,7 +147,7 @@ class App(QMainWindow):
         self.overrides.clear()
         self.apply_defaults()
         self.set_tone("running")
-        self.info.setText("正在查找匹配设备…")
+        set_text(self.info, "正在查找匹配设备…")
         self.fit_contents()
         self.scan(follow_single=False)
 
@@ -147,7 +171,7 @@ class App(QMainWindow):
         for kind in ("mcu", "motor"):
             if master and kind == "motor":
                 self.paths[kind] = ""
-                self.file_labels[kind].setText("主爪不适用")
+                set_text(self.file_labels[kind], "主爪不适用")
                 continue
             if kind in self.overrides:
                 continue
@@ -166,13 +190,14 @@ class App(QMainWindow):
                 self.set_image(kind, path, image, builtin=True)
             else:
                 self.paths[kind] = ""
-                self.file_labels[kind].setText("等待识别型号")
-                self.file_labels[kind].setToolTip("型号未确认，不自动选择电机固件")
+                set_text(self.file_labels[kind], "等待识别型号")
+                set_tooltip(self.file_labels[kind], "型号未确认，不自动选择电机固件")
 
-        self.safety.setText(
+        set_text(
+            self.safety,
             "主爪：刷写时勿拔 USB，完成后按提示拔插 USB。"
             if master
-            else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。"
+            else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。",
         )
         self.update_actions()
         self.fit_contents()
@@ -184,8 +209,8 @@ class App(QMainWindow):
         model_name = {"master": "主爪 MCU", "slave": "从爪 MCU"}.get(
             image.model, image.model
         )
-        self.file_labels[kind].setText(f"{model_name} · {image.version}（{source}）")
-        self.file_labels[kind].setToolTip(str(path))
+        set_text(self.file_labels[kind], f"{model_name} · {image.version}（{source}）")
+        set_tooltip(self.file_labels[kind], str(path))
         if changed:
             self.log(
                 f"{source} {kind}: {image.model} {image.version} SHA256={image.sha256}"
@@ -196,9 +221,9 @@ class App(QMainWindow):
         if not self.activity.active:
             return
         detail = self.activity.detail()
-        self.activity_detail.setText(detail)
+        set_text(self.activity_detail, detail)
         if self.popup and hasattr(self.popup, "detail_label"):
-            self.popup.detail_label.setText(detail)
+            set_text(self.popup.detail_label, detail)
         line = self.activity.heartbeat()
         if line:
             self.log(line)
@@ -211,24 +236,26 @@ class App(QMainWindow):
     def set_stage(self, title):
         self.set_tone("running")
         self.activity.set_stage(title)
-        self.status.setText(title)
+        set_text(self.status, title)
         self.progress.setRange(0, 0)
         self.log(title)
         self.refresh_activity()
 
     def button(self, text, callback):
-        button = QPushButton(text)
+        button = QPushButton()
+        set_text(button, text)
         button.setMinimumHeight(34)
         button.clicked.connect(callback)
         self.controls.append(button)
         return button
 
     def clear_log_view(self):
+        self.visible_log_lines.clear()
         self.text.clear()
 
     def toggle_log(self, visible):
         self.text.setVisible(visible)
-        self.toggle.setText("收起日志" if visible else "查看日志")
+        set_text(self.toggle, "收起日志" if visible else "查看日志")
         self.fit_contents()
         QTimer.singleShot(0, self.fit_contents)
 
@@ -244,7 +271,8 @@ class App(QMainWindow):
     def log(self, value):
         line = time.strftime("%Y-%m-%d %H:%M:%S ") + str(value)
         self.log_lines.append(line)
-        self.text.appendPlainText(line)
+        self.visible_log_lines.append(line)
+        self.text.appendPlainText(tr(line))
 
     def emit(self, kind, value):
         self.events.put((kind, value, getattr(self.emit_context, "task", None)))
@@ -262,9 +290,11 @@ class App(QMainWindow):
         self.task_serial += 1
         task = self.active_task = self.task_serial
         self.discard_read = False
-        self.activity.begin("准备更新，请稍候" if updating else self.status.text())
+        self.activity.begin(
+            "准备更新，请稍候" if updating else self.status._i18n_bindings["setText"]
+        )
         self.progress.setRange(0, 0)
-        self.status.setText(self.activity.stage)
+        set_text(self.status, self.activity.stage)
         self.log(self.activity.stage)
         if updating:
             self.toggle.setChecked(True)
@@ -301,7 +331,7 @@ class App(QMainWindow):
         self.devices = []
         self.combo.clear()
         self.model_row.hide()
-        self.info.setText("重新扫描设备，请稍候…")
+        set_text(self.info, "重新扫描设备，请稍候…")
         self.update_actions()
         if self.auto_connect:
             self.scan_timer.start(5000)
@@ -309,10 +339,10 @@ class App(QMainWindow):
             # Finish/close the old handle before opening another; drop its results.
             self.discard_read = True
             self.pending_scan = follow_single
-            self.status.setText("等待旧读取结束，随后重新扫描设备…")
+            set_text(self.status, "等待旧读取结束，随后重新扫描设备…")
             return
         self.set_tone("running")
-        self.status.setText("正在扫描设备…")
+        set_text(self.status, "正在扫描设备…")
 
         role = self.role_filter.currentIndex()
 
@@ -348,7 +378,7 @@ class App(QMainWindow):
                 self.overrides.clear()
             self.previous_identity = None
             self.apply_defaults()
-        self.status.setText("正在连接并读取设备信息…")
+        set_text(self.status, "正在连接并读取设备信息…")
 
         def work():
             from device import Device
@@ -390,8 +420,8 @@ class App(QMainWindow):
     def clear(self, kind):
         self.overrides.add(kind)
         self.paths[kind] = ""
-        self.file_labels[kind].setText("未选择")
-        self.file_labels[kind].setToolTip("")
+        set_text(self.file_labels[kind], "未选择")
+        set_tooltip(self.file_labels[kind], "")
         self.update_actions()
 
     def choose(self, kind):
@@ -402,7 +432,15 @@ class App(QMainWindow):
         ):
             notice(self, "主爪固件", "主爪仅支持 MCU 更新，无需选择电机固件。")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "选择固件", "", "固件 (*.bin)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("选择固件"),
+            "",
+            tr("固件 (*.bin)"),
+            options=QFileDialog.DontUseNativeDialog
+            if language() == "en"
+            else QFileDialog.Options(),
+        )
         if not path:
             return
         try:
@@ -452,7 +490,7 @@ class App(QMainWindow):
         self.popup = PowerDialog(self)
         master = isinstance(value, dict) and value["role"] == "master"
         reason = value["reason"] if isinstance(value, dict) else value
-        self.popup.setWindowTitle("请拔插主爪 USB" if master else "请按步骤断开 24 V")
+        set_title(self.popup, "请拔插主爪 USB" if master else "请按步骤断开 24 V")
         self.popup.setMinimumWidth(580)
         box = QVBoxLayout(self.popup)
         box.setContentsMargins(28, 24, 28, 24)
@@ -500,7 +538,7 @@ class App(QMainWindow):
                 self.activity.update(value["done"], value["total"], value["unit"])
                 if value["total"] > 0:
                     self.progress.setRange(0, 100)
-                    self.progress.setFormat("当前传输 %p%")
+                    set_format(self.progress, "当前传输 %p%")
                     self.progress.setValue(
                         min(100, int(100 * value["done"] / value["total"]))
                     )
@@ -520,12 +558,12 @@ class App(QMainWindow):
                     else "等待用户断开 24 V 并重新上电（上限 180 秒）"
                 )
                 self.set_tone("warning")
-                self.log(value)
+                self.log(value["reason"] if isinstance(value, dict) else value)
                 self.show_power(value)
             elif kind == "power_status":
                 self.log(value)
                 if self.popup:
-                    self.popup.connection_label.setText(value)
+                    set_text(self.popup.connection_label, value)
             elif kind == "power_done":
                 if self.popup:
                     self.popup.accept()
@@ -549,14 +587,15 @@ class App(QMainWindow):
                 self.combo.setCurrentIndex(-1)
                 self.current_info = None
                 self.model_row.hide()
-                self.info.setText(
+                set_text(
+                    self.info,
                     "请选择设备查看版本"
                     if value
-                    else "未发现匹配夹爪，等待连接；请关闭其他控制程序。"
+                    else "未发现匹配夹爪，等待连接；请关闭其他控制程序。",
                 )
                 self.set_tone("running")
-                self.status.setText(
-                    "请选择目标设备" if value else "等待设备 · 自动扫描中"
+                set_text(
+                    self.status, "请选择目标设备" if value else "等待设备 · 自动扫描中"
                 )
                 target = (
                     value.index(previous)
@@ -579,20 +618,22 @@ class App(QMainWindow):
                 self.model_combo.setCurrentIndex(0)
                 role = core.role_from_sn(identity[0])
                 html, text, tone, status = device_summary(info, role, self.catalog)
-                self.info.setText(html)
-                self.info.setToolTip(
-                    "最新以本安装包内置审核固件为准；Flash 存档不等于实时验证。"
+                set_text(self.info, html)
+                set_tooltip(
+                    self.info,
+                    "最新以本安装包内置审核固件为准；Flash 存档不等于实时验证。",
                 )
-                self.safety.setText(
+                set_text(
+                    self.safety,
                     "主爪：刷写时勿拔 USB，完成后按提示拔插 USB。"
                     if role == "master"
-                    else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。"
+                    else "请清空活动范围；仅在提示时断开 24 V，刷写中勿拔线。",
                 )
                 self.fit_contents()
                 self.log(text)
                 self.apply_defaults()
                 self.set_tone(tone)
-                self.status.setText(status)
+                set_text(self.status, status)
             elif kind == "connection_error":
                 self.previous_identity = self.selected_identity
                 self.selected_identity = None
@@ -604,21 +645,22 @@ class App(QMainWindow):
                 self.current_info = None
                 if "motor" not in self.overrides:
                     self.paths["motor"] = ""
-                    self.file_labels["motor"].setText("读取设备失败")
-                self.info.setText(
-                    "连接失败，请检查 USB、24 V、串口权限或设备占用，然后点击刷新。"
+                    set_text(self.file_labels["motor"], "读取设备失败")
+                set_text(
+                    self.info,
+                    "连接失败，请检查 USB、24 V、串口权限或设备占用，然后点击刷新。",
                 )
                 self.set_tone("error")
-                self.status.setText("未连接 · 详情见日志")
+                set_text(self.status, "未连接 · 详情见日志")
                 self.log(value)
             elif kind == "idle":
                 if self.activity.active:
-                    self.activity_detail.setText(self.activity.detail())
+                    set_text(self.activity_detail, self.activity.detail())
                 self.activity.finish()
                 if self.progress.maximum() == 0:
                     self.progress.setRange(0, 100)
                     self.progress.setValue(0)
-                    self.progress.setFormat("等待下一步")
+                    set_format(self.progress, "等待下一步")
                 self.busy = False
                 self.updating = False
                 self.active_task = None
@@ -637,32 +679,39 @@ class App(QMainWindow):
                     self.set_stage(value)
                 elif kind == "error":
                     self.set_tone("error")
-                    self.activity_detail.setText(self.activity.detail())
+                    set_text(self.activity_detail, self.activity.detail())
                     self.activity.finish()
                     self.progress.setRange(0, 100)
                     self.progress.setValue(0)
-                    self.progress.setFormat("已停止")
-                    self.status.setText("操作已停止 · 请查看详细日志")
+                    set_format(self.progress, "已停止")
+                    set_text(self.status, "操作已停止 · 请查看详细日志")
                     self.toggle.setChecked(True)
                     notice(self, "需要处理", value, QMessageBox.Critical)
                 elif kind == "success":
                     self.set_tone("success")
-                    self.activity_detail.setText(self.activity.detail())
+                    set_text(self.activity_detail, self.activity.detail())
                     self.activity.finish()
                     self.progress.setRange(0, 100)
-                    self.progress.setFormat("完成")
-                    self.status.setText("更新完成 · 所选固件已核验")
+                    set_format(self.progress, "完成")
+                    set_text(self.status, "更新完成 · 所选固件已核验")
                     self.progress.setValue(100)
                     notice(self, "更新完成", value, success=True)
 
     def export(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出日志", "taccap-update.log", "日志 (*.log)"
+            self,
+            tr("导出日志"),
+            "taccap-update.log",
+            tr("日志 (*.log)"),
+            options=QFileDialog.DontUseNativeDialog
+            if language() == "en"
+            else QFileDialog.Options(),
         )
         if path:
             try:
                 Path(path).write_text(
-                    "\n".join(self.log_lines) + "\n", encoding="utf-8"
+                    "\n".join(tr(line) for line in self.log_lines) + "\n",
+                    encoding="utf-8",
                 )
             except OSError as exc:
                 notice(self, "导出失败", str(exc), QMessageBox.Critical)
@@ -682,7 +731,7 @@ class App(QMainWindow):
 
 def main(args):
     if os.geteuid() == 0:
-        raise SystemExit("请以普通用户运行，禁止 sudo 启动升级界面。")
+        raise SystemExit(tr("请以普通用户运行，禁止 sudo 启动升级界面。"))
     configure_fontconfig()
     app = QApplication(sys.argv[:1])
     family = configure(app)
@@ -706,7 +755,16 @@ def main(args):
             if args.screenshot:
                 if not window.grab().save(args.screenshot):
                     raise RuntimeError("截图保存失败")
-            print(json.dumps({"ui": "ok", "font": family}))
+            if language() == "en":
+                import re
+
+                for widget in window.findChildren(QLabel) + window.findChildren(
+                    QPushButton
+                ):
+                    assert not re.search(r"[\u3400-\u9fff]", widget.text()), (
+                        widget.text()
+                    )
+            print(json.dumps({"ui": "ok", "font": family, "language": language()}))
             app.quit()
 
         QTimer.singleShot(400, smoke)
