@@ -9,6 +9,8 @@ CJK = re.compile(r"[\u3400-\u9fff]")
 # Chinese remains the source language. Keep decisions based on the original
 # messages; translate only at the GUI/log/dialog boundary, never in OTA policy.
 WORDS = {
+    "历史版本 · 选择文件": "historical / choose file",
+    "旧版不含 1.2.16 的电机回显帧过滤修复；回滚后须重新验收，不要直接恢复生产运行。": "This release lacks the 1.2.16 motor-echo filtering fix. Revalidate after downgrade; do not resume production directly.",
     "选择版本": "Select version",
     "历史版本": "historical",
     "内置最新": "bundled latest",
@@ -236,6 +238,7 @@ WORDS = {
 }
 
 TEMPLATES = {
+    "所选文件不是指定目标 {0} {1}，请重新选择": "The selected file is not the requested {0} {1} image. Choose the matching file.",
     "MCU 目标低于工具支持下限 {0}，请联系技术支持": "MCU target is below the tool's supported minimum {0}. Contact support.",
     "MCU 降级：{0} → {1}。只更换固件，不恢复旧配置；刷写前需再次确认。": "MCU downgrade: {0} -> {1}. Firmware only; previous configuration is not restored. Confirmation is required before flashing.",
     "等待电机协议 {0} 稳定超时，最后读回 {1}。停止后续步骤；确认断开的是 24 V（仅拔 USB 不够），保持至少 2 秒，再重新运行。若仍失败，保留日志排查协议切换。": "Timed out waiting for stable motor protocol {0}; last readback: {1}. Subsequent steps stopped. Disconnect 24 V (USB alone is insufficient), wait at least 2 seconds, then restart the workflow. If it still fails, retain the log for protocol diagnosis.",

@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -31,7 +32,9 @@ def test_cancel_mcu_downgrade_before_any_motor_or_configuration_write():
 
 def test_mcu_version_change_after_motor_work_invalidates_downgrade_confirmation():
     device = FakeDevice()
-    device.mcu_version = Mock(side_effect=["1.2.16", "1.2.15"])
+    device.mcu_version = lambda: (
+        "1.2.15" if any(e[0] == "flash_motor" for e in device.events) else "1.2.16"
+    )
     with pytest.raises(RuntimeError, match="版本.*变化"):
         run(device, image("mcu", "1.2.14"), image("motor", "1.0.5.0.2"))
     assert any(e[0] == "flash_motor" for e in device.events)
@@ -99,51 +102,58 @@ def test_approved_mcu_lists_are_role_specific_and_keep_latest_default():
     ]
     assert [e["version"] for e in bundled.mcu_entries(catalog, "slave")] == [
         "1.2.16",
+        "1.2.15",
         "1.2.14",
     ]
     assert bundled.FILES["mcu", "master"].endswith("1.2.6.bin")
     assert bundled.FILES["mcu", "slave"].endswith("1.2.16.bin")
 
 
-def test_history_images_match_approved_hashes_and_are_not_added_to_source(tmp_path):
+def external_mcu_file(catalog, role, version, destination):
+    entry = next(
+        e for e in bundled.mcu_entries(catalog, role) if e["version"] == version
+    )
+    history = catalog["history"][entry["file"]]
     repository = APP.parents[1]
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"{history['commit']}:{history['path']}"],
+        cwd=repository,
+        capture_output=True,
+    )
+    if probe.returncode:
+        pytest.skip("External-image integration requires the pinned test Git objects")
+    data = subprocess.check_output(
+        ["git", "show", f"{history['commit']}:{history['path']}"], cwd=repository
+    )
+    assert hashlib.sha256(data).hexdigest() == entry["sha256"]
+    destination.write_bytes(data)
+    return destination
+
+
+def test_external_history_approvals_match_pinned_bytes_without_bundling(tmp_path):
     catalog = core.catalog_at(APP / "catalog.json")
-    for history in catalog["history"].values():
-        probe = bundled.subprocess.run(
-            ["git", "cat-file", "-e", f"{history['commit']}:{history['path']}"],
-            cwd=repository,
-            capture_output=True,
+    for role, version in [
+        ("master", "1.2.5"),
+        ("slave", "1.2.14"),
+        ("slave", "1.2.15"),
+    ]:
+        path = external_mcu_file(
+            catalog, role, version, tmp_path / f"{role}-{version}.bin"
         )
-        if probe.returncode:
-            pytest.skip(
-                "Package history integration requires the pinned Git objects; package builds still fail closed"
-            )
-    files = bundled.materialize_mcu_images(catalog, repository, tmp_path)
-    assert len(files) == 4
-    assert bundled.verify_mcu_versions(catalog, tmp_path) == {
-        "master": ["1.2.6", "1.2.5"],
-        "slave": ["1.2.16", "1.2.14"],
+        assert core.load_image(path, "mcu", catalog).version == version
+    assert bundled.verify_mcu_versions(catalog) == {
+        "master": ["1.2.6"],
+        "slave": ["1.2.16"],
     }
-    for entry in catalog["images"]:
-        if entry["kind"] == "mcu":
-            assert (
-                hashlib.sha256((tmp_path / entry["file"]).read_bytes()).hexdigest()
-                == entry["sha256"]
-            )
-    assert not (repository / "firmware/gripper/tc-gu-01-master-1.2.5.bin").exists()
+    assert len(bundled.packaged_files()) == 4
 
 
-def test_bad_history_payload_is_rejected_before_materialization(tmp_path):
-    repository = tmp_path / "repo"
-    repository.mkdir()
+def test_bad_external_history_payload_is_rejected(tmp_path):
     catalog = core.catalog_at(APP / "catalog.json")
-    catalog["images"] = [
-        e for e in catalog["images"] if e["file"] in catalog["history"]
-    ]
-    with patch.object(bundled.subprocess, "check_output", return_value=b"tampered"):
-        with pytest.raises(ValueError, match="SHA256"):
-            bundled.materialize_mcu_images(catalog, repository, tmp_path / "output")
-    assert not list((tmp_path / "output").rglob("*.bin"))
+    path = tmp_path / "tc-gu-01-slave-1.2.14.bin"
+    path.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="清单"):
+        core.load_image(path, "mcu", catalog)
 
 
 @pytest.fixture
@@ -172,7 +182,9 @@ def ui():
 
 
 @pytest.mark.parametrize("role,version", [("master", "1.2.5"), ("slave", "1.2.14")])
-def test_role_menu_selects_verified_old_mcu_without_changing_motor(ui, role, version):
+def test_role_menu_selects_verified_old_mcu_without_changing_motor(
+    ui, role, version, tmp_path
+):
     window, app = ui
     identity = ("TESTm" if role == "master" else "TESTs", "usb")
     window.selected_identity = identity
@@ -181,17 +193,24 @@ def test_role_menu_selects_verified_old_mcu_without_changing_motor(ui, role, ver
     )
     window.apply_defaults()
     motor_before = window.paths["motor"]
+    path = external_mcu_file(window.catalog, role, version, tmp_path / "selected.bin")
     menu = window.make_mcu_menu()
     try:
         actions = [a for a in menu.actions() if a.data()]
         assert [a.data() for a in actions] == (
             ["1.2.6", "1.2.5", "file"]
             if role == "master"
-            else ["1.2.16", "1.2.14", "file"]
+            else ["1.2.16", "1.2.15", "1.2.14", "file"]
         )
-        with patch.object(window, "launch") as launch:
-            actions[1].trigger()
+        with (
+            patch.object(window, "launch") as launch,
+            patch(
+                "qt_ui.QFileDialog.getOpenFileName", return_value=(str(path), "")
+            ) as picker,
+        ):
+            next(a for a in actions if a.data() == version).trigger()
             launch.assert_not_called()
+            picker.assert_called_once()
         app.processEvents()
         assert window.mcu_target.version == version
         assert core.load_image(window.paths["mcu"], "mcu", window.catalog).model == role
@@ -225,12 +244,18 @@ def test_menu_manual_file_route_and_busy_guard(ui):
         menu.deleteLater()
 
 
-def test_downgrade_selection_does_not_lose_hint_on_readback_and_translates(ui):
+def test_downgrade_selection_does_not_lose_hint_on_readback_and_translates(
+    ui, tmp_path
+):
     import i18n
 
     window, app = ui
-    entry = bundled.mcu_entries(window.catalog, "slave")[1]
-    window.select_mcu_version(entry)
+    entry = bundled.mcu_entries(window.catalog, "slave")[-1]
+    path = external_mcu_file(
+        window.catalog, "slave", entry["version"], tmp_path / "selected.bin"
+    )
+    with patch("qt_ui.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        window.select_mcu_version(entry)
     assert not window.mcu_hint.isVisible()  # No actual current version yet.
     window.selected_identity = ("TESTs", "usb")
     window.current_info = dict(recorded=True, model="EL05", mcu="1.2.16")
@@ -265,7 +290,7 @@ def test_frozen_missing_old_image_fails_without_using_git(tmp_path):
     entry = bundled.mcu_entries(catalog, "master")[1]
     with (
         patch.object(sys, "frozen", True, create=True),
-        patch.object(bundled.subprocess, "check_output") as git,
+        patch.object(subprocess, "check_output") as git,
     ):
         with pytest.raises(FileNotFoundError):
             bundled.mcu_image(entry, catalog, root=tmp_path)

@@ -37,12 +37,22 @@ def catalog_at(path):
 
 
 def version_key(value):
-    parts = tuple(int(p) for p in value.split("."))
+    try:
+        parts = tuple(int(p) for p in value.split("."))
+    except (AttributeError, ValueError):
+        raise ValueError("版本格式无效") from None
     if len(parts) == 5 and parts[0] == 1 and 0 <= parts[1] <= 9:
         parts = (10 + parts[1], *parts[2:])
     if len(parts) not in (3, 4) or any(p < 0 or p > 255 for p in parts):
         raise ValueError("版本格式无效")
-    return parts
+    return parts + (0,) * (4 - len(parts))
+
+
+def checked_mcu_version(device, expected):
+    current = device.mcu_version()
+    if not current or version_key(current) != version_key(expected):
+        raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
+    return current
 
 
 def validate_mcu_target(image, role):
@@ -94,10 +104,13 @@ def execute_master(device, info, mcu, motor, ask, emit):
         f"设备 {info['sn']}\nMCU {info['mcu']} → {mcu.version}\n更新后需拔插 USB。",
     ):
         raise RuntimeError("用户取消，未修改设备")
-    if confirm_change(ask, "主爪 MCU", device.mcu_version(), mcu):
+    before = checked_mcu_version(device, info["mcu"])
+    approved = confirm_change(ask, "主爪 MCU", before, mcu)
+    checked_mcu_version(device, before)
+    if approved:
         device.flash_mcu(mcu)
         device.power_cycle("主爪 MCU 刷写完成，请拔插 USB")
-        if device.mcu_version() != mcu.version:
+        if version_key(device.mcu_version()) != version_key(mcu.version):
             raise RuntimeError("主爪 MCU 实际版本不符")
         emit("success", f"主爪 MCU {mcu.version} 已更新并核验，无需电机标定。")
     else:
@@ -119,7 +132,7 @@ def execute(device, mcu, motor, ask, emit):
         return execute_master(device, info, mcu, motor, ask, emit)
     if not info["recorded"]:
         raise RuntimeError("电机型号尚未配置，请联系技术支持；用户版不覆盖型号")
-    if version_key(info["mcu"]) < (1, 2, 14):
+    if version_key(info["mcu"]) < version_key("1.2.14"):
         raise RuntimeError("此用户版仅支持从爪 MCU >= 1.2.14，旧设备请由技术支持初始化")
     if motor and motor.model != info["model"]:
         raise RuntimeError("电机型号与镜像不匹配，禁止刷写")
@@ -133,33 +146,29 @@ def execute(device, mcu, motor, ask, emit):
         raise RuntimeError("用户取消，未修改设备")
     mcu_first = not mcu or version_key(mcu.version) >= version_key(info["mcu"])
     confirmed_mcu = None
-    if not mcu_first:
-        # Obtain consent for the downgrade before any motor/CAN-ID write.
-        # The actual MCU transfer still runs last, while newer MCU features
-        # remain available for motor update and version-record verification.
-        confirmed_mcu = device.mcu_version()
-        if not confirmed_mcu or version_key(confirmed_mcu) != version_key(info["mcu"]):
-            raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
-        confirm_change(ask, "夹爪 MCU", confirmed_mcu, mcu)
+    mcu_approved = False
+    if mcu:
+        # Both upgrade and downgrade consent precedes any motor/CAN-ID write.
+        # Downgrade transfer still runs last so the newer MCU remains available
+        # for motor update and actual motor-version recording.
+        confirmed_mcu = checked_mcu_version(device, info["mcu"])
+        mcu_approved = confirm_change(ask, "夹爪 MCU", confirmed_mcu, mcu)
+        checked_mcu_version(device, confirmed_mcu)
     if info["model"] == "RS00":
         device.ensure_can_id()
 
     def flash_mcu():
         if not mcu:
             return
-        current = device.mcu_version()
-        if confirmed_mcu is not None and version_key(current) != version_key(
-            confirmed_mcu
-        ):
-            raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
-        if confirmed_mcu is None and not confirm_change(ask, "夹爪 MCU", current, mcu):
+        checked_mcu_version(device, confirmed_mcu)
+        if not mcu_approved:
             emit("log", f"跳过同版本 MCU：{mcu.version}；无需刷写或为它断电")
             return
         device.protocol("Mit")
         emit("stage", "正在刷写 MCU：不要断开电源或 USB")
         device.flash_mcu(mcu)
         device.power_cycle("MCU 刷写完成，必须硬重启")
-        if device.mcu_version() != mcu.version:
+        if version_key(device.mcu_version()) != version_key(mcu.version):
             raise RuntimeError("MCU 运行版本不符，停止后续步骤")
         emit("log", f"MCU 实际版本已确认：{mcu.version}")
 

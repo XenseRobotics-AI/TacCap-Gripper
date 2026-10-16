@@ -116,22 +116,10 @@ def main():
         )
         firmware_args = ["--add-data", f"{metadata}:."]
 
-        for (kind, _), relative in bundled.FILES.items():
-            if kind == "mcu":
-                continue
+        for relative in bundled.packaged_files():
             path = ROOT / "firmware" / relative
             firmware_args.extend(
                 ["--add-data", f"{path}:firmware/{Path(relative).parent}"]
-            )
-        reviewed = temp / "reviewed-mcu"
-        for relative in bundled.materialize_mcu_images(
-            core.catalog_at(app / "catalog.json"), ROOT, reviewed
-        ):
-            firmware_args.extend(
-                [
-                    "--add-data",
-                    f"{reviewed / relative}:firmware/{Path(relative).parent}",
-                ]
             )
         env = os.environ.copy()
         for key in ("PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "LD_LIBRARY_PATH"):

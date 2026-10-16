@@ -86,6 +86,15 @@ def main():
                 "mcu_versions": bundled.verify_mcu_versions(
                     core.catalog_at(HERE / "catalog.json")
                 ),
+                "approved_mcu_versions": {
+                    role: [
+                        e["version"]
+                        for e in bundled.mcu_entries(
+                            core.catalog_at(HERE / "catalog.json"), role
+                        )
+                    ]
+                    for role in ("master", "slave")
+                },
                 "external_non_system_libraries": external,
             }
         )

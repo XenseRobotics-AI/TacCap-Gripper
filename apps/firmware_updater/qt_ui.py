@@ -250,7 +250,7 @@ class App(QMainWindow):
         role = self.effective_role()
         entries = bundled.mcu_entries(self.catalog, role)
         for index, entry in enumerate(entries):
-            label = "内置最新" if index == 0 else "历史版本"
+            label = "内置最新" if index == 0 else "历史版本 · 选择文件"
             action = menu.addAction(f"{entry['version']} ({tr(label)})")
             action.setData(entry["version"])
             if entry["warning"]:
@@ -280,7 +280,13 @@ class App(QMainWindow):
         try:
             if entry["model"] != self.effective_role():
                 raise ValueError("镜像主/从角色与当前设备不匹配")
-            path, image = bundled.mcu_image(entry, self.catalog)
+            try:
+                path, image = bundled.mcu_image(entry, self.catalog)
+            except FileNotFoundError:
+                # Historical approvals are metadata, not bundled images.
+                # The selected local bytes must match this exact approval.
+                self.choose("mcu", expected=entry)
+                return
             self.overrides.add("mcu")
             self.set_image("mcu", path, image, builtin=True)
         except Exception as exc:
@@ -497,7 +503,7 @@ class App(QMainWindow):
             self.mcu_target = None
         self.update_actions()
 
-    def choose(self, kind):
+    def choose(self, kind, expected=None):
         if self.busy:
             return
         if (
@@ -510,7 +516,7 @@ class App(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr("选择固件"),
-            "",
+            Path(expected["file"]).name if expected else "",
             tr("固件 (*.bin)"),
             options=QFileDialog.DontUseNativeDialog
             if language() == "en"
@@ -520,6 +526,10 @@ class App(QMainWindow):
             return
         try:
             image = core.load_image(path, kind, self.catalog)
+            if expected and image.sha256 != expected["sha256"]:
+                raise ValueError(
+                    f"所选文件不是指定目标 {expected['model']} {expected['version']}，请重新选择"
+                )
             if (
                 kind == "mcu"
                 and self.selected_identity
