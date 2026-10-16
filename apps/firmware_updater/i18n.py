@@ -9,22 +9,6 @@ CJK = re.compile(r"[\u3400-\u9fff]")
 # Chinese remains the source language. Keep decisions based on the original
 # messages; translate only at the GUI/log/dialog boundary, never in OTA policy.
 WORDS = {
-    "旧版 MCU 模式 · 仅更新 MCU，请核对实物 EL05。": "Legacy MCU-only mode / check the physical EL05 label.",
-    "旧版模式仅允许 MCU 刷写前的 MIT 管理操作": "Legacy mode allows MIT administrative preparation for MCU flashing only.",
-    "旧版 MCU 模式": "Legacy MCU mode",
-    "确认旧版 MCU 操作": "Confirm legacy MCU operation",
-    "确认旧版 MCU 验收": "Confirm legacy MCU acceptance",
-    "旧版模式仅支持 MCU 更新，请清除电机固件并选择 MCU 镜像": "Legacy mode supports MCU updates only. Clear the motor firmware and select an MCU image.",
-    "当前 MCU 低于 1.1.6，请联系技术支持，不能使用旧版模式": "The current MCU is older than 1.1.6. Contact support; legacy mode is unavailable.",
-    "旧版 MCU 模式仅限实物 EL05，禁止将此固件用于 RS00": "Legacy MCU mode is for a physical EL05 only. Do not use this firmware on RS00.",
-    "仅限 EL05 的旧版 MCU 对比测试；不支持 RS00，缺少新版型号/电机版本记录及串口恢复修复。闭合零点语义与新版 SDK 不兼容；不恢复旧配置，不得直接用于生产夹取。": "Legacy MCU comparison testing for EL05 only, not RS00. New model/motor-version records and UART recovery fixes are absent. Closed-zero semantics are incompatible with the current control SDK. Previous configuration is not restored; do not use directly for production gripping.",
-    "已核验 MCU 为所选版本，跳过重复刷写；未验证电机或机械功能。": "MCU matches the selected version; reflashing skipped. Motor and mechanical functions were not validated.",
-    "仅更新 MCU：刷写与版本核验，不运行新版电机功能": "MCU-only update: flashing and version verification, without newer motor features",
-    "MCU 已刷写并读回目标版本。电机版本、型号配置和机械标定未由本工具验收。\n请检查上电动作，无异常撞击或卡滞；旧版不得直接使用新版 SDK 夹取。\n结束后点击刷新；可选内置最新 MCU 再次升级。是否已理解限制并完成现场检查？": "MCU flashing and target-version readback passed. This tool has not validated the motor version, model configuration or mechanical calibration.\nCheck power-on motion for abnormal impacts or binding. Do not grip using legacy firmware with the current control SDK.\nRefresh when finished; select the bundled latest MCU to upgrade again. Have you understood these limits and completed the physical checks?",
-    "MCU 已写入，但现场验收未确认；请勿夹取，导出日志联系支持。": "MCU was flashed, but physical acceptance was not confirmed. Do not grip; export the log and contact support.",
-    "MCU 刷写、断电及目标版本已核验；未验证电机或控制兼容性。请刷新设备，旧版先做现场验收；可选择内置最新 MCU 升回。": "MCU flashing, power cycle and target version verified. Motor/control compatibility was not validated. Refresh the device and validate legacy firmware physically before use. Select the bundled latest MCU to upgrade again.",
-    "旧版 MCU 模式：仅限 EL05，只更新 MCU；不改型号、方向或力矩参数。旧版与新版控制 SDK 不兼容，必须现场验收。": "Legacy MCU mode: EL05 only; MCU updates only, no model, direction or torque changes. Legacy firmware is incompatible with the current control SDK; physical acceptance is required.",
-    "旧版 MCU 模式：只能更新 MCU，电机型号与版本无法读取；请核对实物 EL05。": "Legacy MCU mode: MCU updates only. Motor model/version cannot be read; check the physical EL05 label.",
     "历史版本 · 选择文件": "historical / choose file",
     "旧版不含 1.2.16 的电机回显帧过滤修复；回滚后须重新验收，不要直接恢复生产运行。": "This release lacks the 1.2.16 motor-echo filtering fix. Revalidate after downgrade; do not resume production directly.",
     "选择版本": "Select version",
@@ -254,7 +238,6 @@ WORDS = {
 }
 
 TEMPLATES = {
-    "设备 {0}\nMCU {1} → {2}\n\n仅限实物 EL05；旧版不能读取型号记录，必须人工核对标签。\n只刷 MCU，不刷电机，不写型号、CAN ID、方向或力矩。\n必要时切回 MIT 协议，并按提示断开 24 V。\n1.1.6 与新版控制 SDK 的闭合零点语义不兼容，不能直接用于生产夹取。\n不会备份或恢复配置；请清空活动范围。确认实物是 EL05 并继续？": "Device {0}\nMCU {1} -> {2}\n\nPhysical EL05 only. Legacy firmware cannot read the model record; check the label manually.\nMCU only: no motor flashing, model, CAN ID, direction or torque changes.\nSwitch back to MIT if needed, and disconnect 24 V when prompted.\n1.1.6 closed-zero semantics are incompatible with the current control SDK; do not use directly for production gripping.\nConfiguration is not backed up or restored. Clear the work area. Confirm a physical EL05 and continue?",
     "所选文件不是指定目标 {0} {1}，请重新选择": "The selected file is not the requested {0} {1} image. Choose the matching file.",
     "MCU 目标低于工具支持下限 {0}，请联系技术支持": "MCU target is below the tool's supported minimum {0}. Contact support.",
     "MCU 降级：{0} → {1}。只更换固件，不恢复旧配置；刷写前需再次确认。": "MCU downgrade: {0} -> {1}. Firmware only; previous configuration is not restored. Confirmation is required before flashing.",

@@ -154,31 +154,13 @@ class App(QMainWindow):
         self.scan(follow_single=False)
 
     def update_actions(self):
-        legacy = self.legacy_mode()
-        for widget in self.motor_widgets:
-            widget.setVisible(self.effective_role() != "master" and not legacy)
-        if legacy:
-            self.paths["motor"] = ""
-            self.model_row.hide()
         self.start.setEnabled(
             not self.busy
             and self.selected_identity is not None
-            and bool(self.current_info and (self.current_info["recorded"] or legacy))
+            and bool(self.current_info and self.current_info["recorded"])
             and any(self.paths.values())
         )
         self.refresh_mcu_hint()
-
-    def legacy_mode(self):
-        if self.effective_role() != "slave":
-            return False
-        current = self.current_info.get("mcu") if self.current_info else None
-        target = (
-            self.mcu_target.version if self.mcu_target and self.paths["mcu"] else None
-        )
-        try:
-            return core.legacy_mcu_mode(current, target)
-        except ValueError:
-            return False  # Unknown versions do not establish safe compatibility.
 
     def use_defaults(self):
         self.overrides.clear()
@@ -190,9 +172,6 @@ class App(QMainWindow):
         for widget in self.motor_widgets:
             widget.setVisible(not master)
         for kind in ("mcu", "motor"):
-            if kind == "motor" and self.legacy_mode():
-                self.paths[kind] = ""
-                continue
             if master and kind == "motor":
                 self.paths[kind] = ""
                 set_text(self.file_labels[kind], "主爪不适用")
@@ -258,14 +237,8 @@ class App(QMainWindow):
             downgrade = (
                 False  # An unknown current version never proves downgrade safety.
             )
-        legacy = self.legacy_mode()
-        self.mcu_hint.setVisible(downgrade or legacy)
-        if legacy:
-            set_text(
-                self.mcu_hint,
-                "旧版 MCU 模式：仅限 EL05，只更新 MCU；不改型号、方向或力矩参数。旧版与新版控制 SDK 不兼容，必须现场验收。",
-            )
-        elif downgrade:
+        self.mcu_hint.setVisible(downgrade)
+        if downgrade:
             set_text(
                 self.mcu_hint,
                 f"MCU 降级：{current} → {target.version}。只更换固件，不恢复旧配置；刷写前需再次确认。",
@@ -533,13 +506,6 @@ class App(QMainWindow):
     def choose(self, kind, expected=None):
         if self.busy:
             return
-        if kind == "motor" and self.legacy_mode():
-            notice(
-                self,
-                "旧版 MCU 模式",
-                "旧版模式仅支持 MCU 更新，请清除电机固件并选择 MCU 镜像",
-            )
-            return
         if (
             kind == "motor"
             and self.selected_identity
@@ -582,9 +548,7 @@ class App(QMainWindow):
         if index < 0 or not any(self.paths.values()):
             notice(self, "还差一步", "请先选择夹爪，并至少选择一个固件文件。")
             return
-        if not self.current_info or not (
-            self.current_info["recorded"] or self.legacy_mode()
-        ):
+        if not self.current_info or not self.current_info["recorded"]:
             notice(self, "尚未就绪", "请等待连接；型号未记录时，先确认实物并设置型号。")
             return
         identity, paths = self.devices[index], self.paths.copy()
@@ -741,7 +705,6 @@ class App(QMainWindow):
                 self.model_combo.setCurrentIndex(0)
                 role = core.role_from_sn(identity[0])
                 html, text, tone, status = device_summary(info, role, self.catalog)
-                self.info.setWordWrap(bool(info.get("legacy_mcu_only")))
                 set_text(self.info, html)
                 set_tooltip(
                     self.info,

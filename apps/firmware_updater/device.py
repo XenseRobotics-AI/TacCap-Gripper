@@ -43,15 +43,10 @@ class Device:
         return flow._wait_ready(self.identity, 12, "查找所选夹爪")
 
     @contextmanager
-    def opened(self, leader=False, *, allow_outdated=False):
+    def opened(self, leader=False):
         ep = self.endpoint()
         cls = LeaderGripper if leader or self.role == "master" else FollowerGripper
-        options = {"mcu_device": ep.mcu_device}
-        if allow_outdated and cls is FollowerGripper:
-            # Only MCU administrative preparation opts out of the control SDK
-            # floor. No motion/normalized-position API is called in that mode.
-            options["allow_outdated_firmware"] = True
-        with cls(**options) as g:
+        with cls(mcu_device=ep.mcu_device) as g:
             if g.device.get_sn() != self.identity[0]:
                 raise RuntimeError("串口设备身份变化，停止")
             self._last_mcu_device = ep.mcu_device
@@ -126,10 +121,7 @@ class Device:
 
     def inspect(self):
         self.emit("stage", "读取设备身份、型号与固件版本（版本查询最多等待 3 秒）")
-        # Old followers cannot be opened by the normal control SDK and lack
-        # model/version-record commands. Probe identity/version without it.
-        with self.opened(leader=True) as g:
-            version = flow._version_text(flow._version_tuple(g.firmware_version))
+        with self.opened() as g:
             if self.role == "master":
                 return {
                     "sn": self.identity[0],
@@ -137,21 +129,8 @@ class Device:
                     "model": "主爪",
                     "recorded": True,
                     "motor": "不适用",
-                    "mcu": version,
+                    "mcu": flow._version_text(flow._version_tuple(g.firmware_version)),
                 }
-            if core.legacy_mcu_mode(version):
-                return {
-                    "sn": self.identity[0],
-                    "model": "未知",
-                    "recorded": False,
-                    "motor": "未知",
-                    "mcu": version,
-                    "legacy_mcu_only": True,
-                }
-        with self.opened() as g:
-            current = flow._version_text(flow._version_tuple(g.firmware_version))
-            if current != version:
-                raise RuntimeError("MCU 版本在确认后发生变化，停止刷写，请刷新设备")
             m = g.motor.get_model()
             v = g.motor.motor_version(3000)
             label = "未知"
@@ -318,30 +297,14 @@ class Device:
         finally:
             self.emit("power_done", "")
 
-    def prepare_mcu_only(self):
-        self.protocol("Mit", allow_outdated=True)
-
-    def protocol(
-        self, name, force_cycle=False, *, allow_recovery=True, allow_outdated=False
-    ):
+    def protocol(self, name, force_cycle=False, *, allow_recovery=True):
         if self.role != "slave":
             raise RuntimeError("主爪不能切换从爪电机协议")
-        if allow_outdated and name != "Mit":
-            raise RuntimeError("旧版模式仅允许 MCU 刷写前的 MIT 管理操作")
-        options = {"allow_outdated": True} if allow_outdated else {}
         self.emit("stage", f"准备切换/核验 {name} 协议")
         expected = getattr(MotorProtocol, name)
         if force_cycle:
             time.sleep(3)
-        with self.opened(**options) as g:
-            if allow_outdated and not core.legacy_mcu_mode(
-                flow._version_text(flow._version_tuple(g.firmware_version))
-            ):
-                model = g.motor.get_model()
-                if not model.from_flash or model.name != "EL05":
-                    raise RuntimeError(
-                        "旧版 MCU 模式仅限实物 EL05，禁止将此固件用于 RS00"
-                    )
+        with self.opened() as g:
             self.emit("stage", "等待标定结束并失能电机（单项等待上限 45 秒）")
             flow._prepare_motor_admin(g)
             changed = g.motor.get_protocol() != expected
@@ -355,7 +318,7 @@ class Device:
             self.power_cycle(f"应用 {name} 协议并重启电机")
         self.emit("stage", f"等待 {name} 协议连续两次读回一致（上限 20 秒）")
         try:
-            with self.opened(**options) as g:
+            with self.opened() as g:
                 flow._wait_motor_protocol(g.motor, expected)
         except RuntimeError as exc:
             self.emit("log", f"协议校验失败：{exc}")

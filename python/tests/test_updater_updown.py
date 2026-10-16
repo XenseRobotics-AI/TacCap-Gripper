@@ -168,7 +168,6 @@ def test_build_does_not_require_any_historical_bin_or_git_history():
         ("master", "1.2.5"),
         ("master", "1.2.6"),
         ("slave", "1.2.14"),
-        ("slave", "1.1.6"),
         ("slave", "1.2.15"),
         ("slave", "1.2.16"),
     ],

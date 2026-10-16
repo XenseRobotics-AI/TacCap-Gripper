@@ -104,7 +104,6 @@ def test_approved_mcu_lists_are_role_specific_and_keep_latest_default():
         "1.2.16",
         "1.2.15",
         "1.2.14",
-        "1.1.6",
     ]
     assert bundled.FILES["mcu", "master"].endswith("1.2.6.bin")
     assert bundled.FILES["mcu", "slave"].endswith("1.2.16.bin")
@@ -201,7 +200,7 @@ def test_role_menu_selects_verified_old_mcu_without_changing_motor(
         assert [a.data() for a in actions] == (
             ["1.2.6", "1.2.5", "file"]
             if role == "master"
-            else ["1.2.16", "1.2.15", "1.2.14", "1.1.6", "file"]
+            else ["1.2.16", "1.2.15", "1.2.14", "file"]
         )
         with (
             patch.object(window, "launch") as launch,
@@ -251,11 +250,7 @@ def test_downgrade_selection_does_not_lose_hint_on_readback_and_translates(
     import i18n
 
     window, app = ui
-    entry = next(
-        e
-        for e in bundled.mcu_entries(window.catalog, "slave")
-        if e["version"] == "1.2.14"
-    )
+    entry = bundled.mcu_entries(window.catalog, "slave")[-1]
     path = external_mcu_file(
         window.catalog, "slave", entry["version"], tmp_path / "selected.bin"
     )
