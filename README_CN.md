@@ -32,22 +32,68 @@ SDK 只用 C++ 实现一次,Python 包是同一份代码的 pybind11 绑定,两�
 | --- | --- |
 | 操作系统 | Linux(Ubuntu 22.04+)。相机走 V4L2,不支持 macOS / Windows |
 | Python | 3.12 |
-| 构建 | `mamba` / `conda`(推荐 —— `environment.yml` 锁定了完整工具链) |
+| 构建 | 通过 Miniforge 安装的 [Mamba](https://github.com/conda-forge/miniforge?tab=readme-ov-file#install) —— `environment.yml` 锁定了完整工具链 |
 | 固件 | 从爪 **≥ 1.2.5**(SDK 强制检查),见 [固件](#固件) |
 
 ## 安装
 
+**第 0 步 —— Mamba。** 安装 Miniforge,它自带 `mamba`(比 conda 快得多,默认使用
+conda-forge)。如果 `mamba --version` 已经能用,可跳过。
+
+```bash
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash Miniforge3-$(uname)-$(uname -m).sh
+# 按提示完成安装,然后打开一个新终端
+```
+
+**第 1 步 —— 系统软件包。** `v4l-utils` 提供 `v4l2-ctl`,设置和检查相机格式要用它
+([主机配置 → 3](#3-腕部相机必须使用-mjpeg))。先 `apt update`,确保装到最新版本:
+
+```bash
+sudo apt update
+sudo apt install -y git curl v4l-utils
+sudo apt install -y --only-upgrade libusb-1.0-0   # 内核更新后保持 USB 运行库为最新
+```
+
+> [!NOTE]
+> 如果 `apt upgrade` 带来了新内核,请按上面的命令升级 USB 软件包并重启,让运行中的内核与
+> 用户态 USB 栈来自同一次更新。内核升级后 USB 栈没跟上,是"昨天还好好的相机今天打不开"
+> 的常见原因。
+
+**第 2 步 —— 克隆仓库。**
+
 ```bash
 git clone https://github.com/XenseRobotics-AI/TacCap-Gripper.git
 cd TacCap-Gripper
-mamba env create -f environment.yml && mamba activate taccap
-uv pip install -e . --no-build-isolation
-python -c "import xense.taccap as t; print(t.__version__)"
 ```
 
-请保留 `--no-build-isolation`:它保证用环境里锁定的 `pybind11` 编译。修改 C++ 代码后需要
-重新安装 —— 可编辑安装仍会从 `site-packages` 加载已编译的扩展。纯 C++ 构建、测试与环境
-陷阱见 [docs/INSTALL.md](docs/INSTALL.md)。
+**第 3 步 —— 创建并激活环境。** 环境名为 `taccap`,会从 conda-forge 安装编译器、CMake、
+OpenCV、pybind11 和 Python 3.12:
+
+```bash
+mamba env create -f environment.yml
+mamba activate taccap
+```
+
+拉取新版本后更新已有环境:`mamba env update -f environment.yml --prune`。
+
+**第 4 步 —— 安装 SDK**(在已激活的环境中):
+
+```bash
+uv pip install -e . --no-build-isolation
+```
+
+请保留 `--no-build-isolation`:它保证用环境里锁定的 `pybind11` 编译。拉取新版本后要重新
+执行这一步 —— 可编辑安装在重装之前仍会使用之前编译好的扩展。
+
+**第 5 步 —— 验证。**
+
+```bash
+python -c "import xense.taccap as t; print(t.__version__)"
+v4l2-ctl --version
+```
+
+纯 C++ 构建、测试与环境陷阱见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 主机配置(一次性)
 
@@ -114,7 +160,7 @@ SDK 的 `Camera` 默认请求 MJPEG(`use_mjpg=True`)—— 整套设备采集时
 GStreamer、相机服务)必须自己请求 MJPEG;OpenCV 中要在设置宽高**之前**把
 `CAP_PROP_FOURCC` 设为 `MJPG`。
 
-用 `v4l2-ctl`(`v4l-utils` 包)检查和设置格式:
+用 `v4l2-ctl`(`v4l-utils` 包,已在[安装 → 第 1 步](#安装)中安装)检查和设置格式:
 
 ```bash
 CAM=/dev/v4l/by-id/<腕部相机>-video-index0       # 用 ls /dev/v4l/by-id/ 查看

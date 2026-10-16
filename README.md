@@ -40,23 +40,74 @@ teleoperation, policies and recording belong in the consuming application
 | --- | --- |
 | OS | Linux (Ubuntu 22.04+). The camera path is V4L2; macOS / Windows are not supported |
 | Python | 3.12 |
-| Build | `mamba` / `conda` (recommended — `environment.yml` pins the full toolchain) |
+| Build | [Mamba](https://github.com/conda-forge/miniforge?tab=readme-ov-file#install) via Miniforge — `environment.yml` pins the full toolchain |
 | Firmware | follower **≥ 1.2.5** (enforced); see [Firmware](#firmware) |
 
 ## Install
 
+**Step 0 — Mamba.** Install Miniforge, which ships `mamba` (much faster than
+plain conda, and conda-forge by default). Skip if `mamba --version` already
+works.
+
+```bash
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash Miniforge3-$(uname)-$(uname -m).sh
+# accept the prompts, then open a new terminal
+```
+
+**Step 1 — System packages.** `v4l-utils` provides `v4l2-ctl`, which you need
+to set and check the camera format ([Host setup → 3](#3-wrist-camera-always-mjpeg)).
+Run `apt update` first so you get the current version:
+
+```bash
+sudo apt update
+sudo apt install -y git curl v4l-utils
+sudo apt install -y --only-upgrade libusb-1.0-0   # keep the USB runtime current after kernel updates
+```
+
+> [!NOTE]
+> After an `apt upgrade` that brings a new kernel, upgrade the USB packages as
+> above and reboot, so the running kernel and the userspace USB stack come from
+> the same update. A stale USB stack after a kernel bump is a common reason
+> cameras that worked yesterday stop opening today.
+
+**Step 2 — Clone.**
+
 ```bash
 git clone https://github.com/XenseRobotics-AI/TacCap-Gripper.git
 cd TacCap-Gripper
-mamba env create -f environment.yml && mamba activate taccap
+```
+
+**Step 3 — Create and activate the environment.** The env is named `taccap`
+and installs the compiler, CMake, OpenCV, pybind11 and Python 3.12 from
+conda-forge:
+
+```bash
+mamba env create -f environment.yml
+mamba activate taccap
+```
+
+To refresh an existing env after pulling a new release:
+`mamba env update -f environment.yml --prune`.
+
+**Step 4 — Install the SDK** (from the activated env):
+
+```bash
 uv pip install -e . --no-build-isolation
-python -c "import xense.taccap as t; print(t.__version__)"
 ```
 
 Keep `--no-build-isolation`: it builds against the `pybind11` pinned in the env.
-After a C++ change, reinstall — an editable install still serves the compiled
-extension from `site-packages`. C++-only builds, tests and environment traps:
-[docs/INSTALL.md](docs/INSTALL.md).
+After pulling a new release, run this again — an editable install keeps
+serving the previously compiled extension until you reinstall.
+
+**Step 5 — Verify.**
+
+```bash
+python -c "import xense.taccap as t; print(t.__version__)"
+v4l2-ctl --version
+```
+
+C++-only builds, tests and environment traps: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Host setup (one-time)
 
@@ -131,7 +182,8 @@ program that opens the camera (OpenCV, ffmpeg, GStreamer, a camera service)
 must request MJPEG itself; in OpenCV, set `CAP_PROP_FOURCC` to `MJPG` *before*
 width/height.
 
-Check and set the format with `v4l2-ctl` (package `v4l-utils`):
+Check and set the format with `v4l2-ctl` (package `v4l-utils`, installed in
+[Install → Step 1](#install)):
 
 ```bash
 CAM=/dev/v4l/by-id/<wrist-camera>-video-index0      # list with: ls /dev/v4l/by-id/

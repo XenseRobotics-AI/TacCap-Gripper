@@ -14,7 +14,8 @@ to build.
 | OS                    | Linux (Ubuntu 22.04+ tested). The capture path is V4L2 + UVC XU; macOS / Windows are not supported. |
 | Toolchain             | gcc/g++ ≥ 13, CMake ≥ 3.20, Ninja, pkg-config                                                       |
 | Python (for bindings) | CPython 3.12                                                                                        |
-| Recommended           | `mamba` / `conda` — `environment.yml` pins the entire toolchain & C++ deps to a known-good set      |
+| System packages       | `sudo apt update && sudo apt install -y git curl v4l-utils` (`v4l2-ctl` sets the camera to MJPEG)   |
+| Recommended           | `mamba` via [Miniforge](https://github.com/conda-forge/miniforge?tab=readme-ov-file#install) — `environment.yml` pins the entire toolchain & C++ deps |
 
 > **Why mamba is recommended.** `environment.yml` ships gcc-14, OpenCV
 > 4.12, spdlog, gtest, pybind11 and scikit-build-core at a known-good set
