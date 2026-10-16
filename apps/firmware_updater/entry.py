@@ -21,6 +21,11 @@ def main():
     )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Read-only OS/SDK diagnostics; no serial commands",
+    )
+    parser.add_argument(
         "--install-desktop",
         action="store_true",
         help="Register AppImage icon without opening hardware",
@@ -31,6 +36,15 @@ def main():
     from i18n import initialize, language, tr
 
     initialize(args.language)
+    if args.diagnose:
+        from host_diagnostics import diagnostic_report
+
+        report = diagnostic_report()
+        report["scope"] = tr(report["scope"])
+        for issue in report["issues"]:
+            issue["message"] = tr(issue["message"])
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
     if args.install_desktop:
         import os
 
@@ -55,6 +69,12 @@ def main():
     from xense.taccap import _taccap_native as native
 
     assert hasattr(native, "expected_open_reverse")
+    from control_parameters import FIELDS, config_type, values_of
+
+    for mode in FIELDS:
+        assert set(values_of(config_type(sdk, mode)(), mode)) == {
+            f.name for f in FIELDS[mode]
+        }
     assert core.catalog_at(HERE / "catalog.json")["schema"] == 1
     bundled_versions = bundled.verify_all(core.catalog_at(HERE / "catalog.json"))
     external = []
@@ -82,6 +102,7 @@ def main():
                 "frozen": bool(getattr(sys, "frozen", False)),
                 "qt": qVersion(),
                 "language": language(),
+                "controller_test_modes": list(FIELDS),
                 "bundled_firmware": bundled_versions,
                 "mcu_versions": bundled.verify_mcu_versions(
                     core.catalog_at(HERE / "catalog.json")

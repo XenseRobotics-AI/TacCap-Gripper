@@ -1,0 +1,12 @@
+# Only the MCU interface of the TacCap CH343 dual-serial bridge.
+# No world access, UVC/debug changes, or kernel module installation.
+ACTION=="remove", GOTO="taccap_updater_end"
+SUBSYSTEM!="tty", GOTO="taccap_updater_end"
+ATTRS{idVendor}!="1a86", GOTO="taccap_updater_end"
+ATTRS{product}!="USB Dual Serial", GOTO="taccap_updater_end"
+IMPORT{builtin}="usb_id"
+SUBSYSTEMS=="usb", ATTRS{bInterfaceNumber}=="?*", ENV{.TACCAP_IFNUM}="$attr{bInterfaceNumber}"
+ENV{.TACCAP_IFNUM}!="02", GOTO="taccap_updater_end"
+GROUP="dialout", MODE="0660", TAG+="uaccess"
+ENV{ID_SERIAL_SHORT}=="?*", SYMLINK+="serial/by-id/usb-1a86_USB_Dual_Serial_$env{ID_SERIAL_SHORT}-if02"
+LABEL="taccap_updater_end"

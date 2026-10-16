@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+if [ "$1" = configure ] && command -v udevadm >/dev/null 2>&1; then
+    if ! udevadm control --reload-rules; then
+        echo 'TacCap: udev is not running. Reconnect USB after udev starts.' >&2
+    fi
+fi
+# No group edits, broad device triggers, driver installs, or root GUI.
+echo 'TacCap: reconnect the gripper USB before starting an update to apply device access rules.'

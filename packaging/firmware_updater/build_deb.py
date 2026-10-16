@@ -47,6 +47,16 @@ def install_icons(source, share):
             raise RuntimeError("Cannot save application icon")
 
 
+def install_serial_rules(package):
+    here = Path(__file__).resolve().parent
+    rules = package / "usr/lib/udev/rules.d"
+    rules.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(here / "69-taccap-firmware-updater.rules", rules)
+    postinst = package / "DEBIAN/postinst"
+    shutil.copy2(here / "postinst", postinst)
+    postinst.chmod(0o755)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
@@ -250,10 +260,11 @@ def main():
         (control / "control").write_text(
             f"Package: {PACKAGE}\nVersion: {PACKAGE_VERSION}\nArchitecture: {arch}\n"
             "Maintainer: TacCap firmware updater maintainers\nSection: utils\nPriority: optional\n"
-            f"Depends: libc6 (>= {target['glibc']}), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libsm6, libice6, libxcb-shape0, libxcb-icccm4, libxcb-keysyms1, libgl1, libegl1\n"
+            f"Depends: udev, libc6 (>= {target['glibc']}), libx11-6, libxext6, libxrender1, libfontconfig1, libfreetype6, libxcb-cursor0, libxkbcommon-x11-0, libsm6, libice6, libxcb-shape0, libxcb-icccm4, libxcb-keysyms1, libgl1, libegl1\n"
             "Description: TacCap follower firmware update and rollback assistant\n"
             " Bundled Python, Qt, CJK font and native SDK. Runs as a normal user.\n"
         )
+        install_serial_rules(package)
         bin_dir = package / "usr/bin"
         bin_dir.mkdir(parents=True)
         launcher = bin_dir / PACKAGE

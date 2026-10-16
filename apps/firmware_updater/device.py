@@ -18,11 +18,19 @@ from xense.taccap import (
 
 
 def discover():
-    return [
+    from host_diagnostics import assert_access
+
+    report = assert_access()
+    devices = [
         (e.firmware_sn, e.mcu_serial)
         for e in scan_grippers()
         if e.firmware_sn and e.firmware_sn.endswith(("s", "m"))
     ]
+    if not devices and report["ready_for_probe"]:
+        raise RuntimeError(
+            "USB 和串口权限已通过，但 MCU 未返回有效序列号。请检查 24 V 供电并关闭其他控制程序；请导出环境诊断和升级日志。"
+        )
+    return devices
 
 
 class Device:

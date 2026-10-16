@@ -4,6 +4,10 @@
 
 ## Install
 
+> 仅使用固件更新工具的用户无需执行本页的 conda、编译和源码 SDK 安装。
+> 请使用匹配架构的 DEB/AppImage，按 [用户版工具说明](FIRMWARE_UPDATER.md#独立运行与环境诊断)
+> 检查系统依赖与串口权限。不要把设备权限问题误当作 SDK 开发环境缺失。
+
 The SDK has two consumable surfaces — the C++ shared library
 (`libtaccap_core.so`) and the Python extension (`xense.taccap`). Both are
 produced by the **same** top-level CMake project; you choose which surface

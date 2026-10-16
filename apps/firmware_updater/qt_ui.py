@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -658,7 +659,9 @@ class App(QMainWindow):
                 task != self.active_task or (self.discard_read and kind != "idle")
             ):
                 continue
-            if kind == "progress":
+            if kind == "diagnostics":
+                self.show_diagnostics(value)
+            elif kind == "progress":
                 self.activity.update(value["done"], value["total"], value["unit"])
                 if value["total"] > 0:
                     self.progress.setRange(0, 100)
@@ -840,6 +843,41 @@ class App(QMainWindow):
             except OSError as exc:
                 notice(self, "导出失败", str(exc), QMessageBox.Critical)
 
+    def diagnose(self):
+        if self.busy:
+            return
+        set_text(self.status, "正在检查环境；不发送夹爪命令…")
+
+        def work():
+            from host_diagnostics import diagnostic_report
+
+            self.emit("diagnostics", diagnostic_report())
+
+        self.launch(work)
+
+    def show_diagnostics(self, report):
+        from host_diagnostics import summary
+
+        message = summary(report)
+        self.log(message)
+        self.log(json.dumps(report, ensure_ascii=False))
+        dialog = QDialog(self)
+        set_title(dialog, "环境诊断")
+        dialog.setMinimumWidth(600)
+        box = QVBoxLayout(dialog)
+        detail = QPlainTextEdit()
+        detail.setReadOnly(True)
+        detail.setPlainText(tr(message))
+        detail.setMinimumHeight(280)
+        box.addWidget(detail)
+        close = QPushButton()
+        set_text(close, "关闭")
+        close.clicked.connect(dialog.accept)
+        box.addWidget(close)
+        set_text(self.status, "诊断完成 · 详情已写入日志")
+        dialog.exec()
+        dialog.deleteLater()
+
     def closeEvent(self, event):
         if self.busy:
             event.ignore()
@@ -882,6 +920,17 @@ def main(args):
             test.show()
             app.processEvents()
             assert test.width() <= 720
+            for index in (0, 1):
+                test.parameters.mode.setCurrentIndex(index)
+                test.parameters.more.setChecked(True)
+                app.processEvents()
+                assert (
+                    test.parameters.stack.geometry().bottom()
+                    < test.slider.geometry().top()
+                )
+                assert test.width() <= 720
+                test.parameters.more.setChecked(False)
+            assert test.worker is None and not test.slider.isEnabled()
             if language() == "en":
                 import re
 

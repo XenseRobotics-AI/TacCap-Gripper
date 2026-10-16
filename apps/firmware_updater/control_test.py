@@ -4,12 +4,14 @@ import math
 import threading
 import time
 
+from control_parameters import limits_of, make_config, values_of
+
 # MotorStatusBit faults, excluding Enabled and Stalled (contact is expected).
 FAULT_MASK = 0x0FFA
 SESSION_SECONDS = 120
 
 
-def preflight(g, sn, sdk):
+def check_device(g, sn, sdk):
     version = g.firmware_version
     if (version.major, version.minor, version.patch) < (1, 2, 14):
         raise RuntimeError("请先升级从爪 MCU 至 1.2.14 或更新版本")
@@ -58,15 +60,17 @@ def preflight(g, sn, sdk):
         raise RuntimeError("安全包络未生效或超出范围，请联系支持")
     if g.motor.read_status().status & FAULT_MASK:
         raise RuntimeError("电机存在故障，禁止测试；不会自动清除故障")
-    config = sdk.ForcePositionConfig.for_spec(spec)
-    config.grasp_torque_nm = min(config.grasp_torque_nm, env.cont_torque_nm, 0.5)
-    config.close_speed_radps = 0.25
-    config.close_preload_nm = 0.0
-    config.status_timeout_ms = 350
-    return config
+    startup = g.motor.get_startup_limit_torque()
+    limits_of(spec, env, startup, sdk)
+    return spec, env, startup
 
 
-def observation(snapshot):
+def preflight(g, sn, sdk, mode="force_position", parameters=None):
+    spec, env, startup = check_device(g, sn, sdk)
+    return make_config(spec, env, startup, sdk, mode, parameters)
+
+
+def observation(snapshot, timeout_ms=350):
     obs = snapshot.observation
     if (
         not snapshot.running
@@ -84,7 +88,7 @@ def observation(snapshot):
             )
         )
         or not 0 <= obs.position <= 1
-        or not 0 <= obs.age_ms <= 350
+        or not 0 <= obs.age_ms <= timeout_ms
         or obs.status & FAULT_MASK
     ):
         raise RuntimeError("控制反馈失效或电机故障，正在停止测试")
@@ -99,11 +103,24 @@ def observation(snapshot):
 class ControlSession:
     """Commands are coalesced at 10 Hz; stop always outranks a pending target."""
 
-    def __init__(self, identity, emit, *, opener=None, sdk=None):
+    def __init__(
+        self,
+        identity,
+        emit,
+        *,
+        opener=None,
+        sdk=None,
+        mode="force_position",
+        parameters=None,
+        prepare_only=False,
+    ):
         self.identity = tuple(identity)
         self.emit = emit
         self.opener = opener
         self.sdk = sdk
+        self.mode = mode
+        self.parameters = dict(parameters) if parameters is not None else None
+        self.prepare_only = prepare_only
         self.stopping = threading.Event()
         self.lock = threading.Lock()
         self.pending = None
@@ -136,15 +153,38 @@ class ControlSession:
                 opener = Device(self.identity, self.emit).opened
             self.emit("stage", "正在检查测试条件；尚未启用电机")
             with opener() as g:
-                config = preflight(g, self.identity[0], sdk)
+                if self.prepare_only:
+                    spec, env, startup = check_device(g, self.identity[0], sdk)
+                    settings = {
+                        mode: values_of(
+                            make_config(spec, env, startup, sdk, mode), mode
+                        )
+                        for mode in ("force_position", "impedance")
+                    }
+                    if not self.stopping.is_set():
+                        self.emit(
+                            "settings",
+                            {
+                                "defaults": settings,
+                                "model": g.motor.get_model().name,
+                                "limits": limits_of(spec, env, startup, sdk),
+                            },
+                        )
+                    return
+                config = preflight(g, self.identity[0], sdk, self.mode, self.parameters)
                 ctl = None
                 try:
                     if self.stopping.is_set():
                         return
                     g.motor.disable()
-                    ctl = sdk.ForcePositionController(g, config)
+                    factory = (
+                        sdk.ForcePositionController
+                        if self.mode == "force_position"
+                        else sdk.ImpedanceController
+                    )
+                    ctl = factory(g, config)
                     ctl.start()  # SDK seeds the target from the measured position.
-                    initial = observation(ctl.snapshot())
+                    initial = observation(ctl.snapshot(), config.status_timeout_ms)
                     if self.stopping.is_set():
                         return
                     g.motor.enable()  # Only after the explicit GUI confirmation.
@@ -157,7 +197,7 @@ class ControlSession:
                         if time.monotonic() - started >= SESSION_SECONDS:
                             self.emit("stage", "已达到 120 秒测试上限，正在停止")
                             break
-                        sample = observation(ctl.snapshot())
+                        sample = observation(ctl.snapshot(), config.status_timeout_ms)
                         with self.lock:
                             target, self.pending = self.pending, None
                         if target is not None and not self.stopping.is_set():
