@@ -120,10 +120,6 @@ def messages():
     for name in (
         "compact_layout",
         "qt_ui",
-        "control_test",
-        "control_test_ui",
-        "control_parameters",
-        "control_parameters_ui",
         "host_diagnostics",
         "dialogs",
         "core",

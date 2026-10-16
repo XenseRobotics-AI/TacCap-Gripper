@@ -69,12 +69,6 @@ def main():
     from xense.taccap import _taccap_native as native
 
     assert hasattr(native, "expected_open_reverse")
-    from control_parameters import FIELDS, config_type, values_of
-
-    for mode in FIELDS:
-        assert set(values_of(config_type(sdk, mode)(), mode)) == {
-            f.name for f in FIELDS[mode]
-        }
     assert core.catalog_at(HERE / "catalog.json")["schema"] == 1
     bundled_versions = bundled.verify_all(core.catalog_at(HERE / "catalog.json"))
     external = []
@@ -102,7 +96,7 @@ def main():
                 "frozen": bool(getattr(sys, "frozen", False)),
                 "qt": qVersion(),
                 "language": language(),
-                "controller_test_modes": list(FIELDS),
+                "purpose": "firmware_update",
                 "bundled_firmware": bundled_versions,
                 "mcu_versions": bundled.verify_mcu_versions(
                     core.catalog_at(HERE / "catalog.json")

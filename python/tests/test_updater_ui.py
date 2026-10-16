@@ -58,6 +58,50 @@ class UpdaterUiTests(unittest.TestCase):
         self.assertLessEqual(self.window.height(), 460)
         self.assertLessEqual(self.window.width(), 700)
 
+    def test_user_tool_is_update_only_for_both_roles_and_languages(self):
+        import i18n
+        from PySide6.QtWidgets import QPushButton, QSlider
+
+        previous = i18n.language()
+        try:
+            for language in ("zh", "en"):
+                i18n.set_language(language)
+                i18n.retranslate(self.window)
+                for role in ("m", "s"):
+                    with self.subTest(language=language, role=role):
+                        self.window.selected_identity = (
+                            f"TCGU01A25Z0017{role}",
+                            "offline-scope",
+                        )
+                        self.window.current_info = {"model": "EL05", "recorded": True}
+                        self.window.apply_defaults()
+                        self.window.update_actions()
+                        self.app.processEvents()
+                        self.assertTrue(self.window.start.isEnabled())
+                        self.assertTrue(self.window.refresh.isEnabled())
+                        self.assertFalse(self.window.findChildren(QSlider))
+                        forbidden = {
+                            "功能测试",
+                            "Function test",
+                            "启用测试",
+                            "Enable test",
+                        }
+                        self.assertFalse(
+                            forbidden.intersection(
+                                b.text() for b in self.window.findChildren(QPushButton)
+                            )
+                        )
+                        self.assertFalse(hasattr(self.window, "open_control_test"))
+                        for module in (
+                            "control_test",
+                            "control_test_ui",
+                            "control_parameters",
+                            "control_parameters_ui",
+                        ):
+                            self.assertIsNone(importlib.util.find_spec(module))
+        finally:
+            i18n.set_language(previous)
+
     def test_connected_information_does_not_overlap_firmware_rows(self):
         self.window.info.setText(
             "型号 EL05（已记录）   MCU 1.2.16\\n电机 1.0.5.0.4（Flash 存档，非实时）"

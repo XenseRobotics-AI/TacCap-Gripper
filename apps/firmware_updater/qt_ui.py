@@ -12,7 +12,6 @@ import bundled
 import core
 from activity import Activity
 from compact_layout import STYLE, build, palette
-from control_test_ui import ControlTestDialog
 from desktop_integration import desktop_id, integrate_appimage
 from dialogs import confirm, notice
 from fontconfig_runtime import configure_fontconfig
@@ -156,14 +155,6 @@ class App(QMainWindow):
         self.scan(follow_single=False)
 
     def update_actions(self):
-        follower = self.effective_role() == "slave"
-        self.test_button.setVisible(follower)
-        self.test_button.setEnabled(
-            not self.busy
-            and follower
-            and self.selected_identity is not None
-            and bool(self.current_info and self.current_info["recorded"])
-        )
         self.start.setEnabled(
             not self.busy
             and self.selected_identity is not None
@@ -171,32 +162,6 @@ class App(QMainWindow):
             and any(self.paths.values())
         )
         self.refresh_mcu_hint()
-
-    def open_control_test(self):
-        if (
-            self.busy
-            or self.selected_identity is None
-            or self.effective_role() != "slave"
-            or not self.current_info
-            or not self.current_info["recorded"]
-        ):
-            return
-        # Modal ownership prevents refresh/model writes/OTA from competing for
-        # the serial port. The dialog cannot finish until its worker exits.
-        self.busy = self.updating = True
-        for control in self.controls:
-            control.setEnabled(False)
-        dialog = None
-        try:
-            dialog = ControlTestDialog(self.selected_identity, self)
-            dialog.exec()
-        finally:
-            if dialog is not None:
-                dialog.deleteLater()
-            self.busy = self.updating = False
-            for control in self.controls:
-                control.setEnabled(True)
-            self.update_actions()
 
     def use_defaults(self):
         self.overrides.clear()
@@ -914,32 +879,8 @@ def main(args):
             assert window.combo.currentIndex() == -1
             assert family.startswith("Noto Sans CJK")
             assert not app.windowIcon().isNull()
-            test = ControlTestDialog(("TCGU01A25Z0017s", "offline-smoke"))
-            assert test.worker is None and not test.slider.isEnabled()
-            assert not test.stop_button.isEnabled()
-            test.show()
-            app.processEvents()
-            assert test.width() <= 720
-            for index in (0, 1):
-                test.parameters.mode.setCurrentIndex(index)
-                test.parameters.more.setChecked(True)
-                app.processEvents()
-                assert (
-                    test.parameters.stack.geometry().bottom()
-                    < test.slider.geometry().top()
-                )
-                assert test.width() <= 720
-                test.parameters.more.setChecked(False)
-            assert test.worker is None and not test.slider.isEnabled()
-            if language() == "en":
-                import re
-
-                for widget in test.findChildren(QLabel) + test.findChildren(
-                    QPushButton
-                ):
-                    assert not re.search(r"[\u3400-\u9fff]", widget.text())
-            test.close()
-            test.deleteLater()
+            assert not hasattr(window, "open_control_test")
+            assert not hasattr(window, "test_button")
             if args.screenshot:
                 if not window.grab().save(args.screenshot):
                     raise RuntimeError("截图保存失败")
@@ -956,7 +897,8 @@ def main(args):
                 json.dumps(
                     {
                         "ui": "ok",
-                        "control_test": "idle; no hardware opened",
+                        "purpose": "firmware_update",
+                        "hardware": "not opened",
                         "font": family,
                         "language": language(),
                     }
