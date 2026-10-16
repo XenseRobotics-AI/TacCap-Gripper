@@ -1,6 +1,10 @@
 {
   "schema": 1,
   "history": {
+    "gripper/tc-gu-01-slave-1.1.6.bin": {
+      "commit": "78e889b03323c285b87a8b66dc07708de5b70a9b",
+      "path": "firmware/tc-gu-01-slave.bin"
+    },
     "gripper/tc-gu-01-master-1.2.5.bin": {
       "commit": "6ea41f7cef9c755652a071e0659c04cefaee7e6c",
       "path": "firmware/tc-gu-01-master-1.2.5.bin"
@@ -15,6 +19,14 @@
     }
   },
   "images": [
+    {
+      "kind": "mcu",
+      "model": "slave",
+      "version": "1.1.6",
+      "sha256": "d786d5df22416525e4f5ff8e10a6671bf581566f875aaa5caadafa3bb54b69a5",
+      "warning": "仅限 EL05 的旧版 MCU 对比测试；不支持 RS00，缺少新版型号/电机版本记录及串口恢复修复。闭合零点语义与新版 SDK 不兼容；不恢复旧配置，不得直接用于生产夹取。",
+      "file": "gripper/tc-gu-01-slave-1.1.6.bin"
+    },
     {
       "kind": "mcu",
       "model": "master",

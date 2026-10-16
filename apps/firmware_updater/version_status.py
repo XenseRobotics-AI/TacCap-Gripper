@@ -55,6 +55,10 @@ def device_summary(info, role, catalog):
         return f'<span style="color:{colors[state]}">{escape(text)}</span>', text
 
     mcu_html, mcu_text = line("MCU", info["mcu"], target("mcu", role))
+    if info.get("legacy_mcu_only"):
+        text = "旧版 MCU 模式：只能更新 MCU，电机型号与版本无法读取；请核对实物 EL05。"
+        brief = "旧版 MCU 模式 · 仅更新 MCU，请核对实物 EL05。"
+        return f"{mcu_html}<br>{escape(brief)}", f"{mcu_text}\n{text}", "warning", text
     if role == "master":
         html, plain = f"主爪 · {mcu_html}", f"主爪 · {mcu_text}"
     else:

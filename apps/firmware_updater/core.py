@@ -59,7 +59,8 @@ def validate_mcu_target(image, role):
     if image.kind != "mcu" or image.model != role:
         raise RuntimeError("MCU 镜像与设备主/从角色不匹配")
     minimum = {"master": "1.2.5", "slave": "1.2.14"}[role]
-    if version_key(image.version) < version_key(minimum):
+    legacy_el05 = role == "slave" and version_key(image.version) == version_key("1.1.6")
+    if not legacy_el05 and version_key(image.version) < version_key(minimum):
         raise RuntimeError(f"MCU 目标低于工具支持下限 {minimum}，请联系技术支持")
 
 
@@ -93,6 +94,59 @@ def role_from_sn(sn):
     if sn.endswith("s"):
         return "slave"
     raise ValueError("设备 SN 未标明主/从角色，拒绝猜测")
+
+
+def legacy_mcu_mode(current=None, target=None):
+    return any(
+        value and version_key(value) < version_key("1.2.14")
+        for value in (current, target)
+    )
+
+
+def execute_mcu_only(device, info, mcu, motor, ask, emit):
+    """Old MCU lacks model/version/admin diagnostics: never run motor OTA here."""
+    if motor or not mcu:
+        raise RuntimeError("旧版模式仅支持 MCU 更新，请清除电机固件并选择 MCU 镜像")
+    validate_mcu_target(mcu, "slave")
+    if version_key(info["mcu"]) < version_key("1.1.6"):
+        raise RuntimeError("当前 MCU 低于 1.1.6，请联系技术支持，不能使用旧版模式")
+    # This specific old binary has fixed EL05 MIT ranges, not RS00 support.
+    if info.get("recorded") and info["model"] != "EL05":
+        raise RuntimeError("旧版 MCU 模式仅限实物 EL05，禁止将此固件用于 RS00")
+    if not ask(
+        "确认旧版 MCU 操作",
+        f"设备 {info['sn']}\nMCU {info['mcu']} → {mcu.version}\n\n"
+        "仅限实物 EL05；旧版不能读取型号记录，必须人工核对标签。\n"
+        "只刷 MCU，不刷电机，不写型号、CAN ID、方向或力矩。\n"
+        "必要时切回 MIT 协议，并按提示断开 24 V。\n"
+        "1.1.6 与新版控制 SDK 的闭合零点语义不兼容，不能直接用于生产夹取。\n"
+        "不会备份或恢复配置；请清空活动范围。确认实物是 EL05 并继续？",
+    ):
+        raise RuntimeError("用户取消，未修改设备")
+    before = checked_mcu_version(device, info["mcu"])
+    approved = confirm_change(ask, "夹爪 MCU", before, mcu)
+    checked_mcu_version(device, before)
+    if not approved:
+        emit("success", "已核验 MCU 为所选版本，跳过重复刷写；未验证电机或机械功能。")
+        return
+    device.prepare_mcu_only()
+    checked_mcu_version(device, before)
+    emit("stage", "仅更新 MCU：刷写与版本核验，不运行新版电机功能")
+    device.flash_mcu(mcu)
+    device.power_cycle("MCU 刷写完成，必须硬重启")
+    if version_key(device.mcu_version()) != version_key(mcu.version):
+        raise RuntimeError("MCU 运行版本不符，停止后续步骤")
+    if not ask(
+        "确认旧版 MCU 验收",
+        "MCU 已刷写并读回目标版本。电机版本、型号配置和机械标定未由本工具验收。\n"
+        "请检查上电动作，无异常撞击或卡滞；旧版不得直接使用新版 SDK 夹取。\n"
+        "结束后点击刷新；可选内置最新 MCU 再次升级。是否已理解限制并完成现场检查？",
+    ):
+        raise RuntimeError("MCU 已写入，但现场验收未确认；请勿夹取，导出日志联系支持。")
+    emit(
+        "success",
+        "MCU 刷写、断电及目标版本已核验；未验证电机或控制兼容性。请刷新设备，旧版先做现场验收；可选择内置最新 MCU 升回。",
+    )
 
 
 def execute_master(device, info, mcu, motor, ask, emit):
@@ -130,6 +184,8 @@ def execute(device, mcu, motor, ask, emit):
     role = role_from_sn(info["sn"])
     if role == "master":
         return execute_master(device, info, mcu, motor, ask, emit)
+    if legacy_mcu_mode(info["mcu"], mcu.version if mcu else None):
+        return execute_mcu_only(device, info, mcu, motor, ask, emit)
     if not info["recorded"]:
         raise RuntimeError("电机型号尚未配置，请联系技术支持；用户版不覆盖型号")
     if version_key(info["mcu"]) < version_key("1.2.14"):
