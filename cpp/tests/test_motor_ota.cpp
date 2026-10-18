@@ -6,8 +6,8 @@
 // follower firmware does, so a mask that would not admit the real reply fails
 // here as NoReply rather than passing by construction.
 //
-// What is pinned: the frame sequence and payloads from RobStride's "OTA 协议
-// 说明" (20251114) and OTA.py, both readings where those two disagree (failure
+// What is pinned: the frame sequence and payloads from RobStride's "OTA Protocol
+// Specification" (20251114) and OTA.py, both readings where those two disagree (failure
 // code 0x0F vs 0xF0, data reply type 11 vs 13), and the resume paths.
 
 #include <taccap/error.hpp>

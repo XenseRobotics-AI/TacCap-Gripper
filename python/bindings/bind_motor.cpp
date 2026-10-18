@@ -274,7 +274,7 @@ void bind_motor(py::module_& m) {
         .def_property_readonly("version", [](const protocol::MotorVersion& v) {
             return py::make_tuple(v.version[0], v.version[1],
                                   v.version[2], v.version[3]);
-        }, "版本号四段,**高位在前**(手册 p.31 应答 Byte3~6)")
+        }, "The four version fields, **high first** (manual p.31, reply Byte3~6)")
         .def_readonly("valid",         &protocol::MotorVersion::valid,
                       "1 when the read succeeded. `version` means nothing otherwise.")
         .def_readonly("motor_stopped", &protocol::MotorVersion::motor_stopped,
@@ -299,7 +299,8 @@ void bind_motor(py::module_& m) {
         .def("__str__", [](const protocol::MotorVersion& v) {
             if (!v.valid) {
                 return std::string("MotorVersion(invalid, protocol=") +
-                       (v.protocol_mode == 2 ? "MIT — 电机在 MIT 下不理扩展帧,且没有 flash 记录"
+                       (v.protocol_mode == 2 ? "MIT — the motor ignores extended frames under MIT, "
+                                               "and there is no flash record"
                                              : "private") + ")";
             }
             const char* src = v.source == protocol::MotorVersionSource::FlashHost
@@ -458,8 +459,10 @@ void bind_motor(py::module_& m) {
         .def_readonly("control_mode",   &MotorStatusSample::control_mode,
                       "MotorMode of the last applied command, raw: 0 idle, 1 position,\n"
                       "2 velocity, 3 torque, 4 impedance.")
-        // 诊断字段:从爪改发 59 字节 V2 状态后随流到达,不再需要轮询 0x53
-        // (轮询会和相位锁里的控制帧对撞)。仍发 31 字节前缀的固件上这些为 0。
+        // Diagnostic fields: since the follower switched to the 59-byte V2 status they
+        // arrive with the stream, so polling 0x53 is no longer needed (polling collides
+        // with the control frames in the phase lock). On firmware that still sends only
+        // the 31-byte prefix these are 0.
         .def_readonly("monitor_version",    &MotorStatusSample::monitor_version,
                       "Layout version of the monitor extension. 0 means the frame carried\n"
                       "only the 31-byte prefix, so every diagnostic field here is zero-fill\n"
@@ -652,35 +655,47 @@ void bind_motor(py::module_& m) {
              "Clear the motor's fault state. Blocks for the ACK; raises ProtocolError\n"
              "on NACK. Clears the motor only -- a controller's own FAULT state needs\n"
              "its reset().")
-        // ---- 裸电机控制 --------------------------------------------------
-        // 这些是**无 ACK 的直投命令**:帧丢上总线就返回,没有主机侧的误差钳位、
-        // 力矩天花板 —— 那些长在 ImpedanceController / ForcePositionController
-        // 里,越过控制器就一个都拿不到。
+        // ---- Raw motor control -------------------------------------------
+        // These are **fire-and-forget commands with no ACK**: they return as soon as
+        // the frame is on the bus, with no host-side error clamp and no torque
+        // ceiling -- those live in ImpedanceController / ForcePositionController,
+        // and going around the controllers you get none of them.
         //
-        // 它们曾经刻意不暴露给 Python。原因是真实事故:客户控制台用
-        // submit_impedance() 在 kp=20 下顶住刚性物体,kp*误差 一路涨到电机的
-        // 0x700B 上限,24V 下的电流需求把整块板子拉垮 —— 夹爪松手掉件、USB
-        // 链路消失。**那是固件 1.1.5、运动安全包络还不存在的时候。**
+        // They were once deliberately not exposed to Python. The reason was a real
+        // incident: a customer console used submit_impedance() at kp=20 against a
+        // rigid object, kp*error climbed all the way to the motor's 0x700B limit,
+        // and the current demand at 24V brought down the whole board -- the gripper
+        // let go and dropped the part, and the USB link vanished. **That was
+        // firmware 1.1.5, before the motion safety envelope existed.**
         //
-        // 1.1.6 的包络改变了这个结论。同一份代码、同一台设备、同一物体、
-        // kp=20,只切包络标志位([实测]):
-        //     包络关闭 -> 整机掉电重启,力矩失控索要 ~12 Nm
-        //     包络启用 -> 25 秒稳定夹持,恒定 0.549 Nm
-        // 包络长在固件 MIT 分支上,是所有阻抗/位置/力/力位混合命令的唯一必经
-        // 点 —— 裸命令绕不过它。控制分层本来就是
-        // 「SDK 给意图,固件 500Hz 执行安全包络」,暴露命令层与之一致。
+        // The 1.1.6 envelope changed that conclusion. Same code, same device, same
+        // object, kp=20, toggling only the envelope flag ([measured]):
+        //     envelope off -> whole unit browns out and reboots, runaway torque demands ~12 Nm
+        //     envelope on  -> 25 s stable grip, constant 0.549 Nm
+        // The envelope lives in the firmware MIT branch and is the single mandatory
+        // path for every impedance/position/force/force-position hybrid command --
+        // raw commands cannot get around it. The control layering already is
+        // "SDK gives intent, firmware enforces the safety envelope at 500Hz";
+        // exposing the command layer is consistent with that.
         //
-        // 仍然要知道的两件事:
-        //  1. **热方向没有底层兜底**(同文档 §2 [实测]):电机自身的过温保护到
-        //     100 °C 壳温都未动作,297 秒恒 1.65 Nm 故障位全零。热保护只有固件
-        //     的温度墙,而温度墙是包络的一部分 —— 包络被关掉就什么都没有了。
-        //  2. 主机看门狗照常计时:停止下发 300ms 后固件 T1 接管零速保持,30s 后
-        //     T2 失能。裸命令不豁免这条。
+        // Two things you still need to know:
+        //  1. **No low-level backstop in the thermal direction** (same doc §2
+        //     [measured]): the motor's own over-temperature protection had not
+        //     tripped even at 100 °C case temperature, 297 s at a constant 1.65 Nm
+        //     with all fault bits zero. The only thermal protection is the firmware
+        //     temperature wall, and the temperature wall is part of the envelope --
+        //     turn the envelope off and there is nothing at all.
+        //  2. The host watchdog keeps counting as usual: 300ms after commands stop,
+        //     firmware T1 takes over with a zero-velocity hold, and after 30s T2
+        //     disables. Raw commands are not exempt from this.
         //
-        // 需要误差钳位、力矩天花板和堵转处理的调用方,仍应该用控制器。
-        // 带 ACK 的版本(v0.3.3):每条命令等固件应答,拿得到 NACK。比 submit_*
-        // 慢一个往返,适合单步命令和测延迟,不适合 100Hz 控制环。和 submit_*
-        // 一样绕过控制器的误差钳位与力矩天花板,只受固件包络和 0x700B 约束。
+        // Callers that need the error clamp, torque ceiling and stall handling should
+        // still use a controller.
+        // ACKed versions (v0.3.3): each command waits for the firmware reply, so you
+        // can see a NACK. One round trip slower than submit_*, suited to single-step
+        // commands and latency tests, not to a 100Hz control loop. Like submit_* they
+        // bypass the controllers' error clamp and torque ceiling, bounded only by the
+        // firmware envelope and 0x700B.
         .def("set_position", [](Motor& self, float pos, float max_vel, float max_torque) {
             py::gil_scoped_release g;
             self.set_position(pos, max_vel, max_torque);
@@ -846,39 +861,52 @@ void bind_motor(py::module_& m) {
             py::gil_scoped_release g;
             return self.get_model(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 1000,
-           "本机记录的电机型号(0x59)。**问的是 MCU 的 flash,不是电机** ——\n"
-           "电机答不出自己的型号,见 MotorModel。需要从爪固件 >= 1.2.7。\n\n"
-           "当一台夹爪表现得像是力矩被整体缩放时先读它:回包里的 t_max_nm /\n"
-           "v_max_rad_s 就是当前真正在用的 MIT 量程。")
+           "The motor model recorded on this unit (0x59). **This asks the MCU's flash,\n"
+           "not the motor** -- the motor cannot report its own model, see MotorModel.\n"
+           "Requires follower firmware >= 1.2.7.\n\n"
+           "Read this first when a gripper behaves as if its torque were scaled across\n"
+           "the board: t_max_nm / v_max_rad_s in the reply are the MIT range actually\n"
+           "in use right now.")
         .def("set_model", [](Motor& self, uint8_t model_id, unsigned timeout_ms) {
             py::gil_scoped_release g;
             self.set_model(model_id, std::chrono::milliseconds(timeout_ms));
         }, py::arg("model_id"), py::arg("timeout_ms") = 1000,
-           "记录本机装的是哪一款电机(0x5A)。**写 MCU flash,掉电保持。**\n\n"
-           "**下次上电才生效**,不是立刻:MIT 量程在启动时定下来,控制环已经按它在\n"
-           "跑,中途换刻度会让在途的命令和反馈用两套标准解释。和改电机 CAN ID 一样,\n"
-           "写完要断电重启(拔 24V 电源线约 2 秒,USB 可不拔)。\n\n"
-           "写错型号不会报错,只会让之后每一帧力矩差一个固定倍率 —— 先用\n"
-           "get_model() 确认写进去的是对的。")
+           "Record which motor model this unit has installed (0x5A). **Writes MCU\n"
+           "flash; persists across power loss.**\n\n"
+           "**Takes effect at the next power-on**, not immediately: the MIT range is\n"
+           "fixed at boot and the control loop is already running on it; switching\n"
+           "scale midway would make in-flight commands and feedback be interpreted by\n"
+           "two different standards. As with changing the motor CAN ID, power-cycle\n"
+           "after writing (unplug the 24V power cable for about 2 s; USB can stay in).\n\n"
+           "Writing the wrong model raises no error; it just makes every later torque\n"
+           "frame off by a fixed factor -- confirm with get_model() that what was\n"
+           "written is right.")
         .def("motor_version", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release g;
             return self.motor_version(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 3000,
-           "**电机自身**的固件版本(不是夹爪固件,那是 gripper.firmware_version)。\n"
-           "需要从爪固件 >= 1.2.6;更旧的固件没有 0x58 这条命令,会抛 InvalidCmd。\n\n"
-           "先看 valid 再读 version:读不到时在 payload 里如实上报而不是抛异常,\n"
-           "因为『电机没应答』和『这里不支持这条命令』是两种不同的诊断,一个 NACK\n"
-           "说不清是哪种。\n\n"
-           "**已实测**:私有协议下可读(0074s / 0018s 都答了 1.0.5.0.x)。MIT 下\n"
-           "电机**不回** —— 请求是扩展帧,MIT 下电机不理扩展帧(实测 0086s)。\n"
-           "从爪固件 >= 1.2.14 此时返回 flash 里的记录,source / from_flash 标明;\n"
-           "记录来自私有协议开机时的自动识别,或 set_motor_fw_version() 写入。\n"
-           "更旧的固件在 MIT 下 valid=0。\n\n"
-           "默认超时 3000 ms:实测往返可达约 1371 ms,原来的 500 ms 会在应答可能到达\n"
-           "之前就超时,把一次正常读取显示成电机没反应。\n\n"
-           "**可能把电机停掉**:请求帧复用了通信类型 4(电机停止),不认 00 C4 魔数\n"
-           "的电机会把它当停止执行。motor_stopped=1 就是这种情况,再发运动命令前\n"
-           "要重新 enable()。")
+           "The firmware version of **the motor itself** (not the gripper firmware;\n"
+           "that is gripper.firmware_version).\n"
+           "Requires follower firmware >= 1.2.6; older firmware has no 0x58 command and\n"
+           "raises InvalidCmd.\n\n"
+           "Check valid before reading version: a failed read is reported as-is in the\n"
+           "payload rather than raised, because 'the motor did not answer' and 'this\n"
+           "command is not supported here' are two different diagnoses, and a NACK\n"
+           "cannot tell which.\n\n"
+           "**Measured**: readable under the private protocol (0074s / 0018s both\n"
+           "answered 1.0.5.0.x). Under MIT the motor **does not reply** -- the request\n"
+           "is an extended frame, and under MIT the motor ignores extended frames\n"
+           "(measured on 0086s). Follower firmware >= 1.2.14 then returns the record in\n"
+           "flash, flagged by source / from_flash; the record comes from auto-detection\n"
+           "at a private-protocol boot, or from set_motor_fw_version().\n"
+           "Older firmware gives valid=0 under MIT.\n\n"
+           "Default timeout 3000 ms: the measured round trip can reach about 1371 ms;\n"
+           "the old 500 ms would time out before the reply could arrive, showing a\n"
+           "normal read as an unresponsive motor.\n\n"
+           "**May stop the motor**: the request frame reuses communication type 4\n"
+           "(motor stop), and a motor that does not know the 00 C4 magic executes it\n"
+           "as a stop. motor_stopped=1 is that case; enable() again before sending\n"
+           "motion commands.")
         .def("set_motor_fw_version", [](Motor& self, py::object version, unsigned timeout_ms) {
             std::array<uint8_t, 4> v{};
             if (py::isinstance<py::str>(version)) {
@@ -905,14 +933,20 @@ void bind_motor(py::module_& m) {
             py::gil_scoped_release g;
             return self.set_motor_fw_version(v, std::chrono::milliseconds(timeout_ms));
         }, py::arg("version"), py::arg("timeout_ms") = 1000,
-           "把**电机自身**的固件版本记进从爪 flash(0x5C,需从爪固件 >= 1.2.14)。\n\n"
-           "电机只在私有协议下回版本帧,现场几乎都在 MIT,所以这是产线 SOP 的一步:\n"
-           "工人照铭牌 / 上位机读到的版本写入;电机 OTA 成功后也应写一次。之后\n"
-           "motor_version() 在 MIT 下返回它(source=1)。\n\n"
-           "version:按**厂家写法**给字符串,照铭牌填即可 —— EL05 '1.0.5.0.4'、\n"
-           "RS00 '0.0.3.32'。也可给四个原始字节的元组,如 (10, 5, 0, 4)。\n\n"
-           "返回 flash 回显的记录;与所写不一致抛 ProtocolError。控制器 / 自动标定 /\n"
-           "OTA 运行中被拒(要擦 flash 扇区)。立即生效,不需要断电。")
+           "Record the firmware version of **the motor itself** in follower flash\n"
+           "(0x5C, requires follower firmware >= 1.2.14).\n\n"
+           "The motor only replies with its version frame under the private protocol,\n"
+           "and in the field almost everything runs MIT, so this is a production-line\n"
+           "SOP step: the worker writes the version from the nameplate / as read by the\n"
+           "host tool; it should also be written once after a successful motor OTA.\n"
+           "After that motor_version() returns it under MIT (source=1).\n\n"
+           "version: a string in the **vendor's notation**, copied from the nameplate --\n"
+           "EL05 '1.0.5.0.4', RS00 '0.0.3.32'. A tuple of the four raw bytes also\n"
+           "works, e.g. (10, 5, 0, 4).\n\n"
+           "Returns the record echoed back from flash; raises ProtocolError if it does\n"
+           "not match what was written. Rejected while a controller / auto-calibration /\n"
+           "OTA is running (it erases a flash sector). Takes effect immediately; no\n"
+           "power cycle needed.")
         .def("can_ext_xfer", [](Motor& self, uint32_t ext_id, py::bytes data,
                                 unsigned reply_timeout_ms, uint32_t match_mask,
                                 uint32_t match_value) {
@@ -928,14 +962,17 @@ void bind_motor(py::module_& m) {
         }, py::arg("ext_id"), py::arg("data") = py::bytes(),
            py::arg("reply_timeout_ms") = 100, py::arg("match_mask") = 0,
            py::arg("match_value") = 0,
-           "往电机 CAN 总线发一帧 29 位扩展帧,在 MCU 上等第一帧满足\n"
-           "(id & match_mask) == match_value 的扩展帧应答(0x5B,从爪固件 >= 1.2.8)。\n\n"
-           "给电机 OTA 和协议探测用的底层工具,**不是控制接口**:它能发出任何帧,\n"
-           "包括使能、停止、改 CAN ID,所以控制环、自动标定、夹爪 OTA 运行时固件\n"
-           "会拒绝(SysBusy / OtaBusy -> ProtocolError)。\n\n"
-           "电机没回不是异常,返回 status == 1(NoReply)。match_mask=0 表示任何\n"
-           "扩展帧都算应答 —— 包括 500Hz 的状态帧,通常不是你要的。\n"
-           "reply_timeout_ms=0 只发不等,上限 2000。")
+           "Send one 29-bit extended frame on the motor CAN bus and wait on the MCU for\n"
+           "the first extended-frame reply satisfying (id & match_mask) == match_value\n"
+           "(0x5B, follower firmware >= 1.2.8).\n\n"
+           "A low-level tool for motor OTA and protocol probing, **not a control\n"
+           "interface**: it can send any frame, including enable, stop and CAN ID\n"
+           "changes, so the firmware rejects it while a control loop, auto-calibration\n"
+           "or gripper OTA is running (SysBusy / OtaBusy -> ProtocolError).\n\n"
+           "No reply from the motor is not an exception; it returns status == 1\n"
+           "(NoReply). match_mask=0 means any extended frame counts as the reply --\n"
+           "including the 500Hz status frames, usually not what you want.\n"
+           "reply_timeout_ms=0 sends without waiting; the maximum is 2000.")
         .def("set_startup_limit_torque", [](Motor& self, float torque_nm) {
             py::gil_scoped_release g; self.set_startup_limit_torque(torque_nm);
         }, py::arg("torque_nm"),
@@ -952,8 +989,9 @@ void bind_motor(py::module_& m) {
            "the firmware's control task is running.")
         .def("get_spec", [](Motor& self) {
             py::gil_scoped_release g; return self.get_spec();
-        }, "当前电机的型号规格(额定/峰值/量程)。设备是自身额定值的权威 —— "
-           "SDK 里的 MOTOR_*_TORQUE_NM 只是 EL05 的 fallback。字段为 0 表示未知。")
+        }, "Spec of the installed motor model (rated / peak / range). The device is the "
+           "authority on its own ratings -- MOTOR_*_TORQUE_NM in the SDK is only the EL05 "
+           "fallback. A field of 0 means unknown.")
         .def("get_startup_limit_torque", [](Motor& self) {
             py::gil_scoped_release g; return self.get_startup_limit_torque();
         }, "Read back the persisted power-on limit torque, N*m. Blocks for the ACK;\n"

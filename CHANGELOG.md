@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default is known), and a shipped image is checked against the manifest's
   CRC32. A bare image name also resolves under `firmware/`.
 
+### Changed
+
+- **Source code is English-only.** Comments, docstrings, pybind11 docstrings
+  and runtime text (log and exception messages, example output, argparse help)
+  across `cpp/`, `python/` and the examples were translated from Chinese.
+  Scripts or log filters that match on the old Chinese text need updating, for
+  example the follower's below-1.2.11 warning now reads `is below 1.2.11`.
+  Example table headers use short English labels at the same column widths.
+
 ## [0.4.3] - 2026-10-10
 
 _The `v0.4.3` tag was moved on 2026-10-18 to include the EL05 motor OTA

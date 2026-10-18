@@ -283,7 +283,7 @@ namespace HomeDiagFlag {
     constexpr std::uint8_t HasMoved  = 0x08;  // stall monitor saw real motion
 }
 
-// ---- 电机自身固件版本 (Cmd::GetMotorVersion 0x58, firmware >= 1.2.6) ------
+// ---- Motor's own firmware version (Cmd::GetMotorVersion 0x58, firmware >= 1.2.6)
 //
 // NOT the gripper firmware version — that is Cmd::GetVersion (0x01). This is
 // the version of the program running inside the motor module.
@@ -328,7 +328,7 @@ struct __attribute__((packed)) MotorFwVersionRecord {
 };
 constexpr size_t MOTOR_FW_VERSION_RECORD_SIZE = 8;
 
-// ---- 电机 CAN 扩展帧透传 (Cmd::MotorCanExtXfer 0x5B, firmware >= 1.2.8) ----
+// ---- Motor CAN extended-frame passthrough (Cmd::MotorCanExtXfer 0x5B, firmware >= 1.2.8)
 //
 // One frame out, then the first EXTENDED frame whose id satisfies
 // (id & match_mask) == match_value within timeout_ms comes back. A matched

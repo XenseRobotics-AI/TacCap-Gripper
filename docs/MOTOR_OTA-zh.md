@@ -48,8 +48,8 @@
 python python/examples/follower_status.py left
 ```
 
-看 `[fw]`（夹爪固件）和 `[motor fw]`（电机固件）两行。此时电机固件可能显示读不到：电机在 MIT 下、
-且夹爪里还没有记录时就是这样，属于正常现象。
+看 `[fw]`（夹爪固件）和 `[motor fw]`（电机固件）两行。此时 `[motor fw]` 可能显示 `unreadable`：
+电机在 MIT 下、且夹爪里还没有记录时就是这样，属于正常现象。
 
 ### 2. 第一遍：切到私有协议
 

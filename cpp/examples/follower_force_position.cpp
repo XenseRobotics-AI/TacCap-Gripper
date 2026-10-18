@@ -1,23 +1,28 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// 力位混合控制。
+// Force-position hybrid control.
 //
-// **全程只有一条控制律**,没有接触检测:
+// **There is a single control law throughout**, with no contact detection:
 //
 //     command(target, kp, kd, torque_budget = grasp_torque_nm)
 //
-// PD 请求对预算做误差钳位。自由行程只付摩擦,被挡住就钳在恰好的预算上并保持 ——
-// 不检测接触,**饱和本身就是接触**。SDK 0.2.0 删掉了主机侧的接触状态机:MCU 已经
-// 在 500Hz 跑同一个堵转判据并且是权威,主机再跑一份,同一个物理事件的两份副本
-// 会漂开,比只在任一侧跑都糟。
+// The PD request is error-clamped to the budget. Free travel only pays friction; when blocked,
+// it clamps at exactly the budget and holds — contact is not detected, **saturation is the
+// contact**. SDK 0.2.0 removed the host-side contact state machine: the MCU already runs the
+// same stall criterion at 500Hz and is authoritative; running a second copy on the host means
+// two copies of the same physical event drift apart, which is worse than running it on either
+// side alone.
 //
-// 闭合端点额外带一个有界前馈预压(close_preload_nm,默认 0.25 Nm),把爪子坐死在
-// 机械止点上。没有它,kp*(target-actual) 在目标处恰好归零,爪子到了就不再施力,
-// 齿隙留在那儿 —— 实测闭合位保持力矩只有 0.001 Nm。预压是从预算里**预留**而非
-// 叠加,所以「总请求不超过 grasp_torque_nm」这条不变量仍然成立。
+// The closed endpoint additionally carries a bounded feed-forward preload (close_preload_nm,
+// default 0.25 Nm) that seats the jaw firmly against the mechanical stop. Without it,
+// kp*(target-actual) goes exactly to zero at the target, the jaw stops applying force once it
+// arrives, and the backlash stays there — measured closed-position holding torque was only
+// 0.001 Nm. The preload is **reserved** out of the budget rather than added on top, so the
+// invariant "total request never exceeds grasp_torque_nm" still holds.
 //
-// holding 是观测量,不是状态跳转:命令用满了预算而爪子仍然没在走。在命令位置上
-// 报 holding 意味着预算被一次本该到位的移动用满了 —— 那是标定或映射出了问题。
+// holding is an observation, not a state transition: the command has used up the budget and
+// the jaw is still not moving. Reporting holding at the commanded position means the budget
+// was used up by a move that should have arrived — that is a calibration or mapping problem.
 
 #include "example_target.hpp"
 
@@ -40,7 +45,7 @@ int main(int argc, char** argv) {
     }
 
     ForcePositionConfig cfg;
-    cfg.grasp_torque_nm = 1.1f;   // 预算:自由行程用不到,被挡住时就停在这个值
+    cfg.grasp_torque_nm = 1.1f;   // budget: unused in free travel, settles here when blocked
     std::printf("[cfg] grasp=%.2f Nm  close_preload=%.2f Nm\n",
                 cfg.grasp_torque_nm, cfg.close_preload_nm);
 
@@ -52,13 +57,14 @@ int main(int argc, char** argv) {
 
     for (float tgt : targets) {
         c.set_target(tgt);
-        // 等停:等「到位」或「被挡住」,而不是固定睡一段 —— 固定等待既会截断慢
-        // 的运动,又会在快的运动上白等。
+        // Wait for settle: wait for "arrived" or "blocked" instead of sleeping a fixed time —
+        // a fixed wait both truncates slow moves and wastes time on fast ones.
         //
-        // 但不能直接等 arrived 变真:**set_target() 不会立刻清掉它**,要到下一个
-        // 控制拍才更新。上一次运动留下的 arrived=true 会让这个循环在爪子还没
-        // 开始动的时候就退出,于是量到的是行进中的位置。所以先等它变假(命令
-        // 被采纳),再等它变真。
+        // But you cannot just wait for arrived to become true: **set_target() does not clear it
+        // immediately**; it only updates on the next control tick. arrived=true left over from
+        // the previous move would make this loop exit before the jaw has even started moving,
+        // so the measured position would be mid-travel. So first wait for it to go false (the
+        // command has been accepted), then wait for it to go true.
         const auto t_accept = std::chrono::steady_clock::now() + 500ms;
         while (std::chrono::steady_clock::now() < t_accept && c.snapshot().arrived) {
             std::this_thread::sleep_for(5ms);
@@ -71,12 +77,12 @@ int main(int argc, char** argv) {
             if (s.arrived || s.holding) break;
             std::this_thread::sleep_for(10ms);
         }
-        std::this_thread::sleep_for(300ms);       // 让保持稳下来再采样
+        std::this_thread::sleep_for(300ms);       // let the hold settle before sampling
         s = c.snapshot();
 
         const float err = s.observation.position - tgt;
         std::printf("  target=%.2f -> %-17s pos=%.4f err=%+.4f cmd=%.3f "
-                    "实测=%+.3f Nm\n",
+                    "measured=%+.3f Nm\n",
                     tgt, to_string(s.state), s.observation.position, err,
                     s.commanded_torque_nm, s.observation.torque);
 
@@ -84,16 +90,18 @@ int main(int argc, char** argv) {
             std::printf("    FAULT: %s\n", s.fault_reason.c_str());
             ++failures;
         } else if (s.holding && std::abs(err) < 0.02f) {
-            // 上面那条不变式:在命令位置上报 holding 是标定/映射的问题。
-            std::printf("    **在命令位置上报 holding —— 检查标定与归一化映射**\n");
+            // The invariant above: holding at the commanded position is a calibration/mapping
+            // problem.
+            std::printf("    **holding reported at the commanded position — check calibration "
+                        "and the normalization mapping**\n");
             ++failures;
         } else if (!s.arrived && !s.holding) {
-            std::printf("    **既没到位也没被挡住:超时**\n");
+            std::printf("    **neither arrived nor blocked: timeout**\n");
             ++failures;
         }
     }
     c.stop();
 
-    std::printf("\n%zu 步,%d 个失败\n", sizeof(targets) / sizeof(targets[0]), failures);
+    std::printf("\n%zu steps, %d failures\n", sizeof(targets) / sizeof(targets[0]), failures);
     return failures ? 1 : 0;
 }

@@ -135,47 +135,49 @@ FollowerGripper::FollowerGripper(const Config& cfg)
             const std::string msg =
                 "\n"
                 "==========================================================\n"
-                "  从爪固件版本过低,必须升级后才能使用本 SDK\n"
                 "  Follower firmware too old -- upgrade required\n"
+                "  before using this SDK\n"
                 "----------------------------------------------------------\n"
-                "  当前 / current : " + fw_version_str + "\n"
-                "  需要 / required: 1.2.5 或更高 / or newer\n"
-                "  设备 / device  : " + cfg_.mcu_device + "\n"
-                "  SN             : " + fw_sn_str + "\n"
+                "  current : " + fw_version_str + "\n"
+                "  required: 1.2.5 or newer\n"
+                "  device  : " + cfg_.mcu_device + "\n"
+                "  SN      : " + fw_sn_str + "\n"
                 "----------------------------------------------------------\n"
-                "  1.1.6 引入运动安全包络:在此之前 MIT 命令路径上没有任何\n"
-                "  堵转保护,夹爪被挡住时力矩只受电机 0x700B 限制,24V 下实测\n"
-                "  会拉垮母线、松手掉件、整机掉电重启。\n"
+                "  1.1.6 introduced the motion safety envelope. Before it\n"
+                "  there was no stall protection at all on the MIT command\n"
+                "  path: with the gripper blocked, torque was limited only by\n"
+                "  motor 0x700B, and at 24 V this was measured to collapse\n"
+                "  the supply rail, drop the held part and brown out / reboot\n"
+                "  the whole unit.\n"
                 "\n"
-                "  1.2.5 把标定写入的闭合零位移到机械止点本身(此前 1.2.3 及\n"
-                "  更早内缩 20mrad、1.2.4 内缩 5mrad)。本 SDK 的闭合端预压\n"
-                "  (close_preload_nm)是按「归一化 0.0 就是止点」设计的;在更旧\n"
-                "  的固件上它会把爪子压过位置映射所说的完全闭合点 —— 力是有界的,\n"
-                "  但归一化刻度在闭合端不再表示它字面的意思。\n"
-                "\n"
-                "  Before 1.1.6: no stall protection on the MIT path at all.\n"
-                "  Before 1.2.5: the calibrated closed zero sat short of the\n"
-                "  mechanical stop, so this SDK's closed-endpoint preload\n"
-                "  presses past what normalized 0.0 claims to mean.\n"
+                "  1.2.5 moved the calibrated closed zero onto the mechanical\n"
+                "  stop itself (1.2.3 and earlier sat 20 mrad short, 1.2.4\n"
+                "  sat 5 mrad short). This SDK's closed-endpoint preload\n"
+                "  (close_preload_nm) is designed around \"normalized 0.0 is\n"
+                "  the stop\"; on older firmware it presses the jaw past the\n"
+                "  fully-closed point the position mapping claims -- the\n"
+                "  force is bounded, but at the closed end the normalized\n"
+                "  scale no longer means what it literally says.\n"
                 "----------------------------------------------------------\n"
-                "  升级 / upgrade:\n"
+                "  upgrade:\n"
                 "    python python/examples/ota_update.py slave\n"
                 "\n"
-                "  (role 选择器,自动找从爪并挑对应镜像;插了多台时也可用\n"
-                "   SN 精确指定: ota_update.py slave "
+                "  (role selector: finds the follower automatically and picks\n"
+                "   the matching image; with several plugged in, select one\n"
+                "   exactly by SN: ota_update.py slave "
                 + fw_sn_str + ")\n"
-                "  刷完后拔掉 24V 电源线约 2 秒再插回(USB 可不拔) /\n"
-                "  after flashing, unplug 24 V for ~2 s (USB may stay in)\n"
+                "  after flashing, unplug the 24 V power cable for ~2 s and\n"
+                "  plug it back in (USB may stay in)\n"
                 "==========================================================";
             logger()->error(msg);
             throw ProtocolError(msg);
         }
         if (!known) {
             logger()->warn(
-                "FollowerGripper: 读不到固件版本,无法确认是否 >= 1.2.5。"
-                "低于 1.1.6 时 MIT 路径上没有堵转保护;低于 1.2.5 时闭合端"
-                "预压会压过归一化 0.0 所表示的位置。"
-                " (could not read firmware version; 1.2.5 or newer is required)");
+                "FollowerGripper: could not read firmware version, cannot confirm it "
+                "is >= 1.2.5 (1.2.5 or newer is required). Below 1.1.6 there is no "
+                "stall protection on the MIT path; below 1.2.5 the closed-endpoint "
+                "preload presses past the position normalized 0.0 represents.");
         }
         // Below 1.2.11 the follower opens, but with a known field failure: one
         // control-UART overrun stops command reception for good while the
@@ -186,11 +188,12 @@ FollowerGripper::FollowerGripper(const Config& cfg)
         constexpr uint32_t recommended = (1u << 16) | (2u << 8) | 11u;
         if (known && have >= need && have < recommended) {
             logger()->warn(
-                "FollowerGripper: 从爪固件 {} 低于 1.2.11 —— 控制串口一次溢出后会"
-                "永久收不到命令(状态流照常,300ms 后夹持降到 0.35N·m、手指松开)。"
-                "建议升级: python python/examples/ota_update.py slave {} ,刷完拔插 24V。"
-                " (follower firmware below 1.2.11 can lose its command channel for "
-                "good after one UART overrun; upgrade recommended)",
+                "FollowerGripper: follower firmware {} is below 1.2.11 -- after one "
+                "control-UART overrun it permanently stops receiving commands (the "
+                "status stream continues as normal; 300ms later the grip drops to "
+                "0.35N·m and the fingers open). Upgrade recommended: "
+                "python python/examples/ota_update.py slave {} , then unplug and "
+                "replug 24V after flashing.",
                 fw_version_str, fw_sn_str);
         }
     }

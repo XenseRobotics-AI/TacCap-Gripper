@@ -114,9 +114,9 @@ enum class Cmd : uint8_t {
     GetMotorFault       = 0x52,    // V2.2 — MotorFaultReport (64B); req 0B (cached)
                                    //        or 1B non-zero (force a CAN read)
     GetMotorStatusExt   = 0x53,    // V2.2 — MotorStatusExt (72B), superset of 0x50
-    GetMotorSpec             = 0x56,  // 电机型号规格(40B)
-    GetHomeDiag              = 0x57,  // 自动标定诊断(64B)
-    GetMotorVersion          = 0x58,  // 电机自身固件版本(8B,仅私有协议)
+    GetMotorSpec             = 0x56,  // motor model spec (40B)
+    GetHomeDiag              = 0x57,  // auto-calibration diagnostics (64B)
+    GetMotorVersion          = 0x58,  // motor's own firmware version (8B, private protocol only)
     // Which actuator this gripper is built around. NOT a query to the motor:
     // the motor cannot answer it (its version frame carries only a version
     // number, neither manual's parameter table has a model field, and private
@@ -125,15 +125,17 @@ enum class Cmd : uint8_t {
     // It matters because MIT frames quantise torque and velocity against the
     // model's ranges, so the wrong model is not an error -- it is a fixed
     // scale factor on every frame (EL05 +/-6 Nm vs RS00 +/-14 Nm).
-    GetMotorModel            = 0x59,  // 本机记录的电机型号(20B)
-    SetMotorModel            = 0x5A,  // 写电机型号(1B),掉电保持,重启生效
+    GetMotorModel            = 0x59,  // motor model recorded on this unit (20B)
+    SetMotorModel            = 0x5A,  // write motor model (1B); survives power-off,
+                                      // takes effect on reboot
     // Send one arbitrary 29-bit extended frame onto the motor's CAN bus and
     // wait for the first matching extended reply (firmware 1.2.8+). The
     // building block for host-side motor OTA and protocol probing. Refused
     // while the control loop, auto-calibration or a gripper OTA is running:
     // it can emit any frame, enable and stop included.
-    MotorCanExtXfer          = 0x5B,  // 扩展帧透传(req 24B / resp 16B)
-    SetMotorFwVersion        = 0x5C,  // 记电机固件版本进 flash(req 4B / resp 8B),fw >= 1.2.14
+    MotorCanExtXfer          = 0x5B,  // extended-frame passthrough (req 24B / resp 16B)
+    SetMotorFwVersion        = 0x5C,  // store motor fw version in flash (req 4B / resp 8B),
+                                      // fw >= 1.2.14
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

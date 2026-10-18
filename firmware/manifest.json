@@ -19,7 +19,7 @@
       "size_bytes": 167544,
       "crc32": "0x4a8cd360",
       "sn_suffix": "s",
-      "protocol": "V2.8 + 运动安全包络",
+      "protocol": "V2.8 + motion envelope",
       "build": "local",
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
       "note": "Stops decoding the motor's echo frames as status. A RobStride motor takes an MIT motion frame whose byte 0 equals its own CAN ID for another command and answers on 0xFD with the frame's first four bytes and zeros in bytes 4-7; byte 0 is the target position's high byte, and the factory ID 127 (0x7F) is -0.098..0 rad -- a LEFT-hand RS00's closed end. 1.2.15 decoded each echo as status (temperature 0, torque -t_max, position clamped to the far end), the envelope clamp then dragged the target toward the open end and the jaw was thrown open: force-position never closed to 0.0 on 0089s. The real fix is the CAN ID (RS00 followers: left 17, right 18, written by the factory config tool); this image is the backstop. Carries 1.2.15 (RS00 open direction from the SN's side). Verified on 0089s (left) / 0094s (right). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."

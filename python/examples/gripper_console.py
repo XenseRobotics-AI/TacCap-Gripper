@@ -1,41 +1,54 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""单个 follower 夹爪的键盘交互控制台 —— 走 SDK 控制器,不裸发 MIT 帧。
+"""Keyboard console for a single follower gripper — goes through the SDK
+controllers, never sends bare MIT frames.
 
-原版控制台直接调 `motor.submit_impedance()`。那是**电机原语**:拼一帧 MIT 丢上
-总线,没有误差钳位、没有力矩天花板、没有堵转保护 —— 主机侧的保护一层都不在它
-的路径上(见 cpp/src/components/motor.cpp)。kp=20 顶住硬物体再把目标压到全闭,
-kp x 位置误差一路涨到电机自己的 0x700B 上限(该型号的 t_max:EL05 6 Nm /
-RS00 14 Nm),24 V 母线被电流拉垮:松手
-掉件,状态位打出 EN|FAULT|UNDER_VOLT,此后无力矩,必须重新上电。
+The original console called `motor.submit_impedance()` directly. That is a
+**motor primitive**: it packs one MIT frame and drops it on the bus, with no
+error clamp, no torque ceiling and no stall protection — not one layer of
+host-side protection is on its path (see cpp/src/components/motor.cpp). With
+kp=20 against a hard object and the target pushed to fully closed, kp x position
+error kept rising up to the motor's own 0x700B limit (that model's t_max: EL05
+6 Nm / RS00 14 Nm), and the current dragged the 24 V bus down: the jaw let go
+and dropped the part, the status bits read EN|FAULT|UNDER_VOLT, and from then on
+there was no torque until a power cycle.
 
-这一版把控制交给 SDK 的两个控制器,并把固件侧的运动安全包络一起配好。
+This version hands control to the SDK's two controllers and configures the
+firmware-side motion safety envelope along with them.
 
-    --mode impedance       ImpedanceController —— 误差钳位 + 力矩天花板 + 堵转保持
-    --mode force-position  ForcePositionController —— 全程一条有界力矩控制律,饱和即接触
+    --mode impedance       ImpedanceController — error clamp + torque ceiling
+                           + stall hold
+    --mode force-position  ForcePositionController — one bounded-torque control
+                           law throughout, saturation is contact
 
-要记住的一条:**固件包络是唯一在 MIT
-路径上、谁都绕不过的一层**,而它出厂默认不启用(GripperConfig.reserved 全 0)。
-不开就没有,主机侧这两个控制器也替代不了它 —— 100 Hz 相位锁的链路,主机反应
-下限几十毫秒,8 rad/s 下就是 0.24 rad。用 --set-envelope 写一次,掉电保持。
+The one thing to remember: **the firmware envelope is the only layer on the MIT
+path that nobody can bypass**, and it ships disabled (GripperConfig.reserved all
+0). If it is not turned on, it is not there, and the two host-side controllers
+cannot replace it — over a 100 Hz phase-locked link the host reacts in tens of
+milliseconds at best, which at 8 rad/s is 0.24 rad. Write it once with
+--set-envelope; it persists across power loss.
 
-包络填什么不是使用者要回答的问题,所以这里没有数值旋钮:设备自己知道它装的电机
-额定多少,而固件无论写进去什么都按那个额定钳。--show-envelope 会把**存的**和
-**实际生效的**分开打印 —— 那两个数会不一样。
+What to put in the envelope is not a question for the user, so there are no
+numeric knobs here: the device knows the rating of the motor it carries, and the
+firmware clamps to that rating whatever is written. --show-envelope prints the
+**stored** and the **actually effective** values separately — those two numbers
+will differ.
 
-用法
+Usage
     python python/examples/gripper_console.py --show-envelope
     python python/examples/gripper_console.py --set-envelope
     python python/examples/gripper_console.py --mode force-position --grasp-torque 0.8
 
-按键
-    j / k   — 目标开度 + / -(一个 --step;归一化 0..1,0=闭合 1=张开)
-    o       — 全开(1.0)          c — 全合(0.0)
-    h       — 保持当前位置(仅力位混合)
-    e / d   — 恢复控制/失能         f — 清故障(力位混合同时 reset 出 Fault)
-    q / ESC — 退出
+Keys
+    j / k   — target opening + / - (one --step; normalized 0..1, 0=closed 1=open)
+    o       — fully open (1.0)       c — fully closed (0.0)
+    h       — hold current position (force-position only)
+    e / d   — resume control/disable
+    f       — clear fault (force-position also resets out of Fault)
+    q / ESC — quit
 
-安全:真实运动。退出路径必定先 stop()(下发零力矩)再 disable()。
+Safety: real motion. The exit path always calls stop() (sends zero torque) first,
+then disable().
 """
 
 from __future__ import annotations
@@ -59,18 +72,22 @@ from xense.taccap import (
     log,
 )
 
-# argparse 的默认值全部是 None,真正的默认在设备打开之后由它自报的电机规格推出
-# (ImpedanceConfig.for_spec / ForcePositionConfig.for_spec)。
+# Every argparse default is None; the real defaults are derived, after the device
+# is opened, from the motor spec it reports (ImpedanceConfig.for_spec /
+# ForcePositionConfig.for_spec).
 #
-# 不能在这里写死:EL05 的持续夹持是 1.1 Nm,RS00 是 3.6 —— 差 3.3 倍,而那正是
-# 换电机的理由。更隐蔽的是 kd:接近速度是 预算/kd,写死 kd 会让"夹得更紧"顺带
-# 变成"撞得更快"。这两件事必须一起由电机决定。
+# They cannot be hardcoded here: EL05 sustained grip is 1.1 Nm, RS00 is 3.6 — a
+# 3.3x difference, and that is exactly the reason for changing motors. The subtler
+# one is kd: approach speed is budget/kd, so a hardcoded kd turns "grip harder"
+# into "crash faster" as a side effect. Both must be decided by the motor together.
 #
-# (历史:--rated-torque 曾经硬编码 2.0,SDK 把上界从峰值收到额定后没人改它,
-#  阻抗模式默认参数崩了十天。写死默认值的代价这里付过一次了。)
+# (History: --rated-torque was once hardcoded to 2.0; nobody changed it after the
+#  SDK lowered the upper bound from peak to rated, and impedance mode's default
+#  arguments were broken for ten days. This file has already paid the price of a
+#  hardcoded default once.)
 
 
-# ── 状态位(protocol::MotorStatusBit) ────────────────────────────────────────
+# ── Status bits (protocol::MotorStatusBit) ───────────────────────────────────
 
 _STATUS_BITS = [
     (1, "EN"),
@@ -93,11 +110,11 @@ def _status_str(mask: Optional[int]) -> str:
     return "|".join(bits) if bits else f"0x{mask:02X}"
 
 
-# ── 键盘原始模式 ──────────────────────────────────────────────────────────────
+# ── Keyboard raw mode ─────────────────────────────────────────────────────────
 
 
 class RawKeyboard:
-    """将 stdin 切换到 non-blocking 原始模式,逐字节 poll。"""
+    """Switch stdin to non-blocking raw mode and poll it byte by byte."""
 
     def __enter__(self):
         self._saved = termios.tcgetattr(sys.stdin.fileno())
@@ -120,44 +137,55 @@ class RawKeyboard:
             return None
 
 
-# ── 两种后端 ──────────────────────────────────────────────────────────────────
+# ── Two backends ──────────────────────────────────────────────────────────────
 #
-# 控制器自己拥有状态流和控制路径:不要再调 g.start_streaming(),也不要注册
-# motor.on_status() —— 观测一律从 observation()/snapshot() 取,控制期间不碰总线。
+# The controller owns the status stream and the control path: do not also call
+# g.start_streaming(), and do not register motor.on_status() — all observations
+# come from observation()/snapshot(), and nothing touches the bus while
+# controlling.
 
 
 class ImpedanceBackend:
-    """ImpedanceController:误差钳位 + 力矩天花板,带状态机。
+    """ImpedanceController: error clamp + torque ceiling, with a state machine.
 
-    被挡住时误差钳位饱和在 max_position_torque_nm 上并保持,那就是夹持力;
-    天花板只兜底实测力矩。所有字段来自同一个 snapshot(),同一把锁。
+    When blocked, the error clamp saturates at max_position_torque_nm and holds
+    there; that is the grip force. The ceiling is only a backstop on measured
+    torque. All fields come from the same snapshot(), under the same lock.
     """
 
     label = "IMPEDANCE"
 
     def __init__(self, g: FollowerGripper, args):
-        # 默认值来自设备自报的电机规格,不是编译期常量 —— EL05 和 RS00 的持续
-        # 夹持差 3.3 倍,而 kd 又跟着预算走好让接近速度不变。
+        # Defaults come from the motor spec the device reports, not compile-time
+        # constants — EL05 and RS00 sustained grip differ by 3.3x, and kd follows
+        # the budget so that approach speed stays the same.
         cfg = ImpedanceConfig.for_spec(g.motor.get_spec())
         if args.kp is not None:
-            cfg.kp = args.kp  # 刚度 Nm/rad
+            cfg.kp = args.kp  # stiffness Nm/rad
         if args.kd is not None:
-            cfg.kd = args.kd  # 阻尼 Nm·s/rad,同时定接近速度
-        # 误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。主保护 —— 它同时
-        # 限住了「接近」和「堵转」,而只防堵转是不够的:实测不钳位的大步进会以
-        # 5.5 rad/s 掠过物体把它撞飞,全程力矩不到 0.03 Nm,没有持续接触可检测。
+            cfg.kd = args.kd  # damping Nm·s/rad, also sets approach speed
+        # Error clamp: the commanded target is limited to within ±(this/kp) rad of
+        # the measured position. The main protection — it bounds both "approach"
+        # and "stall", and guarding only against stall is not enough: measured, an
+        # unclamped large step sweeps past the object at 5.5 rad/s and knocks it
+        # away, with under 0.03 Nm of torque the whole time and no sustained
+        # contact to detect.
         if args.max_position_torque is not None:
             cfg.max_position_torque_nm = args.max_position_torque
-        # 力矩天花板:作用在实测力矩上(不是命令值)。顶住后改发 kp=kd=0 的纯前馈
-        # 帧,位置误差再也加不进输出。上限是额定 1.8 而非峰值 6.0 —— 这个保持无限期。
+        # Torque ceiling: acts on measured torque (not the commanded value). Once
+        # hit, it switches to pure-feedforward frames with kp=kd=0, so position
+        # error can no longer add to the output. The cap is rated 1.8, not peak
+        # 6.0 — this hold is indefinite.
         if args.rated_torque is not None:
             cfg.rated_torque_nm = args.rated_torque
-        # 前馈保持 0。它一度被加进来是为了在失速跳闸后还剩点力,而那个守卫已经
-        # 删了 —— 现在误差钳位自己就保持在预算上。再给前馈只会叠加在总命令上,
-        # 把持续夹持力抬到预算之上,正好绕过"预算必须能无限期保持"这个选择。
-        # status_timeout_ms / motor_stream_hz 用默认值(350 ms / 100 Hz)。
+        # Feedforward stays 0. It was once added to leave some force after a stall
+        # trip, but that guard has been removed — the error clamp now holds at the
+        # budget by itself. Adding feedforward would only stack on the total
+        # command and lift the sustained grip above the budget, bypassing exactly
+        # the choice that "the budget must be holdable indefinitely".
+        # status_timeout_ms / motor_stream_hz use the defaults (350 ms / 100 Hz).
         self.ctl = ImpedanceController(g, cfg)
-        self.cfg = cfg  # 标题行显示**生效值**,不是命令行原值
+        self.cfg = cfg  # header shows the **effective values**, not the raw CLI values
         self._snap = None
 
     def start(self):
@@ -180,7 +208,10 @@ class ImpedanceBackend:
         self.ctl.reset()
 
     def hold(self) -> Optional[float]:
-        """停在当前位置。返回新的目标,None 表示还没有观测可用。"""
+        """Stop at the current position.
+
+        Returns the new target, None if no observation is available yet.
+        """
         s = self._snap or self.ctl.snapshot()
         if not s.observation.valid:
             return None
@@ -204,26 +235,32 @@ class ImpedanceBackend:
 
 
 class ForcePositionBackend:
-    """ForcePositionController:全程一条有界力矩控制律。
+    """ForcePositionController: one bounded-torque control law throughout.
 
-    误差钳位在 grasp_torque_nm,饱和即接触,没有单独的接触判定。
+    The error is clamped at grasp_torque_nm; saturation is contact, there is no
+    separate contact detection.
     """
 
     label = "FORCE-POSITION"
 
     def __init__(self, g: FollowerGripper, args):
-        # 同上:grasp / hold / motion / close_speed 全部按设备的电机推出来。
+        # Same as above: grasp / hold / motion / close_speed are all derived from
+        # the device's motor.
         cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
         if args.grasp_torque is not None:
-            cfg.grasp_torque_nm = args.grasp_torque  # 力矩预算 = 夹持力
-        # 闭合速度与 grasp **是独立的**。曾经有过 grasp/close_speed 的耦合规则
-        # (行程阻尼增益当年就是这个比值),现在斜坡自己调速、预算拆分定增益,
-        # 所以慢就只是慢 —— 见 force_position_controller.cpp 的 validate_config。
+            cfg.grasp_torque_nm = args.grasp_torque  # torque budget = grip force
+        # Close speed **is independent** of grasp. There used to be a coupling rule
+        # between grasp/close_speed (the travel damping gain was that ratio back
+        # then); now the ramp sets the speed itself and the budget split sets the
+        # gains, so slow is just slow — see validate_config in
+        # force_position_controller.cpp.
         if args.close_speed is not None:
             cfg.close_speed_radps = args.close_speed
-        # hold/motion 上限也来自电机(EL05 1.8/6.0,RS00 5.0/14.0)。
-        # 位置增益不是可配项(接触判定常数已随状态机一起删掉):它们是实测值,
-        # 对这台夹爪只有一个正确答案。--kp/--kd 仍然喂 ImpedanceBackend。
+        # The hold/motion limits also come from the motor (EL05 1.8/6.0, RS00
+        # 5.0/14.0). Position gains are not configurable (the contact-detection
+        # constants were removed together with the state machine): they are
+        # measured values, and for this gripper there is only one right answer.
+        # --kp/--kd still feed ImpedanceBackend.
         self.ctl = ForcePositionController(g, cfg)
         self.cfg = cfg
         self._snap = None
@@ -260,7 +297,7 @@ class ForcePositionBackend:
         return out
 
     def open_full(self):
-        # 有界速度阻尼张开,而不是位置阶跃。
+        # Open with bounded velocity damping, not a position step.
         self.ctl.release()
 
     def hold(self) -> Optional[float]:
@@ -269,7 +306,8 @@ class ForcePositionBackend:
         return s.hold_position
 
     def after_fault_clear(self):
-        # 顺序是硬性的:先 motor.clear_fault(),再 reset() 退出 Fault 态。
+        # The order is mandatory: motor.clear_fault() first, then reset() to leave
+        # the Fault state.
         self.ctl.reset()
 
 
@@ -297,15 +335,16 @@ def _redraw(
             + "-".rjust(9)
             + "-".rjust(17)
         )
-        age = "age=  —  (还没收到状态帧)"
+        age = "age=  —  (no status frame received yet)"
     lines = [
         head,
         envline,
         "  j/k=open-/+  o=open  c=close  h=hold  e/d=en/dis  f=fault_clear  q=quit",
         f"{'Tgt[0-1]':>10}{'Act[0-1]':>10}{'Act(rad)':>11}"
-        # Vel/Torq 是夹爪坐标系:**正 = 闭合**。电机装配方向已被消掉,所以两台
-        # 装反的爪子上同一个动作符号相同(0.3.1 之前不是这样)。
-        f"{'Vel(+闭合)':>10}{'Torq(+闭合)':>10}{'Temp(C)':>9}{'State':>17}",
+        # Vel/Torq are in the gripper frame: **positive = closing** ("cls"). The
+        # motor mounting direction has been cancelled out, so the same motion
+        # has the same sign on two mirror-mounted jaws (not so before 0.3.1).
+        f"{'Vel(+cls)':>10}{'Torq(+cls)':>10}{'Temp(C)':>9}{'State':>17}",
         "-" * 77,
         row,
         "  " + backend.detail(),
@@ -328,46 +367,59 @@ def main() -> int:
         "--mode",
         default="impedance",
         choices=("impedance", "force-position"),
-        help="阻抗 (ImpedanceController) 或力位混合 (ForcePositionController)",
+        help="impedance (ImpedanceController) or force-position hybrid "
+        "(ForcePositionController)",
     )
-    ap.add_argument("--kp", type=float, default=None, help="刚度 Nm/rad(默认 20)")
+    ap.add_argument(
+        "--kp", type=float, default=None, help="stiffness Nm/rad (default 20)"
+    )
     ap.add_argument(
         "--kd",
         type=float,
         default=None,
-        help="阻尼 Nm·s/rad。**同时决定接近速度**(≈ 预算/kd)。默认由电机推出,"
-        "让接近速度落在 1.1 rad/s(MOTOR_APPROACH_SPEED_RADPS)",
+        help="damping Nm·s/rad. **Also sets approach speed** (≈ budget/kd). The "
+        "default is derived from the motor so that approach speed lands at 1.1 "
+        "rad/s (MOTOR_APPROACH_SPEED_RADPS)",
     )
     ap.add_argument(
         "--hz",
         type=float,
         default=100.0,
-        help="UI 刷新率。控制提交率不由它决定 —— 两个控制器都锁在状态流的"
-        "相位上,一帧一提交",
+        help="UI refresh rate. It does not set the control submit rate — both "
+        "controllers are locked to the status stream's phase, one submit per frame",
     )
     ap.add_argument(
-        "--step", type=float, default=0.05, help="j/k 步进量(归一化 0..1,默认 0.05)"
+        "--step",
+        type=float,
+        default=0.05,
+        help="j/k step size (normalized 0..1, default 0.05)",
     )
-    # ---- 阻抗模式的两层主机侧保护 ----
+    # ---- Impedance mode's two layers of host-side protection ----
     ap.add_argument(
         "--max-position-torque",
         type=float,
         default=None,
         dest="max_position_torque",
-        help="力矩预算/误差钳位:命令目标限制在实测位置 ±(该值/kp) rad 内。"
-        "被挡住时命令饱和在这里并一直保持,那就是夹持力。默认取电机自报的"
-        "**连续堵转额定**(EL05 1.10 / RS00 3.60),须低于 --rated-torque",
+        help="torque budget/error clamp: the commanded target is limited to within "
+        "±(this/kp) rad of the measured position. When blocked, the command "
+        "saturates here and stays there; that is the grip force. Defaults to the "
+        "motor's reported **continuous stall rating** (EL05 1.10 / RS00 3.60); "
+        "must be below --rated-torque",
     )
-    # 默认值从 MOTOR_RATED_TORQUE_NM 派生,不要再写字面量:这里原本硬编码 2.0,
-    # 而 aa3d0a9 把 ImpedanceConfig 的上界从峰值 6.0 收到额定 1.8(那个保持是
-    # 无限期的,所以按额定封顶),两边就此错开,阻抗模式默认参数直接抛 ValueError。
+    # The default is derived from MOTOR_RATED_TORQUE_NM; do not write a literal
+    # again: this was originally hardcoded to 2.0, and aa3d0a9 lowered
+    # ImpedanceConfig's upper bound from peak 6.0 to rated 1.8 (that hold is
+    # indefinite, so it is capped at rated). The two drifted apart, and impedance
+    # mode's default arguments threw ValueError outright.
     ap.add_argument(
         "--rated-torque",
         type=float,
         default=None,
         dest="rated_torque",
-        help="力矩天花板:实测力矩到顶后转纯前馈保持。默认取电机自报的**旋转额定**"
-        "(EL05 1.80 / RS00 5.00);start() 会拿设备实际额定卡它",
+        help="torque ceiling: once measured torque hits it, switch to a pure "
+        "feedforward hold. Defaults to the motor's reported **rotating rating** "
+        "(EL05 1.80 / RS00 5.00); start() checks it against the device's actual "
+        "rating",
     )
     # ---- ForcePositionController ----
     ap.add_argument(
@@ -375,32 +427,37 @@ def main() -> int:
         type=float,
         default=None,
         dest="grasp_torque",
-        help="力矩预算 Nm = 夹持力(误差钳位的上限,被挡住时饱和在这里)。默认取电机"
-        "自报的**连续堵转额定**(EL05 1.10 / RS00 3.60),不能超过它 —— 超过时 "
-        "start() 直接拒绝。被挡住的爪子会无限期坐在这个力矩上,没有任何东西给它计时",
+        help="torque budget Nm = grip force (the error clamp's upper bound; "
+        "saturates here when blocked). Defaults to the motor's reported "
+        "**continuous stall rating** (EL05 1.10 / RS00 3.60) and cannot exceed it "
+        "— start() rejects it outright if it does. A blocked jaw sits at this "
+        "torque indefinitely, and nothing times it",
     )
     ap.add_argument(
         "--close-speed",
         type=float,
         default=None,
         dest="close_speed",
-        help="闭合速度 rad/s,默认 1.1(MOTOR_APPROACH_SPEED_RADPS)。它与 "
-        "--grasp-torque **是独立的** —— 曾经有过 grasp/close_speed 的耦合规则,"
-        "因为行程阻尼增益当年就是这个比值;现在斜坡自己调速、预算拆分定增益,"
-        "所以慢就只是慢",
+        help="close speed rad/s, default 1.1 (MOTOR_APPROACH_SPEED_RADPS). It "
+        "**is independent** of --grasp-torque — there used to be a coupling rule "
+        "between grasp/close_speed, because the travel damping gain was that ratio "
+        "back then; now the ramp sets the speed itself and the budget split sets "
+        "the gains, so slow is just slow",
     )
-    # ---- 固件运动安全包络 ----
+    # ---- Firmware motion safety envelope ----
     ap.add_argument(
         "--show-envelope",
         action="store_true",
-        help="打印包络(存的 / 实际生效的)后退出,只读",
+        help="print the envelope (stored / actually effective) and exit; read-only",
     )
     ap.add_argument(
         "--set-envelope",
         action="store_true",
-        help="按设备自报的电机额定修好包络后继续。**写 MCU flash**,掉电保持;"
-        "已经正确就什么都不写。设备报了规格时 cont/peak 严格等于额定,偏低也修;"
-        "只有规格未知时才保留更严的原值",
+        help="fix the envelope to the motor rating the device reports, then "
+        "continue. **Writes MCU flash**, persists across power loss; writes nothing "
+        "if already correct. When the device reports a spec, cont/peak are set "
+        "exactly to the rating, and values that are too low are fixed too; the "
+        "stricter existing value is kept only when the spec is unknown",
     )
     args = ap.parse_args()
 
@@ -408,28 +465,37 @@ def main() -> int:
     g, ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
-    # ---- 运动安全包络:固件侧、MIT 路径上唯一绕不过的一层 ----
+    # ---- Motion safety envelope: firmware-side, the only layer on the MIT path
+    # ---- that cannot be bypassed
     #
-    # 这里没有数值旋钮,这是有意的。包络该填什么不是调用方的问题:设备自己知道它
-    # 装的电机额定多少,而固件无论写进去什么都按那个额定钳。数由 SDK 从设备读。
+    # There are no numeric knobs here, on purpose. What the envelope should hold is
+    # not the caller's question: the device knows the rating of the motor it
+    # carries, and the firmware clamps to that rating whatever is written. The SDK
+    # reads the numbers from the device.
     #
-    # 要看清的是 stored 与 effective 的区别 —— 固件把 cont 钳下去这件事只记在一条
-    # 没接到 USB 的 UART 上,而读回的是 flash 里的记录。实测 0015s 存着 1.800、
-    # 一直按 1.100 跑,而这个控制台以前只会显示 1.800。
+    # What matters is the difference between stored and effective — the firmware
+    # logs clamping cont down only on a UART that is not wired to USB, while what
+    # reads back is the record in flash. Measured: 0015s stored 1.800 and ran at
+    # 1.100 all along, and this console used to show only 1.800.
     a = g.audit_envelope()
     print(f"[envelope] stored    {a.stored}")
     print(
-        f"[envelope] effective {a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+        f"[envelope] effective {a.effective if a.effective else '*** firmware enforces nothing ***'}"
     )
     if not a.ok:
         print(f"[warn] {a.detail}")
         if a.needs_write:
-            print("       用 --set-envelope 修一次(写 MCU flash,掉电保持)。")
+            print(
+                "       Fix it once with --set-envelope (writes MCU flash, "
+                "persists across power loss)."
+            )
 
     if args.set_envelope:
         w = g.ensure_envelope()
         print(
-            f"[envelope] 已写入 {w.written}" if w.wrote else "[envelope] 已正确,未写入"
+            f"[envelope] written {w.written}"
+            if w.wrote
+            else "[envelope] already correct, not written"
         )
         a = g.audit_envelope()
 
@@ -439,31 +505,36 @@ def main() -> int:
     cfg = g.get_gripper_config()
     norm_ok = bool(cfg.flags & 0x0001)
     if not norm_ok:
-        log.warning("gripper not calibrated —— Act[0-1] 显示 N/A")
+        log.warning("gripper not calibrated — Act[0-1] shows N/A")
 
     Backend = {"impedance": ImpedanceBackend, "force-position": ForcePositionBackend}[
         args.mode
     ]
     backend = Backend(g, args)
 
-    # 存的值超出堵转额定时,把固件实际执行的数一起显示 —— 只显示 flash 里的值
-    # 会让人以为设置生效了。
+    # When the stored value exceeds the stall rating, also show the number the
+    # firmware actually enforces — showing only the value in flash would make it
+    # look as if the setting took effect.
     eff = a.effective
     envline = (
         f"  envelope: cont={eff.cont_torque_nm:.3f} "
         f"peak={eff.peak_torque_nm:.3f} Nm  "
         f"temp={eff.temp_derate_start_c or 90}/{eff.temp_wall_c or 100}C  ENFORCED"
         if eff
-        else "  envelope: *** 未生效 —— 固件不钳 kp x 误差,I2t 与温度墙也不生效 ***"
+        else "  envelope: *** NOT ENFORCED — firmware does not clamp kp x error, "
+        "I2t and the temperature wall are not in effect either ***"
     )
-    # 显示的是**生效值**而不是命令行原值 —— 现在这些默认值由设备的电机规格推出来
-    # (for_spec),命令行不给就是 None,直接格式化会抛 TypeError。
+    # This shows the **effective values**, not the raw CLI values — these defaults
+    # are now derived from the device's motor spec (for_spec); when not given on
+    # the command line they are None, and formatting them directly would raise
+    # TypeError.
     #
-    # 只在阻抗模式显示增益:力位模式的位置增益不是可配项(在
-    # detail::ForcePositionTuning 里),把它印在标题上会让人以为它生效了。
+    # Gains are shown only in impedance mode: force-position mode's position gains
+    # are not configurable (they live in detail::ForcePositionTuning), and printing
+    # them in the header would make it look as if they took effect.
     c = backend.cfg
     gains = (
-        f"  预算={c.max_position_torque_nm:.2f}Nm kp={c.kp:.1f} kd={c.kd:.2f}"
+        f"  budget={c.max_position_torque_nm:.2f}Nm kp={c.kp:.1f} kd={c.kd:.2f}"
         f" ({c.max_position_torque_nm / c.kd:.1f}rad/s)"
         if args.mode == "impedance"
         else f"  grasp={c.grasp_torque_nm:.2f}Nm close={c.close_speed_radps:.2f}rad/s"
@@ -486,12 +557,15 @@ def main() -> int:
 
     try:
         g.motor.clear_fault()
-        backend.start()  # 控制器自己起状态流,并以当前位置播种,不会跳变
+        backend.start()  # controller starts its own status stream, seeded at the
+        # current position, so there is no jump
         g.motor.enable()
         controller_active = True
 
-        # 等首帧,用实际开度初始化本地目标。控制器 start() 已经播过种了,这里
-        # 只是让 UI 和按键从同一个数出发 —— 不主动下发,避免多余的一次命令。
+        # Wait for the first frame and initialize the local target from the actual
+        # opening. The controller's start() has already seeded itself; this only
+        # makes the UI and the keys start from the same number — nothing is sent,
+        # to avoid one redundant command.
         target = 0.0
         deadline_init = time.monotonic() + 3.0
         while time.monotonic() < deadline_init:
@@ -568,7 +642,7 @@ def main() -> int:
                 time.sleep(period)
     finally:
         try:
-            backend.stop()  # stop() 先下发零力矩
+            backend.stop()  # stop() sends zero torque first
         except Exception as exc:
             print(f"\r\nstop: {exc}")
         try:

@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""边控制边读状态:控制器跑着的时候,状态从哪里拿。
+"""Read status while controlling: where to get state while a controller runs.
 
-**控制期间不要调 `motor.read_status()`。** 那是一次命令往返,它的 ACK 会和控制帧
-在同一条串口上撞车。控制器已经持有电机状态流,所以状态是白拿的:
+**Do not call `motor.read_status()` during control.** It is a command round
+trip, and its ACK collides with control frames on the same serial port. The
+controller already owns the motor status stream, so state comes for free:
 
-    s = c.snapshot()          # 非阻塞,不发任何命令
-    s.observation.position    # 归一化开度 [0,1]
-    s.observation.torque      # 反馈力矩 Nm
+    s = c.snapshot()          # non-blocking, sends no commands
+    s.observation.position    # normalized opening [0,1]
+    s.observation.torque      # feedback torque Nm
     s.state / s.arrived / s.holding
 
-`snapshot()` 在**一把锁下**取出整份视图,所以 state、observation、命令力矩描述的
-是同一时刻。分字段去读会拼出一个从没存在过的状态 —— 位置来自这一帧、状态来自
-下一帧。
+`snapshot()` takes the whole view **under one lock**, so state, observation
+and commanded torque describe the same instant. Reading field by field stitches
+together a state that never existed -- position from this frame, state from
+the next.
 
-`observation.age_ms` 是这份观测的年龄。它是判断「流还活着」的正确依据:帧还在推
-不等于内容在更新(见 follower_status.py 里状态冻结那个坑)。
+`observation.age_ms` is the age of this observation. It is the correct basis
+for judging "the stream is alive": frames still being pushed does not mean
+the content is updating (see the status-freeze trap in follower_status.py).
 
-控制回路和读回路**频率不同是常态**:控制按状态流相位走 100 Hz,而策略/日志往往
-只要 10~30 Hz。两边不需要对齐,snapshot() 随便什么时候调都给最新的一致视图。
+The control loop and the read loop **normally run at different rates**:
+control runs at 100 Hz phase-locked to the status stream, while policy/logging
+often needs only 10~30 Hz. The two need no alignment; snapshot() called at any
+time gives the latest consistent view.
 
-用法
+Usage
     python python/examples/control_and_read.py right
     python python/examples/control_and_read.py --read-hz 20 --seconds 8
 """
@@ -44,13 +49,14 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _target.add_target_argument(ap)
-    ap.add_argument("--read-hz", type=float, default=10.0, help="读状态的频率")
-    ap.add_argument("--seconds", type=float, default=8.0, help="总时长")
+    ap.add_argument("--read-hz", type=float, default=10.0, help="status read rate")
+    ap.add_argument("--seconds", type=float, default=8.0, help="total duration")
     ap.add_argument(
         "--grasp-torque",
         type=float,
         default=None,
-        help="力矩预算 Nm。默认取电机的连续堵转额定(EL05 1.1 / RS00 3.6),不能超过它",
+        help="torque budget Nm. Defaults to the motor's continuous stall rating "
+        "(EL05 1.1 / RS00 3.6); must not exceed it",
     )
     args = ap.parse_args()
 
@@ -58,25 +64,27 @@ def main() -> int:
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
 
-    # 按设备实际装的电机取默认值 —— EL05 和 RS00 的持续夹持差 3.3 倍
+    # Defaults come from the motor actually fitted -- EL05 and RS00 sustained
+    # grip differ by 3.3x
     cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
     if args.grasp_torque is not None:
         cfg.grasp_torque_nm = args.grasp_torque
     c = ForcePositionController(g, cfg)
     c.start()
 
-    # 控制侧:每 2 秒换一个目标。读侧:按 --read-hz 独立采样,不和控制对齐。
+    # Control side: a new target every 2 s. Read side: samples independently at
+    # --read-hz, not aligned with control.
     targets = [1.0, 0.0, 1.0, 0.0]
     period = args.seconds / len(targets)
     interval = 1.0 / args.read_hz
 
     print(
-        f"\n控制 {args.seconds:.0f}s,每 {period:.1f}s 换一次目标;"
-        f"读侧独立跑 {args.read_hz:g} Hz\n"
+        f"\ncontrol {args.seconds:.0f}s, new target every {period:.1f}s; "
+        f"read side runs independently at {args.read_hz:g} Hz\n"
     )
     print(
-        f"  {'t':>5} {'目标':>5} {'位置':>7} {'力矩':>8} {'命令':>7} "
-        f"{'年龄':>6} {'状态':>17} {'到位':>5}"
+        f"  {'t':>5} {'tgt':>5} {'pos':>7} {'torque':>8} {'cmd':>7} "
+        f"{'age':>6} {'state':>17} {'arr':>5}"
     )
 
     stale = 0
@@ -86,12 +94,13 @@ def main() -> int:
             c.set_target(tgt)
             deadline = t0 + (i + 1) * period
             while time.perf_counter() < deadline:
-                s = c.snapshot()  # 非阻塞,一致视图
+                s = c.snapshot()  # non-blocking, consistent view
                 o = s.observation
                 if s.state == ForcePositionState.FAULT:
                     print(f"  FAULT: {s.fault_reason}")
                     return 1
-                # 观测太旧说明流断了,而不是爪子不动 —— 两者的处理完全不同。
+                # A too-old observation means the stream dropped, not that the gripper
+                # is not moving -- the two are handled completely differently.
                 if o.valid and o.age_ms > 100:
                     stale += 1
                 print(
@@ -104,11 +113,17 @@ def main() -> int:
     finally:
         c.stop()
 
-    print(f"\n观测过期(age>100ms)次数: {stale}")
+    print(f"\nstale observations (age>100ms): {stale}")
     if stale:
-        print("  **流有断续** —— 控制器还在发帧,但它看到的状态是旧的。")
+        print(
+            "  **stream is intermittent** -- the controller is still sending frames, "
+            "but the state it sees is stale."
+        )
         return 1
-    print("  状态全程新鲜:控制和读互不干扰,读侧不需要发任何命令。")
+    print(
+        "  state fresh throughout: control and reads do not interfere, the read "
+        "side needs to send no commands."
+    )
     return 0
 
 

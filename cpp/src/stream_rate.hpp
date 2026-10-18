@@ -15,8 +15,8 @@
 //     300 Hz becomes 1000/3 = 333 Hz; 150 Hz becomes 1000/6 = 167 Hz.
 //   - Anything above 1000 Hz makes the divider 0, which the firmware rewrites
 //     to 10 — so asking for 2000 Hz silently yields 100 Hz, not 1000.
-//   - Motor status is capped at STREAM_MOTOR_MAX_RATE_HZ = 100 ("给控制通道
-//     留带宽"), so a 200 Hz request silently yields 100 Hz.
+//   - Motor status is capped at STREAM_MOTOR_MAX_RATE_HZ = 100 ("leave bandwidth
+//     for the control channel"), so a 200 Hz request silently yields 100 Hz.
 //   - **A rate of 0 does not disable a source.** Emission is gated purely on
 //     the source_mask bit; rate 0 takes the same divider==0 fallback and
 //     streams at 100 Hz. Turning a source off means clearing its mask bit,
