@@ -1,6 +1,6 @@
 # taccap-gripper
 
-[中文](README_CN.md)
+[中文](README-zh.md)
 
 C++17 / Python SDK for the **TacCap-Gripper**, XenseRobotics' multimodal tactile
 data-collection gripper. One namespace: `xense::taccap::` in C++,
@@ -345,7 +345,8 @@ looking healthy while it drops status frames.
 `FollowerGripper` refuses followers below firmware 1.2.5. Leader and follower
 firmware are versioned independently. Required motor firmware: EL05 ≥ 1.0.5.0.4,
 RS00 ≥ 0.0.3.32. Image table, motor model, RS00 setup and motor OTA:
-[firmware/README.md](firmware/README.md).
+[firmware/README.md](firmware/README.md). Step-by-step motor firmware update:
+[docs/MOTOR_OTA.md](docs/MOTOR_OTA.md) ([中文](docs/MOTOR_OTA-zh.md)).
 
 ### Checking versions
 
@@ -378,8 +379,9 @@ Logs: every process writes a DEBUG log to `~/.taccaplogs/session_*.log`
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md) ([中文](docs/USAGE_CN.md)) — end-to-end bring-up of gripper, wrist camera and tactile sensor
+- [docs/USAGE.md](docs/USAGE.md) ([中文](docs/USAGE-zh.md)) — end-to-end bring-up of gripper, wrist camera and tactile sensor
 - [docs/INSTALL.md](docs/INSTALL.md) — build options, C++-only builds, environment traps
+- [docs/MOTOR_OTA.md](docs/MOTOR_OTA.md) ([中文](docs/MOTOR_OTA-zh.md)) — updating the follower's motor firmware over USB-C
 - [docs/CALIBRATION.md](docs/CALIBRATION.md) — encoder zero, travel span, fisheye intrinsics
 - [docs/EXAMPLES.md](docs/EXAMPLES.md) — every example script and controller parameter
 - [firmware/README.md](firmware/README.md) — firmware images, flashing, motor setup

@@ -344,7 +344,7 @@ python python/examples/follower_status.py left
 
 ## 文档
 
-- [docs/USAGE_CN.md](docs/USAGE_CN.md)([English](docs/USAGE.md))—— 夹爪、腕部相机、视触觉传感器的完整上手流程
+- [docs/USAGE-zh.md](docs/USAGE-zh.md)([English](docs/USAGE.md))—— 夹爪、腕部相机、视触觉传感器的完整上手流程
 - [docs/INSTALL.md](docs/INSTALL.md) —— 构建选项、纯 C++ 构建、环境陷阱
 - [docs/CALIBRATION.md](docs/CALIBRATION.md) —— 编码器零点、行程、鱼眼内参
 - [docs/EXAMPLES.md](docs/EXAMPLES.md) —— 每个示例脚本与控制器参数

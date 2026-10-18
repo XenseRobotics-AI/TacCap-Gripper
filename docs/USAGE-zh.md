@@ -23,7 +23,7 @@
 > [EXAMPLES.md](EXAMPLES.md#选择设备统一用-left--right)。
 
 安装见 [docs/INSTALL.md](INSTALL.md);请先完成一次性的
-[主机配置](../README_CN.md#主机配置一次性)(`dialout` 组、ModemManager udev 规则、
+[主机配置](../README-zh.md#主机配置一次性)(`dialout` 组、ModemManager udev 规则、
 相机 MJPEG 格式)。下文假定 `taccap` 环境已激活、
 `import xense.taccap` 能成功。
 
@@ -625,7 +625,7 @@ finally:
   一路未压缩的 YUYV(640×480 @ 30 fps ≈ 147 Mbit/s)就足以让下一台相机报
   `No space left on device` 或丢帧。保持 `use_mjpg=True`,并用
   `v4l2-ctl -d <设备> --get-fmt-video` 确认(见 README 的
-  [主机配置](../README_CN.md#3-腕部相机必须使用-mjpeg))。即使是 MJPEG,两个 OG + 一个
+  [主机配置](../README-zh.md#3-腕部相机必须使用-mjpeg))。即使是 MJPEG,两个 OG + 一个
   腕相机也会占掉相当一部分总线,满配采集时先实测帧率,别假设标称值。夹爪本身走串口,
   不受影响。
 - **谁持有 UVC 设备。** 生产环境里外部相机服务持有 `/dev/video*`,这时
@@ -648,9 +648,9 @@ finally:
 
 | 现象 | 多半是 |
 | --- | --- |
-| `scan_grippers()` 返回空,或 `role=Unknown` | 用户不在 `dialout` 组(见 README 的[主机配置](../README_CN.md#主机配置一次性)),或线没插好 |
-| 插上后立即打开报 `Device or resource busy` | ModemManager 在探测串口 —— 添加[主机配置](../README_CN.md#2-让-modemmanager-不要占用夹爪串口)里的 udev 规则 |
-| 相机报 `No space left on device` 或丢帧 | 没用 MJPEG —— 见[主机配置](../README_CN.md#3-腕部相机必须使用-mjpeg) |
+| `scan_grippers()` 返回空,或 `role=Unknown` | 用户不在 `dialout` 组(见 README 的[主机配置](../README-zh.md#主机配置一次性)),或线没插好 |
+| 插上后立即打开报 `Device or resource busy` | ModemManager 在探测串口 —— 添加[主机配置](../README-zh.md#2-让-modemmanager-不要占用夹爪串口)里的 udev 规则 |
+| 相机报 `No space left on device` 或丢帧 | 没用 MJPEG —— 见[主机配置](../README-zh.md#3-腕部相机必须使用-mjpeg) |
 | `fw_sn` 为空 / `Side.Unknown` | 固件没烧 SN,或固件早于 V1.6 |
 | 矫正后画面全黑 | 用了 `read_fisheye()` 的全零记录 —— 改用 `resolve_fisheye()` |
 | 矫正后画面偏心 | 未必是错的,主点本来就不一定在画面中心 |
