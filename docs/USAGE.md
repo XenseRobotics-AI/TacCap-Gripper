@@ -1,6 +1,6 @@
 # Usage — bringing up the three data paths
 
-> A Chinese version is available at [USAGE_CN.md](USAGE_CN.md). This English file is authoritative.
+> A Chinese version is available at [USAGE-zh.md](USAGE-zh.md). This English file is authoritative.
 
 <!-- For anyone bringing the hardware up for the first time: one section each for
      tactile, vision, and gripper readout/control, and each section is the complete

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Chinese documents are named `<NAME>-zh.md`.** `README_CN.md` is now
+  `README-zh.md` and `docs/USAGE_CN.md` is `docs/USAGE-zh.md`; links inside the
+  repository are updated. English files stay authoritative.
+
 ## [0.4.3] - 2026-10-10
 
 ### Fixed

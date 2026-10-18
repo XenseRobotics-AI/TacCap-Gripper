@@ -1,6 +1,6 @@
 # taccap-gripper
 
-[中文](README_CN.md)
+[中文](README-zh.md)
 
 C++17 / Python SDK for the **TacCap-Gripper**, XenseRobotics' multimodal tactile
 data-collection gripper. One namespace: `xense::taccap::` in C++,
@@ -378,7 +378,7 @@ Logs: every process writes a DEBUG log to `~/.taccaplogs/session_*.log`
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md) ([中文](docs/USAGE_CN.md)) — end-to-end bring-up of gripper, wrist camera and tactile sensor
+- [docs/USAGE.md](docs/USAGE.md) ([中文](docs/USAGE-zh.md)) — end-to-end bring-up of gripper, wrist camera and tactile sensor
 - [docs/INSTALL.md](docs/INSTALL.md) — build options, C++-only builds, environment traps
 - [docs/CALIBRATION.md](docs/CALIBRATION.md) — encoder zero, travel span, fisheye intrinsics
 - [docs/EXAMPLES.md](docs/EXAMPLES.md) — every example script and controller parameter
