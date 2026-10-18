@@ -24,5 +24,15 @@
       "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
       "note": "Stops decoding the motor's echo frames as status. A RobStride motor takes an MIT motion frame whose byte 0 equals its own CAN ID for another command and answers on 0xFD with the frame's first four bytes and zeros in bytes 4-7; byte 0 is the target position's high byte, and the factory ID 127 (0x7F) is -0.098..0 rad -- a LEFT-hand RS00's closed end. 1.2.15 decoded each echo as status (temperature 0, torque -t_max, position clamped to the far end), the envelope clamp then dragged the target toward the open end and the jaw was thrown open: force-position never closed to 0.0 on 0089s. The real fix is the CAN ID (RS00 followers: left 17, right 18, written by the factory config tool); this image is the backstop. Carries 1.2.15 (RS00 open direction from the SN's side). Verified on 0089s (left) / 0094s (right). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
+  },
+  "motors": {
+    "EL05": {
+      "file": "EL05_1.0.5.0.4.bin",
+      "version": "1.0.5.0.4",
+      "size_bytes": 92584,
+      "crc32": "0x845a0474",
+      "vendor": "RobStride",
+      "note": "RobStride EL05 motor firmware, flashed with motor_ota_update.py through the follower (follower firmware >= 1.2.8). Fixes the constant velocity feedback of 1.0.5.0.2. The motor itself answers the version as bytes 10.5.0.4; the vendor writes it 1.0.5.0.4. Keep the filename: the script reads the model and version from it."
+    }
   }
 }

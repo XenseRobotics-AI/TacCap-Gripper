@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
+  a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
+  takes the image as optional: without one it picks the shipped image for the
+  motor model recorded on the gripper (refusing when only the compile-time
+  default is known), and a shipped image is checked against the manifest's
+  CRC32. A bare image name also resolves under `firmware/`.
+
 ## [0.4.3] - 2026-10-10
 
 _The `v0.4.3` tag was moved on 2026-10-18 to include the EL05 motor OTA

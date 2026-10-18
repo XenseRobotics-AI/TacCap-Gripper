@@ -15,7 +15,9 @@
   那一行。如果版本较旧，先用 `ota_update.py` 升级夹爪固件并断电重启。升级夹爪固件会把电机切回
   常规协议，所以必须先升级夹爪、再升级电机，顺序不能反。
 - **SDK 0.4.3 或更新版本**，并且 `import xense.taccap` 能正常导入。
-- **我们提供的电机固件镜像**，例如 `EL05_1.0.5.0.4.bin`。请保持原文件名：脚本会从文件名读出
+- **电机固件镜像**随仓库放在 [`firmware/`](../firmware/) 里（登记在 `manifest.json` 的
+  `motors` 下）。脚本会按夹爪记录的电机型号自动选镜像，并核对 CRC32。要刷别的镜像，把文件名写在
+  目标前面（`motor_ota_update.py EL05_1.0.5.0.4.bin left`），并保持原文件名：脚本会从文件名读出
   电机型号和版本，并与镜像内容和夹爪记录核对。
 - **没有别的程序在使用夹爪。** 先停掉你自己的程序。
 - **两指之间清空。** 每次断电重启后，夹爪会自动开合一次做标定。
@@ -52,7 +54,7 @@ python python/examples/follower_status.py left
 ### 2. 第一遍：切到私有协议
 
 ```bash
-python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
+python python/examples/motor_ota_update.py left
 ```
 
 ```text
@@ -70,7 +72,7 @@ wait ~10 s, then run the same command again to flash.
 ### 3. 第二遍：刷写
 
 ```bash
-python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
+python python/examples/motor_ota_update.py left
 ```
 
 ```text
@@ -78,7 +80,7 @@ python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
   gripper      : TCGU01A25Z0017s  firmware FirmwareVersion(1.2.16.0)
   motor        : EL05  can_id 1  uid ...
   motor fw now : 1.0.5.0.2
-  image        : EL05_1.0.5.0.4.bin
+  image        : .../TacCap-Gripper/firmware/EL05_1.0.5.0.4.bin
                  92,584 B, 11,573 packs, version 1.0.5.0.4
   envelope     : at the motor's rating, unchanged
 Flash the MOTOR with this image? type 'yes': yes
@@ -119,6 +121,8 @@ python python/examples/follower_status.py left
 
 | 现象 | 处理方法 |
 | --- | --- |
+| `no recorded motor model` / `no shipped image for motor ...` | 夹爪没有记录电机型号，或 `firmware/` 里没有该型号的镜像。显式指定镜像，或先设置型号（见 [firmware/README.md](../firmware/README.md#follower-motor-setup)）。 |
+| `... has CRC32 ..., firmware/manifest.json says ...` | `firmware/` 里的文件损坏或被替换。用 `git checkout firmware/` 恢复。 |
 | `cannot tell the motor model from ...` | 镜像文件被改了名。恢复原文件名，或加 `--model EL05`。 |
 | `this gripper records a ... motor, the image is for ...` | 镜像对应的是另一种电机型号。不要强行刷写，请联系我们。 |
 | `follower firmware ... lacks the 0x5B relay` | 先升级夹爪固件（见"开始之前"）。 |
@@ -146,7 +150,7 @@ m = g.motor
 # the motor must already be on the private protocol (see step 2)
 session = t.MotorOtaSession(m, m.get_can_id())
 session.preflight("EL05")                       # private protocol + recorded model
-session.update_from_file("EL05_1.0.5.0.4.bin", lambda done, total: None)
+session.update_from_file("firmware/EL05_1.0.5.0.4.bin", lambda done, total: None)
 m.set_motor_fw_version("1.0.5.0.4")             # record it for MIT reads
 m.switch_protocol(t.MotorProtocol.Mit)          # then power-cycle
 ```
