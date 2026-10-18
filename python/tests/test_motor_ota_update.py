@@ -224,6 +224,20 @@ def test_version_mismatch_after_flash_stays_on_private(run, monkeypatch):
     rc, _ = run(motor, "IMAGE", "left", "--yes")
     assert rc == 2
     assert motor.switches == []  # left on private so the user can retry
+    assert motor.recorded is None  # a failed flash must not be recorded
+
+
+def test_motor_back_on_mit_after_flash_records_the_image_version(run, monkeypatch):
+    """RS00: the motor restarts on MIT, so its version cannot be read back."""
+    motor = FakeMotor(MotorProtocol.Private)
+
+    def flash(self, data, progress):
+        self.motor.protocol = MotorProtocol.Mit
+
+    monkeypatch.setattr(FakeSession, "update_from_bytes", flash)
+    rc, _ = run(motor, "IMAGE", "left", "--yes")
+    assert rc == 0
+    assert motor.recorded == "1.0.5.0.4" and motor.switches == []
 
 
 def test_to_mit_only_switches_back(run):

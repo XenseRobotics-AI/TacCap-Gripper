@@ -109,6 +109,19 @@ def read_version(motor, timeout_s: float = 20.0):
     return None
 
 
+def record_version(motor, version) -> None:
+    """Record the flashed version in the follower's flash (0x5C, follower >=
+    1.2.14), so motor_version() reports it on MIT, where the motor itself
+    cannot answer."""
+    if not version:
+        return
+    try:
+        motor.set_motor_fw_version(version)
+        print(f"  recorded     : motor fw {version} in follower flash")
+    except Exception as exc:  # older follower firmware has no 0x5C
+        print(f"  not recorded : {exc}")
+
+
 def repair_envelope(g) -> None:
     """Set the motion envelope to the motor's rating. Never fails the update."""
     try:
@@ -247,17 +260,8 @@ def main() -> int:
     session.update_from_bytes(data, progress)
     print(f"\n=== done in {time.monotonic() - t0:.1f}s; waiting for the motor ===")
 
-    # Record the new version in the follower's flash (0x5C, follower >= 1.2.14),
-    # so motor_version() reports it once the motor is back on MIT -- where the
-    # motor itself cannot answer. The image's own version is what was flashed.
     if fix_envelope:
         repair_envelope(g)
-    if version:
-        try:
-            motor.set_motor_fw_version(version)
-            print(f"  recorded     : motor fw {version} in follower flash")
-        except Exception as exc:  # older follower firmware has no 0x5C
-            print(f"  not recorded : {exc}")
 
     # Measured on the first real flash: the motor restarts on MIT, and the MCU
     # follows it there. The version frame needs private, so under MIT "no
@@ -267,6 +271,8 @@ def main() -> int:
         # RS00 (0086s): the update restarts the motor on MIT and the MCU
         # follows, so the version frame cannot be read here.
         print("  the motor restarted on the MIT protocol by itself.")
+        # Nothing to verify against here, so the image's version is recorded.
+        record_version(motor, version)
         print(
             f"\nNow {POWER_CYCLE}; the gripper auto-calibrates (~10 s, keep the jaws clear)."
         )
@@ -282,6 +288,9 @@ def main() -> int:
             f"   {POWER_CYCLE} and run the same command again. Use --to-mit to give up."
         )
         return 2
+    # Recorded only once the motor confirmed it: a record that outlives a failed
+    # flash would make every later MIT read report the wrong version.
+    record_version(motor, version)
     # EL05 (0017s): the motor stays on the private protocol after the update.
     motor.switch_protocol(MotorProtocol.Mit)
     print("  switched the motor back to the MIT protocol.")

@@ -18,7 +18,7 @@ motor stays mounted.
   firmware first with `ota_update.py` and power-cycle; a gripper firmware update
   also resets the motor to its normal protocol, so it must come before the motor
   update, never after.
-- **SDK 0.4.3 or newer**, installed so that `import xense.taccap` works.
+- **SDK 0.4.4 or newer**, installed so that `import xense.taccap` works.
 - **The motor firmware image** from us, for example `EL05_1.0.5.0.4.bin`. Keep the
   file name as delivered: the script reads the motor model and version from it
   and checks them against the image and the gripper.
@@ -97,8 +97,8 @@ python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
 Flash the MOTOR with this image? type 'yes': yes
   [########################################] 100.0%  11,573/11,573
 === done in 28s; waiting for the motor ===
-  recorded     : motor fw 1.0.5.0.4 in follower flash
   motor fw     : 1.0.5.0.2 -> 1.0.5.0.4
+  recorded     : motor fw 1.0.5.0.4 in follower flash
   switched the motor back to the MIT protocol.
 
 Done. Now unplug the gripper's 24 V power cable for ~2 s and plug it back (USB may stay in);

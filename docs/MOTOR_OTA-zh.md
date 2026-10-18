@@ -14,7 +14,7 @@
 - **夹爪固件 1.2.16**（升级电机至少需要 1.2.8）。用 `follower_status.py` 查看，看 `[fw]`
   那一行。如果版本较旧，先用 `ota_update.py` 升级夹爪固件并断电重启。升级夹爪固件会把电机切回
   常规协议，所以必须先升级夹爪、再升级电机，顺序不能反。
-- **SDK 0.4.3 或更新版本**，并且 `import xense.taccap` 能正常导入。
+- **SDK 0.4.4 或更新版本**，并且 `import xense.taccap` 能正常导入。
 - **我们提供的电机固件镜像**，例如 `EL05_1.0.5.0.4.bin`。请保持原文件名：脚本会从文件名读出
   电机型号和版本，并与镜像内容和夹爪记录核对。
 - **没有别的程序在使用夹爪。** 先停掉你自己的程序。
@@ -84,8 +84,8 @@ python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
 Flash the MOTOR with this image? type 'yes': yes
   [########################################] 100.0%  11,573/11,573
 === done in 28s; waiting for the motor ===
-  recorded     : motor fw 1.0.5.0.4 in follower flash
   motor fw     : 1.0.5.0.2 -> 1.0.5.0.4
+  recorded     : motor fw 1.0.5.0.4 in follower flash
   switched the motor back to the MIT protocol.
 
 Done. Now unplug the gripper's 24 V power cable for ~2 s and plug it back (USB may stay in);

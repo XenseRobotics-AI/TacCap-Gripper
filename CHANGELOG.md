@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`motor_ota_update.py` mis-read EL05 images.** EL05 versions have five
+  parts (`1.0.5.0.4`); the example kept four and compared the motor's raw
+  bytes (`10.5.0.4`), so a good flash was reported as a mismatch. It now
+  parses five-part versions and compares the vendor spelling.
+
+### Added
+
+- **`motor_ota_update.py` runs as two passes of the same command**: the first
+  switches the motor to its private protocol, the second (after a 24 V power
+  cycle) flashes, verifies, records the version in the follower (0x5C) and
+  switches back to MIT. The version is recorded only after the motor confirmed
+  it, or blind when the motor returned to MIT by itself (RS00). `--to-mit`
+  switches back without flashing.
+- **The motor OTA sets the motion envelope to the motor's rating** when it
+  differs (`ensure_envelope()`); travel calibration and open direction are
+  kept. `--keep-envelope` skips it.
+- **`docs/MOTOR_OTA.md`** (and `MOTOR_OTA-zh.md`): customer guide to updating
+  the motor firmware over USB-C.
+
 ### Changed
 
 - **Chinese documents are named `<NAME>-zh.md`.** `README_CN.md` is now
