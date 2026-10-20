@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from _updater_fixtures import rs00_ui_image
 
 APP = Path(__file__).resolve().parents[2] / "apps/firmware_updater"
 sys.path.insert(0, str(APP))
@@ -316,7 +317,10 @@ def test_english_device_summary_and_power_instructions(window, role):
             ),
         ),
     )
-    w.drain()
+    with rs00_ui_image(w) as motor_path:
+        w.drain()
+        if role == "slave":
+            assert w.paths["motor"] == str(motor_path)
     app.processEvents()
     text = visible_texts(w)
     assert not i18n.CJK.search(text) and "\\u" not in text, text

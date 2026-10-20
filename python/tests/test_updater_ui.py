@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from _updater_fixtures import rs00_ui_image
+
 APP_DIR = Path(__file__).resolve().parents[2] / "apps/firmware_updater"
 sys.path.insert(0, str(APP_DIR))
 HAS_QT = importlib.util.find_spec("PySide6") is not None
@@ -363,7 +365,9 @@ class UpdaterUiTests(unittest.TestCase):
                 ),
             ),
         )
-        self.window.drain()
+        with rs00_ui_image(self.window) as motor_path:
+            self.window.drain()
+            self.assertEqual(self.window.paths["motor"], str(motor_path))
         self.app.processEvents()
         self.assertIn("CAN ID 127", self.window.info.text())
         self.assertIn("确认修正", self.window.status.text())
