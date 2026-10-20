@@ -5,6 +5,7 @@ import os
 import platform
 import pwd
 import stat
+import sys
 from pathlib import Path
 
 RULE_NAME = "69-taccap-firmware-updater.rules"
@@ -159,12 +160,19 @@ def diagnostic_report():
         from xense.taccap import _taccap_native as native
 
         report["runtime"] = {
-            "ok": True,
+            "ok": hasattr(native, "expected_open_reverse")
+            and (
+                not getattr(sys, "frozen", False)
+                or Path(native.__file__).resolve().is_relative_to(Path(sys._MEIPASS))
+            ),
             "sdk": sdk.__version__,
             "native": native.__file__,
         }
     except Exception as exc:
         report["runtime"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    from environment_guidance import enrich
+
+    enrich(report)
     return report
 
 
@@ -177,13 +185,28 @@ def summary(report):
     if "runtime" in report:
         lines.append(
             "内置 SDK 加载："
-            + ("正常" if report["runtime"]["ok"] else report["runtime"]["error"])
+            + (
+                "正常"
+                if report["runtime"]["ok"]
+                else report["runtime"].get("error", "SDK / ABI mismatch")
+            )
         )
     lines.extend(
         f"{p['node']}  驱动 {p['driver']}  读写 {p['read_write']}  稳定链接 {p['stable_present']}"
         for p in report["ports"]
     )
     lines.extend(issue["message"] for issue in report["issues"])
+    if report.get("os"):
+        lines.append(
+            f"OS: {report['os'].get('ID', 'unknown')} {report['os'].get('VERSION_ID', 'unknown')}"
+        )
+    if report.get("ports") and "ownership_scope" in report:
+        lines.append("占用检查仅覆盖当前用户可见进程；未发现不代表串口空闲。")
+    for p in report["ports"]:
+        if "owners" in p:
+            lines.append(
+                f"{p['node']}  visible owners={p['owners']}  ModemManager ignore={p.get('modemmanager_ignore', 'unknown')}"
+            )
     if not report["bridges"] and not report["ports"]:
         lines.append("尚未发现匹配的 USB 串口桥；请检查 USB 线缆和端口。")
     if report["ready_for_probe"]:
@@ -191,4 +214,13 @@ def summary(report):
             "USB 与访问权限检查通过；不代表 MCU 已应答。若仍 GetSn 超时，请检查 24 V、占用程序和通信日志，不要反复安装 SDK。"
         )
     lines.append(report["scope"])
+    if report.get("connection_error"):
+        lines.extend(
+            [
+                "通信错误不等于权限错误；请核对供电、占用程序并导出报告。",
+                report["connection_error"],
+            ]
+        )
+    for action in report.get("actions", []):
+        lines.extend(["", action["message"], action["commands"]])
     return "\n".join(lines)

@@ -265,6 +265,29 @@ WORDS = {
     "右": "Right",
 }
 
+WORDS.update(
+    {
+        "复制命令": "Copy commands",
+        "占用检查仅覆盖当前用户可见进程；未发现不代表串口空闲。": "Port ownership checks cover visible processes only. No match does not prove the port is free.",
+        "重新检测": "Check again",
+        "导出报告": "Export report",
+        "环境未就绪 · 请按诊断提示处理后重新检测": "Environment not ready / Follow the diagnostic guidance, then check again",
+        "通信错误不等于权限错误；请核对供电、占用程序并导出报告。": "A communication error does not imply a permissions error. Check power and other applications, then export the report.",
+        "内置 SDK 无法加载或版本不匹配；请重新安装适配本平台的工具，不要安装 conda 或源码 SDK 来替代。": "The bundled SDK could not load or is incompatible. Reinstall the correct tool for this platform; do not substitute conda or a source SDK.",
+        "dialout 已配置：请完整注销桌面或 SSH 会话后重新登录；仅开新终端不够。": "dialout is configured: fully log out of the desktop or SSH session and log in again. A new terminal alone is insufficient.",
+        "仅在自己的终端执行权限配置，然后注销并重新登录；不要用 sudo 启动工具。": "Run this permission setup in your own terminal, then log out and log in again. Do not launch the tool with sudo.",
+        "dialout 已生效但节点仍不可访问：请检查设备规则或联系管理员，不要 chmod 777。": "dialout is active but the node is inaccessible. Check device rules or contact an administrator; do not use chmod 777.",
+        "USB 已识别但没有 MCU 串口：把以下只读检查结果交给支持人员；不要盲目替换 Jetson 驱动。": "USB was detected without an MCU serial port. Send these read-only checks to support; do not blindly replace Jetson drivers.",
+        "检测到进程持有 MCU 串口；请先正常关闭对应控制程序，再重新检测。工具不会强制结束进程。": "A process holds an MCU serial port. Close that controller normally, then check again. The tool will not terminate processes.",
+        "ModemManager 正在运行且该 MCU 端口未标记忽略；可能干扰热插拔，但这不是已确认的失联原因。": "ModemManager is active and this MCU port is not marked ignored. It may interfere with hotplug; this is not a confirmed cause of communication loss.",
+        "无法读取 udev 属性；此项未验证，请导出报告，不要视为驱动或权限已通过。": "udev properties could not be read. This check is unverified; export the report. Driver and permission success cannot be inferred.",
+        "未读到 MCU 串口驱动绑定；已有节点不代表通信正常，请导出报告核查。": "The MCU serial driver binding could not be read. An existing node does not prove communication; export the report for review.",
+        "以下进程持有串口；请正常退出程序，不能据此直接强制结束系统服务。": "These processes hold the port. Close applications normally; this is not permission to forcibly stop system services.",
+        "推荐安装本平台 DEB 并在未刷写时重新插拔 USB。AppImage 用户也可审阅后复制以下规则配置；仅匹配夹爪 MCU，不停止系统服务。": "Install the DEB for this platform and reconnect USB when not flashing. AppImage users can review and copy these rules; they target only the gripper MCU and do not stop services.",
+        "应用规则后，在没有刷写任务时重新插拔该夹爪 USB，再点击重新检测。通常不需要重启 PC 或 Jetson。": "After applying rules, reconnect this gripper USB when no flash is running, then check again. Restarting the PC or Jetson is normally unnecessary.",
+    }
+)
+
 TEMPLATES = {
     "所选文件不是指定目标 {0} {1}，请重新选择": "The selected file is not the requested {0} {1} image. Choose the matching file.",
     "MCU 目标低于工具支持下限 {0}，请联系技术支持": "MCU target is below the tool's supported minimum {0}. Contact support.",

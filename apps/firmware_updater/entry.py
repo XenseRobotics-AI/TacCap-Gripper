@@ -43,6 +43,8 @@ def main():
         report["scope"] = tr(report["scope"])
         for issue in report["issues"]:
             issue["message"] = tr(issue["message"])
+        for action in report.get("actions", []):
+            action["message"] = tr(action["message"])
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return
     if args.install_desktop:

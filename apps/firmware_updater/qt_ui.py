@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -102,6 +101,8 @@ class App(QMainWindow):
         self.selected_identity = None
         self.auto_connect = auto_connect
         self.log_lines = []
+        self.environment_dialog = None
+        self.environment_seen = set()
         self.visible_log_lines = []
         self.catalog = core.catalog_at(HERE / "catalog.json")
         build(self)
@@ -391,6 +392,11 @@ class App(QMainWindow):
                     )
                 else:
                     self.emit("connection_error", f"{type(exc).__name__}: {exc}")
+                    from host_diagnostics import diagnostic_report
+
+                    report = diagnostic_report()
+                    report["connection_error"] = f"{type(exc).__name__}: {exc}"
+                    self.emit("environment", report)
             finally:
                 self.emit("idle", "")
 
@@ -422,6 +428,12 @@ class App(QMainWindow):
         role = self.role_filter.currentIndex()
 
         def work():
+            from host_diagnostics import diagnostic_report
+
+            report = diagnostic_report()
+            self.emit("environment", report)
+            if report["blocking"]:
+                return
             from device import discover
 
             devices = discover()
@@ -625,6 +637,19 @@ class App(QMainWindow):
                 continue
             if kind == "diagnostics":
                 self.show_diagnostics(value)
+            elif kind == "environment":
+                fingerprint = (
+                    tuple(sorted(i["code"] for i in value["issues"])),
+                    tuple(p["serial"] for p in value["ports"]),
+                    bool(value.get("connection_error")),
+                )
+                if value["issues"] or value.get("connection_error"):
+                    if fingerprint not in self.environment_seen:
+                        self.environment_seen.add(fingerprint)
+                        self.show_diagnostics(value)
+                if value.get("blocking"):
+                    self.set_tone("warning")
+                    set_text(self.status, "环境未就绪 · 请按诊断提示处理后重新检测")
             elif kind == "progress":
                 self.activity.update(value["done"], value["total"], value["unit"])
                 if value["total"] > 0:
@@ -759,6 +784,8 @@ class App(QMainWindow):
                 for control in self.controls:
                     control.setEnabled(True)
                 self.update_actions()
+                if self.environment_dialog:
+                    self.environment_dialog.retry.setEnabled(True)
                 if self.pending_scan is not None:
                     follow_single = self.pending_scan
                     self.pending_scan = None
@@ -811,6 +838,8 @@ class App(QMainWindow):
         if self.busy:
             return
         set_text(self.status, "正在检查环境；不发送夹爪命令…")
+        if self.environment_dialog:
+            self.environment_dialog.retry.setEnabled(False)
 
         def work():
             from host_diagnostics import diagnostic_report
@@ -820,27 +849,19 @@ class App(QMainWindow):
         self.launch(work)
 
     def show_diagnostics(self, report):
+        from environment_dialog import EnvironmentDialog
         from host_diagnostics import summary
 
         message = summary(report)
         self.log(message)
         self.log(json.dumps(report, ensure_ascii=False))
-        dialog = QDialog(self)
-        set_title(dialog, "环境诊断")
-        dialog.setMinimumWidth(600)
-        box = QVBoxLayout(dialog)
-        detail = QPlainTextEdit()
-        detail.setReadOnly(True)
-        detail.setPlainText(tr(message))
-        detail.setMinimumHeight(280)
-        box.addWidget(detail)
-        close = QPushButton()
-        set_text(close, "关闭")
-        close.clicked.connect(dialog.accept)
-        box.addWidget(close)
+        if not self.environment_dialog:
+            self.environment_dialog = EnvironmentDialog(self)
+        dialog = self.environment_dialog
+        dialog.update_report(report)
+        dialog.retry.setEnabled(not self.busy)
         set_text(self.status, "诊断完成 · 详情已写入日志")
-        dialog.exec()
-        dialog.deleteLater()
+        dialog.show()
 
     def closeEvent(self, event):
         if self.busy:

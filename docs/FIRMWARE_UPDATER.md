@@ -19,12 +19,18 @@ README 同时包含开发环境安装和 `dialout` 权限配置，执行整个�
 原始 `5dd8cb5` ARM64 包已在无完整 SDK/conda 的隔离 ARM64 用户空间通过 SDK 加载自检；该结果不代表真机 USB/OTA 验收。
 
 新版 DEB 声明系统运行库与 udev 依赖，并安装 `69-taccap-firmware-updater.rules`：
-仅匹配 `1a86 / USB Dual Serial / interface 02`，设置 `dialout + 0660 + uaccess`，补充稳定串口链接。
+仅匹配 `1a86 / USB Dual Serial / interface 02`，设置 `dialout + 0660 + uaccess`，补充稳定串口链接，并标记此 MCU 端口供 ModemManager 忽略（不停止服务、不影响其他串口）。
 安装只重载规则，不批量触发设备、不自动加组、不装驱动或改 CUDA，不停止 ModemManager，不运行 root UI。
 **未刷写时**退出工具并重新插拔该夹爪 USB，使规则应用；常规桌面会话通常无需重启 Jetson。
 远程/无活动桌面会话仍需手动配置 `dialout` 并重新登录。AppImage 不会自动向系统安装 udev 规则。
 
 点击“环境诊断”，结果也会写入导出日志；或使用不发送夹爪命令的 CLI：
+
+启动及刷新扫描前会先检查系统环境；发现异常时提示具体原因，并提供“复制命令 / 重新检测 / 导出报告”。
+命令不会自动执行；请先审阅，再在自己的终端操作。加入 dialout 后须完整注销再登录；仅开新终端不够。
+AppImage 不安装系统规则，诊断会按实际问题提供规则配置指令。应用规则后，在没有刷写任务时重新插拔 USB；通常不必重启 PC 或 Jetson。
+串口占用只检查当前用户可见的进程，无发现不等于无人占用；ModemManager 运行仅是风险，不能据此认定通信失败的根因。
+诊断不打开串口、不校验固件身份或 OTA；USB/权限正常后仍需正常扫描握手。内置 SDK 加载失败应换用正确架构的工具，不应依赖客户另装开发环境。
 
 ```bash
 taccap-firmware-updater --diagnose

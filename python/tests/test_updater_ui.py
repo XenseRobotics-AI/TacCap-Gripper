@@ -58,6 +58,82 @@ class UpdaterUiTests(unittest.TestCase):
         self.assertLessEqual(self.window.height(), 460)
         self.assertLessEqual(self.window.width(), 700)
 
+    def test_environment_dialog_is_reusable_and_does_not_block_idle(self):
+        import host_diagnostics as health
+        from environment_guidance import enrich
+
+        report = health.collect(
+            sys_root=Path("/nonexistent/sys"), dev_root=Path("/nonexistent/dev")
+        )
+        report["runtime"] = {"ok": False}
+        enrich(report)
+        self.window.busy = True
+        self.window.emit("diagnostics", report)
+        self.window.emit("idle", "")
+        self.window.drain()
+        dialog = self.window.environment_dialog
+        self.assertFalse(self.window.busy)
+        self.assertTrue(dialog.retry.isEnabled())
+        self.assertFalse(dialog.copy.isEnabled())
+        with patch.object(self.window, "launch") as launch:
+            dialog.retry.click()
+            launch.assert_called_once()
+        self.window.show_diagnostics(report)
+        self.assertIs(dialog, self.window.environment_dialog)
+        dialog.accept()
+
+    def test_startup_precheck_blocks_serial_scan_when_runtime_is_broken(self):
+        from unittest.mock import Mock
+
+        import host_diagnostics as health
+
+        module = Mock()
+        with (
+            patch.object(health, "diagnostic_report", return_value={"blocking": True}),
+            patch.dict(sys.modules, {"device": module}),
+            patch.object(self.window, "launch", side_effect=lambda fn: fn()),
+        ):
+            self.window.scan()
+        module.discover.assert_not_called()
+        self.assertEqual(self.window.events.get_nowait()[0], "environment")
+
+    def test_diagnostic_copy_and_export_preserve_commands_and_evidence(self):
+        import json
+        import tempfile
+
+        import host_diagnostics as health
+
+        report = health.collect(
+            sys_root=Path("/nonexistent/sys"), dev_root=Path("/nonexistent/dev")
+        )
+        report["actions"] = [
+            {"message": "environment", "commands": 'id\nprintf "test"'}
+        ]
+        self.window.show_diagnostics(report)
+        dialog = self.window.environment_dialog
+        dialog.copy.click()
+        self.assertEqual(self.app.clipboard().text(), 'id\nprintf "test"')
+        with tempfile.TemporaryDirectory() as folder:
+            target = str(Path(folder) / "report.json")
+            with patch.object(
+                qt_ui.QFileDialog, "getSaveFileName", return_value=(target, "")
+            ):
+                dialog.export.click()
+            self.assertEqual(json.loads(Path(target).read_text())["ports"], [])
+        dialog.accept()
+
+    def test_environment_issue_not_repeated_on_automatic_scan(self):
+        report = {
+            "issues": [{"code": "permission_denied"}],
+            "ports": [],
+            "blocking": True,
+        }
+        with patch.object(self.window, "show_diagnostics") as show:
+            for _ in range(2):
+                self.window.emit("environment", report)
+                self.window.drain()
+            show.assert_called_once_with(report)
+
     def test_user_tool_is_update_only_for_both_roles_and_languages(self):
         import i18n
         from PySide6.QtWidgets import QPushButton, QSlider

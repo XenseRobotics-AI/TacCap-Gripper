@@ -178,6 +178,10 @@ def main():
             check=True,
         )
         frozen = temp / "frozen" / PACKAGE
+        shutil.copy2(
+            Path(__file__).parent / "69-taccap-firmware-updater.rules",
+            frozen / "_internal/serial.rules",
+        )
         # Replace build-machine RPATHs in every bundled ELF, not only Python.
         internal = frozen / "_internal"
         # The UI uses PNG only. Qt 6.7 ARM wheels ship a WebP plugin linked

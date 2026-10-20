@@ -131,6 +131,7 @@ def test_serial_rules_installer_is_targeted_and_non_world_writable(tmp_path):
     assert 'ATTRS{product}!="USB Dual Serial"' in rules
     assert 'ENV{.TACCAP_IFNUM}!="02"' in rules
     assert 'MODE="0660"' in rules and 'TAG+="uaccess"' in rules
+    assert 'ENV{ID_MM_PORT_IGNORE}="1"' in rules
     assert "SYMLINK+=" in rules and "666" not in rules and "777" not in rules
     assert script.stat().st_mode & 0o111
     assert "--reload-rules" in script.read_text()
@@ -138,3 +139,125 @@ def test_serial_rules_installer_is_targeted_and_non_world_writable(tmp_path):
         "usermod" not in script.read_text()
         and "trigger" not in script.read_text().replace("broad device triggers", "")
     )
+
+
+def guided(host, *, writable=True, runtime=True, probe=None, owners=None):
+    import environment_guidance as guide
+
+    report = health.collect(
+        sys_root=host[0],
+        dev_root=host[1],
+        access=lambda _: writable,
+        char_node=lambda _: True,
+    )
+    report["runtime"] = {"ok": runtime}
+    guide.enrich(
+        report, probe=probe or (lambda _: (0, "")), find_owners=lambda _: owners or []
+    )
+    return report
+
+
+def test_permission_commands_are_manual_scoped_and_no_developer_sdk(host):
+    from environment_guidance import commands
+
+    report = guided(host, writable=False)
+    report["dialout_active"] = False
+    assert report["blocking"]
+    text = commands(report)
+    assert 'MODE="0660"' in text and "--reload-rules" in text
+    assert "--trigger" not in text and "chmod 777" not in text
+    assert "pip install" not in text and "conda install" not in text
+    assert 'ENV{.TACCAP_IFNUM}!="02"' in text
+
+
+def test_pending_group_membership_requires_full_login_not_usermod_again(host):
+    import environment_guidance as guide
+
+    report = health.collect(
+        sys_root=host[0],
+        dev_root=host[1],
+        access=lambda _: False,
+        char_node=lambda _: True,
+    )
+    report.update(dialout_configured=True, dialout_active=False, runtime={"ok": True})
+    guide.enrich(report, probe=lambda _: (0, ""), find_owners=lambda _: [])
+    assert "usermod" not in guide.commands(report)
+    assert "仅开新终端不够" in health.summary(report)
+
+
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_runtime_failure_blocks_scan_on_both_platforms(host, arch):
+    with patch.object(health.platform, "machine", return_value=arch):
+        report = guided(host, runtime=False)
+    assert report["architecture"] == arch and report["blocking"]
+    assert any(i["code"] == "sdk_unavailable" for i in report["issues"])
+
+
+def test_modemmanager_active_is_risk_not_proven_owner(host):
+    report = guided(
+        host, probe=lambda argv: (0, "active" if argv[0] == "systemctl" else "")
+    )
+    issue = next(i for i in report["issues"] if i["code"] == "modemmanager_risk")
+    assert "不是已确认" in issue["message"]
+    assert report["ports"][0]["owners"] == []
+    assert not report["blocking"]
+
+
+def test_modemmanager_ignored_port_does_not_prompt_service_stop(host):
+    report = guided(
+        host,
+        probe=lambda argv: (
+            0,
+            "active" if argv[0] == "systemctl" else "ID_MM_PORT_IGNORE=1",
+        ),
+    )
+    assert not any(i["code"] == "modemmanager_risk" for i in report["issues"])
+    assert "systemctl stop" not in health.summary(report)
+
+
+def test_occupied_port_lists_pid_without_killing_process(host):
+    report = guided(host, owners=[{"pid": 123, "name": "controller"}])
+    assert "ps -p 123" in health.summary(report)
+    assert any(i["code"] == "port_in_use" for i in report["issues"])
+    assert report["ownership_scope"] == "best_effort_visible_processes_only"
+
+
+def test_unavailable_probe_is_unknown_not_pass(host):
+    report = guided(host, probe=lambda _: (None, ""))
+    assert report["ports"][0]["modemmanager_ignore"] == "unknown"
+    assert any(i["code"] == "udev_check_unavailable" for i in report["issues"])
+
+
+def test_probe_never_uses_shell_or_unbounded_timeout():
+    import subprocess
+
+    import environment_guidance as guide
+
+    with patch.object(
+        guide.subprocess, "run", side_effect=subprocess.TimeoutExpired("udevadm", 1)
+    ) as run:
+        assert guide.query(["udevadm", "info"]) == (None, "")
+    assert run.call_args.kwargs["timeout"] == 1
+    assert not run.call_args.kwargs.get("shell", False)
+
+
+def test_environment_guidance_fully_translated_without_altering_commands(host):
+    import i18n
+
+    report = guided(
+        host,
+        writable=False,
+        runtime=False,
+        probe=lambda _: (None, ""),
+        owners=[{"pid": 123, "name": "test"}],
+    )
+    old = i18n.language()
+    try:
+        i18n.set_language("en")
+        message = i18n.tr(health.summary(report))
+        assert not i18n.CJK.search(message)
+        assert "\\u" not in message
+        for action in report["actions"]:
+            assert action["commands"] in message
+    finally:
+        i18n.set_language(old)
