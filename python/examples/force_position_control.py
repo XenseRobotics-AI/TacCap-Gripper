@@ -1,54 +1,69 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""ForcePositionController 的用法:力位混合控制。
+"""ForcePositionController usage: force-position hybrid control.
 
-**全程只有一条控制律**,没有接触检测:
+**There is only one control law throughout**, with no contact detection:
 
     command(target, kp, kd, torque_budget = grasp_torque_nm)
 
-PD 请求对预算做误差钳位,自由行程只付摩擦,被挡住就钳在恰好的预算上并保持。
-不检测接触 —— **饱和本身就是接触**。SDK 0.2.0 删掉了主机侧的接触状态机:MCU
-已经在 500Hz 跑同一个堵转判据并且是权威,主机再跑一份,比只在任一侧跑都糟,
-因为同一个物理事件的两份副本会漂开。
+The PD request is error-clamped to the budget: free travel pays only friction,
+and when blocked it clamps at exactly the budget and holds there. Contact is not
+detected — **saturation itself is contact**. SDK 0.2.0 removed the host-side
+contact state machine: the MCU already runs the same stall criterion at 500Hz and
+is authoritative, and running a second copy on the host is worse than running it
+on either side alone, because two copies of the same physical event drift apart.
 
-(这段文档一度描述的是被删掉的那套「kp=0 闭合 → 接触判定 → kp=kd=0 纯 tau_ff
-保持」。脚本一直能跑,但教的是一套不存在的模型 —— 现在跑起来状态是
-HOLDING_POSITION,不会进 HoldingForce,除非真的被挡住。)
+(This docstring once described the removed scheme "kp=0 close -> contact
+detection -> kp=kd=0 pure tau_ff hold". The script kept running, but it taught a
+model that does not exist — now the state it runs into is HOLDING_POSITION, and
+it does not enter HoldingForce unless actually blocked.)
 
-行进用**时间基准的斜坡**调速,而不是「当前位置 + 误差上限」:后者会让位置误差
-永久饱和,那是恒力推不是跟踪速度,实测会跑到目标速度的两倍。
+Travel speed is set by a **time-based ramp**, not "current position + error
+limit": the latter keeps the position error permanently saturated, which is a
+constant-force push rather than speed tracking, and measured it runs at twice the
+target speed.
 
-闭合端点额外带一个**有界前馈预压**(close_preload_nm,默认 0.25 Nm),把爪子坐死
-在机械止点上。没有它,kp*(target-actual) 在目标处恰好归零,爪子到了就不再施力,
-齿隙留在那里 —— 实测闭合位保持力矩只有 0.001 Nm。预压是从预算里**预留**而非
-叠加,所以总请求不超过 grasp_torque_nm 这条不变量仍然成立。
+The closed endpoint additionally carries a **bounded feedforward preload**
+(close_preload_nm, default 0.25 Nm) that seats the jaw firmly against the
+mechanical stop. Without it, kp*(target-actual) goes to exactly zero at the
+target, the jaw stops applying force once it arrives, and the backlash stays
+there — measured holding torque at the closed position was only 0.001 Nm. The
+preload is **reserved** out of the budget, not added on top, so the invariant
+that the total request never exceeds grasp_torque_nm still holds.
 
-接口和 ImpedanceController 一样只有两个非阻塞调用:
+Like ImpedanceController, the interface is just two non-blocking calls:
 
-    c.set_target(p)      # p in [0,1],0=闭合 1=张开
-    s = c.snapshot()     # 状态 + 观测 + 命令力矩,一把锁一致视图
+    c.set_target(p)      # p in [0,1], 0=closed 1=open
+    s = c.snapshot()     # state + observation + commanded torque, consistent
+                         # view under one lock
 
-注意 snapshot().grasp_torque_nm 是**设定值**;固件的 I2t 与温度墙会把实际输出
-降下来,所以握持力不是常数。
+Note that snapshot().grasp_torque_nm is the **setpoint**; the firmware's I2t and
+temperature wall bring the actual output down, so the grip force is not constant.
 
-这个脚本同时是**上机验收**:它跑一遍带中间位置的目标序列,并检查那条不变式 ——
+This script is also the **on-hardware acceptance test**: it runs a target
+sequence that includes intermediate positions and checks the invariant —
 
-    报告 holding 时,爪子必须明显**没到**命令位置。
+    when holding is reported, the jaw must clearly **not have reached** the
+    commanded position.
 
-闭合端点(目标 0.0)除外:止点与指垫本身会挡住爪子,在那里报 holding 是按预算
-夹紧,是正常终态。
+The closed endpoint (target 0.0) is the exception: the stop and the finger pads
+themselves block the jaw, so reporting holding there means clamping at the
+budget, which is a normal final state.
 
-holding 是观测量:命令用满了力矩预算而爪子仍然没在走。在命令位置上报 holding
-意味着预算被一次本该到位的移动用满了,那是标定或映射出了问题。
+holding is an observation: the command has used up the torque budget and the jaw
+still is not moving. Reporting holding at the commanded position means the budget
+was used up by a move that should have arrived, which points to a calibration or
+mapping problem.
 
-任何一步失败 → 退出码非零。
+Any failed step -> non-zero exit code.
 
-用法
+Usage
     python python/examples/force_position_control.py right
     python python/examples/force_position_control.py --grasp-torque 1.1
     python python/examples/force_position_control.py --targets 1.0,0.7,0.35,0.0
 
-安全:真实运动 + 夹持力,退出路径必定下发零力矩并 disable。
+Safety: real motion + grip force; the exit path always sends zero torque and
+disables.
 """
 
 from __future__ import annotations
@@ -65,23 +80,27 @@ from xense.taccap import (
 
 TERMINAL = ("HOLDING_FORCE", "HOLDING_POSITION", "FAULT")
 
-# detail::ForcePositionTuning::arrival_eps_rad —— 控制器判「到位」的半径。
-# 这里放宽一点再用来判定,免得测量噪声把通过的步骤报成失败。
+# detail::ForcePositionTuning::arrival_eps_rad — the radius within which the
+# controller considers the jaw "arrived". It is widened a bit here before use, so
+# that measurement noise does not report a passing step as a failure.
 ARRIVAL_BAND_RAD = 0.010
 ARRIVAL_SLACK = 2.5
-# 与 SDK 的 kClosedEndpointEps 一致:归一化目标不大于它就是闭合端点。
+# Matches the SDK's kClosedEndpointEps: a normalized target no greater than this
+# is the closed endpoint.
 CLOSED_ENDPOINT = 1e-3
 
 
 def await_command(
     c: ForcePositionController, target: float, budget: float = 1.0
 ) -> bool:
-    """等控制器真正接下这个目标。
+    """Wait until the controller has actually taken this target.
 
-    set_target() 是**排队**的:命令在下一帧状态流的相位上才应用(这样每次写都落
-    在 MCU 空闲的窗口里)。刚下发完就去读 snapshot(),读到的是**上一个**目标的
-    终态 —— 于是「还没开始动」会被当成「已经收敛」,整轮验收在爪子一动不动的
-    情况下全部通过。别删这一步。
+    set_target() is **queued**: the command is applied only on the next frame's
+    phase of the status stream (so every write lands in the MCU's idle window).
+    Reading snapshot() right after sending returns the final state of the
+    **previous** target — so "has not started moving" is taken as "already
+    converged", and the whole acceptance run passes with the jaw never moving.
+    Do not remove this step.
     """
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < budget:
@@ -92,7 +111,8 @@ def await_command(
 
 
 def settle(c: ForcePositionController, budget: float = 8.0):
-    """等控制器收敛到终态,返回 (状态名, 快照, 用时)。"""
+    """Wait for the controller to settle in a final state; return (state name,
+    snapshot, elapsed)."""
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < budget:
         s = c.snapshot()
@@ -113,56 +133,61 @@ def main() -> int:
         "--grasp-torque",
         type=float,
         default=None,
-        help="力矩预算 Nm —— 自由行程用不到,被挡住时就停在这个值。默认取电机的"
-        "连续堵转额定(EL05 1.1 / RS00 3.6),不能超过它",
+        help="torque budget Nm — not used during free travel; when blocked the "
+        "jaw stops at this value. Defaults to the motor's continuous stall rating "
+        "(EL05 1.1 / RS00 3.6) and cannot exceed it",
     )
     ap.add_argument(
         "--close-speed",
         type=float,
         default=None,
-        help="闭合速度 rad/s。默认 MOTOR_APPROACH_SPEED_RADPS(1.1)",
+        help="close speed rad/s. Default MOTOR_APPROACH_SPEED_RADPS (1.1)",
     )
     ap.add_argument(
         "--targets",
         default="1.0,0.5,0.0,0.5,1.0",
-        help="逗号分隔的归一化目标序列。默认带中间位置 —— 只跑端点看不出"
-        "「到位/接触」判错",
+        help="comma-separated sequence of normalized targets. The default includes "
+        "intermediate positions — running only the endpoints cannot reveal a "
+        'wrong "arrived/contact" judgment',
     )
     args = ap.parse_args()
 
     try:
         targets = [float(x) for x in args.targets.split(",") if x.strip()]
     except ValueError:
-        ap.error(f"--targets 解析失败: {args.targets!r}")
+        ap.error(f"--targets failed to parse: {args.targets!r}")
     if not targets or any(not 0.0 <= t <= 1.0 for t in targets):
-        ap.error("--targets 必须是 [0,1] 内的归一化位置")
+        ap.error("--targets must be normalized positions in [0,1]")
 
     log.set_level("warn")
     g, _ep = _target.open_follower(args.target)
     print(f"[fw] {g.firmware_version}")
-    # audit 而不是 get_envelope:只看 Enforce 标志的话,对"存的值不是生效值"
-    # 和布局错配这两种情况都是瞎的,而这两种都会让保持失去热保护。
+    # audit rather than get_envelope: looking only at the Enforce flag is blind to
+    # both "the stored value is not the effective value" and a layout mismatch,
+    # and either one leaves the hold without thermal protection.
     a = g.audit_envelope()
     print(f"[envelope] stored    {a.stored}")
     print(
         f"[envelope] effective "
-        f"{a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+        f"{a.effective if a.effective else '*** firmware enforces nothing ***'}"
     )
     if not a.ok:
         print(
             f"[warn] {a.detail}\n"
-            "       长时间保持的热保护就落在这上面。"
-            "修:impedance_control.py --set-envelope"
+            "       Thermal protection for long holds depends on this. "
+            "Fix: impedance_control.py --set-envelope"
         )
 
-    # 按设备实际装的电机取默认值(grasp / hold / motion / close_speed 全部跟着走)
+    # Take defaults from the motor the device actually carries (grasp / hold /
+    # motion / close_speed all follow it)
     cfg = ForcePositionConfig.for_spec(g.motor.get_spec())
     if args.grasp_torque is not None:
-        cfg.grasp_torque_nm = args.grasp_torque  # 被挡住时停在这个值 = 夹持力
+        cfg.grasp_torque_nm = args.grasp_torque  # stops here when blocked = grip force
     if args.close_speed is not None:
         cfg.close_speed_radps = args.close_speed
-    # 其余走 for_spec:hold = 旋转额定、motion = 力矩量程(EL05 1.8/6.0,
-    # RS00 5.0/14.0),status_timeout_ms=350(流断 → FAULT + 零力矩)、motor_stream_hz=100。
+    # The rest comes from for_spec: hold = rotating rating, motion = torque range
+    # (EL05 1.8/6.0, RS00 5.0/14.0), status_timeout_ms=350 (stream loss -> FAULT +
+    # zero torque), motor_stream_hz=100.
     print(
         f"[config] grasp={cfg.grasp_torque_nm:.2f}Nm close_speed={cfg.close_speed_radps:.2f}rad/s "
         f"hold={cfg.hold_torque_limit_nm:.2f}Nm motion={cfg.motion_torque_limit_nm:.2f}Nm"
@@ -172,29 +197,36 @@ def main() -> int:
     failures = 0
     try:
         g.motor.clear_fault()
-        c.start()  # 校验设备持久化的 0x700B 启动上限,并播种位置保持
+        c.start()  # checks the device's persisted 0x700B limit at startup, seeds a
+        # position hold
         g.motor.enable()
 
-        # 到位带换算到归一化:控制器在 rad 空间判定,这里的位置是归一化的。
+        # Convert the arrival band to normalized units: the controller judges in
+        # rad space, while positions here are normalized.
         travel = g.position_map().max_open_rad
         band = ARRIVAL_BAND_RAD * ARRIVAL_SLACK / travel
-        print(f"[band] 行程 {travel:.4f} rad,到位 |误差| <= {band:.4f}(归一化)")
+        print(
+            f"[band] travel {travel:.4f} rad, arrived if |err| <= {band:.4f} (normalized)"
+        )
 
         for target in targets:
             before = c.snapshot().state.name
             c.set_target(target)
             if not await_command(c, target):
-                print(f"  target={target:.2f} -> FAIL  控制器没有接下这个目标")
+                print(
+                    f"  target={target:.2f} -> FAIL  controller did not take this target"
+                )
                 failures += 1
                 continue
             name, s, dt = settle(c)
             pos = s.observation.position
             err = abs(pos - target)
-            # 位置/力矩/温度全部来自状态流的 snapshot,控制期间不碰总线。
+            # Position/torque/temperature all come from the status stream's
+            # snapshot; nothing touches the bus while controlling.
             print(
                 f"  target={target:.2f} -> {name:16s} pos={pos:.4f} err={err:.4f} "
-                f"cmd={s.commanded_torque_nm:.3f} 实测={s.observation.torque:+.3f} Nm "
-                f"temp={s.observation.motor_temp_c:.0f}°C 用时 {dt:.2f}s"
+                f"cmd={s.commanded_torque_nm:.3f} meas={s.observation.torque:+.3f} Nm "
+                f"temp={s.observation.motor_temp_c:.0f}°C took {dt:.2f}s"
             )
 
             if name == "FAULT":
@@ -202,51 +234,64 @@ def main() -> int:
                 failures += 1
                 break
 
-            # 已经夹稳时,一个更深的闭合目标是被**故意**吞掉的:爪子已经在这个
-            # 力上推不动了,重新起步只会把好好的夹持抖掉。不算通过也不算失败 ——
-            # 这一步根本没有发生运动,不该拿它去判「保护是否正确」。
+            # Once the grip is stable, a deeper close target is **deliberately**
+            # swallowed: the jaw already cannot push further at this force, and
+            # restarting would only shake loose a good grip. It counts as neither
+            # pass nor fail — no motion happened in this step at all, so it must
+            # not be used to judge "is the protection correct".
             if before == "HOLDING_FORCE" and name == "HOLDING_FORCE" and dt < 0.05:
                 print(
-                    "    skip  已在力保持中,更深的闭合目标被忽略(设计如此);"
-                    "要离开只能下发张开目标"
+                    "    skip  already holding force, deeper close target ignored "
+                    "(by design); only an open target leaves it"
                 )
                 continue
             if name not in ("HOLDING_POSITION", "HOLDING_FORCE"):
-                print("    FAIL  未在预算内收敛到终态")
+                print("    FAIL  did not settle in a final state within budget")
                 failures += 1
                 continue
 
-            # 这条是核心:holding 只有在爪子被挡在命令位置**之外**时才成立。
-            # 到位了还报 holding,说明一次本该到位的移动把力矩预算用满了 ——
-            # 标定或归一化映射出了问题。
-            # 闭合端例外(SDK 0.3.7 起):目标 0.0 就是机械止点,止点和指垫本身
-            # 就会挡住爪子 —— 闭合到底被挡住、按预算夹紧,HOLDING_FORCE 是正常
-            # 终态,和到位一样。0094s(RS00)实测:爪子在止点前 ~12mrad 碰到指垫,
-            # 控制器补到预算、报 HOLDING_FORCE,0.2 秒内压到止点(3.2Nm)。旧的
-            # 判法把它当成"到位还报 holding"判失败,与控制器的设计矛盾。
+            # This is the core check: holding is valid only when the jaw is
+            # blocked **short of** the commanded position. Reporting holding after
+            # arriving means a move that should have arrived used up the torque
+            # budget — a calibration or normalized-mapping problem.
+            # The closed endpoint is the exception (since SDK 0.3.7): target 0.0
+            # is the mechanical stop, and the stop and finger pads themselves
+            # block the jaw — blocked at full close and clamped at the budget,
+            # HOLDING_FORCE is a normal final state, just like arrival. Measured on
+            # 0094s (RS00): the jaw touches the finger pads ~12mrad before the
+            # stop, the controller fills up to the budget and reports
+            # HOLDING_FORCE, and presses to the stop within 0.2 s (3.2Nm). The old
+            # check failed this as "holding reported after arrival", which
+            # contradicts the controller's design.
             if s.holding and target <= CLOSED_ENDPOINT:
-                print(f"    ok    闭合端被止点/指垫挡住,按预算夹紧(err {err:.4f})")
+                print(
+                    f"    ok    closed end blocked by stop/finger pads, clamped at "
+                    f"budget (err {err:.4f})"
+                )
             elif s.holding and err <= band:
                 print(
-                    "    FAIL  在命令位置上报 holding —— 一次本该到位的移动"
-                    "用满了力矩预算"
+                    "    FAIL  holding reported at the commanded position — a move "
+                    "that should have arrived used up the torque budget"
                 )
                 failures += 1
             elif s.holding:
-                print(f"    ok    被挡在目标外 {err:.4f}(归一化),holding 正确")
-            elif s.arrived:
-                print("    ok    到位")
-            else:
-                # 既没到位也没在 holding,却已经稳定下来 —— 没有任何东西解释
-                # 它为什么停在这里。
                 print(
-                    f"    FAIL  停在目标外 {err:.4f} 却既未到位也未 holding"
-                    f" —— 运动没有真正发生?"
+                    f"    ok    blocked {err:.4f} short of target (normalized), "
+                    "holding correct"
+                )
+            elif s.arrived:
+                print("    ok    arrived")
+            else:
+                # Neither arrived nor holding, yet already settled — nothing
+                # explains why it stopped here.
+                print(
+                    f"    FAIL  stopped {err:.4f} short of target, but neither arrived"
+                    f" nor holding — did the motion actually happen?"
                 )
                 failures += 1
     finally:
         try:
-            c.stop()  # stop() 先下发零力矩
+            c.stop()  # stop() sends zero torque first
         except Exception as exc:
             print("stop:", exc)
         try:
@@ -255,9 +300,9 @@ def main() -> int:
             print("disable:", exc)
 
     if failures:
-        print(f"\n{failures} 步失败")
+        print(f"\n{failures} step(s) failed")
         return 1
-    print(f"\n{len(targets)} 步执行完毕,无失败")
+    print(f"\n{len(targets)} steps completed, no failures")
     return 0
 
 

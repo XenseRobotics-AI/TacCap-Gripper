@@ -7,10 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
+  a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
+  takes the image as optional: without one it picks the shipped image for the
+  motor model recorded on the gripper (refusing when only the compile-time
+  default is known), and a shipped image is checked against the manifest's
+  CRC32. A bare image name also resolves under `firmware/`.
+
+### Changed
+
+- **Source code is English-only.** Comments, docstrings, pybind11 docstrings
+  and runtime text (log and exception messages, example output, argparse help)
+  across `cpp/`, `python/` and the examples were translated from Chinese.
+  Scripts or log filters that match on the old Chinese text need updating, for
+  example the follower's below-1.2.11 warning now reads `is below 1.2.11`.
+  Example table headers use short English labels at the same column widths.
+
 ## [0.4.3] - 2026-10-10
+
+_The `v0.4.3` tag was moved on 2026-10-18 to include the EL05 motor OTA
+fix and docs below; the version number is unchanged._
 
 ### Fixed
 
+- **`motor_ota_update.py` mis-read EL05 images.** EL05 versions have five
+  parts (`1.0.5.0.4`); the example kept four and compared the motor's raw
+  bytes (`10.5.0.4`), so a good flash was reported as a mismatch. It now
+  parses five-part versions and compares the vendor spelling.
 - **Force-position could not close a left-hand RS00 follower to 0.0.** Root
   cause (0089s, diagnostic firmware, 2026-10-10): a RobStride motor takes an MIT
   motion frame whose byte 0 equals its own CAN ID for another command and
@@ -26,6 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`motor_ota_update.py` runs as two passes of the same command**: the first
+  switches the motor to its private protocol, the second (after a 24 V power
+  cycle) flashes, verifies, records the version in the follower (0x5C) and
+  switches back to MIT. The version is recorded only after the motor confirmed
+  it, or blind when the motor returned to MIT by itself (RS00). `--to-mit`
+  switches back without flashing.
+- **The motor OTA sets the motion envelope to the motor's rating** when it
+  differs (`ensure_envelope()`); travel calibration and open direction are
+  kept. `--keep-envelope` skips it.
+- **`docs/MOTOR_OTA.md`** (and `MOTOR_OTA-zh.md`): customer guide to updating
+  the motor firmware over USB-C.
 - **RS00 followers use motor CAN ID 17 (left) / 18 (right).**
   `detail::expected_motor_can_id(model_id, side)` (Python
   `expected_motor_can_id`) is the rule; `FollowerGripper` warns on open when the
@@ -49,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Chinese documents are named `<NAME>-zh.md`.** `README_CN.md` is now
+  `README-zh.md` and `docs/USAGE_CN.md` is `docs/USAGE-zh.md`; links inside the
+  repository are updated. English files stay authoritative.
 - Shipped follower image is now **1.2.16** (was 1.2.14 in 0.4.2; leader
   unchanged at 1.2.6). It carries 1.2.15: an RS00's open direction follows the
   side in its firmware SN, auto-calibration corrects a stored direction that

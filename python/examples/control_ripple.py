@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""量行进段的速度纹波 —— 控制器的**质量**,不是能不能到位。
+"""Measure velocity ripple over the travel segment -- the controller's
+**quality**, not whether it arrives.
 
-impedance_control.py / force_position_control.py 验的是「到位」和「到位与被挡住
-可分」,那是功能。功能对了控制仍然可以很难看:爪子一边走一边抖,平均速度只有命令
-的七成。那正是重构前的实测状态。
+impedance_control.py / force_position_control.py check "arrives" and
+"arrived vs. blocked are distinguishable"; that is function. With function
+correct, control can still look bad: the gripper shakes as it travels and the
+mean speed is only 70% of the command. That was exactly the measured state
+before the refactor.
 
-指标和 `docs/CONTROL_REFACTOR.md` §1.2 的基线表一致,好直接对比:
+The metrics match the pre-refactor baseline table, for direct comparison:
 
-    相对速度纹波 = σ(|v|) / 均值(|v|)     行进段,掐掉加减速两头
-    峰峰         = max(|v|) - min(|v|)
-    均速/命令    = 均值(|v|) / 命令速度
-                   ForcePosition:config 实际的 close_speed_radps
-                   Impedance:设计接近速度 预算/kd(它没有斜坡速度)
-    极限环频率   = 去均值后的过零次数 / 2 / 时长
-    逆向帧       = 速度方向与行进方向相反的帧数(区分**脉动**与**振动**)
+    relative ripple  = σ(|v|) / mean(|v|)     travel segment, ramp up/down trimmed
+    peak-to-peak     = max(|v|) - min(|v|)
+    mean/command     = mean(|v|) / commanded speed
+                       ForcePosition: the config's actual close_speed_radps
+                       Impedance: design approach speed budget/kd (it has no ramp speed)
+    limit-cycle freq = zero crossings after mean removal / 2 / duration
+    reversal frames  = frames whose velocity opposes the travel direction
+                       (tells **pulsation** from **vibration**)
 
-最后一条是当初用来定性的:旧设计逆向帧 0/300 —— 爪子从不倒退,所以那是速度脉动
-不是机械振动,再加上「纹波跟 kd 走、不跟速度走」的四组对照,排除了机械共振。
+The last one is what was used to characterize it back then: the old design had
+0/300 reversal frames -- the gripper never moved backward, so it was velocity
+pulsation, not mechanical vibration; together with four control comparisons
+showing "ripple follows kd, not speed", that ruled out mechanical resonance.
 
-采样走状态流回调,满 100Hz,不额外发任何命令 —— 行进期间轮询会和控制帧撞车。
+Sampling uses the status stream callback, full 100Hz, sending no extra
+commands -- polling during travel collides with control frames.
 
-用法
+Usage
     python python/examples/control_ripple.py right
     python python/examples/control_ripple.py --rounds 10 --controller both
 """
@@ -43,22 +50,25 @@ from xense.taccap import (
 
 
 def summarize(seg, commanded: float) -> dict:
-    """seg: [(t, pos, vel, torque)],已经是行进段。"""
+    """seg: [(t, pos, vel, torque)], already the travel segment."""
     n = len(seg)
-    # 掐掉两头各 20%:加速段和减速段不是稳态,算进去等于把控制器的正常行为
-    # 记成纹波。
+    # Trim 20% off each end: the acceleration and deceleration phases are not
+    # steady state; including them would count normal controller behavior as
+    # ripple.
     core = seg[int(n * 0.2) : int(n * 0.8)]
     v = [abs(r[2]) for r in core]
     mu, sd = st.mean(v), st.pstdev(v)
     dur = core[-1][0] - core[0][0]
 
-    # 极限环频率:去均值后数过零。比 FFT 简单,而且在这种低频单峰的情况下
-    # 给出的是同一个数。
+    # Limit-cycle frequency: count zero crossings after mean removal. Simpler
+    # than an FFT, and in this low-frequency single-peak case it gives the same
+    # number.
     dev = [x - mu for x in v]
     crossings = sum(1 for a, b in zip(dev, dev[1:]) if a * b < 0)
     freq = crossings / 2.0 / dur if dur > 0 else 0.0
 
-    # 逆向帧:整段的行进方向由位移决定,再数有多少帧的速度和它反号。
+    # Reversal frames: the segment's travel direction comes from displacement,
+    # then count frames whose velocity has the opposite sign.
     direction = 1.0 if core[-1][1] > core[0][1] else -1.0
     reversals = sum(1 for r in core if r[2] * direction < -0.02)
 
@@ -74,7 +84,8 @@ def summarize(seg, commanded: float) -> dict:
     }
 
 
-# 「停住了」的判据:这段时间内原始位置的极差不超过这么多。
+# "Stopped" criterion: raw position range within this window stays within
+# this much.
 STILL_WINDOW_S = 0.3
 STILL_RANGE_RAD = 0.0015
 
@@ -90,8 +101,10 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
     c.start()
 
     def settle(budget=8.0):
-        # 先等 arrived 变假(命令被采纳)再等变真 —— set_target() 不会立刻清掉
-        # 上一次运动留下的 arrived,直接等真会在爪子还没动时就返回。
+        # First wait for arrived to go false (command taken), then true --
+        # set_target() does not immediately clear the arrived left by the
+        # previous move; waiting for true directly would return before the
+        # gripper has moved.
         t0 = time.perf_counter()
         while time.perf_counter() - t0 < 1.2 and _arrived(c):
             time.sleep(0.02)
@@ -104,23 +117,25 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
         a = getattr(s, "arrived", None)
         if a is not None:
             return a
-        # 阻抗控制器没有 arrived,用「位置不动了」代替,不用速度:MIT 状态帧的
-        # 速度在电机停住时有约 ±0.07 rad/s 的量化噪声,|v| < 0.02 几乎从不成立,
-        # 每一步都要白等满 budget(0086s 上由 DVT 测试发现)。位置一格约
-        # 0.00038 rad,0.3 s 内极差 <= 0.0015 rad 就是约 4 格。
+        # The impedance controller has no arrived; use "position stopped
+        # moving" instead, not velocity: MIT status frame velocity has about
+        # ±0.07 rad/s quantization noise when the motor is stopped, so
+        # |v| < 0.02 almost never holds and every step would wait out the full
+        # budget (found by DVT testing on 0086s). One position count is about
+        # 0.00038 rad; a range <= 0.0015 rad within 0.3 s is about 4 counts.
         now = time.perf_counter()
         win = [r[1] for r in rows[-60:] if now - r[0] <= STILL_WINDOW_S]
         if len(win) < 20:
             return False
         return max(win) - min(win) <= STILL_RANGE_RAD
 
-    per_dir: dict[str, list] = {"闭合": [], "张开": []}
+    per_dir: dict[str, list] = {"close": [], "open": []}
     try:
         c.set_target(1.0)
         settle()
         time.sleep(0.4)
         for _ in range(rounds):
-            for label, tgt in (("闭合", 0.0), ("张开", 1.0)):
+            for label, tgt in (("close", 0.0), ("open", 1.0)):
                 rows.clear()
                 c.set_target(tgt)
                 settle()
@@ -133,15 +148,15 @@ def run(name, make_ctrl, commanded, gripper, rounds: int) -> int:
         c.stop()
         gripper.motor.off(sub)
 
-    print(f"\n=== {name} ===  命令速度 {commanded:.2f} rad/s,{rounds} 轮")
+    print(f"\n=== {name} ===  commanded speed {commanded:.2f} rad/s, {rounds} rounds")
     print(
-        f"  {'方向':>4} {'轮':>3} {'相对纹波':>18} {'峰峰':>16} "
-        f"{'极限环':>8} {'均速/命令':>10} {'逆向帧':>8}"
+        f"  {'dir':>4} {'n':>3} {'rel ripple':>18} {'pk-pk':>16} "
+        f"{'cycle':>8} {'mean/cmd':>10} {'reversal':>8}"
     )
     bad = 0
     for label, xs in per_dir.items():
         if not xs:
-            print(f"  {label:>4}  —— 没有有效样本")
+            print(f"  {label:>4}  -- no valid samples")
             bad += 1
             continue
         rip = [x["ripple"] for x in xs]
@@ -164,7 +179,9 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _target.add_target_argument(ap)
-    ap.add_argument("--rounds", type=int, default=10, help="每个方向测多少轮")
+    ap.add_argument(
+        "--rounds", type=int, default=10, help="rounds to measure per direction"
+    )
     ap.add_argument(
         "--controller", choices=("force-position", "impedance", "both"), default="both"
     )
@@ -172,7 +189,8 @@ def main() -> int:
         "--close-speed",
         type=float,
         default=None,
-        help="ForcePosition 斜坡速度 rad/s,默认 for_spec 的 1.1;阻抗不用它",
+        help="ForcePosition ramp speed rad/s, default 1.1 from for_spec; "
+        "impedance does not use it",
     )
     args = ap.parse_args()
 
@@ -183,7 +201,7 @@ def main() -> int:
     print(f"[envelope] stored    {a.stored}")
     print(
         f"[envelope] effective "
-        f"{a.effective if a.effective else '*** 固件什么都不执行 ***'}"
+        f"{a.effective if a.effective else '*** firmware enforces nothing ***'}"
     )
     if not a.ok:
         print(f"[warn] {a.detail}")
@@ -197,7 +215,8 @@ def main() -> int:
         def mk_fp():
             return ForcePositionController(g, fp_cfg)
 
-        # 分母取 config 里实际生效的斜坡速度,不给 --close-speed 时就是 for_spec 的值。
+        # The denominator is the ramp speed actually in effect in the config; without
+        # --close-speed that is the for_spec value.
         bad += run(
             "ForcePositionController", mk_fp, fp_cfg.close_speed_radps, g, args.rounds
         )
@@ -208,18 +227,22 @@ def main() -> int:
         def mk_imp():
             return ImpedanceController(g, imp_cfg)
 
-        # 阻抗没有「命令速度」:位置误差被钳在 预算/kp 以内,驱动力矩封顶在预算,
-        # 爪子加速到阻尼 kd·v 与它平衡为止 —— 设计接近速度就是 预算/kd。拿它当
-        # 分母,「均速/命令」才有意义。
+        # Impedance has no "commanded speed": position error is clamped within
+        # budget/kp, drive torque is capped at the budget, and the gripper
+        # accelerates until damping kd·v balances it -- the design approach
+        # speed is budget/kd. Only with that as the denominator is
+        # "mean/command" meaningful.
         #
-        # 曾经拿 --close-speed 当分母,那是 ForcePosition 的斜坡速度,阻抗根本没用
-        # 它:RS00 上因此报出 187%,看着像超速,实际是设计值 1.1 rad/s 的 ~87%。
+        # --close-speed was once used as the denominator; that is the
+        # ForcePosition ramp speed, which impedance does not use at all: RS00
+        # reported 187% because of it, which looked like overspeed but was
+        # actually ~87% of the 1.1 rad/s design value.
         imp_speed = imp_cfg.max_position_torque_nm / imp_cfg.kd
         bad += run("ImpedanceController", mk_imp, imp_speed, g, args.rounds)
 
-    print("\n基线(docs/CONTROL_REFACTOR.md §1.2,重构前,10 轮):")
-    print("    闭合 纹波 37%  峰峰 0.59  12-13Hz  均速/命令 77%")
-    print("    张开 纹波 24%  峰峰 0.51  20Hz     均速/命令 94%")
+    print("\nbaseline (pre-refactor, 10 rounds):")
+    print("    close ripple 37%  pk-pk 0.59  12-13Hz  mean/cmd 77%")
+    print("    open  ripple 24%  pk-pk 0.51  20Hz     mean/cmd 94%")
     return 1 if bad else 0
 
 

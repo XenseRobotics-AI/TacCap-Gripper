@@ -51,6 +51,7 @@ def _resolve_target(target):
 
 
 _target.resolve_target = _resolve_target
+_target.SIDE_ALIASES = {"left": "left", "l": "left", "right": "right", "r": "right"}
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -238,3 +239,56 @@ def test_cli_treats_role_name_as_target_not_firmware_path():
     normalized = mod._normalize_cli_target(args)
     assert normalized.firmware is None
     assert normalized.target == "slave"
+
+
+def _cli(firmware, target):
+    return types.SimpleNamespace(
+        firmware=firmware, target=target, get_status=False, all=False
+    )
+
+
+def test_cli_role_then_side_is_role_plus_side():
+    """`slave right` used to resolve "slave" as a firmware path and fail."""
+    n = mod._normalize_cli_target(_cli("slave", "right"))
+    assert (n.firmware, n.target, n.role) == (None, "right", "slave")
+
+
+def test_cli_side_then_role_means_the_same():
+    n = mod._normalize_cli_target(_cli("right", "slave"))
+    assert (n.firmware, n.target, n.role) == (None, "right", "slave")
+
+
+def test_cli_explicit_image_and_side_untouched():
+    n = mod._normalize_cli_target(_cli("tc-gu-01-slave-1.2.16.bin", "right"))
+    assert (n.firmware, n.target, n.role) == (
+        "tc-gu-01-slave-1.2.16.bin",
+        "right",
+        None,
+    )
+
+
+def _patch_resolve(monkeypatch, eps):
+    monkeypatch.setattr(mod._target, "resolve_target", lambda t: (eps, True, [eps]))
+
+
+def test_role_plus_side_flashes_that_role_image(monkeypatch):
+    right = FakeEndpoint("TCGU01A28Z0002s", side="right")
+    _patch_resolve(monkeypatch, right)
+    jobs = mod._build_upgrade_jobs("right", None, False, lambda: [right], role="slave")
+    assert len(jobs) == 1
+    assert jobs[0]["eps"] is right
+    assert jobs[0]["role"] == "slave"
+    assert Path(jobs[0]["firmware"]).name == Path(_manifest_file("slave")).name
+
+
+def test_role_plus_side_refuses_a_gripper_of_the_other_role(monkeypatch):
+    right_master = FakeEndpoint("TCGU01A28Z0002m", side="right")
+    _patch_resolve(monkeypatch, right_master)
+    try:
+        mod._build_upgrade_jobs(
+            "right", None, False, lambda: [right_master], role="slave"
+        )
+    except SystemExit as e:
+        assert "bricks" in str(e)
+    else:
+        raise AssertionError("flashing a master with the slave image must refuse")

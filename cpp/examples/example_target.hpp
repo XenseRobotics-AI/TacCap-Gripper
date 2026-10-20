@@ -1,10 +1,13 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// 示例共用的目标选择:`left` / `right` / 明确的 SN,和 Python 示例同一套约定。
+// Target selection shared by the examples: `left` / `right` / an explicit SN, the same
+// convention as the Python examples.
 //
-// 存在的理由很具体:工位上常年插着四台(两主两从),而 FollowerGripper::open()
-// 走的是 find_one(),多于一台就抛 IoError。没有选择器的示例在真实台架上一次
-// 都跑不起来 —— 而且「拿到的是哪一台」不能靠猜,刷错、标定错的代价太高。
+// The reason it exists is concrete: the workstation permanently has four units plugged in (two
+// leaders, two followers), and FollowerGripper::open() goes through find_one(), which throws
+// IoError if there is more than one. An example without a selector cannot run even once on a
+// real bench — and "which unit did I get" must not be guessed; flashing or calibrating the wrong
+// one costs too much.
 
 #pragma once
 
@@ -20,7 +23,7 @@
 namespace example {
 
 inline void print_candidates(const std::vector<xense::taccap::discovery::GripperEndpoints>& all) {
-    std::printf("当前接着的:\n");
+    std::printf("Currently connected:\n");
     for (const auto& e : all) {
         const char* side =
             e.side == xense::taccap::discovery::Side::Left    ? "left "
@@ -35,7 +38,8 @@ inline void print_candidates(const std::vector<xense::taccap::discovery::Gripper
     }
 }
 
-// argv[1] 可以是 "left" / "right" / 一个完整 SN;省略则要求恰好接着一台从爪。
+// argv[1] can be "left" / "right" / a full SN; if omitted, exactly one follower must be
+// connected.
 inline std::unique_ptr<xense::taccap::FollowerGripper>
 open_follower(int argc, char** argv) {
     using namespace xense::taccap;
@@ -62,10 +66,10 @@ open_follower(int argc, char** argv) {
 
     if (hits.size() != 1) {
         std::printf("%s\n",
-                    hits.empty() ? "没有匹配的从爪。"
-                                 : "匹配到不止一台从爪,请用 SN 指定。");
+                    hits.empty() ? "No matching follower."
+                                 : "More than one follower matched; specify one by SN.");
         print_candidates(all);
-        std::printf("用法: %s [left|right|SN]\n", argv[0]);
+        std::printf("Usage: %s [left|right|SN]\n", argv[0]);
         throw std::runtime_error("target selection failed");
     }
 

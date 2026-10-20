@@ -7,8 +7,6 @@
 > `GetVersion` 查（`gripper.firmware_version`）——它返回的是编译进镜像的常量，
 > 是唯一能证明刷进去了什么的东西。
 
-<!-- 从 README.md 拆出，保持内容不变；README 只保留入门路径。 -->
-
 ## Firmware / PC GUI reference repos
 
 The wire protocol this SDK speaks is defined by the firmware that runs

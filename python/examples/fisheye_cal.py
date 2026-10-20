@@ -40,8 +40,9 @@ Usage:
     # Or write a known value directly
     python python/examples/fisheye_cal.py set-encoder-max --max-rad 1.30
 
-选择器和其它示例一致:位置参数 left / right(或直接给固件 SN),
-省略则要求只插了一台。列出连着的夹爪:
+The selector matches the other examples: positional argument left / right (or a
+firmware SN directly); if omitted, exactly one unit must be plugged in. To list
+the connected grippers:
     python -c "from xense.taccap import scan_grippers; \\
                [print(g.firmware_sn, g.mcu_device) for g in scan_grippers()]"
 """

@@ -89,7 +89,8 @@ GripperEnvelope = (
 )  # motion safety envelope (in GripperConfig)
 GRIPPER_ENVELOPE_VALID = _taccap_native.GRIPPER_ENVELOPE_VALID
 GRIPPER_ENVELOPE_ENFORCE = _taccap_native.GRIPPER_ENVELOPE_ENFORCE
-# 审计结果:存的 / 生效的 / 推荐的是三件不同的事 —— 见 EnvelopeAudit
+# Audit result: stored / in effect / recommended are three different things — see
+# EnvelopeAudit
 EnvelopeAudit = _taccap_native.EnvelopeAudit
 EnvelopeWrite = _taccap_native.EnvelopeWrite
 GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN = _taccap_native.GRIPPER_ENVELOPE_ISSUE_NOT_WRITTEN
@@ -132,14 +133,18 @@ ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
 ImpedanceController = _taccap_native.ImpedanceController
 MOTOR_RATED_TORQUE_NM = _taccap_native.MOTOR_RATED_TORQUE_NM  # 1.8 Nm, indefinite
 MOTOR_PEAK_TORQUE_NM = _taccap_native.MOTOR_PEAK_TORQUE_NM  # 6.0 Nm, transient
-# 1.1 Nm —— 堵转额定,被挡住的爪子可以无限期维持的那个。别和 RATED(旋转额定)混
+# 1.1 Nm — the stall rating, the one a blocked jaw can hold indefinitely. Do not
+# confuse it with RATED (the rotating rating)
 MOTOR_STALL_CONT_TORQUE_NM = _taccap_native.MOTOR_STALL_CONT_TORQUE_NM
-# 两个控制器共用的目标接近速度。它是**目标**不是测量:阻抗侧的接近速度是
-# 预算/kd(涌现的),力位侧由斜坡直接调到这个值。提预算必须同时提 kd,否则
-# 夹持力上去了、接近速度也跟着上去 —— 这是 for_spec() 替你做的事
+# Target approach speed shared by both controllers. It is a **target**, not a
+# measurement: on the impedance side the approach speed is budget/kd (emergent);
+# on the force-position side a ramp drives it straight to this value. Raising the
+# budget must raise kd too, otherwise grip force goes up and the approach speed
+# goes up with it — this is what for_spec() does for you
 MOTOR_APPROACH_SPEED_RADPS = _taccap_native.MOTOR_APPROACH_SPEED_RADPS
 MOTOR_MAX_APPROACH_SPEED_RADPS = _taccap_native.MOTOR_MAX_APPROACH_SPEED_RADPS
-# 只是理智上限,不是电机额定 —— 真正的界是设备自报的规格,在 start() 里校验
+# Only a sanity cap, not a motor rating — the real bound is the device's
+# self-reported spec, checked in start()
 MOTOR_ABSOLUTE_TORQUE_CEILING_NM = _taccap_native.MOTOR_ABSOLUTE_TORQUE_CEILING_NM
 ForcePositionState = _taccap_native.ForcePositionState
 ForcePositionConfig = _taccap_native.ForcePositionConfig
@@ -159,25 +164,28 @@ MotorStatusExt = _taccap_native.MotorStatusExt  # V2.2 72-byte status (Cmd 0x53)
 MotorFaultReport = (
     _taccap_native.MotorFaultReport
 )  # V2.2 64-byte fault report (Cmd 0x52)
-# 本机记录的电机型号 (Cmd 0x59/0x5A, 需固件 >= 1.2.7)。问的是 MCU 的 flash,
-# 不是电机 —— 电机答不出自己的型号
+# Motor model recorded on this unit (Cmd 0x59/0x5A, needs firmware >= 1.2.7). This
+# asks the MCU's flash, not the motor — the motor cannot report its own model
 MotorModel = _taccap_native.MotorModel
-# 上电自动标定的诊断 (Cmd 0x57)。标定的失败原因此前只走没接到 USB 的 UART7
+# Power-on auto-calibration diagnostics (Cmd 0x57). Calibration failure reasons
+# used to go only to UART7, which is not wired to USB
 HomeDiagReport = _taccap_native.HomeDiagReport
 HomeState = _taccap_native.HomeState
 HomeFail = _taccap_native.HomeFail
-MotorVersion = (
-    _taccap_native.MotorVersion
-)  # 电机自身固件版本 (Cmd 0x58, 需固件 >= 1.2.6;>= 1.2.14 时 MIT 下返回 flash 记录)
-# 从爪 flash 里的电机固件版本记录 (Cmd 0x5C 回显, 需固件 >= 1.2.14)
+# The motor's own firmware version (Cmd 0x58, needs firmware >= 1.2.6; on >= 1.2.14
+# returns the flash record under MIT)
+MotorVersion = _taccap_native.MotorVersion
+# Motor firmware version record in follower flash (Cmd 0x5C echo, needs firmware
+# >= 1.2.14)
 MotorFwVersionRecord = _taccap_native.MotorFwVersionRecord
-# 电机 CAN 扩展帧透传的结果 (Cmd 0x5B, 需固件 >= 1.2.8)
+# Result of a motor CAN extended-frame passthrough (Cmd 0x5B, needs firmware >= 1.2.8)
 MotorCanXferResp = _taccap_native.MotorCanXferResp
-# MCU 级命令:心跳 / 复位 / SN / 设备类型(gripper.device,v0.3.3)
+# MCU-level commands: heartbeat / reset / SN / device type (gripper.device, v0.3.3)
 Device = _taccap_native.Device
 Heartbeat = _taccap_native.Heartbeat
 DeviceType = _taccap_native.DeviceType
-# 电机固件升级(刷 RobStride 电机本身,不是夹爪 MCU),经 0x5B 透传
+# Motor firmware upgrade (flashes the RobStride motor itself, not the gripper MCU),
+# via 0x5B passthrough
 MotorOtaSession = _taccap_native.MotorOtaSession
 MotorStopReason = _taccap_native.MotorStopReason  # V2.2
 # V2.2 partial auto-cal writes — patch stall params without a read-modify-write

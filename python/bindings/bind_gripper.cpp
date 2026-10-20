@@ -429,13 +429,18 @@ void bind_gripper(py::module_& m) {
              // pipelines, which all want RGB. Pass ColorMode.BGR for code that
              // hands frames straight to cv2.imshow/imwrite.
              py::arg("wrist_color_mode")    = ColorMode::Rgb,
-             // 固件版本门:低于 **1.2.5** 直接拒绝打开。两条理由叠加 —— 1.1.6
-             // 之前 MIT 路径上没有任何堵转保护(安全底线);1.2.5 之前标定写入的
-             // 闭合零位带内缩量,而本 SDK 的闭合端预压按「归一化 0.0 就是止点」
-             // 设计,在更旧固件上会压过位置映射所说的完全闭合点。
-             // 置 true 只为了在升级前读一台旧设备的配置;OTA 本身走
-             // LeaderGripper(不设门),升级通道始终可用。
-             // 门槛的唯一真值源是 FollowerGripper::kMinFirmware*,别在这里写死。
+             // Firmware version gate: below **1.2.5** opening is refused outright.
+             // Two reasons stack -- before 1.1.6 the MIT path had no stall
+             // protection at all (the safety floor); before 1.2.5 the closed zero
+             // written by calibration carried an inset, while this SDK's closed-end
+             // preload is designed on "normalized 0.0 is the hard stop", so on
+             // older firmware it presses past the point the position map calls
+             // fully closed.
+             // Set true only to read an old device's config before upgrading; OTA
+             // itself goes through LeaderGripper (no gate), so the upgrade path is
+             // always available.
+             // The single source of truth for the threshold is
+             // FollowerGripper::kMinFirmware*; do not hard-code it here.
              py::arg("allow_outdated_firmware") = false,
              "Open a follower by explicit device path -- mcu_device is the\n"
              "/dev/serial/by-id/ path from discovery.\n\n"
@@ -572,16 +577,21 @@ void bind_gripper(py::module_& m) {
             py::gil_scoped_release r;
             return g.home_diag(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 200u,
-           "上电自动标定到底做了什么(0x57)。\n\n"
-           "它存在的理由:标定的五种失败原因此前只走固件的 UART7,而 UART7 没接到\n"
-           "USB —— 从主机看,一次提前结束的标定和一次正常的标定长得一模一样,两者\n"
-           "都会留下一个看起来合理的 max_open_rad。\n\n"
-           "判断一次堵转判定实不实:拿 last_abs_torque 和 stall_threshold_nm 比。\n"
-           "阈值 = 命令限流 × 型号的反馈饱和比 × 余量;实测只比阈值高一点点,说明\n"
-           "那次判定很勉强。型号表里饱和比还是 0(未测)时,阈值会落到一个保守的\n"
-           "回退值上,而保守意味着**偏向提前判出堵转**。\n\n"
-           "注意标定最后一步是从开限位**故意后退 0.12 rad**,所以爪子停在比\n"
-           "max_open_rad 小的位置是设计如此,不是故障。"
+           "What the power-on auto-calibration actually did (0x57).\n\n"
+           "Why it exists: the five calibration failure reasons used to go only to\n"
+           "the firmware's UART7, and UART7 is not wired to USB -- from the host, a\n"
+           "calibration that ended early looks exactly like a normal one, and both\n"
+           "leave a plausible-looking max_open_rad.\n\n"
+           "To judge whether a stall detection was solid: compare last_abs_torque\n"
+           "with stall_threshold_nm. Threshold = command current limit × the model's\n"
+           "feedback saturation ratio × margin; a measured value only slightly above\n"
+           "the threshold means that detection was marginal. While the saturation\n"
+           "ratio in the model table is still 0 (not measured), the threshold falls\n"
+           "back to a conservative value, and conservative means **biased toward\n"
+           "detecting the stall early**.\n\n"
+           "Note that the last calibration step **deliberately backs off 0.12 rad**\n"
+           "from the open limit, so the jaw stopping short of max_open_rad is by\n"
+           "design, not a fault."
         )
         .def("audit_envelope", [](FollowerGripper& g, unsigned timeout_ms) {
             py::gil_scoped_release r;
@@ -663,10 +673,11 @@ void bind_gripper(py::module_& m) {
            "when the gripper is not calibrated. While a controller is running, read\n"
            "its snapshot instead -- that comes from the status stream the controller\n"
            "already owns and costs no bus traffic.")
-        // set_position() 同样不暴露:follower_gripper.cpp 里它就是
-        // motor_.submit_impedance() 外面包了一层归一化,绕开控制器的程度和裸
-        // 原语完全一样,只是名字看起来更像正经 API。用 ImpedanceController 或
-        // ForcePositionController 的 set_target()。
+        // set_position() is not exposed either: in follower_gripper.cpp it is just
+        // motor_.submit_impedance() wrapped in a normalization layer, bypassing the
+        // controllers exactly as much as the raw primitive does, only with a name
+        // that looks more like a proper API. Use set_target() on ImpedanceController
+        // or ForcePositionController.
         .def("pos_to_rad", [](FollowerGripper& g, float position) {
             py::gil_scoped_release gil;
             return g.pos_to_rad(position);

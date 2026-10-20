@@ -20,8 +20,7 @@
 // into pure feed-forward torque. Three things were wrong with it.
 //
 //  1. It duplicated the MCU. task_canmotor_is_stalled() runs the same test at
-//     500 Hz and docs/CONTROL_LAYERING.md section 3 already assigns contact
-//     detection to the firmware. Two copies of one physical event drift apart.
+//     500 Hz, and contact detection belongs to the firmware. Two copies of one physical event drift apart.
 //  2. It made the control soft ON PURPOSE. The travel command carried kp=0 --
 //     a position term would have muddied the stall signature -- leaving a
 //     proportional velocity loop of grasp_torque/close_speed, 0.7 Nm/(rad/s) at
@@ -131,7 +130,6 @@ enum class ForcePositionState : uint8_t {
 // NOT A HARD CEILING EITHER. Measured feedback runs 4-7% above the budget at a
 // settled hold (1.149 Nm against 1.100, 0.643 against 0.600). The budget shapes
 // the command; the firmware's motion envelope is what actually bounds output.
-// See docs/CONTROL_REFACTOR.md.
 struct ForcePositionConfig {
     float grasp_torque_nm      = MOTOR_STALL_CONT_TORQUE_NM;  // torque budget
     float close_speed_radps    = 0.5f;   // ramp speed, raw motor units
@@ -212,8 +210,7 @@ namespace detail {
 // contact_vel_radps, contact_vel_ratio, contact_moved_rad, stall_hold_ms,
 // startup_guard_ms) along with arrival_band_rad and brake_distance_rad. They
 // are gone with the contact state machine: the MCU already runs that test at
-// 500 Hz (task_canmotor_is_stalled) and is the authority per
-// docs/CONTROL_LAYERING.md section 3, so the host was duplicating it -- worse
+// 500 Hz (task_canmotor_is_stalled) and is the authority on contact, so the host was duplicating it -- worse
 // than doing it in either place alone, because two copies of one physical
 // event drift apart.
 struct ForcePositionTuning {

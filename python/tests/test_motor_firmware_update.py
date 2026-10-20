@@ -35,6 +35,39 @@ def test_mismatched_image_rejected():
         ota.image_facts("EL05_1.0.5.0.2.bin", b"fw=1.0.5.0.4", None)
 
 
+@pytest.mark.parametrize(
+    "name,embedded",
+    [
+        ("EL05_1.0.5.0.4.bin", b"fw=10.5.0.4"),
+        ("EL05_10.5.0.4.bin", b"fw=1.0.5.0.4"),
+    ],
+)
+def test_vendor_and_raw_el05_versions_are_equivalent(name, embedded):
+    assert ota.image_facts(name, embedded, None) == ("EL05", "1.0.5.0.4")
+
+
+def test_classified_motor_path_and_crc(tmp_path, monkeypatch):
+    import zlib
+
+    name = "EL05_1.0.5.0.4.bin"
+    image = tmp_path / "motor" / name
+    image.parent.mkdir()
+    data = b"fw=1.0.5.0.4"
+    image.write_bytes(data)
+    manifest = {"EL05": {"file": f"motor/{name}", "crc32": f"0x{zlib.crc32(data):08x}"}}
+    monkeypatch.setattr(ota, "FIRMWARE_DIR", str(tmp_path))
+    monkeypatch.setattr(ota, "_shipped_motors", lambda: manifest)
+    monkeypatch.chdir(tmp_path.parent)
+    motor = SimpleNamespace(
+        get_model=lambda: SimpleNamespace(from_flash=True, name="EL05")
+    )
+    assert ota.shipped_image(motor) == str(image)
+    assert ota.resolve_image(name) == str(image)
+    ota.check_shipped_crc(str(image), data)
+    with pytest.raises(SystemExit, match="CRC32"):
+        ota.check_shipped_crc(str(image), data + b"tampered")
+
+
 def test_downgrade_requires_permission():
     with pytest.raises(RuntimeError, match="allow-downgrade"):
         update.check_version_policy("1.0.5.0.4", "1.0.5.0.2", False)

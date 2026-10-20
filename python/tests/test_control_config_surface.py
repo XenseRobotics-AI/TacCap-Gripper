@@ -56,7 +56,7 @@ FORCE_POSITION_REMOVED = [
     "startup_guard_ms",
     "contact_samples",
     "close_position",
-    # 接触状态机随 2026-09 重构一并删除,见 docs/CONTROL_REFACTOR.md
+    # The contact state machine was removed along with the 2026-09 refactor
     "arrival_band_rad",
     "brake_distance_rad",
     "startup_guard_ms",
@@ -151,13 +151,17 @@ IMPEDANCE_FIELDS = {
     "kp": 20.0,
     "kd": 1.0,
     "feedforward_torque": 0.0,
-    # 1.1 = EL05 连续堵转额定,和 ForcePositionConfig.grasp_torque_nm 同一个数。
-    # 被挡住的爪子会稳定坐在这个预算上、没有任何东西给它计时,所以它必须是能
-    # 无限期保持的力矩。曾是 1.5 —— 那是还指望失速守卫来终止保持的时候。
+    # 1.1 = EL05 continuous stall rating, the same number as
+    # ForcePositionConfig.grasp_torque_nm. A blocked jaw sits steadily on this
+    # budget with nothing timing it, so it must be a torque that can be held
+    # indefinitely. It used to be 1.5 — back when the stall guard was still
+    # expected to end the hold.
     "max_position_torque_nm": 1.1,
     "rated_torque_nm": 1.8,
-    # EL05 的力矩量程。实测力矩超过它就判故障(读数不可能是真的);for_spec()
-    # 从设备取,RS00 是 14。曾写死 6.0 在 policy 里,RS00 上会误判被反拖的读数。
+    # EL05 torque range. A measured torque above it is judged a fault (the reading
+    # cannot be real); for_spec() takes it from the device, RS00 is 14. It used to
+    # be hard-coded as 6.0 in the policy, which on RS00 misjudged back-driven
+    # readings.
     "peak_torque_nm": 6.0,
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
@@ -166,8 +170,9 @@ IMPEDANCE_FIELDS = {
 IMPEDANCE_INTERNAL = [
     "rated_hold_ms",
     "rated_release_rad",
-    # 失速守卫已删除,这几个字段连内部都不存在了 —— 列在这里是为了钉住"它们不该
-    # 再出现":误差钳位就是保护,再加一层跳闸会把它撤销掉。
+    # The stall guard was removed; these fields no longer exist even internally —
+    # they are listed here to pin "they must not come back": the error clamp is the
+    # protection, and another layer of tripping on top would undo it.
     "stall_torque_nm",
     "stall_vel_radps",
     "stall_hold_ms",
@@ -207,8 +212,9 @@ def test_impedance_ceiling_is_the_rated_torque_not_the_peak():
 
 def test_impedance_states_are_ordered_by_precedence():
     names = [v.name for v in t.ImpedanceState.__members__.values()]
-    # 没有 STALLED:失速守卫已删除,被挡住的爪子让误差钳位饱和在预算上并保持,
-    # 那是 TRACKING 的稳态而不是另一个状态。
+    # No STALLED: the stall guard was removed. A blocked jaw saturates the error
+    # clamp at the budget and holds there; that is the steady state of TRACKING,
+    # not another state.
     assert names == ["IDLE", "TRACKING", "TORQUE_CAPPED", "FAULT"]
 
 

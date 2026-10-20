@@ -40,10 +40,12 @@ using xense::taccap::FollowerGripper;
 
 class FakeFollower {
 public:
-    // 默认版本**从 SDK 的门槛常量派生**,不要写死。写死过一次:门槛从 1.1.6 抬到
-    // 1.2.5 时,这里还停在 1.1.6,于是 47 个用默认构造的测试全被自己的版本门拒掉,
-    // 失败信息指向控制器而不是指向版本。派生之后,抬门槛不会再打断这些测试 ——
-    // 而真正该检查门槛的用例本来就显式传版本。
+    // The default version is **derived from the SDK's floor constants**; do not hard-code it. It
+    // was hard-coded once: when the floor was raised from 1.1.6 to 1.2.5, this was still at
+    // 1.1.6, so all 47 tests using the default constructor were rejected by their own version
+    // gate, and the failure messages pointed at the controller instead of at the version. Once
+    // derived, raising the floor no longer breaks these tests — and the cases that really should
+    // check the floor pass a version explicitly anyway.
     FakeFollower(Pty& pty,
                  uint8_t major = FollowerGripper::kMinFirmwareMajor,
                  uint8_t minor = FollowerGripper::kMinFirmwareMinor,

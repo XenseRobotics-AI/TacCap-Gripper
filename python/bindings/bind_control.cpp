@@ -22,25 +22,30 @@ void bind_control(py::module_& m) {
                       "False until the first frame arrives, and again once the stream goes stale.")
         .def_readonly("position", &GripperObservation::position,
                       "Normalized opening, 0 = closed, 1 = open. Needs a calibrated gripper.\n\n"
-                      "**钳位在 [0, 1]**:爪子越过标定端点(比如软垫压过零点、全开时过冲)\n"
-                      "时这里仍读 0 或 1,越界量看不到。要看就用 raw_pos 自己换算,\n"
-                      "得到不钳位的开合弧度(0 = 标定闭合点,越过它为负)::\n\n"
+                      "**Clamped to [0, 1]**: when the jaw goes past a calibrated end (e.g. a\n"
+                      "soft pad pressed past the zero point, overshoot at full open) this still\n"
+                      "reads 0 or 1, and the excursion is invisible. To see it, convert raw_pos\n"
+                      "yourself to get the unclamped opening in radians (0 = calibrated closed\n"
+                      "point, negative past it)::\n\n"
                       "    m = gripper.position_map\n"
                       "    opening = obs.raw_pos * (-1 if m.reverse else 1) - m.min_open_rad\n"
-                      "    normalized = opening / (m.max_open_rad - m.min_open_rad)  # 可 <0 或 >1")
+                      "    normalized = opening / (m.max_open_rad - m.min_open_rad)  # may be <0 or >1")
         .def_readonly("velocity", &GripperObservation::velocity,
-                      "rad/s,**正 = 闭合**。\n\n"
-                      "这是夹爪坐标系,不是电机坐标系 —— 电机装配方向已经被消掉,\n"
-                      "所以同一个物理动作在每一台上符号都相同。0.3.1 之前它是原始\n"
-                      "电机值,符号取决于那台的电机怎么装,而这一点在所有从爪都是\n"
-                      "EL05 时看不出来。\n\n"
-                      "**故意不等于 d(position)/dt**:position 往 1(张开)方向数,\n"
-                      "而这里往闭合方向为正。position 是开合程度,它是有符号量,\n"
-                      "而夹爪上有意义的有符号量是夹持。")
+                      "rad/s, **positive = closing**.\n\n"
+                      "This is the gripper frame, not the motor frame -- the motor mounting\n"
+                      "direction has already been cancelled out, so the same physical motion\n"
+                      "has the same sign on every unit. Before 0.3.1 it was the raw motor\n"
+                      "value, whose sign depended on how that unit's motor was mounted, and\n"
+                      "that did not show while every follower was EL05.\n\n"
+                      "**Deliberately not d(position)/dt**: position counts toward 1 (open),\n"
+                      "while this is positive toward closing. position measures how far open\n"
+                      "the jaw is; velocity is signed, and the direction that matters on a\n"
+                      "gripper is the gripping one.")
         .def_readonly("torque",   &GripperObservation::torque,
-                      "实测力矩 N*m,**正 = 闭合**,所以夹持力是正数。\n\n"
-                      "和 velocity 同一个坐标系。要的是请求值而不是实测值的话,\n"
-                      "读 snapshot 的 commanded_torque_nm(那是幅值)。")
+                      "Measured torque, N*m, **positive = closing**, so grip force is positive.\n\n"
+                      "Same frame as velocity. If you want the requested value rather than the\n"
+                      "measured one, read the snapshot's commanded_torque_nm (that is a\n"
+                      "magnitude).")
         .def_readonly("raw_pos",  &GripperObservation::raw_pos,
                       "Motor angle in radians, before the normalized position map. Not clamped:\n"
                       "the only place an excursion past the calibrated ends shows (see position).")
@@ -72,11 +77,13 @@ void bind_control(py::module_& m) {
     m.attr("MOTOR_ABSOLUTE_TORQUE_CEILING_NM") = MOTOR_ABSOLUTE_TORQUE_CEILING_NM;
 
     py::enum_<ImpedanceState>(m, "ImpedanceState",
-        "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING。\n\n"
-        "没有 STALLED —— 失速守卫已删除。被挡住的爪子会让误差钳位饱和在 "
-        "max_position_torque_nm 并一直保持在那里,那是预期的稳态而不是一个状态:"
-        "接触不需要检测,饱和本身就是接触。原来那个守卫会把有效目标压到爪子当前"
-        "位置,误差归零、力矩随之塌掉 —— 实测是接触后 60 ms 在 0.35 Nm 松手。")
+        "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING.\n\n"
+        "There is no STALLED -- the stall guard was removed. A blocked jaw makes the "
+        "error clamp saturate at max_position_torque_nm and stay there; that is the "
+        "expected steady state, not a state: contact needs no detecting, saturation "
+        "itself is contact. The old guard pulled the effective target to the jaw's "
+        "current position, the error went to zero and the torque collapsed with it -- "
+        "measured as letting go at 0.35 Nm 60 ms after contact.")
         .value("IDLE",          ImpedanceState::Idle)
         .value("TRACKING",      ImpedanceState::Tracking)
         .value("TORQUE_CAPPED", ImpedanceState::TorqueCapped)
@@ -121,15 +128,19 @@ void bind_control(py::module_& m) {
                        "is submitted per status frame, so this is also the control rate.");
 
     impedance_config.def_static("for_spec", &ImpedanceConfig::for_spec, py::arg("spec"),
-        "按设备实际装的电机给出默认值(传 motor.get_spec() 的结果)。\n\n"
-        "类里的成员默认值是编译期烘进去的 EL05 数,**换了电机就不对**:RS00 上它把\n"
-        "持续夹持限在 1.1 Nm,而那颗电机能无限期维持 3.6 —— 换它的理由有三分之二\n"
-        "就这么没了。\n\n"
+        "Defaults for the motor the device actually has installed (pass the result of\n"
+        "motor.get_spec()).\n\n"
+        "The class's member defaults are EL05 numbers baked in at compile time, **wrong\n"
+        "once the motor changes**: on RS00 they cap sustained grip at 1.1 Nm, while that\n"
+        "motor can hold 3.6 indefinitely -- two thirds of the reason for switching to it\n"
+        "gone just like that.\n\n"
         "    cfg = ImpedanceConfig.for_spec(g.motor.get_spec())\n\n"
-        "三个值必须一起动:预算取**连续堵转额定**(被挡住的爪子无限期坐在它上面),\n"
-        "天花板取**旋转额定**(必须高于预算,否则正常夹持就跳闸、位置控制丢失),\n"
-        "kd = 预算 / MOTOR_APPROACH_SPEED_RADPS —— 接近速度是 预算/kd,只提预算\n"
-        "会把接近速度一起提上去,这正是「直接把力矩调大」不对的地方。"
+        "The three values must move together: the budget takes the **continuous stall\n"
+        "rating** (a blocked jaw sits on it indefinitely), the ceiling takes the\n"
+        "**rotating rating** (must be above the budget, or a normal grip trips it and\n"
+        "position control is lost), kd = budget / MOTOR_APPROACH_SPEED_RADPS -- the\n"
+        "approach speed is budget/kd, so raising only the budget raises the approach\n"
+        "speed with it, which is exactly what is wrong with \"just turn the torque up\"."
     );
 
     py::class_<ImpedanceSnapshot>(m, "ImpedanceSnapshot",
@@ -293,14 +304,16 @@ void bind_control(py::module_& m) {
                        "seats it fully and 0.50 moves it no further, so raising this buys nothing.");
 
     fp_config.def_static("for_spec", &ForcePositionConfig::for_spec, py::arg("spec"),
-        "按设备实际装的电机给出默认值(传 motor.get_spec() 的结果)。\n\n"
+        "Defaults for the motor the device actually has installed (pass the result of\n"
+        "motor.get_spec()).\n\n"
         "    cfg = ForcePositionConfig.for_spec(g.motor.get_spec())\n\n"
-        "grasp_torque_nm 取连续堵转额定、hold_torque_limit_nm 取旋转额定、\n"
-        "motion_torque_limit_nm 取力矩量程、close_speed_radps 取\n"
-        "MOTOR_APPROACH_SPEED_RADPS。\n\n"
-        "**close_preload_nm 不派生**:0.25 Nm 是在某一个机构上扫出来的落座力矩\n"
-        "(0.15 就能坐死,0.50 不再前进),它是爪子和减速箱的属性,不跟着电机走 ——\n"
-        "按电机推它等于凭空编一个数。"
+        "grasp_torque_nm takes the continuous stall rating, hold_torque_limit_nm the\n"
+        "rotating rating, motion_torque_limit_nm the torque range, close_speed_radps\n"
+        "MOTOR_APPROACH_SPEED_RADPS.\n\n"
+        "**close_preload_nm is not derived**: 0.25 Nm is a seating torque swept on one\n"
+        "particular mechanism (0.15 already seats it fully, 0.50 moves it no further);\n"
+        "it is a property of the jaw and gearbox and does not follow the motor --\n"
+        "deriving it from the motor would be making up a number."
     );
 
     py::class_<ForcePositionSnapshot>(m, "ForcePositionSnapshot",
@@ -322,7 +335,7 @@ void bind_control(py::module_& m) {
         .def_readonly("motion_torque_limit_nm", &ForcePositionSnapshot::motion_torque_limit_nm)
         .def_readonly("device_limit_nm",       &ForcePositionSnapshot::device_limit_nm,
                       "The motor's own persisted torque limit (0x700B) read at start().")
-        // 观测量，非控制状态 —— 每帧从命令与误差导出
+        // Observed quantities, not control state -- derived each frame from command and error
         .def_readonly("holding",               &ForcePositionSnapshot::holding,
                       "Derived each frame from the command and the error, not a state: the jaw\n"
                       "is pressing rather than travelling.")

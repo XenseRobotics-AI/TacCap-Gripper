@@ -43,7 +43,7 @@ def test_version_ready_callback_uses_open_verified_handle(monkeypatch):
     opener.assert_called_once_with(mcu_device=ep.mcu_device)
 
 
-@pytest.mark.parametrize("version,sn", [(15, "TESTs"), (16, "OTHERs")])
+@pytest.mark.parametrize("version,sn", [(15, "TESTs"), (16, "TEST2s")])
 def test_version_ready_never_writes_on_wrong_version_or_changed_sn(
     monkeypatch, version, sn
 ):

@@ -10,5 +10,5 @@
 # reformat below was verified by comparing the syntax tree of every touched
 # file before and after (ast.dump, 19 files, zero differences).
 
-# style: 全仓跑一遍 ruff format,并在 CI 加上格式门
+# style: run ruff format over the whole repo and add a format gate to CI
 51853b9edc5aa8a0fcb8a4537e86b01a6aade49b

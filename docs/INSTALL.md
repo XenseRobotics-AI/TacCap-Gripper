@@ -1,7 +1,5 @@
 # 安装与构建
 
-<!-- 从 README.md 拆出，保持内容不变；README 只保留入门路径。 -->
-
 ## Install
 
 > 仅使用固件更新工具的用户无需执行本页的 conda、编译和源码 SDK 安装。
@@ -20,7 +18,8 @@ to build.
 | OS                    | Linux (Ubuntu 22.04+ tested). The capture path is V4L2 + UVC XU; macOS / Windows are not supported. |
 | Toolchain             | gcc/g++ ≥ 13, CMake ≥ 3.20, Ninja, pkg-config                                                       |
 | Python (for bindings) | CPython 3.12                                                                                        |
-| Recommended           | `mamba` / `conda` — `environment.yml` pins the entire toolchain & C++ deps to a known-good set      |
+| System packages       | `sudo apt update && sudo apt install -y git curl v4l-utils` (`v4l2-ctl` sets the camera to MJPEG)   |
+| Recommended           | `mamba` via [Miniforge](https://github.com/conda-forge/miniforge?tab=readme-ov-file#install) — `environment.yml` pins the entire toolchain & C++ deps |
 
 > **Why mamba is recommended.** `environment.yml` ships gcc-14, OpenCV
 > 4.12, spdlog, gtest, pybind11 and scikit-build-core at a known-good set
@@ -30,8 +29,8 @@ to build.
 ### 2. Clone
 
 ```bash
-git clone <repo-url> taccap-gripper
-cd taccap-gripper
+git clone https://github.com/XenseRobotics-AI/TacCap-Gripper.git
+cd TacCap-Gripper
 ```
 
 There are no git submodules — the SDK builds standalone.
@@ -56,16 +55,13 @@ which python    # → .../envs/taccap/bin/python
 gcc --version   # → 14.x
 ```
 
-### 4. Device permissions (one-time)
+### 4. Host setup (one-time)
 
-Plugged-in TacCap devices appear as `/dev/ttyACM*` (MCU) and
-`/dev/video*` (UVC cameras). Your user needs to be in the matching
-groups:
-
-```bash
-sudo usermod -aG dialout,video "$USER"
-# log out and back in (or `newgrp dialout && newgrp video`) for it to apply
-```
+Three things must be in place before a gripper works on a new host — serial
+and camera permissions (`dialout`, `video`), a udev rule that keeps
+ModemManager off the gripper's serial port, and the wrist camera running in
+**MJPEG** (YUYV exhausts the USB 2.0 bandwidth). The commands are in the
+README: **[Host setup (one-time)](../README.md#host-setup-one-time)**.
 
 ### 5a. Python install (recommended for most users)
 

@@ -59,7 +59,7 @@ taccap-firmware-updater --diagnose
 ### 在专用 ARM64 构建机或 Jetson 上构建
 
 使用本分支的独立干净 checkout，不要复用含 x86_64 扩展或其他 Python ABI 扩展的源码目录。
-准备清单中对应的两份电机镜像到 firmware/motor/（它们不在 Git 中），先提交本次源码修改。
+确认 firmware/motor/ 中的受审镜像齐全：EL05 默认镜像已随仓库提供，RS00 仍需本地提供。先提交本次源码修改。
 以下依赖只需在构建机安装；最终用户不需要编译环境或 conda：
 
 ```bash
@@ -223,7 +223,7 @@ python packaging/firmware_updater/build_deb.py --output dist
 安装后可运行 `taccap-firmware-updater --self-test` 检查嵌入式 SDK/Python；
 `--ui-smoke-test` 打开窗口后自动关闭，不扫描设备、不刷写。
 源代码更改后需要重新打包，不要把运行中的安装包与源码视为同步。
-构建需要 `firmware/motor/` 中对应的两份原始电机镜像（仍不加入 Git）；
+构建需要 `firmware/motor/` 中对应的两份原始电机镜像（EL05 已跟踪，RS00 本地提供）；
 缺失或哈希不符时构建失败，不能生成缺省镜像残缺的安装包。
 `--self-test` 也会校验随包四份镜像；`--ui-smoke-test` 明确禁用自动连接。
 
