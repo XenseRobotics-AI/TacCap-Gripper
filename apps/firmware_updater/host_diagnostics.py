@@ -21,7 +21,10 @@ def read(path):
 def is_bridge(path):
     return (
         read(path / "idVendor").lower() == "1a86"
-        and read(path / "product") == "USB Dual Serial"
+        # Both descriptors are present on shipped CH343 grippers. Do not
+        # normalize arbitrary names or let a presentation check hide a valid
+        # SDK port just because this USB firmware uses an underscore.
+        and read(path / "product") in ("USB Dual Serial", "USB Dual_Serial")
     )
 
 

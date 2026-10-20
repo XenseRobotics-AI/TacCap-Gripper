@@ -1,6 +1,8 @@
 """No serial opens: model OS prerequisites using a temporary sysfs tree."""
 
+import fnmatch
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -12,14 +14,14 @@ sys.path.insert(0, str(APP))
 import host_diagnostics as health  # noqa: E402
 
 
-@pytest.fixture
-def host(tmp_path):
+@pytest.fixture(params=["USB Dual Serial", "USB Dual_Serial"])
+def host(tmp_path, request):
     sys_root, dev = tmp_path / "sys", tmp_path / "dev"
     usb = sys_root / "bus/usb/devices/1-2"
     usb.mkdir(parents=True)
     for name, value in {
         "idVendor": "1a86",
-        "product": "USB Dual Serial",
+        "product": request.param,
         "serial": "5C96090844",
     }.items():
         (usb / name).write_text(value)
@@ -36,6 +38,62 @@ def host(tmp_path):
     alias.parent.mkdir(parents=True)
     alias.symlink_to(dev / "ttyACM1")
     return sys_root, dev, usb, interface, alias
+
+
+def test_known_bridge_names_reach_connection_readiness(host):
+    from environment_status import assess
+
+    report = guided(host)
+    assert len(report["bridges"]) == len(report["ports"]) == 1
+    assert report["ready_for_probe"] and not report["blocking"]
+    assert report["ports"][0]["stable_present"]
+    state = assess(report)
+    assert state["system_ready"] and not state["connection_verified"]
+    for sn in ("TCGU01A25Z0016s", "TCGU01A25Z0016m"):
+        assert assess(report, (sn, "5C96090844"), {"recorded": True})[
+            "connection_verified"
+        ]
+
+
+@pytest.mark.parametrize("suffix", ["s", "m"])
+def test_real_descriptor_report_does_not_clear_connected_ui_or_disable_update(
+    host, suffix
+):
+    import qt_ui
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    qt_ui.configure(app)
+    window = qt_ui.App(auto_connect=False)
+    try:
+        identity = (f"TCGU01A25Z0016{suffix}", "5C96090844")
+        info = {"model": "EL05" if suffix == "s" else "主爪", "recorded": True}
+        window.selected_identity, window.current_info = identity, info
+        window.apply_defaults()
+        window.apply_environment(guided(host))
+        assert window.selected_identity == identity and window.current_info == info
+        assert window.start.isEnabled()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize(
+    "vendor,product",
+    [
+        ("1234", "USB Dual_Serial"),
+        ("1a86", "USB Serial"),
+        ("1a86", ""),
+        ("1a86", "USB DualXSerial"),
+    ],
+)
+def test_unrelated_or_incomplete_usb_descriptors_are_not_eligible(
+    host, vendor, product
+):
+    (host[2] / "idVendor").write_text(vendor)
+    (host[2] / "product").write_text(product)
+    report = collect(host)
+    assert not report["bridges"] and not report["ports"]
+    assert not report["ready_for_probe"]
 
 
 def collect(host, **overrides):
@@ -128,7 +186,11 @@ def test_serial_rules_installer_is_targeted_and_non_world_writable(tmp_path):
     rules = (tmp_path / "usr/lib/udev/rules.d" / health.RULE_NAME).read_text()
     script = tmp_path / "DEBIAN/postinst"
     assert 'ATTRS{idVendor}!="1a86"' in rules
-    assert 'ATTRS{product}!="USB Dual Serial"' in rules
+    product_pattern = re.search(r'ATTRS\{product\}!="([^"]+)"', rules)[1]
+    for product in ("USB Dual Serial", "USB Dual_Serial"):
+        assert fnmatch.fnmatchcase(product, product_pattern)
+    for product in ("USB Serial", "USB DualXSerial", "USB Dual Serial Debug", ""):
+        assert not fnmatch.fnmatchcase(product, product_pattern)
     assert 'ENV{.TACCAP_IFNUM}!="02"' in rules
     assert 'MODE="0660"' in rules and 'TAG+="uaccess"' in rules
     assert 'ENV{ID_MM_PORT_IGNORE}="1"' in rules

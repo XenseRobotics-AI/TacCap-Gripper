@@ -19,7 +19,7 @@ README 同时包含开发环境安装和 `dialout` 权限配置，执行整个�
 原始 `5dd8cb5` ARM64 包已在无完整 SDK/conda 的隔离 ARM64 用户空间通过 SDK 加载自检；该结果不代表真机 USB/OTA 验收。
 
 新版 DEB 声明系统运行库与 udev 依赖，并安装 `69-taccap-firmware-updater.rules`：
-仅匹配 `1a86 / USB Dual Serial / interface 02`，设置 `dialout + 0660 + uaccess`，补充稳定串口链接，并标记此 MCU 端口供 ModemManager 忽略（不停止服务、不影响其他串口）。
+仅匹配 `1a86 / USB Dual Serial 或 USB Dual_Serial / interface 02`，设置 `dialout + 0660 + uaccess`，补充稳定串口链接，并标记此 MCU 端口供 ModemManager 忽略（不停止服务、不影响其他串口）。环境检测兼容这两种已出货的 USB 描述符；主/从爪仍通过 MCU 序列号识别，不根据 USB 名称猜测角色。
 安装只重载规则，不批量触发设备、不自动加组、不装驱动或改 CUDA，不停止 ModemManager，不运行 root UI。
 **未刷写时**退出工具并重新插拔该夹爪 USB，使规则应用；常规桌面会话通常无需重启 Jetson。
 远程/无活动桌面会话仍需手动配置 `dialout` 并重新登录。AppImage 不会自动向系统安装 udev 规则。

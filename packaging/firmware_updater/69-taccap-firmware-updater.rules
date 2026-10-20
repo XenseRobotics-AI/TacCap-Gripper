@@ -3,7 +3,7 @@
 ACTION=="remove", GOTO="taccap_updater_end"
 SUBSYSTEM!="tty", GOTO="taccap_updater_end"
 ATTRS{idVendor}!="1a86", GOTO="taccap_updater_end"
-ATTRS{product}!="USB Dual Serial", GOTO="taccap_updater_end"
+ATTRS{product}!="USB Dual[ _]Serial", GOTO="taccap_updater_end"
 IMPORT{builtin}="usb_id"
 SUBSYSTEMS=="usb", ATTRS{bInterfaceNumber}=="?*", ENV{.TACCAP_IFNUM}="$attr{bInterfaceNumber}"
 ENV{.TACCAP_IFNUM}!="02", GOTO="taccap_updater_end"
