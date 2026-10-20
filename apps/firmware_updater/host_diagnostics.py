@@ -204,7 +204,10 @@ def summary(report):
             f"OS: {report['os'].get('ID', 'unknown')} {report['os'].get('VERSION_ID', 'unknown')}"
         )
     if report.get("ports") and "ownership_scope" in report:
-        lines.append("占用检查仅覆盖当前用户可见进程；未发现不代表串口空闲。")
+        lines.append(
+            "串口占用检查仅作参考：未检测到其他程序占用不是故障，此项本身不阻止更新预检。"
+            "检查仅覆盖当前用户可见进程；更新前仍会再次验证设备通信。"
+        )
     for p in report["ports"]:
         if "owners" in p:
             lines.append(

@@ -216,6 +216,48 @@ class UpdaterUiTests(unittest.TestCase):
         device.Device.assert_not_called()
         self.assertEqual(self.window.events.get_nowait()[0], "diagnostics_auto")
 
+    def test_ownership_hint_is_neutral_and_clear_in_both_languages(self):
+        import i18n
+        from test_updater_environment_status import environment
+
+        previous = i18n.language()
+        try:
+            for language in ("zh", "en"):
+                i18n.set_language(language)
+                report = environment("usb")
+                report["ownership_scope"] = "best_effort_visible_processes_only"
+                self.window.selected_identity = ("TESTs", "usb")
+                self.window.current_info = {"model": "EL05", "recorded": True}
+                self.window.show_diagnostics(report)
+                dialog = self.window.environment_dialog
+                self.app.processEvents()
+                row = dialog.checks.topLevelItem(4)
+                self.assertEqual(row.foreground(2).color().name(), "#626b78")
+                self.assertIn(
+                    "非故障" if language == "zh" else "not a fault", row.text(2)
+                )
+                self.assertEqual(row.toolTip(2), row.text(2))
+                self.assertEqual(dialog.result.property("tone"), "success")
+                detail = dialog.detail.toPlainText()
+                self.assertIn(
+                    "本身不阻止" if language == "zh" else "does not itself block",
+                    detail,
+                )
+                self.assertIn(
+                    "当前用户可见"
+                    if language == "zh"
+                    else "visible to the current user",
+                    detail,
+                )
+                self.assertIn(
+                    "再次验证" if language == "zh" else "verified again", detail
+                )
+                if language == "en":
+                    self.assertNotIn("\\u", detail)
+                dialog.accept()
+        finally:
+            i18n.set_language(previous)
+
     def test_user_tool_is_update_only_for_both_roles_and_languages(self):
         import i18n
         from PySide6.QtWidgets import QPushButton, QSlider

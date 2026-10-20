@@ -52,7 +52,7 @@ def assess(report, identity=None, info=None):
     check(
         "串口占用",
         "error" if owners else "neutral",
-        "请关闭占用程序" if owners else "未发现可见占用；不保证空闲",
+        "请关闭占用程序" if owners else "未检测到其他程序占用（非故障提示）",
     )
     risks = [
         i

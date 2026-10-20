@@ -268,7 +268,7 @@ WORDS = {
 WORDS.update(
     {
         "复制命令": "Copy commands",
-        "占用检查仅覆盖当前用户可见进程；未发现不代表串口空闲。": "Port ownership checks cover visible processes only. No match does not prove the port is free.",
+        "串口占用检查仅作参考：未检测到其他程序占用不是故障，此项本身不阻止更新预检。检查仅覆盖当前用户可见进程；更新前仍会再次验证设备通信。": "Finding no other application using the port is normal, not a fault. This result does not itself block update preflight. Checks cover only processes visible to the current user; device communication is verified again before updating.",
         "重新检测": "Check again",
         "导出报告": "Export report",
         "环境未就绪 · 请按诊断提示处理后重新检测": "Environment not ready / Follow the diagnostic guidance, then check again",
@@ -312,7 +312,7 @@ WORDS.update(
         "尚无端口可检查": "No port to check",
         "串口占用": "Port ownership",
         "请关闭占用程序": "Close the application holding the port",
-        "未发现可见占用；不保证空闲": "No visible owner; availability is not guaranteed",
+        "未检测到其他程序占用（非故障提示）": "No other app detected (not a fault)",
         "设备规则与会话": "Rules and login session",
         "存在待处理提示，展开详情查看": "Review warnings in diagnostic details",
         "未发现规则异常": "No rule issue detected",

@@ -54,6 +54,33 @@ def test_verified_identity_and_recorded_model_allow_preflight_not_success_claim(
     assert "预检" in state["title"] and "仍会检查" in state["next_step"]
 
 
+@pytest.mark.parametrize("language", ["zh", "en"])
+@pytest.mark.parametrize("occupied", [False, True])
+def test_ownership_message_distinguishes_information_from_a_real_block(
+    language, occupied
+):
+    import i18n
+
+    previous = i18n.language()
+    try:
+        i18n.set_language(language)
+        report = environment("usb")
+        if occupied:
+            report["ports"][0]["owners"] = [{"pid": 123}]
+        state = assess(report, ("TESTs", "usb"), {"recorded": True})
+        check = next(c for c in state["checks"] if c["name"] == "串口占用")
+        message = i18n.tr(check["value"])
+        if occupied:
+            assert check["tone"] == "error" and not state["system_ready"]
+            assert "关闭" in message if language == "zh" else "Close" in message
+        else:
+            assert check["tone"] == "neutral" and state["tone"] == "success"
+            assert state["system_ready"] and state["connection_verified"]
+            assert "非故障" in message if language == "zh" else "not a fault" in message
+    finally:
+        i18n.set_language(previous)
+
+
 @pytest.mark.parametrize(
     "failure", ["runtime", "permission", "owner", "missing_node", "communication"]
 )
