@@ -30,7 +30,10 @@ def test_motor_images_match_manifest():
 def test_motor_filename_names_model_and_version():
     # The script reads model and version from the file name (image_facts).
     for model, entry in _motors().items():
-        m = re.match(r"(?i)(rs00|el05)[-_](\d+(?:\.\d+){3,4})\.bin$", entry["file"])
+        m = re.match(
+            r"(?i)(rs00|el05)[-_](\d+(?:\.\d+){3,4})\.bin$",
+            Path(entry["file"]).name,
+        )
         assert m, entry["file"]
         assert m.group(1).upper() == model
         assert m.group(2) == entry["version"]

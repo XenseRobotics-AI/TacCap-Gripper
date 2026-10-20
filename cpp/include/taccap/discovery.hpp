@@ -13,6 +13,9 @@
 //
 //   MCU board (CH343 dual-serial, VID:PID 1a86:55d2):
 //       /dev/serial/by-id/usb-1a86_USB_Dual_Serial_<SN>-if02
+//   On systems without udev by-id links (notably some Jetson images), the
+//   scanner also probes /dev/ttyACM* and /dev/ttyUSB* and identifies the MCU
+//   from its firmware SN.
 //
 // TacCap SN grammar (firmware-burned, read via Cmd::GetSn):
 //
@@ -79,7 +82,7 @@ ParsedSerial parse_serial(const std::string& s) noexcept;
 // One MCU board entry. Note: serial_number is the CH343 USB-chip SN, kept for
 // identification only — it is NOT a side source (see header note).
 struct McuEndpoint {
-    std::string device;          // e.g. /dev/serial/by-id/...-if02
+    std::string device;          // by-id link, or raw /dev/ttyACM*/ttyUSB*
     std::string serial_number;   // CH343 chip SN, e.g. "5CXXXXXXXX"
 };
 

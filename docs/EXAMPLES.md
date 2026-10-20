@@ -78,6 +78,7 @@ python python/examples/ota_update.py --get-status right
 
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
+| `full_ota_update.py` | **依次刷从爪 MCU + 电机固件** | 锁定设备身份，编排协议切换、实时版本核验和最终标定检查。按提示手动断 24 V；默认保留方向。 |
 | `ota_update.py` | **刷固件** | 夹爪固件 OTA,带进度条。**按角色选镜像,刷错会让 MCU 无法启动。** 刷完断电重启(从爪断 24 V,主爪拔插 USB)。|
 | `motor_ota_update.py` | **刷电机固件** | 通过从爪 USB-C 升级 RobStride 电机固件。需要从爪固件 ≥ 1.2.8、电机处于私有协议;不指定镜像时按设备记录的电机型号取 `firmware/` 里的镜像并核对 CRC32;脚本会核对镜像与设备记录的电机型号。先刷夹爪再刷电机。详见 [firmware/README.md](../firmware/README.md#motor-firmware)。|
 

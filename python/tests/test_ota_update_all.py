@@ -103,6 +103,21 @@ def _shipped(role: str) -> bytes:
     return (Path(mod._firmware_dir()) / _manifest_file(role)).read_bytes()
 
 
+def test_shipped_images_resolve_from_outside_repo(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for role in ("master", "slave"):
+        relative = _manifest_file(role)
+        expected = Path(mod._firmware_dir()) / relative
+        assert expected.parent.name == "gripper"
+        for path in (
+            expected.name,
+            str(Path("firmware") / relative),
+            str(Path("firmware") / expected.name),  # legacy spelling
+            mod._default_firmware_for_role(role),
+        ):
+            assert Path(mod._resolve_firmware(path)).resolve() == expected.resolve()
+
+
 def test_image_version_is_identified_by_content_not_filename():
     """A renamed .bin must still report its real version.
 
@@ -194,8 +209,8 @@ def test_role_upgrade_plan_includes_both_master_and_slave():
     roles = [job["role"] for job in jobs]
     assert roles == ["master", "slave"]
     assert [Path(job["firmware"]).name for job in jobs] == [
-        _manifest_file("master"),
-        _manifest_file("slave"),
+        Path(_manifest_file("master")).name,
+        Path(_manifest_file("slave")).name,
     ]
 
 
@@ -214,7 +229,7 @@ def test_single_slave_role_target_is_supported():
 
     assert len(jobs) == 1
     assert jobs[0]["role"] == "slave"
-    assert Path(jobs[0]["firmware"]).name == _manifest_file("slave")
+    assert Path(jobs[0]["firmware"]).name == Path(_manifest_file("slave")).name
 
 
 def test_cli_treats_role_name_as_target_not_firmware_path():
@@ -263,7 +278,7 @@ def test_role_plus_side_flashes_that_role_image(monkeypatch):
     assert len(jobs) == 1
     assert jobs[0]["eps"] is right
     assert jobs[0]["role"] == "slave"
-    assert Path(jobs[0]["firmware"]).name == _manifest_file("slave")
+    assert Path(jobs[0]["firmware"]).name == Path(_manifest_file("slave")).name
 
 
 def test_role_plus_side_refuses_a_gripper_of_the_other_role(monkeypatch):

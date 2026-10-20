@@ -240,8 +240,10 @@ taccap-gripper/
 │                                                  __version__ comes from
 │                                                  _taccap_native
 │
-├── firmware/                                     shipped leader + follower
-│                                                  images + manifest.json
+├── firmware/
+│   ├── manifest.json                             released MCU image metadata
+│   ├── gripper/                                  shipped leader + follower images
+│   └── motor/                                    local vendor motor images (ignored)
 ├── scripts/
 │   └── check_protocol_drift.py                   fails when the SDK's
 │                                                  hand-written protocol
@@ -412,12 +414,14 @@ The firmware SN follows the TacCap scheme and encodes both side and role:
 
 ```
 scan_grippers():
-  1) walk /dev/serial/by-id/, keep usb-1a86_USB_Dual_Serial_<SN>-if02
-  2) for each MCU, open a transient Transport and read the firmware SN
+  1) prefer /dev/serial/by-id/, and fall back to /dev/ttyACM* /dev/ttyUSB*
+     when udev did not create stable links (common on some Jetson images)
+  2) for each candidate MCU, open a transient Transport and read the firmware SN
      (Cmd::GetSn), then parse_serial(): side := odd-last(seq) -> Left else
      Right; role := patch m|s -> Leader|Follower. Side falls back to the
-     CH343 chip-SN parity if the SN read fails; role is Unknown for legacy/
-     empty SNs.
+     firmware GetDevType value if the SN read fails; it remains Unknown when
+     neither firmware source answers. The role is Unknown for legacy/empty
+     SNs.
   3) emit one GripperEndpoints{side, role, mcu_device, mcu_serial,
      firmware_sn} per MCU board.
 

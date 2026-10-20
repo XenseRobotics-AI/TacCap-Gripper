@@ -300,6 +300,10 @@ TCGU01 A24 Z 0001 m
 
 ## 固件
 
+独立的中英文固件维护工具、PC/Jetson 安装包和受审升降级流程见
+[docs/FIRMWARE_UPDATER.md](docs/FIRMWARE_UPDATER.md)。工具自带运行环境，
+无需安装上面的 SDK 开发环境。
+
 预编译镜像在 [`firmware/`](firmware/)。按**角色**选镜像(固件 SN 最后一个字符:`m` 主爪,
 `s` 从爪)—— 刷错角色的镜像会让 MCU 变砖。
 

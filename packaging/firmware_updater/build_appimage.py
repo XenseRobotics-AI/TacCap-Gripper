@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Wrap a verified updater deb in an AppImage, preserving its build identity."""
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import struct
+import subprocess
+import tempfile
+from pathlib import Path
+
+from platform_config import check_elf, native_target
+
+PACKAGE = "taccap-firmware-updater"
+# Official AppImage GitHub asset digests reviewed on 2026-10-11.
+TOOL_SHA = "95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6"
+RUNTIME_SHA = "156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074"
+
+
+def verify_file(path, expected):
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise ValueError(f"Unreviewed build dependency: {path}")
+
+
+def extract_appimage(image, destination):
+    """Extract a verified type-2 ELF64 AppImage without executing its runtime."""
+    with image.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:7] != b"\x7fELF\x02\x01\x01":
+            raise ValueError("Expected little-endian ELF64 AppImage")
+        if header[8:11] != b"AI\x02":
+            raise ValueError("Expected type-2 AppImage")
+        section_offset = struct.unpack_from("<Q", header, 40)[0]
+        section_size, section_count = struct.unpack_from("<HH", header, 58)
+        offset = section_offset + section_size * section_count
+        if not section_size or not section_count or offset < 64:
+            raise ValueError("Invalid AppImage section table")
+        stream.seek(offset)
+        if stream.read(4) != b"hsqs":
+            raise ValueError("AppImage SquashFS offset is invalid")
+    subprocess.run(
+        ["unsquashfs", "-quiet", "-o", str(offset), "-d", str(destination), str(image)],
+        check=True,
+    )
+    return destination
+
+
+def prepare_appdir(extracted, appdir):
+    frozen = extracted / "opt" / PACKAGE
+    metadata = json.loads((frozen / "_internal/build-info.json").read_text())
+    if metadata["dirty"]:
+        raise ValueError("Refusing a dirty source build")
+    shutil.copytree(frozen, appdir / "usr/lib" / PACKAGE)
+    icon_tree = extracted / "usr/share/icons"
+    if icon_tree.is_dir():
+        shutil.copytree(icon_tree, appdir / "usr/share/icons")
+    square = icon_tree / "hicolor/512x512/apps" / f"{PACKAGE}.png"
+    icon = (
+        square
+        if square.is_file()
+        else extracted / "usr/share/pixmaps" / f"{PACKAGE}.png"
+    )
+    shutil.copy2(icon, appdir / f"{PACKAGE}.png")
+    shutil.copy2(icon, appdir / "usr/lib" / PACKAGE / "_internal/icon.png")
+    shutil.copy2(appdir / f"{PACKAGE}.png", appdir / ".DirIcon")
+    desktop = (extracted / "usr/share/applications" / f"{PACKAGE}.desktop").read_text()
+    desktop = desktop.replace(f"Exec=/usr/bin/{PACKAGE}", "Exec=AppRun")
+    (appdir / f"{PACKAGE}.desktop").write_text(desktop)
+    launcher = appdir / "AppRun"
+    launcher.write_text(
+        "#!/bin/sh\nset -eu\n"
+        "unset PYTHONPATH PYTHONHOME LD_LIBRARY_PATH LD_PRELOAD\n"
+        'if [ "$(id -u)" -eq 0 ]; then\n'
+        '    echo "Run Xense TacCap as a normal user, not root." >&2\n'
+        "    exit 1\nfi\n"
+        'app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+        f'exec "$app_dir/usr/lib/{PACKAGE}/{PACKAGE}" "$@"\n'
+    )
+    launcher.chmod(0o755)
+    return metadata
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("deb", type=Path)
+    parser.add_argument("--tool", type=Path, required=True)
+    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=Path("dist"))
+    parser.add_argument(
+        "--extract-appimages",
+        action="store_true",
+        help="Extract AppImages before running (QEMU build environments)",
+    )
+    args = parser.parse_args()
+    target = native_target()
+    deb_arch = subprocess.check_output(
+        ["dpkg-deb", "-f", str(args.deb.resolve()), "Architecture"], text=True
+    ).strip()
+    if deb_arch != target["deb_arch"]:
+        raise ValueError(f"Wrong deb architecture: {deb_arch}")
+    tool, runtime = args.tool.resolve(), args.runtime.resolve()
+    verify_file(tool, target["tool_sha"])
+    verify_file(runtime, target["runtime_sha"])
+    tool.chmod(0o755)
+    args.output.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    for key in ("PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH", "LD_PRELOAD"):
+        env.pop(key, None)
+    env.update(ARCH=target["machine"], APPIMAGE_EXTRACT_AND_RUN="1")
+    with tempfile.TemporaryDirectory(prefix="taccap-appimage-") as temp:
+        temp = Path(temp)
+        extracted, appdir = temp / "deb", temp / "TacCap.AppDir"
+        subprocess.run(
+            ["dpkg-deb", "-x", str(args.deb.resolve()), str(extracted)], check=True
+        )
+        metadata = prepare_appdir(extracted, appdir)
+        check_elf(appdir / "usr/lib" / PACKAGE / PACKAGE, target)
+        if metadata.get("architecture", target["machine"]) != target["machine"]:
+            raise ValueError("Build metadata architecture mismatch")
+        version = metadata["package_version"]
+        output = (
+            args.output.resolve() / f"{PACKAGE}_{version}_{target['machine']}.AppImage"
+        )
+        if output.exists():
+            raise FileExistsError(f"Preserve the existing artifact first: {output}")
+        tool_command = (
+            extract_appimage(tool, temp / "tool") / "AppRun"
+            if args.extract_appimages
+            else tool
+        )
+        subprocess.run(
+            [
+                str(tool_command),
+                "--runtime-file",
+                str(runtime),
+                str(appdir),
+                str(output),
+            ],
+            env=env,
+            check=True,
+        )
+        output.chmod(0o755)
+        print(output)
+
+
+if __name__ == "__main__":
+    main()

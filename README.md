@@ -323,6 +323,8 @@ The wrist camera (`XC…`) carries the same sequence number as its gripper, so
 | `calibrate.py` | encoder zero + travel span | writes flash |
 | `fisheye_cal.py` | show / set fisheye and encoder-max records | read-only / writes flash |
 | `ota_update.py` | flash gripper firmware | **flashes firmware** |
+| `full_ota_update.py` | guided follower MCU + motor update and verification | **flashes firmware; operator power cycles required** |
+| `motor_firmware_update.py` | guided motor-only update to a specified version | **flashes firmware; operator power cycles required** |
 | `motor_ota_update.py` | flash the follower's motor firmware | **flashes firmware** |
 
 Details: [docs/EXAMPLES.md](docs/EXAMPLES.md). C++ examples build into
@@ -347,6 +349,11 @@ firmware are versioned independently. Required motor firmware: EL05 ≥ 1.0.5.0.
 RS00 ≥ 0.0.3.32. Image table, motor model, RS00 setup and motor OTA:
 [firmware/README.md](firmware/README.md). Step-by-step motor firmware update:
 [docs/MOTOR_OTA.md](docs/MOTOR_OTA.md) ([中文](docs/MOTOR_OTA-zh.md)).
+
+For the standalone Chinese/English maintenance GUI, supported PC/Jetson packages,
+and reviewed upgrade/downgrade targets, see [Firmware updater](docs/FIRMWARE_UPDATER.md).
+It bundles its runtime; users do not need the SDK development environment above.
+The combined CLI is `python python/examples/full_ota_update.py firmware/motor/rs00-0.0.3.32.bin left`.
 
 ### Checking versions
 
@@ -381,6 +388,7 @@ Logs: every process writes a DEBUG log to `~/.taccaplogs/session_*.log`
 
 - [docs/USAGE.md](docs/USAGE.md) ([中文](docs/USAGE-zh.md)) — end-to-end bring-up of gripper, wrist camera and tactile sensor
 - [docs/INSTALL.md](docs/INSTALL.md) — build options, C++-only builds, environment traps
+- [docs/FIRMWARE_UPDATER.md](docs/FIRMWARE_UPDATER.md) — standalone PC/Jetson firmware maintenance and packaging
 - [docs/MOTOR_OTA.md](docs/MOTOR_OTA.md) ([中文](docs/MOTOR_OTA-zh.md)) — updating the follower's motor firmware over USB-C
 - [docs/CALIBRATION.md](docs/CALIBRATION.md) — encoder zero, travel span, fisheye intrinsics
 - [docs/EXAMPLES.md](docs/EXAMPLES.md) — every example script and controller parameter

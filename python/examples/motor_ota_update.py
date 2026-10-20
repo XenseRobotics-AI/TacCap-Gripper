@@ -109,23 +109,33 @@ def shipped_image(motor) -> str:
 
 
 def resolve_image(path: str) -> str:
-    """`path` as given, else the bare name under firmware/."""
+    """Resolve explicit paths and legacy basenames in the classified layout."""
     if os.path.isfile(path):
         return path
-    cand = os.path.join(FIRMWARE_DIR, os.path.basename(path))
-    if os.path.isfile(cand):
-        return cand
+    name = os.path.basename(path)
+    candidates = [
+        os.path.join(FIRMWARE_DIR, path),
+        os.path.join(FIRMWARE_DIR, name),
+        os.path.join(FIRMWARE_DIR, "motor", name),
+    ]
+    candidates.extend(
+        os.path.join(FIRMWARE_DIR, entry["file"])
+        for entry in _shipped_motors().values()
+        if os.path.basename(entry["file"]) == name
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
     sys.exit(f"error: image not found: {path} (shipped images live in firmware/)")
 
 
 def check_shipped_crc(path: str, data: bytes) -> None:
     """The shipped image in firmware/ must match its manifest CRC32. Images
     from elsewhere are only checked against their own name (image_facts)."""
-    if os.path.dirname(os.path.abspath(path)) != FIRMWARE_DIR:
-        return
     name = os.path.basename(path)
     for entry in _shipped_motors().values():
-        if entry.get("file") == name:
+        shipped = os.path.join(FIRMWARE_DIR, entry["file"])
+        if os.path.realpath(path) == os.path.realpath(shipped):
             crc = f"0x{zlib.crc32(data):08x}"
             if crc != entry.get("crc32"):
                 sys.exit(
@@ -133,6 +143,24 @@ def check_shipped_crc(path: str, data: bytes) -> None:
                     f"{entry.get('crc32')}; the file is damaged or not the released image"
                 )
             return
+
+
+def version_bytes(text):
+    parts = tuple(int(p) for p in text.split("."))
+    if len(parts) == 5:
+        if parts[0] != 1 or not 0 <= parts[1] <= 9:
+            raise ValueError(f"invalid vendor version: {text}")
+        parts = (10 + parts[1], *parts[2:])
+    if len(parts) != 4 or any(p < 0 or p > 255 for p in parts):
+        raise ValueError(f"invalid motor version: {text}")
+    return parts
+
+
+def version_text(parts):
+    parts = tuple(parts)
+    if 10 <= parts[0] <= 19:
+        return ".".join(map(str, (1, parts[0] - 10, *parts[1:])))
+    return ".".join(map(str, parts))
 
 
 def image_facts(path: str, data: bytes, model_arg: str | None):
@@ -148,12 +176,12 @@ def image_facts(path: str, data: bytes, model_arg: str | None):
     version = m.group(2) if m else None
     embedded = sorted(
         {
-            v.decode()
-            for v in re.findall(
-                rb"(?<![\d.])" + _VERSION_RE.encode() + rb"(?![\d.])", data
-            )
+            version_text(version_bytes(v.decode()))
+            for v in re.findall(rb"(?<![\d.])\d+(?:\.\d+){3,4}(?![\d.])", data)
         }
     )
+    if version is not None:
+        version = version_text(version_bytes(version))
     if version is not None and embedded and version not in embedded:
         sys.exit(f"error: filename says {version}, the image contains {embedded}")
     return model, version or (embedded[0] if len(embedded) == 1 else None)
@@ -167,9 +195,8 @@ def read_version(motor, timeout_s: float = 20.0):
             # Live reads only: follower >= 1.2.14 answers from its flash record
             # when the motor is silent, and that would be the OLD version.
             if v.valid and not getattr(v, "from_flash", False):
-                # Vendor form, so it compares with the image's version: an EL05
-                # answers bytes 10.5.0.4 and the image says 1.0.5.0.4.
-                return v.vendor_str
+                # Keep the SDK vendor form and compatibility with raw tuples.
+                return getattr(v, "vendor_str", None) or version_text(v.version)
         except Exception:  # the motor is restarting; keep asking
             pass
         time.sleep(1.0)

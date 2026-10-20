@@ -23,6 +23,14 @@ Leader and follower firmware are **versioned independently**; different numbers
 on the two halves of a pair are normal. The SDK refuses to drive a follower
 below **1.2.5**.
 
+MCU images are in `gripper/`; motor images use `motor/`
+(see [motor/README.md](motor/README.md)). Paths in `manifest.json` are relative
+to `firmware/`; role selectors and explicit image basenames remain supported.
+The reviewed EL05 image is tracked; RS00 is supplied locally for packaging.
+
+For the standalone maintenance GUI and guided MCU/motor workflow, see
+[docs/FIRMWARE_UPDATER.md](../docs/FIRMWARE_UPDATER.md).
+
 ## Flashing
 
 ```bash
@@ -53,7 +61,7 @@ To verify an image file before flashing:
 
 ```bash
 python -c "from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/gripper/tc-gu-01-master-1.2.6.bin','rb').read())))"
 # -> 0x350393b5
 ```
 
@@ -116,7 +124,7 @@ motor stays mounted):
 
 ```bash
 python python/examples/motor_ota_update.py left                      # image from this directory
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left    # or name one
+python python/examples/motor_ota_update.py firmware/motor/rs00-0.0.3.32.bin left    # or name one
 ```
 
 Without an image the script takes the one the manifest lists for the motor
