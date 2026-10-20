@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -121,13 +122,35 @@ def external_mcu_file(catalog, role, version, destination):
         capture_output=True,
     )
     if probe.returncode:
-        pytest.skip("External-image integration requires the pinned test Git objects")
+        message = "External-image integration requires the pinned test Git objects"
+        if os.environ.get("TACCAP_REQUIRE_FIRMWARE_HISTORY") == "1":
+            pytest.fail(message + "; fetch full history before running CI tests")
+        pytest.skip(message)
     data = subprocess.check_output(
         ["git", "show", f"{history['commit']}:{history['path']}"], cwd=repository
     )
     assert hashlib.sha256(data).hexdigest() == entry["sha256"]
     destination.write_bytes(data)
     return destination
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_missing_history_fails_when_ci_requires_it(monkeypatch, tmp_path, required):
+    catalog = core.catalog_at(APP / "catalog.json")
+    target = tmp_path / "selected.bin"
+    if required:
+        monkeypatch.setenv("TACCAP_REQUIRE_FIRMWARE_HISTORY", "1")
+    else:
+        monkeypatch.delenv("TACCAP_REQUIRE_FIRMWARE_HISTORY", raising=False)
+    expected = pytest.fail.Exception if required else pytest.skip.Exception
+    with (
+        patch.object(subprocess, "run", return_value=Mock(returncode=1)),
+        patch.object(subprocess, "check_output") as read,
+        pytest.raises(expected, match="pinned test Git objects"),
+    ):
+        external_mcu_file(catalog, "master", "1.2.5", target)
+    read.assert_not_called()
+    assert not target.exists()
 
 
 def test_external_history_approvals_match_pinned_bytes_without_bundling(tmp_path):

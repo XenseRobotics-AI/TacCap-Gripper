@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          # External-image integration reads catalog-pinned blobs from history.
+          fetch-depth: 0
 
       # OpenCV (Camera component) and spdlog (shared logger) are hard
       # dependencies of taccap_core; GTest backs the unit tests. Everything
@@ -79,6 +81,7 @@ jobs:
       - name: Python tests
         env:
           QT_QPA_PLATFORM: offscreen
+          TACCAP_REQUIRE_FIRMWARE_HISTORY: "1"
         run: |
           # Fail explicitly if Qt cannot start; do not silently skip GUI tests.
           python3 -c 'from PySide6.QtWidgets import QApplication; app = QApplication([])'
