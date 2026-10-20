@@ -73,7 +73,7 @@ TEST(FirmwareAdvisory, FollowerBelow1211WarnsButOpens) {
         FakeFollower fw(pty, v.a, v.b, v.c);
         CaptureLog log;
         EXPECT_NO_THROW({ auto g = open_follower(pty); });
-        EXPECT_EQ(log.count("低于 1.2.11") > 0, v.warn)
+        EXPECT_EQ(log.count("below 1.2.11") > 0, v.warn)
             << int(v.a) << "." << int(v.b) << "." << int(v.c);
     }
 }

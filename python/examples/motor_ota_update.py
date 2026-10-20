@@ -38,8 +38,14 @@ which writes flash only if the stored record differs). Early example scripts
 wrote other values (for example cont 1.0 / peak 2.0) and the device never
 corrects them itself. --keep-envelope skips this.
 
+The current images ship in firmware/ and are listed under "motors" in
+firmware/manifest.json. Without an image argument the script takes the one for
+the motor model recorded on the gripper; a shipped image is also checked
+against the manifest's CRC32.
+
 Usage:
-    python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left   # run twice
+    python python/examples/motor_ota_update.py left                      # run twice
+    python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left   # explicit image
     python python/examples/motor_ota_update.py rs00-0.0.3.32.bin TCGU01A28Z0086s
     python python/examples/motor_ota_update.py --to-mit left             # back to MIT only
 """
@@ -47,10 +53,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 import time
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _target import add_target_argument, resolve_target  # noqa: E402
@@ -66,6 +74,65 @@ POWER_CYCLE = (
 # an EL05 string is never cut down to its first four parts -- that is how the
 # first version of this script read EL05_1.0.5.0.4.bin as "1.0.5.0".
 _VERSION_RE = r"\d+(?:\.\d+){3,4}"
+FIRMWARE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "firmware")
+)
+
+
+def _shipped_motors() -> dict:
+    """The "motors" section of firmware/manifest.json, {} if absent."""
+    try:
+        with open(os.path.join(FIRMWARE_DIR, "manifest.json"), "rb") as f:
+            return json.load(f).get("motors", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def shipped_image(motor) -> str:
+    """The shipped image for the motor model recorded on the gripper."""
+    rec = motor.get_model()
+    if not rec.from_flash:
+        # A compile-time default is a guess, and RobStride's OTA accepts any
+        # model's image -- picking by it could flash the wrong motor line.
+        sys.exit(
+            "error: the gripper has no recorded motor model (compile-time default "
+            f"{rec.name}), so the image cannot be picked for it. Pass the image "
+            "explicitly, or set the model first (firmware/README.md, Follower motor setup)"
+        )
+    entry = _shipped_motors().get(rec.name)
+    if not entry:
+        sys.exit(
+            f"error: no shipped image for motor {rec.name} in firmware/manifest.json; "
+            "pass the image explicitly"
+        )
+    return os.path.join(FIRMWARE_DIR, entry["file"])
+
+
+def resolve_image(path: str) -> str:
+    """`path` as given, else the bare name under firmware/."""
+    if os.path.isfile(path):
+        return path
+    cand = os.path.join(FIRMWARE_DIR, os.path.basename(path))
+    if os.path.isfile(cand):
+        return cand
+    sys.exit(f"error: image not found: {path} (shipped images live in firmware/)")
+
+
+def check_shipped_crc(path: str, data: bytes) -> None:
+    """The shipped image in firmware/ must match its manifest CRC32. Images
+    from elsewhere are only checked against their own name (image_facts)."""
+    if os.path.dirname(os.path.abspath(path)) != FIRMWARE_DIR:
+        return
+    name = os.path.basename(path)
+    for entry in _shipped_motors().values():
+        if entry.get("file") == name:
+            crc = f"0x{zlib.crc32(data):08x}"
+            if crc != entry.get("crc32"):
+                sys.exit(
+                    f"error: {name} has CRC32 {crc}, firmware/manifest.json says "
+                    f"{entry.get('crc32')}; the file is damaged or not the released image"
+                )
+            return
 
 
 def image_facts(path: str, data: bytes, model_arg: str | None):
@@ -146,7 +213,12 @@ def confirm(question: str, assume_yes: bool) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("image", nargs="?", help="RobStride motor firmware .bin")
+    ap.add_argument(
+        "image",
+        nargs="?",
+        help="RobStride motor firmware .bin; default: the shipped image in firmware/ "
+        "for the motor model recorded on the gripper",
+    )
     add_target_argument(ap, required=True)
     ap.add_argument("--model", help="override the model taken from the filename")
     ap.add_argument(
@@ -164,12 +236,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not args.to_mit and not args.image:
-        ap.error("an image is required (or pass --to-mit)")
     data = model = version = None
-    if not args.to_mit:
+    if not args.to_mit and args.image:
+        args.image = resolve_image(args.image)
         with open(args.image, "rb") as f:
             data = f.read()
+        check_shipped_crc(args.image, data)
         model, version = image_facts(args.image, data, args.model)
 
     ep, _, _ = resolve_target(args.target)
@@ -187,6 +259,13 @@ def main() -> int:
         )
 
     motor = g.motor
+    if not args.to_mit and not args.image:
+        # Picked before anything is switched, so a missing image fails here.
+        args.image = shipped_image(motor)
+        with open(args.image, "rb") as f:
+            data = f.read()
+        check_shipped_crc(args.image, data)
+        model, version = image_facts(args.image, data, args.model)
     proto = motor.get_protocol()
 
     if args.to_mit:

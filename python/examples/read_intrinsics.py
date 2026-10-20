@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""读取腕相机内参,输出 JSON。只读 —— 不写 flash,不动电机。
+"""Read the wrist-camera intrinsics and print them as JSON. Read-only — no flash
+writes, no motor motion.
 
-走的是 `Calibration.resolve_fisheye()`,不是 `read_fisheye()`。区别很重要:
-**没标定过的机器对读请求回的是一条全零记录,而不是 NACK**,把它交给
-FisheyeUndistorter 会把每一帧都重映射成全黑。resolve_fisheye() 把"读 → 判可用
-→ 回退到 SDK 参考值"这条策略做在一处,和 SDK 内部用的是同一个决定。
+Goes through `Calibration.resolve_fisheye()`, not `read_fisheye()`. The
+difference matters: **an uncalibrated unit answers the read request with an
+all-zero record, not a NACK**, and handing that to FisheyeUndistorter remaps
+every frame to solid black. resolve_fisheye() keeps the "read → check usable →
+fall back to the SDK reference values" policy in one place, and it is the same
+decision the SDK makes internally.
 
-输出里的 `source` 字段就是这个决定的结果:
+The `source` field in the output is the result of that decision:
 
-    "device"     内参来自这台设备烧录的标定记录
-    "reference"  设备没标定(或记录不可用),用的是 SDK 的共享参考值。
-                 参考值是近似的 —— 镜头装配存在个体差异,拿它做精确测量之前
-                 先想清楚。用 --require-device 可以让这种情况直接失败。
+    "device"     intrinsics come from the calibration record flashed on this unit
+    "reference"  the unit is not calibrated (or the record is unusable); the SDK's
+                 shared reference values are used. The reference values are
+                 approximate — lens assembly varies unit to unit, so think twice
+                 before using them for precise measurement. --require-device
+                 makes this case fail outright.
 
-JSON 走 stdout,诊断信息走日志(stderr),所以可以直接管道:
+JSON goes to stdout, diagnostics go to the log (stderr), so it can be piped
+directly:
 
     python python/examples/read_intrinsics.py left > left_cal.json
     python python/examples/read_intrinsics.py left | jq .K
 
-用法
-    python python/examples/read_intrinsics.py                # 只插一台时可省略
+Usage
+    python python/examples/read_intrinsics.py                # omit when only one is plugged in
     python python/examples/read_intrinsics.py left
     python python/examples/read_intrinsics.py right --out right_cal.json
     python python/examples/read_intrinsics.py left --require-device
@@ -35,8 +41,10 @@ import sys
 import _target
 from xense.taccap import FollowerGripper, LeaderGripper, log
 
-# 标定记录里**不存图像尺寸**。SDK 一律按标定时的 640x480 使用这组内参,按别的
-# 分辨率缩放就是猜 —— 所以这里把假设显式写进输出,而不是假装知道。
+# The calibration record **does not store the image size**. The SDK always uses these
+# intrinsics at the 640x480 they were calibrated at; scaling them to another resolution
+# is a guess — so the assumption is written explicitly into the output here, rather
+# than pretending to know.
 ASSUMED_IMAGE_SIZE = [640, 480]
 
 
@@ -52,16 +60,22 @@ def main() -> int:
     ap.add_argument(
         "--follower",
         action="store_true",
-        help="以 FollowerGripper 打开(默认 LeaderGripper)。"
-        "内参两个类都能读,默认走 leader 是为了绕开从爪的固件版本门",
+        help="open as FollowerGripper (default LeaderGripper). "
+        "Both classes can read the intrinsics; leader is the default to get around "
+        "the follower's firmware version gate",
     )
-    ap.add_argument("--out", metavar="FILE", help="写入文件,不给就打到 stdout")
+    ap.add_argument(
+        "--out", metavar="FILE", help="write to a file; if omitted, print to stdout"
+    )
     ap.add_argument(
         "--require-device",
         action="store_true",
-        help="内参若回退到 SDK 参考值则报错退出,而不是静默使用",
+        help="exit with an error if the intrinsics fall back to the SDK reference "
+        "values, instead of using them silently",
     )
-    ap.add_argument("--indent", type=int, default=2, help="JSON 缩进,0 = 单行")
+    ap.add_argument(
+        "--indent", type=int, default=2, help="JSON indent, 0 = single line"
+    )
     args = ap.parse_args()
 
     ep, _by_side, _all = _target.resolve_target(args.target)
@@ -73,13 +87,14 @@ def main() -> int:
 
         if is_reference:
             log.warning(
-                f"内参回退到 SDK 参考值({reason})—— 这台设备没有可用的"
-                "标定记录。参考值是近似的,镜头装配有个体差异。"
+                f"intrinsics fell back to the SDK reference values ({reason}) — this "
+                "unit has no usable calibration record. The reference values are "
+                "approximate; lens assembly varies unit to unit."
             )
             if args.require_device:
                 sys.exit(
-                    "error: --require-device 要求设备自带标定,但当前回退到了"
-                    f"参考值:{reason}"
+                    "error: --require-device requires the unit's own calibration, but it "
+                    f"fell back to the reference values: {reason}"
                 )
 
         doc = {
@@ -110,7 +125,7 @@ def main() -> int:
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text + "\n")
-        log.info(f"内参已写入 {args.out} (source={doc['source']})")
+        log.info(f"intrinsics written to {args.out} (source={doc['source']})")
     else:
         print(text)
     return 0

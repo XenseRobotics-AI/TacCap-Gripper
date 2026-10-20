@@ -7,7 +7,7 @@ loop: CPython's default 5 ms switch interval is already ~3x the per-frame
 budget of a 200 Hz three-source stream (~1.67 ms), so a busy main thread would
 stall the reader, overflow the kernel tty buffer (4 KB on n_tty), and cost
 *bytes* — the stream silently dropping to a fraction of its configured rate,
-which is what customers reported as "encoder state 降频".
+which is what customers reported as "encoder state rate drop".
 
 The C++ tests cover the queue mechanics. This one exists because only Python
 reproduces the GIL half: a callback that holds the GIL must not stop the

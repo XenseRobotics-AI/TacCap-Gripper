@@ -5,7 +5,7 @@
 // follower firmware 1.2.8+): the MCU relays each CAN frame and waits for the
 // motor's reply, the sequencing lives here.
 //
-// RobStride's OTA protocol ("OTA 协议说明", 20251114), communication types:
+// RobStride's OTA protocol ("OTA Protocol Specification", 20251114), communication types:
 //
 //    0  get device id  -> 64-bit MCU UID          (reply goes to 0xFE)
 //   11  OTA start      payload = that UID

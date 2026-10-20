@@ -411,21 +411,22 @@ def _resolve_or_report(path: str) -> Optional[str]:
 
 
 def _identify_image(fw_bytes: bytes):
-    """CRC32 反查 firmware/manifest.json,返回 (role, meta) 或 (None, None)。
+    """Look up the CRC32 in firmware/manifest.json; return (role, meta) or (None, None).
 
-    **按内容认,不按文件名认。** 发布镜像的文件名带版本
-    (tc-gu-01-slave-1.2.16.bin),但文件名是可以被改的 —— 拷走、重命名、从别处
-    下载,名字就开始说谎。CRC32 不会:它认的是这一份字节。
+    **Identify by content, not by file name.** Released image file names carry
+    the version (tc-gu-01-slave-1.2.16.bin), but file names can change — copy
+    it, rename it, download it from somewhere else, and the name starts lying.
+    CRC32 does not: it identifies these exact bytes.
 
-    认不出来不是错误,只是"不是我们发布的镜像"(自己编的、第三方的),调用方按
-    未知处理即可。
+    Not recognizing an image is not an error, only "not an image we released"
+    (self-built, third-party); the caller just treats it as unknown.
     """
     images = _load_manifest().get("images", {})
     if not images:
         return None, None
 
-    # 按整数比,不要按字符串:"0x...".upper() 会把前缀里的 "x" 也大写,
-    # 于是字符串比较永远不匹配 —— 这个坑踩过一次。
+    # Compare as integers, not strings: "0x...".upper() also uppercases the "x"
+    # in the prefix, so the string comparison never matches — we hit this once.
     def _crc_of(meta) -> int:
         try:
             return int(str(meta.get("crc32", "")), 16)
@@ -458,8 +459,9 @@ def _check_role(fw_bytes: bytes, firmware_sn: str, force: bool) -> int:
         print(f"  role check  : {_dim('image not in manifest, cannot verify')}")
         return 0
 
-    # matched 之后还要 images,是为了反查「那这台其实该刷哪个」—— 给出替代文件名
-    # 比只说「刷错了」有用得多。
+    # images is still needed after matched, to look up "which one should this unit
+    # actually get" — naming the alternative file is far more useful than just
+    # saying "wrong image".
     images = _load_manifest().get("images", {})
     want = meta.get("sn_suffix", "")
     have = firmware_sn[-1:]
@@ -506,9 +508,11 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
     role, meta = _identify_image(fw_bytes)
     image_ver = meta.get("version") if meta else None
 
-    # 没显式指定就用镜像自报的版本。这个字段是发给固件的,它拿去写 bank 元数据和
-    # 安装后的校验日志;缺省的 0.0.0 等于告诉固件"不知道刷的是什么",而我们其实
-    # 知道 —— CRC 刚刚认出来了。认不出来(自编/第三方镜像)才退回 0.0.0。
+    # If not given explicitly, use the version the image reports for itself. This
+    # field is sent to the firmware, which uses it for the bank metadata and the
+    # post-install verification log; the default 0.0.0 tells the firmware "no idea
+    # what is being flashed", when we actually do know — the CRC just identified
+    # it. Only an unrecognized (self-built / third-party) image falls back to 0.0.0.
     target = _parse_version(args.target_version or image_ver)
 
     print("=== OTA update ===")
@@ -523,13 +527,15 @@ def _cmd_update(args: argparse.Namespace, g: LeaderGripper, eps, fw_path: str) -
         )
         print(f"  image ver    : {image_ver} ({role})  [{src}]")
     else:
-        print(f"  image ver    : {_dim('未知 —— CRC32 不在 manifest 里,不是发布镜像')}")
+        print(
+            f"  image ver    : {_dim('unknown — CRC32 not in manifest, not a released image')}"
+        )
     print(
         f"  target ver   : {_target.format_version(target.major, target.minor, target.patch)}"
         + (
             ""
             if args.target_version or image_ver
-            else _dim("  (没有版本可报,固件会记下 0.0.0)")
+            else _dim("  (no version to report, firmware will record 0.0.0)")
         )
     )
     if _check_role(fw_bytes, getattr(eps, "firmware_sn", "") or "", args.force):

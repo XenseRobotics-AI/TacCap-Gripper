@@ -8,6 +8,13 @@ part of this SDK.
 | `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
 | `tc-gu-01-slave-1.2.16.bin` | follower (SN ends **`s`**) | **1.2.16** | V2.8 | 167,544 B | `0x4a8cd360` |
 
+The follower's RobStride motor runs its own firmware; its images are listed
+under `motors` in the manifest (see [Motor firmware](#motor-firmware)):
+
+| Image | Motor | Version | Size | CRC32 |
+| --- | --- | --- | --- | --- |
+| `EL05_1.0.5.0.4.bin` | EL05 | **1.0.5.0.4** | 92,584 B | `0x845a0474` |
+
 Only the current release is kept here; older images are in git history.
 [`manifest.json`](manifest.json) carries the same data machine-readably —
 `ota_update.py` picks the file through it and verifies the image by CRC32.
@@ -108,16 +115,23 @@ is returned under MIT as well — record it after each motor update with
 motor stays mounted):
 
 ```bash
-python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left
+python python/examples/motor_ota_update.py left                      # image from this directory
+python python/examples/motor_ota_update.py rs00-0.0.3.32.bin left    # or name one
 ```
 
-1. Flash the gripper firmware first — a gripper OTA switches the motor back to
-   MIT.
-2. Switch the motor to the private protocol:
-   `g.motor.switch_protocol(t.MotorProtocol.Private)`, then cut 24 V for ~2 s.
-3. Run `motor_ota_update.py`. It refuses an image whose model does not match
-   the model recorded on the gripper (RobStride's own OTA does not check).
-4. Cut 24 V again. The motor comes back on MIT.
+Without an image the script takes the one the manifest lists for the motor
+model recorded on the gripper, and checks its CRC32. Run the same command
+twice, cutting 24 V for ~2 s after each: the first run switches the motor to its
+private protocol, the second flashes it and switches it back to MIT. Flash the
+gripper firmware first — a gripper OTA switches the motor back to MIT. The
+script refuses an image whose model does not match the model recorded on the
+gripper (RobStride's own OTA does not check). Full procedure:
+[docs/MOTOR_OTA.md](../docs/MOTOR_OTA.md).
+
+No RS00 image ships yet. To add a motor image, keep the vendor's file name
+(`<MODEL>_<version>.bin` or `<model>-<version>.bin`; the script reads model and
+version from it) and add a `motors.<MODEL>` entry with `file`, `version`,
+`size_bytes` and `crc32` to `manifest.json`.
 
 ## Building from source
 

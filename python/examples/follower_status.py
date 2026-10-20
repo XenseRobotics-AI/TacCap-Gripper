@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
-"""读从爪的状态:一次性读、开流读、以及状态里每个字段的意思。
+"""Read follower state: one-shot read, streaming read, and what each status
+field means.
 
-开头先打印三个版本:夹爪固件、电机型号、电机自身固件(对照最低要求)。
-排查问题时把这个脚本的完整输出发给我们,就包含了需要的全部版本信息。
+It first prints three versions: gripper firmware, motor model, and the
+motor's own firmware (checked against the minimum). When troubleshooting, send
+us this script's full output; it contains all the version info we need.
 
-从爪**只流电机状态**这一种数据。固件在这个角色上把 IMU / 编码器 / 电子皮肤的
-流编译掉了,所以 `start_streaming()` 只有 `motor_hz` 一个参数。
+The follower **streams motor status only**. In this role the firmware
+compiles out the IMU / encoder / e-skin streams, so `start_streaming()` takes
+only one parameter, `motor_hz`.
 
-两种读法,各有各的用途:
+Two ways to read, each with its own use:
 
-    g.motor.read_status()        一次命令往返,想什么时候读就什么时候读
-    g.motor.on_status(cb)        注册回调,按固件的节奏推过来
+    g.motor.read_status()        one command round trip, read whenever you want
+    g.motor.on_status(cb)        register a callback, pushed at the firmware's pace
 
-**控制期间不要用 read_status()。** 命令的 ACK 会和控制帧在串口上撞车;控制器
-自己持有状态流,`snapshot()` 拿到的就是最新一帧,不需要额外轮询 —— 见
-control_and_read.py。
+**Do not use read_status() during control.** The command's ACK collides with
+control frames on the serial port; the controller owns the status stream
+itself and `snapshot()` returns the latest frame, no extra polling needed --
+see control_and_read.py.
 
-一个容易踩的坑:**状态可能是旧的而一切看着正常。** 固件曾经因为向电机请求了
-主动上报(而这台电机不支持)就停掉了自己的轮询,于是空闲时状态帧永久冻结,
-版本号、数据流、计数全都正常,唯一症状是读到的数悄悄是旧的。所以这个脚本会
-打印 `status_timestamp_ms` 的推进量:它必须跟着墙钟走。
+An easy trap: **status can be stale while everything looks normal.** The
+firmware once stopped its own polling because it requested active reporting
+from the motor (which this motor does not support), so the status frame froze
+permanently while idle; version, data stream and counters were all normal,
+and the only symptom was that the values read were silently stale. So this
+script prints how far `status_timestamp_ms` advances: it must track the wall
+clock.
 
-用法
+Usage
     python python/examples/follower_status.py right
     python python/examples/follower_status.py --seconds 5 --hz 100
 """
@@ -37,7 +44,7 @@ from xense.taccap import MotorStopReason, log
 
 
 def describe_status(s) -> str:
-    """状态位 + 停止原因,翻成人能读的。"""
+    """Status bits + stop reason, rendered human-readable."""
     try:
         reason = str(MotorStopReason(s.stop_reason)).split(".")[-1]
     except ValueError:
@@ -45,9 +52,11 @@ def describe_status(s) -> str:
     return f"status=0x{s.status:04X} stop={reason}"
 
 
-# 电机固件最低版本,按 MotorVersion.version 的原始四字节比较(高位在前)。
-# 两条产品线各自编号,互不可比。低于它的电机过不了出厂测试:
-# EL05 1.0.5.0.2 速度反馈是常数,RS00 0.0.3.22 运动抖动。
+# Minimum motor firmware, compared on the raw four bytes of
+# MotorVersion.version (most significant first). The two product lines are
+# numbered independently and are not comparable. Motors below it fail factory
+# test: EL05 1.0.5.0.2 has constant velocity feedback, RS00 0.0.3.22 jitters
+# in motion.
 MOTOR_FW_MIN = {
     "EL05": ((10, 5, 0, 4), "1.0.5.0.4"),
     "RS00": ((0, 0, 3, 32), "0.0.3.32"),
@@ -55,36 +64,41 @@ MOTOR_FW_MIN = {
 
 
 def print_motor_versions(g) -> None:
-    """电机型号 + 电机自身固件版本(不是夹爪固件),并对照最低要求。"""
+    """Motor model + the motor's own firmware version (not the gripper firmware),
+    checked against the minimum."""
     model = g.motor.get_model()
     print(f"[motor] {model!r}")
     if not model.from_flash:
         print(
-            "  型号是编译期默认值,不是本机记录 —— 见 firmware/README.md「Follower motor setup」"
+            "  model is the compile-time default, not this unit's record -- see "
+            'firmware/README.md "Follower motor setup"'
         )
 
     try:
         v = g.motor.motor_version()
-    except Exception as e:  # 从爪固件 < 1.2.6 没有 0x58
-        print(f"[motor fw] 读不到 ({e}) —— 需要从爪固件 >= 1.2.6")
+    except Exception as e:  # follower firmware < 1.2.6 has no 0x58
+        print(f"[motor fw] unreadable ({e}) -- needs follower firmware >= 1.2.6")
         return
     if not v.valid:
         print(
-            "[motor fw] 读不到 —— 电机在 MIT 协议下不应答版本,且 flash 里没有记录"
-            "(从爪固件 >= 1.2.14 才有);按铭牌用 g.motor.set_motor_fw_version() 记录"
+            "[motor fw] unreadable -- the motor does not answer version on the MIT "
+            "protocol, and there is no record in flash (needs follower firmware "
+            ">= 1.2.14); record it from the nameplate with "
+            "g.motor.set_motor_fw_version()"
         )
         return
-    src = "flash 记录" if v.from_flash else "电机实时读取"
+    src = "flash record" if v.from_flash else "live read from motor"
     line = f"[motor fw] {v.vendor_str}  ({src})"
     floor = MOTOR_FW_MIN.get(model.name)
     if floor is not None:
         ok = tuple(v.version) >= floor[0]
-        line += (
-            f"  {'OK' if ok else '**低于最低要求 ' + floor[1] + ',需要升级电机固件**'}"
-        )
+        line += f"  {'OK' if ok else '**below minimum ' + floor[1] + ', motor firmware update needed**'}"
     print(line)
     if v.motor_stopped:
-        print("  这次读取让电机执行了一次停止(RobStride 通信类型 4),运动前重新使能即可")
+        print(
+            "  this read made the motor execute a stop (RobStride comm type 4); "
+            "re-enable before moving"
+        )
 
 
 def main() -> int:
@@ -92,8 +106,15 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _target.add_target_argument(ap)
-    ap.add_argument("--seconds", type=float, default=3.0, help="开流读多久")
-    ap.add_argument("--hz", type=int, default=100, help="电机状态流频率(固件上限 100)")
+    ap.add_argument(
+        "--seconds", type=float, default=3.0, help="how long to read the stream"
+    )
+    ap.add_argument(
+        "--hz",
+        type=int,
+        default=100,
+        help="motor status stream rate (firmware max 100)",
+    )
     args = ap.parse_args()
 
     log.set_level("warn")
@@ -101,36 +122,46 @@ def main() -> int:
     print(f"[fw] {g.firmware_version}")
     print_motor_versions(g)
 
-    # ── 一次性读 ──────────────────────────────────────────────────────────────
+    # ── One-shot read ─────────────────────────────────────────────────────────
     s = g.motor.read_status()
-    print("\n[一次性读] g.motor.read_status()")
-    print(f"  位置    {s.actual_pos:+.5f} rad     (电机轴原始角,零点由上电标定确定)")
-    print(f"  速度    {s.actual_vel:+.5f} rad/s")
-    print(f"  力矩    {s.actual_torque:+.4f} Nm    (反馈值,不是命令值)")
-    print(f"  温度    {s.motor_temp_c:.1f} °C")
+    print("\n[one-shot] g.motor.read_status()")
+    print(
+        f"  position  {s.actual_pos:+.5f} rad     "
+        "(raw motor shaft angle, zero set by power-on calibration)"
+    )
+    print(f"  velocity  {s.actual_vel:+.5f} rad/s")
+    print(f"  torque    {s.actual_torque:+.4f} Nm    (feedback, not the command)")
+    print(f"  temp      {s.motor_temp_c:.1f} °C")
     print(f"  {describe_status(s)}")
 
-    # 归一化开度要标定过才有意义:0=闭合 1=张开,由 gripper_config 的行程定义。
+    # Normalized opening is meaningful only after calibration: 0=closed 1=open,
+    # defined by the travel in gripper_config.
     cfg = g.get_gripper_config()
-    print(f"\n[归一化] g.position() = {g.position():.4f}")
+    print(f"\n[normalized] g.position() = {g.position():.4f}")
     print(
-        f"  行程 min_open={cfg.min_open_rad:.5f}  max_open={cfg.max_open_rad:.5f} rad"
+        f"  travel min_open={cfg.min_open_rad:.5f}  max_open={cfg.max_open_rad:.5f} rad"
     )
 
-    # ── 故障 ──────────────────────────────────────────────────────────────────
+    # ── Faults ────────────────────────────────────────────────────────────────
     fr = g.motor.fault_report()
     print(
-        f"\n[故障] 电机 0x{fr.motor_fault_code:08X}  锁存 0x{fr.motor_latched_fault_code:08X}"
-        f"  固件 0x{fr.firmware_fault_code:08X}"
+        f"\n[faults] motor 0x{fr.motor_fault_code:08X}  "
+        f"latched 0x{fr.motor_latched_fault_code:08X}"
+        f"  firmware 0x{fr.firmware_fault_code:08X}"
     )
-    print("  锁存位要显式清除才会消失 —— 当前为 0 不代表从没出过故障。")
+    print(
+        "  latched bits clear only when explicitly cleared -- 0 now does not mean "
+        "there was never a fault."
+    )
 
-    # ── 开流读 ────────────────────────────────────────────────────────────────
+    # ── Streaming read ────────────────────────────────────────────────────────
     frames: list = []
     sub = g.motor.on_status(lambda x: frames.append((time.perf_counter(), x)))
-    # 固件侧最后一帧状态的 tick。新鲜度必须用它,不能用 sample.host_time ——
-    # 后者是**主机收到的时刻**,只要流还在推就一直在涨,哪怕固件送的是同一份
-    # 旧数据。这正是当初状态冻结 45 秒却毫无症状的那个洞。
+    # Firmware-side tick of the last status frame. Freshness must use this, not
+    # sample.host_time -- the latter is **when the host received it**, and keeps
+    # rising as long as the stream is pushing, even if the firmware sends the
+    # same stale data. That is exactly the hole through which status froze for
+    # 45 s with no symptom.
     fw_ms_before = g.motor.fault_report().status_timestamp_ms
     t0 = time.perf_counter()
     g.start_streaming(motor_hz=args.hz)
@@ -141,25 +172,33 @@ def main() -> int:
         g.motor.off(sub)
     elapsed = time.perf_counter() - t0
 
-    print(f"\n[开流读] g.start_streaming(motor_hz={args.hz}) + on_status()")
+    print(f"\n[streaming] g.start_streaming(motor_hz={args.hz}) + on_status()")
     if not frames:
-        print("  **一帧都没收到** —— 流没起来,或者回调注册晚于开流。")
+        print(
+            "  **not a single frame received** -- the stream did not start, or the "
+            "callback was registered after streaming started."
+        )
         return 1
-    print(f"  {len(frames)} 帧 / {elapsed:.2f} s = {len(frames) / elapsed:.1f} Hz")
+    print(f"  {len(frames)} frames / {elapsed:.2f} s = {len(frames) / elapsed:.1f} Hz")
 
-    # 新鲜度:固件的状态时间戳必须跟着墙钟推进。冻住 = 上面说的那个坑。
+    # Freshness: the firmware status timestamp must advance with the wall clock.
+    # Frozen = the trap described above.
     fw_ms_after = g.motor.fault_report().status_timestamp_ms
     advance = fw_ms_after - fw_ms_before
     wall_ms = elapsed * 1000.0
     fresh = advance > wall_ms * 0.5
     print(
-        f"  固件状态时间戳推进 {advance} ms,墙钟 {wall_ms:.0f} ms"
-        f"  {'OK' if fresh else '**状态是旧的 —— 流在推,内容没更新**'}"
+        f"  firmware status timestamp advanced {advance} ms, wall clock "
+        f"{wall_ms:.0f} ms"
+        f"  {'OK' if fresh else '**status is stale -- stream pushing, content not updating**'}"
     )
 
     lo = min(f[1].actual_pos for f in frames)
     hi = max(f[1].actual_pos for f in frames)
-    print(f"  位置区间 [{lo:+.5f}, {hi:+.5f}] rad  (静止时这两个数应当几乎相等)")
+    print(
+        f"  position range [{lo:+.5f}, {hi:+.5f}] rad  "
+        "(at rest these two should be nearly equal)"
+    )
     return 0
 
 

@@ -157,9 +157,10 @@ TEST(ForcePositionControllerPty, StartRefusesADeviceLimitAboveTheMotionLimit) {
 //   it says — which is worse to debug than a refusal.
 namespace {
 
-// 门槛 ±1 个 patch,**从常量算出来**而不是写死。写死过一次:把门槛从 1.1.6 抬到
-// 1.2.5 时,这些用例里的 1.2.5 / 1.1.6 都成了字面量,门一动测试就塌,而失败信息
-// 看起来像功能坏了。
+// The floor ±1 patch, **computed from the constants** rather than hard-coded. It was hard-coded
+// once: when the floor was raised from 1.1.6 to 1.2.5, the 1.2.5 / 1.1.6 in these cases were
+// all literals, so moving the gate collapsed the tests, and the failure messages looked like a
+// broken feature.
 struct Ver { uint8_t major, minor, patch; };
 
 constexpr Ver kFloor{xense::taccap::FollowerGripper::kMinFirmwareMajor,
@@ -167,7 +168,8 @@ constexpr Ver kFloor{xense::taccap::FollowerGripper::kMinFirmwareMajor,
                      xense::taccap::FollowerGripper::kMinFirmwarePatch};
 
 constexpr Ver just_below(Ver v) {
-    // patch 为 0 时不能简单减一,退到上一个 minor 的高 patch。
+    // When patch is 0 you cannot just subtract one; fall back to a high patch of the
+    // previous minor.
     return v.patch > 0 ? Ver{v.major, v.minor, uint8_t(v.patch - 1)}
                        : Ver{v.major, uint8_t(v.minor - 1), 255};
 }

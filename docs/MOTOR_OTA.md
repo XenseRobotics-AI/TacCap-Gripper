@@ -19,9 +19,12 @@ motor stays mounted.
   also resets the motor to its normal protocol, so it must come before the motor
   update, never after.
 - **SDK 0.4.3 or newer**, installed so that `import xense.taccap` works.
-- **The motor firmware image** from us, for example `EL05_1.0.5.0.4.bin`. Keep the
-  file name as delivered: the script reads the motor model and version from it
-  and checks them against the image and the gripper.
+- **The motor firmware image** ships in [`firmware/`](../firmware/) (listed under
+  `motors` in `manifest.json`). The script picks the one for the motor model
+  recorded on the gripper and checks its CRC32. To flash a different image, put
+  it before the target (`motor_ota_update.py EL05_1.0.5.0.4.bin left`) and keep
+  the file name as delivered: the script reads the motor model and version from
+  it and checks them against the image and the gripper.
 - **Nothing else using the gripper.** Stop your own programs first.
 - **Jaws clear.** After each power cycle the gripper opens and closes once to
   calibrate.
@@ -64,7 +67,7 @@ is on MIT and nothing has been recorded yet.
 ### 2. First run: switch to the private protocol
 
 ```bash
-python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
+python python/examples/motor_ota_update.py left
 ```
 
 ```text
@@ -83,7 +86,7 @@ stays disabled and the gripper does not calibrate; that is expected.
 ### 3. Second run: flash
 
 ```bash
-python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
+python python/examples/motor_ota_update.py left
 ```
 
 ```text
@@ -91,7 +94,7 @@ python python/examples/motor_ota_update.py EL05_1.0.5.0.4.bin left
   gripper      : TCGU01A25Z0017s  firmware FirmwareVersion(1.2.16.0)
   motor        : EL05  can_id 1  uid ...
   motor fw now : 1.0.5.0.2
-  image        : EL05_1.0.5.0.4.bin
+  image        : .../TacCap-Gripper/firmware/EL05_1.0.5.0.4.bin
                  92,584 B, 11,573 packs, version 1.0.5.0.4
   envelope     : at the motor's rating, unchanged
 Flash the MOTOR with this image? type 'yes': yes
@@ -137,6 +140,8 @@ gripper, so it stays readable on MIT from now on.
 
 | Symptom | What to do |
 | --- | --- |
+| `no recorded motor model` / `no shipped image for motor ...` | The gripper's motor model is not recorded, or no image for it ships in `firmware/`. Pass the image explicitly, or set the model first ([firmware/README.md](../firmware/README.md#follower-motor-setup)). |
+| `... has CRC32 ..., firmware/manifest.json says ...` | The file in `firmware/` is damaged or was replaced. Restore it with `git checkout firmware/`. |
 | `cannot tell the motor model from ...` | The image file was renamed. Restore the original name, or pass `--model EL05`. |
 | `this gripper records a ... motor, the image is for ...` | The image is for a different motor model. Do not override this; contact us. |
 | `follower firmware ... lacks the 0x5B relay` | Update the gripper firmware first (see *Before you start*). |
@@ -164,7 +169,7 @@ m = g.motor
 # the motor must already be on the private protocol (see step 2)
 session = t.MotorOtaSession(m, m.get_can_id())
 session.preflight("EL05")                       # private protocol + recorded model
-session.update_from_file("EL05_1.0.5.0.4.bin", lambda done, total: None)
+session.update_from_file("firmware/EL05_1.0.5.0.4.bin", lambda done, total: None)
 m.set_motor_fw_version("1.0.5.0.4")             # record it for MIT reads
 m.switch_protocol(t.MotorProtocol.Mit)          # then power-cycle
 ```

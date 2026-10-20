@@ -48,7 +48,7 @@ TEST(StreamRate, ZeroRateIsOneHundredHzNotOff) {
     EXPECT_EQ(det::effective_stream_rate_hz(0, det::kMotorMaxRateHz), 100u);
 }
 
-// STREAM_MOTOR_MAX_RATE_HZ = 100, "给控制通道留带宽".
+// STREAM_MOTOR_MAX_RATE_HZ = 100, "leave bandwidth for the control channel".
 TEST(StreamRate, MotorStatusIsCappedAtOneHundred) {
     EXPECT_EQ(det::kMotorMaxRateHz, 100u);
     EXPECT_EQ(det::effective_stream_rate_hz(100, det::kMotorMaxRateHz), 100u);

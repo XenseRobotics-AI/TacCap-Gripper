@@ -143,8 +143,9 @@ PYBIND11_MODULE(_taccap_native, m) {
         .value("GetMotorStatusExt",  tp::Cmd::GetMotorStatusExt)
         .value("GetUartStats",       tp::Cmd::GetUartStats)
         .value("SetLogConfig",       tp::Cmd::SetLogConfig)
-        // 这三项此前漏在枚举外(GetMotorSpec / GetHomeDiag 从来没补过)。枚举的
-        // 用处就是镜像命令集,缺项会让 transport.send_cmd() 的调用方只能写裸值。
+        // These three were previously missing from the enum (GetMotorSpec /
+        // GetHomeDiag were never added). The enum exists to mirror the command set;
+        // a missing entry leaves callers of transport.send_cmd() writing raw values.
         .value("GetMotorSpec",       tp::Cmd::GetMotorSpec)
         .value("GetHomeDiag",        tp::Cmd::GetHomeDiag)
         .value("GetMotorVersion",    tp::Cmd::GetMotorVersion)

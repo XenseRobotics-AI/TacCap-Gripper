@@ -186,7 +186,7 @@ TEST(ImpedanceControllerPty, StopCommandsZeroTorque) {
 
 // stop() must return when the device has vanished mid-run.
 //
-// From the field: "阻抗控制器报错卡死". The USB tree on that bench dropped and
+// From the field: "the impedance controller errors out and hangs". The USB tree on that bench dropped and
 // re-enumerated 15 times in 45 minutes, so the controller was repeatedly losing
 // its device underneath it -- and a stop() that blocks on join() while the run
 // thread is stuck writing to a dead tty is a hang with no way out but SIGKILL.

@@ -156,7 +156,7 @@ PATCH_ROLE = {"m": "leader", "s": "follower"}
 
 
 def side_of_serial(sn: str) -> str:
-    """Odd trailing sequence digit → left, even → right (单左双右)."""
+    """Odd trailing sequence digit → left, even → right (odd-left / even-right rule)."""
     seq = sn[-5:-1] if sn[-1] in PATCH_ROLE else sn[-4:]
     return "left" if int(seq[-1]) % 2 == 1 else "right"
 
@@ -208,7 +208,8 @@ def print_devices() -> None:
         for d in devs["tactile"]:
             print(f"  {d['serial']:<14} {d['side']:<5} {'':<9} {d['path']}")
         print(
-            "  这些走 xensesdk,不是本 SDK: Sensor.create(<serial>) — 见 docs/USAGE.md"
+            "  These go through xensesdk, not this SDK: Sensor.create(<serial>) — "
+            "see docs/USAGE.md"
         )
 
     if devs["other"]:
@@ -231,13 +232,15 @@ def resolve_wrist_camera(target: str) -> dict:
 
     if TACTILE_SN_RE.search(key):
         raise SystemExit(
-            f"{key} 是视触觉(GSPS)传感器,不是腕相机。它的采集与矫正在 xensesdk 里,"
-            "不走本 SDK —— 见 docs/USAGE-zh.md 的触觉一节。"
+            f"{key} is a visuotactile (GSPS) sensor, not a wrist camera. Its capture "
+            "and rectification live in xensesdk, not this SDK — see the tactile "
+            "section of docs/USAGE.md."
         )
     if key.startswith("/dev/"):
         raise SystemExit(
-            f"不接受设备路径({key})。/dev/videoN 的编号随插拔顺序变,而且紧挨着腕相机的"
-            "那个节点通常是视触觉传感器 —— 请用 left / right 或 XC 序列号。"
+            f"device paths are not accepted ({key}). /dev/videoN numbering changes "
+            "with plug order, and the node right next to the wrist camera is "
+            "usually the visuotactile sensor — use left / right or an XC serial."
         )
 
     if key.lower() in SIDES:
@@ -245,12 +248,12 @@ def resolve_wrist_camera(target: str) -> dict:
         matches = [d for d in devs["wrist"] if d["side"] == side]
         if not matches:
             print_devices()
-            raise SystemExit(f"没有找到 {side} 侧的 XC 腕相机(见上表)。")
+            raise SystemExit(f"no {side} XC wrist camera found (see the table above).")
         if len(matches) > 1:
             names = ", ".join(f"{d['serial']}({d['role']})" for d in matches)
             raise SystemExit(
-                f"{side} 侧有 {len(matches)} 个腕相机:{names}。"
-                "leader 和 follower 各带一个时请直接给序列号。"
+                f"{len(matches)} wrist cameras on the {side} side: {names}. "
+                "When leader and follower each carry one, give the serial directly."
             )
         return matches[0]
 
@@ -258,12 +261,15 @@ def resolve_wrist_camera(target: str) -> dict:
         for d in devs["wrist"]:
             if d["serial"] == key:
                 return d
-        found = ", ".join(d["serial"] for d in devs["wrist"]) or "无"
-        raise SystemExit(f"序列号 {key} 没插在这台机器上。已连接的腕相机:{found}")
+        found = ", ".join(d["serial"] for d in devs["wrist"]) or "none"
+        raise SystemExit(
+            f"serial {key} is not plugged into this machine. Connected wrist "
+            f"cameras: {found}"
+        )
 
     raise SystemExit(
-        f"无法识别的目标 {target!r} —— 用 left / right,或形如 XCA24Z0003m 的腕相机序列号"
-        "(--list 可以列出连着的设备)。"
+        f"unrecognized target {target!r} — use left / right, or a wrist camera "
+        "serial like XCA24Z0003m (--list lists the connected devices)."
     )
 
 
@@ -319,7 +325,7 @@ def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str]:
     if want_role is not None and any(g.role == want_role for g in matches):
         matches = [g for g in matches if g.role == want_role]
     if not matches:
-        found = ", ".join(f"{g.firmware_sn or '<no SN>'}" for g in grippers) or "无"
+        found = ", ".join(f"{g.firmware_sn or '<no SN>'}" for g in grippers) or "none"
         raise RuntimeError(
             f"no {cam['side']} gripper on the bus to read the calibration from "
             f"(connected: {found})"
@@ -513,8 +519,8 @@ def main(argv=None) -> int:
         return 0
     if not args.target:
         raise SystemExit(
-            "缺少目标 —— 用 left / right,或腕相机序列号(如 XCA24Z0003m);"
-            "--list 可以列出连着的设备。"
+            "missing target — use left / right, or a wrist camera serial (e.g. "
+            "XCA24Z0003m); --list lists the connected devices."
         )
 
     cam_info = resolve_wrist_camera(args.target)

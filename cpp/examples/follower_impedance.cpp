@@ -1,20 +1,24 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// 阻抗控制,以及**边控制边读状态**。
+// Impedance control, and **reading status while controlling**.
 //
-// 控制器在后台按状态流的相位提交 MIT 帧,策略侧只碰两个非阻塞调用:
+// The controller submits MIT frames in the background, phased to the status stream; the policy
+// side touches only two non-blocking calls:
 //
-//     c.set_target(p);        // p in [0,1],0=闭合 1=张开
-//     auto s = c.snapshot();  // 状态 + 观测 + 保护标志,一把锁一致视图
+//     c.set_target(p);        // p in [0,1], 0=closed 1=open
+//     auto s = c.snapshot();  // state + observation + protection flags, one-lock consistent view
 //
-// 状态是白拿的:控制器已经持有电机状态流,所以**控制期间不要再调 read_status()**
-// —— 那是一次 ACK 往返,它的请求会和控制帧在串口上撞车。observation 里连电机
-// 温度都有,就是为了让运行中的回路不需要任何额外命令。
+// Status comes for free: the controller already owns the motor status stream, so **do not call
+// read_status() during control** — that is an ACK round trip, and its request collides with the
+// control frames on the serial link. observation even includes the motor temperature, precisely
+// so a running loop never needs any extra command.
 //
-// snapshot() 在一把锁下取出整份视图,所以 state、observation、命令力矩描述的是
-// 同一时刻;分字段去读会拼出一个从没存在过的状态。
+// snapshot() takes the whole view under one lock, so state, observation and the commanded torque
+// describe the same instant; reading field by field stitches together a state that never
+// existed.
 //
-// observation.age_ms 是判断「流还活着」的正确依据 —— 见 follower_status.cpp。
+// observation.age_ms is the correct basis for judging "the stream is still alive" — see
+// follower_status.cpp.
 
 #include "example_target.hpp"
 
@@ -37,8 +41,8 @@ int main(int argc, char** argv) {
     }
 
     ImpedanceConfig cfg;
-    cfg.kp = 20.0f;   // 刚度 Nm/rad
-    cfg.kd = 1.0f;    // 阻尼 Nm·s/rad,同时决定接近速度
+    cfg.kp = 20.0f;   // stiffness Nm/rad
+    cfg.kd = 1.0f;    // damping Nm·s/rad, also sets the approach speed
     ImpedanceController c(*g, cfg);
     c.start();
 
@@ -46,36 +50,39 @@ int main(int argc, char** argv) {
     int stale = 0;
 
     std::printf("\n  %5s %5s %8s %9s %8s %7s %s\n",
-                "t", "目标", "位置", "力矩", "命令", "年龄", "状态");
+                "t", "tgt", "pos", "torque", "cmd", "age", "state");
     const auto t0 = std::chrono::steady_clock::now();
     for (float tgt : targets) {
         c.set_target(tgt);
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         while (std::chrono::steady_clock::now() < deadline) {
-            const auto s = c.snapshot();          // 非阻塞,不发任何命令
+            const auto s = c.snapshot();          // non-blocking, sends no command
             const auto& o = s.observation;
             if (s.state == ImpedanceState::Fault) {
                 std::printf("  FAULT: %s\n", s.fault_reason.c_str());
                 c.stop();
                 return 1;
             }
-            // 观测太旧说明流断了,而不是爪子不动 —— 两者的处理完全不同。
+            // A stale observation means the stream broke, not that the jaw is not moving — the
+            // two are handled completely differently.
             if (o.valid && o.age_ms > 100.0f) ++stale;
             std::printf("  %5.1f %5.2f %8.4f %+9.4f %8.4f %6.0fms %s\n",
                         std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - t0).count(),
                         tgt, o.position, o.torque, s.commanded_torque_nm,
                         o.age_ms, to_string(s.state));
-            std::this_thread::sleep_for(200ms);   // 读侧频率和控制无关
+            std::this_thread::sleep_for(200ms);   // read-side rate is independent of control
         }
     }
     c.stop();
 
-    std::printf("\n观测过期(age>100ms)次数: %d\n", stale);
+    std::printf("\nstale observations (age>100ms): %d\n", stale);
     if (stale) {
-        std::printf("  **流有断续** —— 控制器还在发帧,但它看到的状态是旧的。\n");
+        std::printf("  **stream is intermittent** — the controller is still sending frames, but "
+                    "the status it sees is stale.\n");
         return 1;
     }
-    std::printf("  状态全程新鲜:控制和读互不干扰,读侧不需要发任何命令。\n");
+    std::printf("  status fresh throughout: control and reads do not interfere; the read side "
+                "needs no commands.\n");
     return 0;
 }
