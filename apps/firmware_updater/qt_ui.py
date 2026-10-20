@@ -249,10 +249,9 @@ class App(QMainWindow):
     def make_mcu_menu(self):
         menu = QMenu(self)
         role = self.effective_role()
-        entries = bundled.mcu_entries(self.catalog, role)
-        for index, entry in enumerate(entries):
-            label = "内置最新" if index == 0 else "历史版本 · 选择文件"
-            action = menu.addAction(f"{entry['version']} ({tr(label)})")
+        entries = bundled.mcu_entries(self.catalog, role, packaged_only=True)
+        for entry in entries:
+            action = menu.addAction(f"{entry['version']} ({tr('内置最新')})")
             action.setData(entry["version"])
             if entry["warning"]:
                 action.setToolTip(tr(entry["warning"]))

@@ -9,6 +9,10 @@ CJK = re.compile(r"[\u3400-\u9fff]")
 # Chinese remains the source language. Keep decisions based on the original
 # messages; translate only at the GUI/log/dialog boundary, never in OTA policy.
 WORDS = {
+    "电机已提交，等待自动重启后读取实际协议和版本": "Motor committed; waiting for its restart before reading actual protocol and version",
+    "电机刷后仍为 Private：直接核验实时版本，硬重启与恢复 MIT 合并": "Motor remains in Private: verify the live version now; combine the hard restart with MIT restoration",
+    "电机刷后已回到 MIT：实时版本查询需要 Private，必须额外切换并断电": "Motor returned to MIT: a live version query requires Private, so an extra switch and power cycle are necessary",
+    "电机刷后协议未知，停止；不能用镜像或存档代替实时版本": "Unknown post-flash motor protocol; stopping. Neither the image nor a stored record is a live version",
     "关闭": "Close",
     "环境诊断": "Environment check",
     "正在检查环境；不发送夹爪命令…": "Checking environment; no gripper commands...",

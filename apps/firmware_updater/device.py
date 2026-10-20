@@ -310,8 +310,6 @@ class Device:
             raise RuntimeError("主爪不能切换从爪电机协议")
         self.emit("stage", f"准备切换/核验 {name} 协议")
         expected = getattr(MotorProtocol, name)
-        if force_cycle:
-            time.sleep(3)
         with self.opened() as g:
             self.emit("stage", "等待标定结束并失能电机（单项等待上限 45 秒）")
             flow._prepare_motor_admin(g)
@@ -420,6 +418,29 @@ class Device:
         with self.opened() as g:
             flow._wait_motor_protocol(g.motor, MotorProtocol.Private)
             return motor_tools.read_version(g.motor, 20)
+
+    def motor_version_after_flash(self):
+        self.emit("stage", "电机已提交，等待自动重启后读取实际协议和版本")
+        time.sleep(3)
+        with self.opened() as g:
+            actual = g.motor.get_protocol()
+        if actual == MotorProtocol.Private:
+            self.emit(
+                "log",
+                "电机刷后仍为 Private：直接核验实时版本，硬重启与恢复 MIT 合并",
+            )
+        elif actual == MotorProtocol.Mit:
+            self.emit(
+                "log",
+                "电机刷后已回到 MIT：实时版本查询需要 Private，必须额外切换并断电",
+            )
+            # No retry offer after a transfer. Never infer success from the
+            # selected image or the MCU's cached version (unlike the CLI's
+            # RS00 shortcut). A failed switch stops without flashing again.
+            self.protocol("Private", allow_recovery=False)
+        else:
+            raise RuntimeError("电机刷后协议未知，停止；不能用镜像或存档代替实时版本")
+        return self.live_motor_version()
 
     def record_motor(self, actual):
         self.emit("stage", f"保存已核验的电机版本记录：{actual}")

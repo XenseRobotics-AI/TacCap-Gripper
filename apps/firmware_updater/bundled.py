@@ -49,8 +49,11 @@ def verify_all(catalog, root=None):
     }
 
 
-def mcu_entries(catalog, role):
+def mcu_entries(catalog, role, *, packaged_only=False):
     entries = [e for e in catalog["images"] if (e["kind"], e["model"]) == ("mcu", role)]
+    if packaged_only:
+        default = approved_defaults(catalog).get(("mcu", role))
+        entries = [e for e in entries if e.get("file") == default]
     return sorted(entries, key=lambda e: core.version_key(e["version"]), reverse=True)
 
 

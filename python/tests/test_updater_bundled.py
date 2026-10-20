@@ -52,6 +52,20 @@ class BundledTests(unittest.TestCase):
                 bundled.default_image("motor", model, self.catalog, self.root)
             )
 
+    def test_menu_only_lists_packaged_latest_and_keeps_external_approvals(self):
+        catalog = bundled.core.catalog_at(
+            Path(bundled.__file__).with_name("catalog.json")
+        )
+        for role, latest in (("master", "1.2.6"), ("slave", "1.2.16")):
+            self.assertEqual(
+                [
+                    entry["version"]
+                    for entry in bundled.mcu_entries(catalog, role, packaged_only=True)
+                ],
+                [latest],
+            )
+            self.assertGreater(len(bundled.mcu_entries(catalog, role)), 1)
+
     def test_tampered_image_rejected(self):
         (self.root / bundled.FILES["motor", "RS00"]).write_bytes(b"changed")
         with self.assertRaises(ValueError):

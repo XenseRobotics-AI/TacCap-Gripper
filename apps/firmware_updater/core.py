@@ -174,15 +174,18 @@ def execute(device, mcu, motor, ask, emit):
 
     if mcu_first:
         flash_mcu()
+    flashed_motor = False
     if motor:
         device.protocol("Private")
         before = device.live_motor_version()
         if confirm_change(ask, "电机", before, motor):
             emit("stage", "正在刷写电机：不要断开电源或 USB")
             device.flash_motor(motor)
-            # Keep the mandatory physical cycle after an actual transfer.
-            device.protocol("Private", force_cycle=True)
-            actual = device.live_motor_version()
+            flashed_motor = True
+            # EL05 normally stays in Private: verify live now, then combine
+            # its mandatory post-flash cycle with the final MIT restoration.
+            # Motors that return to MIT still need Private for a live read.
+            actual = device.motor_version_after_flash()
         else:
             emit("log", f"跳过同版本电机：{before}；仍需恢复 MIT 协议")
             actual = before
@@ -192,9 +195,12 @@ def execute(device, mcu, motor, ask, emit):
             )
         device.record_motor(actual)
         emit("log", f"电机实时版本已确认：{actual}")
+    # Even when the motor has returned to MIT by itself, a real transfer must
+    # receive a physical cycle. Do this before any MCU downgrade so a newer
+    # relay remains available for live verification and protocol restoration.
+    device.protocol("Mit", force_cycle=flashed_motor)
     if not mcu_first:
         flash_mcu()
-    device.protocol("Mit")
     if info["model"] == "RS00":
         device.check_can_id()
     device.check_homing()

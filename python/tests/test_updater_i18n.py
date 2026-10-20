@@ -80,6 +80,7 @@ def test_real_policy_plan_confirmations_and_events_stay_english(skip_same):
     )
     device.mcu_version.return_value = "1.2.16"
     device.live_motor_version.return_value = "1.0.5.0.4"
+    device.motor_version_after_flash.return_value = "1.0.5.0.4"
     mcu = core.Image("mcu", "slave", "1.2.16", "digest", "", b"image")
     motor = core.Image("motor", "EL05", "1.0.5.0.4", "digest", "", b"image")
     messages = []

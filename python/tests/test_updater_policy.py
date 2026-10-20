@@ -68,6 +68,9 @@ class FakeDevice:
     def live_motor_version(self):
         return self.motor
 
+    def motor_version_after_flash(self):
+        return self.live_motor_version()
+
     def record_motor(self, value):
         self.events.append(("record", value))
 
@@ -221,6 +224,21 @@ def test_skip_same_motor_uses_live_version_and_restores_mit():
     assert not any(e[0] == "flash_motor" for e in d.events)
     assert ("protocol", "Mit", False) in d.events
     assert ("protocol", "Private", True) not in d.events
+
+
+def test_motor_flash_merges_mandatory_restart_with_mit_restore():
+    d = FakeDevice()
+    run(d, motor=image("motor", d.motor))
+    assert ("protocol", "Private", True) not in d.events
+    assert ("protocol", "Mit", True) in d.events
+
+
+def test_mcu_downgrade_keeps_new_motor_restart_before_mcu_transfer():
+    d = FakeDevice()
+    run(d, image("mcu", "1.2.14"), image("motor", d.motor))
+    assert d.events.index(("protocol", "Mit", True)) < d.events.index(
+        ("flash_mcu", "1.2.14")
+    )
 
 
 class FakeMaster(FakeDevice):

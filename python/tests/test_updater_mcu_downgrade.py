@@ -198,9 +198,7 @@ def test_role_menu_selects_verified_old_mcu_without_changing_motor(
     try:
         actions = [a for a in menu.actions() if a.data()]
         assert [a.data() for a in actions] == (
-            ["1.2.6", "1.2.5", "file"]
-            if role == "master"
-            else ["1.2.16", "1.2.15", "1.2.14", "file"]
+            ["1.2.6", "file"] if role == "master" else ["1.2.16", "file"]
         )
         with (
             patch.object(window, "launch") as launch,
@@ -208,7 +206,7 @@ def test_role_menu_selects_verified_old_mcu_without_changing_motor(
                 "qt_ui.QFileDialog.getOpenFileName", return_value=(str(path), "")
             ) as picker,
         ):
-            next(a for a in actions if a.data() == version).trigger()
+            next(a for a in actions if a.data() == "file").trigger()
             launch.assert_not_called()
             picker.assert_called_once()
         app.processEvents()
@@ -267,7 +265,8 @@ def test_downgrade_selection_does_not_lose_hint_on_readback_and_translates(
     menu = window.make_mcu_menu()
     try:
         assert all(not i18n.CJK.search(a.text()) for a in menu.actions())
-        assert "historical" in menu.actions()[1].text()
+        assert [a.data() for a in menu.actions() if a.data()] == ["1.2.16", "file"]
+        assert "historical" not in " ".join(a.text() for a in menu.actions())
     finally:
         menu.deleteLater()
     window.clear("mcu")
