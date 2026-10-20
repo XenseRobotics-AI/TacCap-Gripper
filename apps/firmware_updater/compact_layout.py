@@ -39,6 +39,13 @@ QLabel#status[tone="success"] { color: #146448; background: #DDF3E9; }
 QLabel#status[tone="warning"] { color: #815000; background: #FFF0CE; }
 QLabel#status[tone="error"] { color: #9A2836; background: #FCE4E8; }
 QLabel#muted { color: #626B78; }
+QPushButton#environmentCheck { border: none; color: #626B78; background: transparent; }
+QPushButton#environmentCheck[tone="success"] { color: #146448; background: #DDF3E9; }
+QPushButton#environmentCheck[tone="warning"] { color: #815000; background: #FFF0CE; }
+QPushButton#environmentCheck[tone="error"] { color: #9A2836; background: #FCE4E8; }
+QTreeWidget { background: #FAFBFC; border: 1px solid #E1E5EB; border-radius: 5px; }
+QTreeWidget::item { height: 26px; }
+QHeaderView::section { background: #EDF2F8; color: #163C65; padding: 4px; border: none; }
 QLabel#notice { color: #815000; padding: 4px 6px; background: #FFF0CE; border-radius: 4px; }
 QLabel#rollback { color: #B42318; padding: 4px 6px; background: #FCE4E8; border-radius: 4px; }
 QMenu { background: #FFFFFF; border: 1px solid #D7DBE1; padding: 4px; }
@@ -204,7 +211,7 @@ def build(window):
     options = QHBoxLayout()
     options.addWidget(text("默认使用内置固件；可手动选择其他版本。"), 1)
     window.diagnostics = window.button("环境诊断", window.diagnose)
-    window.diagnostics.setObjectName("link")
+    window.diagnostics.setObjectName("environmentCheck")
     options.addWidget(window.diagnostics)
     defaults = window.button("恢复默认", window.use_defaults)
     defaults.setObjectName("link")

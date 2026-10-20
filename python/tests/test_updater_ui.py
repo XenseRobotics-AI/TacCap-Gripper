@@ -134,6 +134,88 @@ class UpdaterUiTests(unittest.TestCase):
                 self.window.drain()
             show.assert_called_once_with(report)
 
+    def test_environment_refresh_updates_disconnected_to_connected_without_reopening(
+        self,
+    ):
+        from test_updater_environment_status import environment
+
+        self.window.show_diagnostics(environment())
+        dialog = self.window.environment_dialog
+        self.assertEqual(dialog.state["tone"], "warning")
+        self.assertFalse(dialog.connection.isEnabled())
+        self.window.emit("diagnostics_auto", environment("new-usb"))
+        self.window.drain()
+        self.assertIs(dialog, self.window.environment_dialog)
+        self.assertTrue(dialog.connection.isEnabled())
+        self.assertIn("尚需连接验证", dialog.result._i18n_bindings["setText"])
+        self.window.selected_identity = ("TESTs", "new-usb")
+        self.window.current_info = {"recorded": True}
+        self.window.emit("diagnostics_auto", environment("new-usb"))
+        self.window.drain()
+        self.assertEqual(dialog.state["tone"], "success")
+        self.window.emit("diagnostics_auto", environment())
+        self.window.drain()
+        self.assertIsNone(self.window.current_info)
+        self.assertFalse(self.window.start.isEnabled())
+        self.assertEqual(dialog.state["tone"], "warning")
+        dialog.accept()
+
+    def test_environment_auto_refresh_is_read_only_idle_only_and_stops_when_hidden(
+        self,
+    ):
+        from test_updater_environment_status import environment
+
+        self.window.show_diagnostics(environment())
+        dialog = self.window.environment_dialog
+        with patch.object(self.window, "diagnose") as diagnose:
+            dialog.refresh()
+            diagnose.assert_called_once_with(automatic=True)
+            self.window.busy = True
+            dialog.refresh()
+            diagnose.assert_called_once()
+            self.window.busy = False
+            dialog.accept()
+            dialog.refresh()
+            diagnose.assert_called_once()
+        self.assertFalse(dialog.refresh_timer.isActive())
+
+    def test_environment_details_collapse_compacts_window_and_colors_results(self):
+        from test_updater_environment_status import environment
+
+        report = environment("usb")
+        report["ports"][0]["read_write"] = False
+        self.window.show_diagnostics(report)
+        dialog = self.window.environment_dialog
+        self.app.processEvents()
+        self.assertEqual(dialog.result.property("tone"), "error")
+        self.assertEqual(
+            dialog.checks.topLevelItem(3).foreground(1).color().name(), "#9a2836"
+        )
+        compact = dialog.height()
+        dialog.toggle.setChecked(True)
+        self.app.processEvents()
+        self.assertGreater(dialog.height(), compact)
+        dialog.toggle.setChecked(False)
+        self.app.processEvents()
+        self.assertLessEqual(dialog.height(), compact + 2)
+        dialog.accept()
+
+    def test_silent_environment_refresh_does_not_discover_or_open_serial(self):
+        from unittest.mock import Mock
+
+        from test_updater_environment_status import environment
+
+        device = Mock()
+        with (
+            patch("host_diagnostics.diagnostic_report", return_value=environment()),
+            patch.dict(sys.modules, {"device": device}),
+            patch.object(self.window, "launch", side_effect=lambda fn, **kw: fn()),
+        ):
+            self.window.diagnose(automatic=True)
+        device.discover.assert_not_called()
+        device.Device.assert_not_called()
+        self.assertEqual(self.window.events.get_nowait()[0], "diagnostics_auto")
+
     def test_user_tool_is_update_only_for_both_roles_and_languages(self):
         import i18n
         from PySide6.QtWidgets import QPushButton, QSlider
@@ -538,6 +620,8 @@ class UpdaterUiTests(unittest.TestCase):
         )
 
     def test_refresh_follows_single_follower_after_master_unplug(self):
+        from test_updater_environment_status import environment
+
         old = ("TCGU01A00Z0001m", "old-usb")
         new = ("TCGU01A00Z0002s", "new-usb")
         info = dict(model="EL05", recorded=True, mcu="1.2.16", motor="未知")
@@ -547,7 +631,12 @@ class UpdaterUiTests(unittest.TestCase):
         self.window.combo.addItem("old master")
         self.window.selected_identity = old
         self.window.current_info = dict(model="主爪", recorded=True)
-        with patch.dict(sys.modules, {"device": self.fake_devices([new], info)}):
+        with (
+            patch.dict(sys.modules, {"device": self.fake_devices([new], info)}),
+            patch(
+                "host_diagnostics.diagnostic_report", return_value=environment(new[1])
+            ),
+        ):
             self.window.scan()
             self.wait_for_ui(lambda: self.window.current_info == info)
         self.assertEqual(self.window.selected_identity, new)
@@ -558,6 +647,8 @@ class UpdaterUiTests(unittest.TestCase):
 
     def test_refresh_queues_after_old_read_and_discards_its_error(self):
         import threading
+
+        from test_updater_environment_status import environment
 
         old = ("TCGU01A00Z0001m", "old-usb")
         new = ("TCGU01A00Z0002s", "new-usb")
@@ -577,7 +668,12 @@ class UpdaterUiTests(unittest.TestCase):
                 (old, dict(model="主爪", recorded=True, mcu="1.2.6", motor="不适用")),
             )
 
-        with patch.dict(sys.modules, {"device": self.fake_devices([new], info)}):
+        with (
+            patch.dict(sys.modules, {"device": self.fake_devices([new], info)}),
+            patch(
+                "host_diagnostics.diagnostic_report", return_value=environment(new[1])
+            ),
+        ):
             self.window.launch(old_read)
             try:
                 self.assertTrue(self.window.refresh.isEnabled())

@@ -103,6 +103,8 @@ class App(QMainWindow):
         self.log_lines = []
         self.environment_dialog = None
         self.environment_seen = set()
+        self.environment_report = None
+        self.last_connection_error = ""
         self.visible_log_lines = []
         self.catalog = core.catalog_at(HERE / "catalog.json")
         build(self)
@@ -132,6 +134,8 @@ class App(QMainWindow):
         self.fit_contents()
 
     def auto_scan(self):
+        if self.environment_dialog and self.environment_dialog.isVisible():
+            return
         if self.auto_connect and not self.busy and not self.devices:
             self.scan(follow_single=False)
 
@@ -156,11 +160,20 @@ class App(QMainWindow):
         self.scan(follow_single=False)
 
     def update_actions(self):
+        from environment_status import assess
+
+        allowed = (
+            self.environment_report is None
+            or assess(
+                self.environment_report, self.selected_identity, self.current_info
+            )["system_ready"]
+        )
         self.start.setEnabled(
             not self.busy
             and self.selected_identity is not None
             and bool(self.current_info and self.current_info["recorded"])
             and any(self.paths.values())
+            and allowed
         )
         self.refresh_mcu_hint()
 
@@ -358,7 +371,7 @@ class App(QMainWindow):
         self.emit("ask", (title, text, reply))
         return reply.get()
 
-    def launch(self, fn, updating=False):
+    def launch(self, fn, updating=False, silent=False):
         if self.busy:
             return
         self.busy = True
@@ -366,12 +379,17 @@ class App(QMainWindow):
         self.task_serial += 1
         task = self.active_task = self.task_serial
         self.discard_read = False
-        self.activity.begin(
-            "准备更新，请稍候" if updating else self.status._i18n_bindings["setText"]
-        )
-        self.progress.setRange(0, 0)
-        set_text(self.status, self.activity.stage)
-        self.log(self.activity.stage)
+        if not silent:
+            self.activity.begin(
+                "准备更新，请稍候"
+                if updating
+                else self.status._i18n_bindings["setText"]
+            )
+            self.progress.setRange(0, 0)
+            set_text(self.status, self.activity.stage)
+            self.log(self.activity.stage)
+        if self.environment_dialog:
+            self.environment_dialog.set_busy(True)
         if updating:
             self.toggle.setChecked(True)
         self.refresh_activity()
@@ -405,6 +423,7 @@ class App(QMainWindow):
     def scan(self, *_, follow_single=True):
         if self.updating:
             return
+        self.last_connection_error = ""
         if self.selected_identity is not None:
             self.previous_identity = self.selected_identity
         self.selected_identity = None
@@ -635,9 +654,17 @@ class App(QMainWindow):
                 task != self.active_task or (self.discard_read and kind != "idle")
             ):
                 continue
-            if kind == "diagnostics":
+            if kind in ("diagnostics", "diagnostics_auto"):
+                self.apply_environment(value)
+                if kind == "diagnostics_auto":
+                    if self.environment_dialog and self.environment_dialog.isVisible():
+                        self.environment_dialog.update_report(self.environment_report)
+                    continue
                 self.show_diagnostics(value)
             elif kind == "environment":
+                self.apply_environment(value)
+                if self.environment_dialog and self.environment_dialog.isVisible():
+                    self.environment_dialog.update_report(self.environment_report)
                 fingerprint = (
                     tuple(sorted(i["code"] for i in value["issues"])),
                     tuple(p["serial"] for p in value["ports"]),
@@ -647,6 +674,8 @@ class App(QMainWindow):
                     if fingerprint not in self.environment_seen:
                         self.environment_seen.add(fingerprint)
                         self.show_diagnostics(value)
+                else:
+                    self.environment_seen.clear()
                 if value.get("blocking"):
                     self.set_tone("warning")
                     set_text(self.status, "环境未就绪 · 请按诊断提示处理后重新检测")
@@ -730,6 +759,7 @@ class App(QMainWindow):
                 if identity != self.selected_identity:
                     continue
                 self.current_info = info
+                self.last_connection_error = ""
                 self.model_row.setVisible(not info["recorded"])
                 self.model_combo.setCurrentIndex(0)
                 role = core.role_from_sn(identity[0])
@@ -750,7 +780,11 @@ class App(QMainWindow):
                 self.apply_defaults()
                 self.set_tone(tone)
                 set_text(self.status, status)
+                if self.environment_report:
+                    self.environment_report.pop("connection_error", None)
+                    self.apply_environment(self.environment_report)
             elif kind == "connection_error":
+                self.last_connection_error = value
                 self.previous_identity = self.selected_identity
                 self.selected_identity = None
                 self.devices = []
@@ -785,7 +819,7 @@ class App(QMainWindow):
                     control.setEnabled(True)
                 self.update_actions()
                 if self.environment_dialog:
-                    self.environment_dialog.retry.setEnabled(True)
+                    self.environment_dialog.set_busy(False)
                 if self.pending_scan is not None:
                     follow_single = self.pending_scan
                     self.pending_scan = None
@@ -834,19 +868,45 @@ class App(QMainWindow):
             except OSError as exc:
                 notice(self, "导出失败", str(exc), QMessageBox.Critical)
 
-    def diagnose(self):
+    def apply_environment(self, report):
+        from environment_status import assess
+
+        report = dict(report)
+        if self.last_connection_error:
+            report["connection_error"] = self.last_connection_error
+        self.environment_report = report
+        state = assess(report, self.selected_identity, self.current_info)
+        if not state["system_ready"]:
+            self.current_info = None
+            if self.selected_identity:
+                self.previous_identity = self.selected_identity
+                self.selected_identity = None
+                self.devices = []
+                self.combo.clear()
+                self.model_row.hide()
+                set_text(self.info, "设备未通过环境复检，请重新连接验证。")
+        set_text(self.diagnostics, state["badge"])
+        self.diagnostics.setProperty("tone", state["tone"])
+        self.diagnostics.style().unpolish(self.diagnostics)
+        self.diagnostics.style().polish(self.diagnostics)
+        self.update_actions()
+
+    def diagnose(self, automatic=False):
         if self.busy:
             return
-        set_text(self.status, "正在检查环境；不发送夹爪命令…")
+        if not automatic:
+            set_text(self.status, "正在检查环境；不发送夹爪命令…")
         if self.environment_dialog:
             self.environment_dialog.retry.setEnabled(False)
 
         def work():
             from host_diagnostics import diagnostic_report
 
-            self.emit("diagnostics", diagnostic_report())
+            self.emit(
+                "diagnostics_auto" if automatic else "diagnostics", diagnostic_report()
+            )
 
-        self.launch(work)
+        self.launch(work, silent=automatic)
 
     def show_diagnostics(self, report):
         from environment_dialog import EnvironmentDialog
@@ -858,7 +918,7 @@ class App(QMainWindow):
         if not self.environment_dialog:
             self.environment_dialog = EnvironmentDialog(self)
         dialog = self.environment_dialog
-        dialog.update_report(report)
+        dialog.update_report(self.environment_report or report)
         dialog.retry.setEnabled(not self.busy)
         set_text(self.status, "诊断完成 · 详情已写入日志")
         dialog.show()
