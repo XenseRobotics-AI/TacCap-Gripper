@@ -184,6 +184,7 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz) {
     // Build StreamConfig (12 bytes — see protocol::StreamConfig).
     protocol::StreamConfig sc{};
     sc.source_mask  = mask;
+    if (imu_hz) sc.source_mask = (mask & ~protocol::StreamSrc::Imu) | imu_.negotiate_time();
     sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Separate);
     sc.imu_rate     = static_cast<uint16_t>(imu_hz);
     sc.encoder_rate = static_cast<uint16_t>(encoder_hz);

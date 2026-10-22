@@ -16,6 +16,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <unordered_map>
 
 namespace xense::taccap {
 
@@ -24,7 +26,11 @@ struct ImuSample {
     // since the MCU's `timestamp_us` is relative to its own boot.
     std::chrono::steady_clock::time_point host_time;
 
-    uint32_t mcu_timestamp_us;   // MCU-side timestamp (us since MCU boot)
+    uint64_t mcu_timestamp_us;   // V2: exact capture time in the boot epoch.
+    uint64_t boot_session_id{};  // V2: nonzero, constant per boot. Legacy: 0.
+    bool timestamp_is_64bit{};   // True only for native V2, not legacy unfolding.
+    bool timestamp_valid{true};  // False on ambiguous legacy discontinuities.
+    bool timestamp_discontinuity{}; // New boot / ambiguous jump; reset estimators.
     uint16_t valid_flag;         // protocol::ImuValid::* bits
     uint16_t seq;                // MCU-side packet sequence
 
@@ -46,9 +52,27 @@ public:
 
     explicit IMU(bus::Transport& transport);
 
-    // Synchronous one-shot read (sends CMD_NEED_ACK GetImu, waits for ACK).
-    // Throws on timeout / NACK / size mismatch.
+    // Negotiate time format, then GetImu/GetImuV2. Timeout is per command
+    // (plus transport retries). Throws on timeout / NACK / size mismatch.
     ImuSample read_once(std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
+    // Read-only capability negotiation except for assigning a first-boot RAM
+    // nonce. Repeated calls preserve the existing nonce. No flash writes.
+    uint16_t negotiate_time(std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+
+    // One tracker per subscription (and one for polling), so fan-out does not
+    // consume another subscriber's reset notification. Legacy epochs are
+    // relative to first observation, not guaranteed absolute boot uptime.
+    class Timeline {
+    public:
+        ImuSample decode(const std::uint8_t*, std::size_t,
+                         std::chrono::steady_clock::time_point arrival = std::chrono::steady_clock::now());
+    private:
+        bool seen_{};
+        uint64_t last_time_{}, session_{};
+        uint32_t raw_{};
+        uint16_t seq_{};
+        std::chrono::steady_clock::time_point host_{};
+    };
 
     // Subscribe to streaming DATA frames. The Transport keeps streaming
     // running independently — see LeaderGripper::start_streaming().
@@ -94,6 +118,9 @@ public:
 
 private:
     bus::Transport& t_;
+    std::mutex read_mutex_, subscriptions_mutex_;
+    Timeline polling_time_;
+    std::unordered_map<SubId, SubId> subscriptions_;
 };
 
 }  // namespace xense::taccap

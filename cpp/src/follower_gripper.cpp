@@ -354,6 +354,8 @@ void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
     protocol::StreamConfig sc{};
     // Legacy calls keep only MotorStatus; IMU is always explicit opt-in.
     sc.source_mask  = detail::stream_source_mask(imu_hz, 0, motor_hz);
+    const auto logical_sources = sc.source_mask;
+    if (imu_hz) sc.source_mask = (sc.source_mask & ~protocol::StreamSrc::Imu) | imu_.negotiate_time();
     sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Separate);
     sc.imu_rate     = static_cast<uint16_t>(imu_hz);
     sc.encoder_rate = 0;
@@ -369,7 +371,7 @@ void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
                             protocol::to_string(ack.error_code));
     }
 
-    streaming_sources_ = sc.source_mask;
+    streaming_sources_ = logical_sources;
     streaming_ = true;
 }
 

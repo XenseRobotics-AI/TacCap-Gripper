@@ -983,6 +983,7 @@ struct Ws2812Effect {
 
 namespace StreamSrc {
     constexpr uint16_t Imu         = 0x0001;
+    constexpr uint16_t ImuV2       = 0x0020;
     constexpr uint16_t Encoder     = 0x0002;
     constexpr uint16_t Eskin1      = 0x0004;
     constexpr uint16_t Eskin2      = 0x0008;

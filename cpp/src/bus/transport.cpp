@@ -364,8 +364,8 @@ void Transport::handle_ack_(const Frame& f) {
             r.error_code = err;
             try {
                 winning_promise.set_exception(std::make_exception_ptr(
-                    ProtocolError(std::string("NACK: ") +
-                                  protocol::to_string(err))));
+                    NackError(std::string("NACK: ") +
+                              protocol::to_string(err), static_cast<uint8_t>(err))));
             } catch (...) { /* promise already satisfied — ignore */ }
             return;
         }

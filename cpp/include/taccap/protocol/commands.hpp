@@ -76,6 +76,8 @@ enum class Cmd : uint8_t {
     GetEskin2       = 0x13,
     GetAllSensors   = 0x14,
     KeyStatus       = 0x15,    // V1.4 — device-side button, payload=key_status_payload_t
+    TimeSession     = 0x16,    // request nonce:u64; response time_us:u64, session:u64
+    GetImuV2        = 0x17,    // legacy 28B + capture_us:u64 + session:u64
 
     // Stream control + calibration (0x20–0x2F)
     StartStream         = 0x20,

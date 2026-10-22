@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <cstdint>
 
 namespace xense::taccap {
 
@@ -26,6 +27,17 @@ public:
 class CrcError : public ProtocolError {
 public:
     using ProtocolError::ProtocolError;
+};
+
+// Preserve ProtocolError compatibility while allowing capability negotiation
+// to fall back ONLY on an explicit unsupported-command response.
+class NackError : public ProtocolError {
+public:
+    NackError(const std::string& what, std::uint8_t code)
+        : ProtocolError(what), code_(code) {}
+    std::uint8_t code() const noexcept { return code_; }
+private:
+    std::uint8_t code_;
 };
 
 // Errno-backed I/O failure (open/read/write/tcsetattr).

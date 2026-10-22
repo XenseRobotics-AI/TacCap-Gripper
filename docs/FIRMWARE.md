@@ -7,6 +7,44 @@
 > `GetVersion` 查（`gripper.firmware_version`）——它返回的是编译进镜像的常量，
 > 是唯一能证明刷进去了什么的东西。
 
+## 本地候选：IMU 单调时间与协议兼容
+
+尚未正式发布。新固件支持 `TimeSession (0x16)` 和 `GetImuV2 (0x17)`；
+SDK 的 `read_once()` 和主/从爪显式 IMU streaming 自动协商：
+明确 InvalidCmd 才使用旧 28 字节包；超时/忙/畸形响应报错，不静默降级。
+从爪默认仍只开电机状态流，主爪现有 `start_streaming` 参数不变。
+V2 使用 source_mask=0x0020，保持电机与编码器 source 位和速率不变。
+
+新采样字段（C++ 与 Python）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mcu_timestamp_us` | C++ uint64_t / Python int；V2 完整捕获时间，旧包为首次观测起的展开时间 |
+| `boot_session_id` | V2 本次启动的非零会话号；旧包为 0，应与设备 SN 联合使用 |
+| `timestamp_is_64bit` | 是否来自原生 V2，而不是 SDK 展开 |
+| `timestamp_valid` | 本帧时间是否可用于当前观测段；异常旧包跳变或 V2 乱序为 false |
+| `timestamp_discontinuity` | 会话改变或不确定跳变，消费者应重置积分/滤波/时间拟合 |
+
+会话号由 SDK 提议随机 64 位 nonce，固件每次启动只接受第一个，保存在 RAM；
+重复协商不改变它，不写 Flash。设备重启后必须重新协商、重开流。
+会话号是概率唯一的诊断标识，不是认证凭据。V2 可跨任意多次 32 位回绕和断流恢复，
+但重启会重置时间，应按会话分段，不能把新启动拼成旧启动的连续轨迹。
+
+旧包只在短间隔、序列正常的连续观测下展开自然回绕。旧 DWT 固件的约 17 秒回退、
+重启样跳变和超过约 35.8 分钟的观测空档标记 discontinuity/invalid，不制造假时间。
+重新建立观测段不保证恢复绝对开机时间；旧包无法排除所有重启歧义。
+`IMU::decode` 是无状态解码；`read_once` 与每个 `on_data` 订阅分别维护时间线。
+
+**集成限制：**这是 C++ `ImuSample` 布局变更，所有链接消费者必须重编译，不能仅替换共享库。
+Python 扩展也须重建并核实实际加载路径。ROS 的时间字段须为 uint64，并增加会话/有效性字段，
+否则旧 uint32 消息仍会截断；本任务不修改独立 ROS 仓库或其依赖副本。
+ROS header 时间仍是另外的时钟域，以上修改不代表相机/IMU 同步通过验收。
+固件/SDK 本地构建成功也不等于已刷设备或安装到业务环境。
+
+软件检查：`ctest --test-dir <build> --output-on-failure`、`python -m pytest python/tests -q`。
+真机还需超过 75 分钟连续采集与冷重启验收；默认 motor-only、旧 SDK、新旧协议互通、
+IMU 同时上报时的控制时延和 OTA 都需验证。IMU 数值精度另行验收。
+
 ## Firmware / PC GUI reference repos
 
 The wire protocol this SDK speaks is defined by the firmware that runs

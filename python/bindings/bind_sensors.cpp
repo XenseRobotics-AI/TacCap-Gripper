@@ -25,7 +25,15 @@ void bind_sensors(py::module_& m) {
            "comparable with time.monotonic(). The MCU timestamp counts from the\n"
            "MCU's own boot instead.")
         .def_readonly("mcu_timestamp_us", &ImuSample::mcu_timestamp_us,
-                      "MCU-side capture time, microseconds since the MCU booted.")
+                      "64-bit capture time in microseconds. Native V2 boot epoch, or legacy observed epoch.")
+        .def_readonly("boot_session_id", &ImuSample::boot_session_id,
+                      "Nonzero V2 boot identity; zero on legacy firmware. Changes after a reboot.")
+        .def_readonly("timestamp_is_64bit", &ImuSample::timestamp_is_64bit,
+                      "True for native V2 timestamps, false for unfolded legacy timestamps.")
+        .def_readonly("timestamp_valid", &ImuSample::timestamp_valid,
+                      "False for ambiguous legacy jumps or reordered V2 timestamps.")
+        .def_readonly("timestamp_discontinuity", &ImuSample::timestamp_discontinuity,
+                      "Reset time-dependent estimators when true; this is not a clock synchronization result.")
         .def_readonly("valid_flag",       &ImuSample::valid_flag,
                       "Bitmask of the groups this frame carries: 0x01 accel, 0x02 gyro,\n"
                       "0x04 mag, 0x08 temperature.")
@@ -124,7 +132,8 @@ void bind_sensors(py::module_& m) {
             return self.read_once(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 100,
            "Poll one sample and wait for the answer. Works without start_streaming().\n\n"
-           "Blocks up to timeout_ms with the GIL released. Raises ProtocolError when\n"
+           "Negotiates native 64-bit time, then reads the sample; timeout_ms applies\n"
+           "to each command (plus transport retries), with the GIL released. Raises ProtocolError when\n"
            "the firmware NACKs or answers with the wrong payload size, TimeoutError\n"
            "when it does not answer at all.")
         .def("on_data", [](IMU& self, py::function pycb) {

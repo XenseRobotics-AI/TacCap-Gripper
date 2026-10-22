@@ -89,6 +89,7 @@ public:
     unsigned submit_count() const { return submits_.load(); }
     unsigned disable_count() const { return disables_.load(); }
     void set_imu_supported(bool on) { imu_supported_.store(on); }
+    void set_imu_v2_supported(bool on) { imu_v2_supported_.store(on); imu_supported_.store(on); }
     unsigned imu_queries() const { return imu_queries_.load(); }
     unsigned stream_stops() const { return stream_stops_.load(); }
     tp::StreamConfig stream_config() const {
@@ -173,6 +174,8 @@ private:
                     imu.accel_z = 1000;
                     pty_.send_data(0, tp::Cmd::GetImu, pod_bytes(&imu, sizeof(imu)));
                 }
+                if (stream_config_.source_mask & tp::StreamSrc::ImuV2)
+                    pty_.send_data(0,tp::Cmd::GetImuV2,imu_v2_packet_());
             }
         }
     }
@@ -334,6 +337,18 @@ private:
                                    pod_bytes(&status_, sizeof(status_)));
                 return;
             }
+            case tp::Cmd::TimeSession: {
+                if(!imu_v2_supported_.load()) {pty_.send_nack(f.seq,tp::ErrorCode::InvalidCmd);return;}
+                if(f.payload.size()!=8) {pty_.send_nack(f.seq,tp::ErrorCode::LengthMismatch);return;}
+                uint64_t proposed=0; std::memcpy(&proposed,f.payload.data(),8);
+                if(!imu_session_) imu_session_=proposed;
+                uint64_t reply[2]={imu_time_,imu_session_};
+                pty_.send_response(f.seq,f.cmd,pod_bytes(reply,sizeof(reply)));return;
+            }
+            case tp::Cmd::GetImuV2: {
+                if(!imu_v2_supported_.load()) {pty_.send_nack(f.seq,tp::ErrorCode::InvalidCmd);return;}
+                pty_.send_response(f.seq,f.cmd,imu_v2_packet_());return;
+            }
             case tp::Cmd::GetImu: {
                 ++imu_queries_;
                 if (!imu_supported_.load()) {
@@ -384,6 +399,17 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> streaming_{false};
     std::atomic<bool> imu_supported_{false};
+    std::atomic<bool> imu_v2_supported_{false};
+    uint64_t imu_session_{0}, imu_time_{UINT64_C(0x200000000)};
+    uint16_t imu_seq_{0};
+    std::vector<uint8_t> imu_v2_packet_() {
+        imu_time_+=10000;
+        tp::ImuData raw{};raw.accel_z=1000;raw.timestamp_us=uint32_t(imu_time_);raw.seq=imu_seq_++;
+        auto p=pod_bytes(&raw,sizeof(raw));
+        for(auto value:{imu_time_,imu_session_})
+            for(unsigned i=0;i<8;i++)p.push_back(uint8_t(value>>(i*8)));
+        return p;
+    }
     std::atomic<unsigned> imu_queries_{0}, stream_stops_{0};
     tp::StreamConfig stream_config_{};
     std::atomic<bool> frozen_{false};
