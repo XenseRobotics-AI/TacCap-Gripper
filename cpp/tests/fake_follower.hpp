@@ -88,6 +88,13 @@ public:
     }
     unsigned submit_count() const { return submits_.load(); }
     unsigned disable_count() const { return disables_.load(); }
+    void set_imu_supported(bool on) { imu_supported_.store(on); }
+    unsigned imu_queries() const { return imu_queries_.load(); }
+    unsigned stream_stops() const { return stream_stops_.load(); }
+    tp::StreamConfig stream_config() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return stream_config_;
+    }
     // Make 0x5C store something other than what was sent.
     void set_corrupt_fw_ver_writes(bool on) { corrupt_fw_ver_writes_.store(on); }
 
@@ -158,8 +165,14 @@ private:
             if (streaming_.load() && !frozen_.load() && now >= next_status) {
                 next_status = now + std::chrono::milliseconds(10);
                 std::lock_guard<std::mutex> lk(mu_);
-                pty_.send_data(0, tp::Cmd::GetMotorStatus,
+                if (stream_config_.source_mask & tp::StreamSrc::MotorStatus)
+                    pty_.send_data(0, tp::Cmd::GetMotorStatus,
                                pod_bytes(&status_, sizeof(status_)));
+                if (stream_config_.source_mask & tp::StreamSrc::Imu) {
+                    tp::ImuData imu{};
+                    imu.accel_z = 1000;
+                    pty_.send_data(0, tp::Cmd::GetImu, pod_bytes(&imu, sizeof(imu)));
+                }
             }
         }
     }
@@ -321,11 +334,30 @@ private:
                                    pod_bytes(&status_, sizeof(status_)));
                 return;
             }
-            case tp::Cmd::StartStream:
+            case tp::Cmd::GetImu: {
+                ++imu_queries_;
+                if (!imu_supported_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidCmd);
+                } else {
+                    tp::ImuData imu{};
+                    imu.accel_z = 1000;
+                    pty_.send_response(f.seq, f.cmd, pod_bytes(&imu, sizeof(imu)));
+                }
+                return;
+            }
+            case tp::Cmd::StartStream: {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (f.payload.size() != sizeof(stream_config_)) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::LengthMismatch);
+                    return;
+                }
+                std::memcpy(&stream_config_, f.payload.data(), sizeof(stream_config_));
                 streaming_.store(true);
                 pty_.send_ack_ok(f.seq, f.cmd);
                 return;
+            }
             case tp::Cmd::StopStream:
+                ++stream_stops_;
                 streaming_.store(false);
                 pty_.send_ack_ok(f.seq, f.cmd);
                 return;
@@ -351,6 +383,9 @@ private:
     std::thread thread_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> streaming_{false};
+    std::atomic<bool> imu_supported_{false};
+    std::atomic<unsigned> imu_queries_{0}, stream_stops_{0};
+    tp::StreamConfig stream_config_{};
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
     std::atomic<unsigned> disables_{0};

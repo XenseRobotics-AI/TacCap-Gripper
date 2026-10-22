@@ -55,6 +55,12 @@ public:
     SubId on_data(Callback cb);
     void  off(SubId id);
 
+    // Keep the IMU stationary, sensor Z up. Caller must stop the controller
+    // and disable the motor first on followers. Cmd 0x25 actions 1 then 4:
+    // firmware performs its static verification before we request persistence.
+    // timeout applies to each command; timeout does NOT cancel device work.
+    void calibrate_accel_gyro(std::chrono::milliseconds timeout = std::chrono::milliseconds{16000});
+
     // V1.4 — write magnetometer hard-iron offsets + soft-iron correction
     // matrix to firmware (Cmd::SetImuMagCal, 0x26). `hard_iron` is the
     // 3-axis bias in µT; `soft_iron` is the 3×3 correction matrix in
@@ -64,8 +70,10 @@ public:
                              const std::array<float, 9>& soft_iron_row_major,
                              std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
-    // Magnetometer calibration session (Cmd 0x26 with a 1-byte payload; leader
-    // firmware only -- a follower NACKs InvalidCmd).
+    // Magnetometer calibration session (Cmd 0x26 with a 1-byte payload).
+    // Historical followers NACK; capable followers require stopped/disabled
+    // motors, restore the previous stream on finish, and expire after 180s.
+    // The following stream-replacement semantics apply to leader firmware:
     //
     // start: the firmware flags calibration and STARTS AN IMU STREAM ON ITS OWN
     //   (separate mode, IMU only, rate code 5) so the host can collect raw

@@ -79,6 +79,17 @@ IMU::SubId IMU::on_data(Callback cb) {
 
 void IMU::off(SubId id) { t_.unsubscribe(id); }
 
+void IMU::calibrate_accel_gyro(std::chrono::milliseconds timeout) {
+    for (uint8_t action : {0x01, 0x04}) {
+        auto ack = t_.send_cmd(protocol::Cmd::SetImuCal, {action}, timeout,
+                               bus::RetryMode::SameSeq);
+        if (ack.is_nack) {
+            throw ProtocolError(std::string("IMU::calibrate_accel_gyro NACK: ") +
+                                protocol::to_string(ack.error_code));
+        }
+    }
+}
+
 void IMU::start_mag_calibration(std::chrono::milliseconds timeout) {
     auto ack = t_.send_cmd(protocol::Cmd::SetImuMagCal, {0x01}, timeout);
     if (ack.is_nack) {

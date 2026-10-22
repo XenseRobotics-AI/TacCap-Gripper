@@ -318,17 +318,28 @@ std::unique_ptr<FollowerGripper> FollowerGripper::open() {
 }
 
 void FollowerGripper::start_streaming(unsigned motor_hz) {
-    if (streaming_) return;
+    start_streaming(motor_hz, 0);
+}
 
-    // Motor status is the only source the follower firmware emits; everything
-    // else in its stream task is compiled out on this role. So there is exactly
-    // one rate to honour, and a rate of 0 has nowhere useful to go.
-    if (motor_hz == 0) {
-        throw IoError("FollowerGripper::start_streaming: motor_hz is 0, and "
-                      "motor status is the only source a follower streams — "
-                      "pass a non-zero rate, or just don't start the stream",
+void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
+    if (imu_hz > 100) throw IoError("Follower IMU rate must be 0..100 Hz", EINVAL);
+    if (streaming_) {
+        const auto requested = detail::stream_source_mask(imu_hz, 0, motor_hz);
+        if ((requested & streaming_sources_) != requested)
+            throw IoError("FollowerGripper: stop streaming before adding sources", EBUSY);
+        return;
+    }
+
+    // Zero rates clear source bits, rather than selecting firmware defaults.
+    if (motor_hz == 0 && imu_hz == 0) {
+        throw IoError("FollowerGripper::start_streaming: both rates are 0",
                       EINVAL);
     }
+
+    // Probe before StopStream: old firmware must fail explicitly without
+    // disturbing a stream left by another client. Never infer support from a
+    // shared firmware version number (leader/follower have separate features).
+    if (imu_hz) (void)imu_.read_once(std::chrono::milliseconds{500});
 
     // Drain the firmware queue from any previous host process — same
     // rationale as LeaderGripper::start_streaming.
@@ -341,16 +352,15 @@ void FollowerGripper::start_streaming(unsigned motor_hz) {
                                   detail::kMotorMaxRateHz);
 
     protocol::StreamConfig sc{};
-    // Only the MotorStatus bit: a rate alone would not turn a source on, and a
-    // set bit with rate 0 would stream at the firmware's 100Hz default rather
-    // than staying off. See stream_rate.hpp.
-    sc.source_mask  = protocol::StreamSrc::MotorStatus;
+    // Legacy calls keep only MotorStatus; IMU is always explicit opt-in.
+    sc.source_mask  = detail::stream_source_mask(imu_hz, 0, motor_hz);
     sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Separate);
-    sc.imu_rate     = 0;
+    sc.imu_rate     = static_cast<uint16_t>(imu_hz);
     sc.encoder_rate = 0;
     sc.eskin_rate   = 0;
     sc.motor_rate   = static_cast<uint16_t>(motor_hz);
     sc.output_iface = static_cast<uint8_t>(protocol::StreamInterface::Uart);
+    if (imu_hz) detail::warn_if_rate_adjusted("FollowerGripper", "IMU", imu_hz, 100);
 
     auto wire = protocol::encode(sc);
     auto ack = t_.send_cmd(protocol::Cmd::StartStream, wire);
@@ -359,6 +369,7 @@ void FollowerGripper::start_streaming(unsigned motor_hz) {
                             protocol::to_string(ack.error_code));
     }
 
+    streaming_sources_ = sc.source_mask;
     streaming_ = true;
 }
 

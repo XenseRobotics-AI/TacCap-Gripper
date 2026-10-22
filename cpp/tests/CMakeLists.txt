@@ -36,6 +36,7 @@ add_executable(taccap_unit_tests
     test_crc32_boundaries.cpp
     test_log.cpp
     test_stream_rate.cpp
+    test_follower_imu_pty.cpp
 )
 
 # stream_rate.hpp is a private helper under src/ (not an installed header),

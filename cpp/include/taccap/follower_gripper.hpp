@@ -478,7 +478,7 @@ public:
     //
     // Motor status is the ONLY thing a follower streams. This used to mirror
     // the leader's (imu_hz, encoder_hz, motor_hz) signature, which was worse
-    // than useless: the follower firmware emits IMU, encoder and eskin only
+    // than useless: historical follower firmware emitted IMU/encoder/eskin only
     // under #ifdef ENABLE_MASTER_GRIPPER, so those two rates set their mask
     // bits and then produced nothing (measured: 1000Hz of each yields zero
     // frames and leaves byte volume unchanged). Worse, the old defaults were
@@ -501,6 +501,12 @@ public:
     // for a bad rate, so the SDK logs a warning whenever it has to adjust one.
     // See cpp/src/stream_rate.hpp for the firmware model this mirrors.
     void start_streaming(unsigned motor_hz = 100);
+    // Opt-in IMU on capable follower firmware, separate 28-byte packets.
+    // imu_hz=0 preserves legacy behavior; 1..100 enables IMU after a GetImu
+    // capability probe. Old firmware NACKs without changing its stream.
+    // motor_hz=0 permits IMU-only; both zero is invalid. Stop before changing
+    // an existing stream (as with the original one-argument interface).
+    void start_streaming(unsigned motor_hz, unsigned imu_hz);
     void stop_streaming();
     bool is_streaming() const noexcept { return streaming_; }
 
@@ -541,6 +547,7 @@ private:
     OtaSession                      ota_;       // V1.3
     std::unique_ptr<Camera>         wrist_;
     bool                            streaming_ = false;
+    uint16_t                        streaming_sources_ = 0;
     GripperPosition                 pos_map_;             // raw<->position, cached
     bool                            pos_map_loaded_ = false;
 };

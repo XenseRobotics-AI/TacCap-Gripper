@@ -474,18 +474,14 @@ void bind_gripper(py::module_& m) {
            "explicit mcu_device from find_follower() in that case. It does not\n"
            "check that the hardware really is a follower -- see the class docstring.\n"
            "Cameras stay closed.")
-        .def("start_streaming", [](FollowerGripper& self, unsigned motor_hz) {
+        .def("start_streaming", [](FollowerGripper& self, unsigned motor_hz, unsigned imu_hz) {
             py::gil_scoped_release gil;
-            self.start_streaming(motor_hz);
-        }, py::arg("motor_hz") = 100u,
-           "Start the motor-status stream.\n\n"
-           "Motor status is the ONLY source a follower streams -- the firmware\n"
-           "compiles IMU, encoder and eskin streaming out on this role. This used\n"
-           "to take imu_hz and encoder_hz for parity with the leader; they set\n"
-           "their mask bits and produced nothing, and the old defaults\n"
-           "(imu=100, encoder=100, motor=0) meant a bare start_streaming() call\n"
-           "started a stream carrying NOTHING and reported success.\n\n"
-           "motor_hz=0 raises IoError(EINVAL) rather than starting an empty\n"
+            self.start_streaming(motor_hz, imu_hz);
+        }, py::arg("motor_hz") = 100u, py::arg("imu_hz") = 0u,
+           "Start motor status, optionally IMU (default off).\n\n"
+           "imu_hz=1..100 requires capable follower firmware; an IMU read probes\n"
+           "support before changing the stream. Old firmware raises ProtocolError.\n"
+           "Stop streaming before changing rates. Both rates zero raises IoError(EINVAL).\n"
            "stream. The firmware caps motor status at 100 Hz and divides a 1 kHz\n"
            "tick by an integer, so only divisors of 1000 arrive at the requested\n"
            "rate. It never NACKs a rate it had to adjust, so the SDK logs a\n"
@@ -497,8 +493,8 @@ void bind_gripper(py::module_& m) {
            "Best-effort: a no-op when no stream was started, and it returns even\n"
            "when the MCU never ACKs the StopStream.")
         .def_property_readonly("imu",           [](FollowerGripper& g) -> IMU&            { return g.imu(); },           py::return_value_policy::reference_internal,
-                               "IMU component. Present on both roles, but a follower does not stream\n"
-                               "it -- see start_streaming().")
+                               "IMU component; follower support requires capable firmware and explicit\n"
+                               "imu_hz opt-in -- see start_streaming().")
         .def_property_readonly("encoder",       [](FollowerGripper& g) -> Encoder&        { return g.encoder(); },       py::return_value_policy::reference_internal,
                                "Encoder component. Present on both roles, but a follower does not\n"
                                "stream it -- see start_streaming().")
