@@ -2,6 +2,7 @@
 #include <taccap/components/imu.hpp>
 #include <taccap/error.hpp>
 #include <gtest/gtest.h>
+#include <condition_variable>
 
 namespace tx = xense::taccap;
 namespace tp = tx::protocol;
@@ -53,6 +54,23 @@ TEST(ImuTime, LegacyRestartAndOutOfOrderAreFlagged) {
     tx::IMU::Timeline t; sample(t,500000,200);
     EXPECT_FALSE(sample(t,100,0).timestamp_valid);
     sample(t,300,2); EXPECT_FALSE(sample(t,200,1).timestamp_valid);
+}
+TEST(ImuTime, LegacyRegressionRemainsInvalidAcrossDuplicatesAndForwardSamples) {
+    tx::IMU::Timeline t;
+    EXPECT_TRUE(sample(t,17173017,5113).timestamp_valid);
+    for (int i=0;i<10;++i) {
+        auto s=sample(t,3148,5114);
+        EXPECT_FALSE(s.timestamp_valid);
+        EXPECT_TRUE(s.timestamp_discontinuity);
+    }
+    EXPECT_FALSE(sample(t,13148,5115).timestamp_valid);
+    // Explicit new tracker establishes a new, unrelated legacy segment.
+    tx::IMU::Timeline restarted;
+    EXPECT_TRUE(sample(restarted,13148,5115).timestamp_valid);
+    // Native time carries a boot identity, so it can safely replace legacy.
+    auto native=sample(t,23148,5116,123);
+    EXPECT_TRUE(native.timestamp_valid);
+    EXPECT_TRUE(native.timestamp_discontinuity);
 }
 TEST(ImuTime, LegacyLongSilenceIsAmbiguousRatherThanInventedUptime) {
     tx::IMU::Timeline t;
@@ -121,4 +139,34 @@ TEST(ImuTimePty, NativeStreamFansOutAndOffRemovesBothFormats) {
     EXPECT_GT(a.load(),0u);EXPECT_GT(b.load(),0u);EXPECT_GT(motors.load(),0u);
     g->imu().off(first);g->imu().off(second);g->motor().off(motor);
     g->close();
+}
+
+TEST(ImuTimePty, DuplicateLegacyFramesDoNotRestoreValidityOrRepeatCallbacks) {
+    Pty pty;
+    tx::bus::Transport transport(base_config(pty.slave_path()));
+    tx::IMU imu(transport);
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::vector<tx::ImuSample> received;
+    auto id=imu.on_data([&](const auto& s) {
+        std::lock_guard<std::mutex> lock(mutex);
+        received.push_back(s);
+        ready.notify_all();
+    });
+    pty.send_data(0,tp::Cmd::GetImu,packet(17173017,5113));
+    for (int i=0;i<10;++i)
+        pty.send_data(0,tp::Cmd::GetImu,packet(3148,5114));
+    pty.send_data(0,tp::Cmd::GetImu,packet(13148,5115));
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(ready.wait_for(lock,std::chrono::seconds(2),[&] {
+            return !received.empty() && received.back().seq==5115;
+        }));
+    }
+    imu.off(id);
+    std::lock_guard<std::mutex> lock(mutex);
+    ASSERT_EQ(received.size(),3u);
+    EXPECT_TRUE(received[0].timestamp_valid);
+    EXPECT_FALSE(received[1].timestamp_valid);
+    EXPECT_FALSE(received[2].timestamp_valid);
 }

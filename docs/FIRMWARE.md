@@ -9,6 +9,10 @@
 
 ## 本地候选：IMU 单调时间与协议兼容
 
+固件与 SDK 当前本地分支均为 `codex/gripper-imu-support`，由原从爪分支延续。
+主爪也启用 TIM2 单调时间和 V2，并只发送新缓存样本；请求 1000 Hz 不代表
+1000 Hz 独立采样。主爪原校准和从爪电机控制算法不在本轮修改范围。
+
 尚未正式发布。新固件支持 `TimeSession (0x16)` 和 `GetImuV2 (0x17)`；
 SDK 的 `read_once()` 和主/从爪显式 IMU streaming 自动协商：
 明确 InvalidCmd 才使用旧 28 字节包；超时/忙/畸形响应报错，不静默降级。
@@ -32,8 +36,16 @@ V2 使用 source_mask=0x0020，保持电机与编码器 source 位和速率不�
 
 旧包只在短间隔、序列正常的连续观测下展开自然回绕。旧 DWT 固件的约 17 秒回退、
 重启样跳变和超过约 35.8 分钟的观测空档标记 discontinuity/invalid，不制造假时间。
-重新建立观测段不保证恢复绝对开机时间；旧包无法排除所有重启歧义。
+检测到上述旧包异常后，该时间线保持 invalid/discontinuity，不因下一帧重复或正常前进
+自动恢复。流可 `off(id)` 后重新 `on_data(...)` 建立新观测段；轮询需新建 IMU 实例。
+有效原生 V2 可恢复可信时间。重新建立观测段不保证恢复绝对开机时间，不能将两段直接积分；
+旧 DWT 固件仍会再次回退，根治需要升级固件。旧包无法排除所有重启歧义。
 `IMU::decode` 是无状态解码；`read_once` 与每个 `on_data` 订阅分别维护时间线。
+
+`on_data` 现在过滤连续字节完全相同的 IMU DATA 载荷，减少缓存重复引起的重复积分；
+原始传输订阅与 `read_once` 不过滤。多个订阅者各自保有去重及时间线状态。
+回调频率因此可能由约 1000 Hz 降至约 100 Hz；不要把回调次数当成串口接收帧数。
+使用者必须检查 `timestamp_valid`，无效样本不能用于积分；这不是坐标系或精度修正。
 
 **集成限制：**这是 C++ `ImuSample` 布局变更，所有链接消费者必须重编译，不能仅替换共享库。
 Python 扩展也须重建并核实实际加载路径。ROS 的时间字段须为 uint64，并增加会话/有效性字段，
@@ -76,9 +88,8 @@ What's in them:
   the human-readable spec, including the §10 offset table for the 72-byte
   extended motor status that `test_codec_v22.cpp` is transcribed from.
 - `tc-gu-01/App/tasks/task_data_stream.c` + `task_imu.c` +
-  `task_encoder.c` — explains why IMU/encoder unique-data rate caps at
-  ~60 Hz even when you request 100 (see the SDK's stream-dup note in
-  the Claude memory).
+  `task_encoder.c` — acquisition, cached samples and stream scheduling are
+  separate; requested rate is not evidence of independent sample rate.
 - `tc-gu-01-pc/core/protocol.py` + `core/serial_worker.py` — Python
   reference implementation of the same wire protocol; useful as a
   cross-check when debugging the C++ codec.

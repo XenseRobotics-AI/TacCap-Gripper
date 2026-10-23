@@ -68,6 +68,9 @@ public:
                          std::chrono::steady_clock::time_point arrival = std::chrono::steady_clock::now());
     private:
         bool seen_{};
+        // Legacy cannot establish a new boot epoch after an ambiguous jump.
+        // Keep it invalid until a new tracker (subscription/instance) or V2.
+        bool legacy_faulted_{};
         uint64_t last_time_{}, session_{};
         uint32_t raw_{};
         uint16_t seq_{};

@@ -82,18 +82,20 @@ ImuSample IMU::Timeline::decode(const uint8_t* p, std::size_t n,
                 s.timestamp_discontinuity = true;
                 return s; // stale frame: do not move the high-water mark
             }
+            legacy_faulted_ = false;
         } else {
             const uint32_t delta = s.raw.timestamp_us - raw_;
             const uint16_t seq_delta = uint16_t(s.seq - seq_);
             // Legacy cannot prove boot identity or reconstruct arbitrary gaps.
             // Never turn a historical 17-second DWT reset into a 71-minute wrap.
-            bool ambiguous = session_ != 0 || gap < 0 || gap >= INT32_MAX ||
+            bool ambiguous = legacy_faulted_ || session_ != 0 || gap < 0 || gap >= INT32_MAX ||
                              delta >= INT32_MAX || seq_delta >= 0x8000U;
             if (s.raw.timestamp_us < raw_)
                 ambiguous |= raw_ < 0xf0000000U || s.raw.timestamp_us > 0x0fffffffU ||
                              seq_delta == 0 || uint64_t(delta) > uint64_t(gap) + 2000000ULL;
             s.timestamp_valid = !ambiguous;
             s.timestamp_discontinuity = ambiguous;
+            legacy_faulted_ = ambiguous;
             if (!ambiguous) s.mcu_timestamp_us = last_time_ + delta;
         }
     }
@@ -141,8 +143,12 @@ ImuSample IMU::read_once(std::chrono::milliseconds timeout) {
 }
 
 IMU::SubId IMU::on_data(Callback cb) {
-    auto timeline = std::make_shared<Timeline>();
-    auto callback = [cb = std::move(cb), timeline](const bus::Frame& f) {
+    struct SubscriptionState {
+        Timeline timeline;
+        std::vector<uint8_t> last_payload;
+    };
+    auto state = std::make_shared<SubscriptionState>();
+    auto callback = [cb = std::move(cb), state](const bus::Frame& f) {
             // Dispatcher thread context, not the reader -- Transport keeps
             // user code off the read path on purpose. decode() may throw on a
             // malformed frame; preserve the component's existing policy of
@@ -150,7 +156,12 @@ IMU::SubId IMU::on_data(Callback cb) {
             try {
                 if (f.payload.size() != (f.cmd == protocol::Cmd::GetImuV2 ? 44U : 28U))
                     throw ProtocolError("IMU stream format mismatch");
-                cb(timeline->decode(f.payload.data(), f.payload.size()));
+                // Legacy devices may send the identical cache at 1000 Hz
+                // although acquisition is 100 Hz. Do not integrate it twice.
+                if (f.payload == state->last_payload) return;
+                auto sample = state->timeline.decode(f.payload.data(), f.payload.size());
+                state->last_payload = f.payload;
+                cb(sample);
             } catch (...) {}
         };
     std::lock_guard<std::mutex> lock(subscriptions_mutex_);
