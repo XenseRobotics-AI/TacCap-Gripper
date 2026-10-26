@@ -127,7 +127,9 @@ MotorStatusSample Motor::read_status(std::chrono::milliseconds timeout) {
         throw ProtocolError(std::string("Motor::read_status NACK: ") +
                             protocol::to_string(ack.error_code));
     }
-    return decode(ack.data.data(), ack.data.size());
+    auto sample = decode(ack.data.data(), ack.data.size());
+    sample.host_time = ack.receive_time;
+    return sample;
 }
 
 protocol::MotorStatusExt Motor::read_status_ext(std::chrono::milliseconds timeout) {
@@ -310,19 +312,26 @@ bool is_stray_fault_reply_frame(bool seen_real_temp, float motor_temp_c) noexcep
 }  // namespace detail
 
 Motor::SubId Motor::on_status(Callback cb) {
+    return subscribe_status_(std::move(cb), false);
+}
+
+Motor::SubId Motor::on_control_status_(Callback cb) {
+    return subscribe_status_(std::move(cb), true);
+}
+
+Motor::SubId Motor::subscribe_status_(Callback cb, bool control) {
     // Per subscription: the dispatch thread is the only caller, so no lock.
     auto seen_real_temp = std::make_shared<bool>(false);
     auto dropped = std::make_shared<std::uint64_t>(0);
-    return t_.subscribe(
-        protocol::Cmd::GetMotorStatus,
-        [cb = std::move(cb), seen_real_temp, dropped](const bus::Frame& f) {
+    auto callback = [cb = std::move(cb), seen_real_temp, dropped, control](const bus::Frame& f) {
             try {
-                const MotorStatusSample s = decode(f.payload.data(), f.payload.size());
+                MotorStatusSample s = decode(f.payload.data(), f.payload.size());
+                s.host_time = f.receive_time;
                 if (detail::is_stray_fault_reply_frame(*seen_real_temp, s.motor_temp_c)) {
                     // Rate-limited: a closing move on an affected unit draws a few
                     // per second. Powers of two keep the count visible.
                     const std::uint64_t n = ++*dropped;
-                    if ((n & (n - 1)) == 0) {
+                    if (!control && (n & (n - 1)) == 0) {
                         logger()->warn(
                             "Motor::on_status: dropped {} status frame(s) that were not "
                             "status (temperature 0.0, pos {:.4f} rad, torque {:.2f} N*m): "
@@ -336,7 +345,9 @@ Motor::SubId Motor::on_status(Callback cb) {
                 if (s.motor_temp_c != 0.0f) *seen_real_temp = true;
                 cb(s);
             } catch (...) {}
-        });
+        };
+    return control ? t_.subscribe_control_(std::move(callback))
+                   : t_.subscribe(protocol::Cmd::GetMotorStatus, std::move(callback));
 }
 
 void Motor::off(SubId id) { t_.unsubscribe(id); }

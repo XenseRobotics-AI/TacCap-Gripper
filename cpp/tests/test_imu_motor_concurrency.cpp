@@ -1,7 +1,7 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
-// IMU and motor DATA share a dispatcher, while ACK matching and controller
-// safety timeouts run independently. Exercise that boundary through a PTY:
+// User IMU delivery must not block control feedback or hide its receive age.
+// Exercise that boundary through a PTY:
 // the fake models packet flow, not firmware scheduling or physical motion.
 
 #include "fake_follower.hpp"
@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <thread>
 
@@ -153,7 +154,7 @@ void controller_keeps_preexisting_imu_stream() {
 }
 
 template <class Controller>
-void slow_imu_callback_triggers_safe_timeout() {
+void slow_imu_callback_isolated_and_real_loss_times_out() {
     Pty pty;
     ASSERT_GE(pty.master(), 0);
     FakeFollower fw(pty);
@@ -179,9 +180,17 @@ void slow_imu_callback_triggers_safe_timeout() {
     const auto submits_before = fw.submit_count();
     const auto frames_before = g->transport().stats().frames_received;
 
-    // A user callback stalls motor delivery, even though the firmware and
-    // reader still run. ACK matching must remain usable during the stall.
+    // A blocked user callback must not stall control feedback. Keep it blocked
+    // for several status timeouts, while the independent control lane advances.
     EXPECT_NO_THROW((void)g->device().heartbeat(Ms(500)));
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() >= submits_before + 30; }, Ms(2000)));
+    EXPECT_NE(controller.state(), ControllerTraits<Controller>::fault);
+    EXPECT_TRUE(controller.snapshot().observation.valid);
+    EXPECT_FALSE(gate->completed.load());
+
+    // Real loss, not a user callback, must still trip the existing failsafe.
+    // Backlogged user DATA must never refresh the controller on release.
+    fw.freeze_stream(true);
     ASSERT_TRUE(wait_for([&] {
         return controller.state() == ControllerTraits<Controller>::fault &&
                fw.submit_count() > submits_before &&
@@ -218,12 +227,12 @@ TEST(ImuMotorConcurrency, ImpedanceKeepsPreexistingCombinedStream) {
     controller_keeps_preexisting_imu_stream<tx::ImpedanceController>();
 }
 
-TEST(ImuMotorConcurrency, ForcePositionSlowImuCallbackFaultsWithZeroTorque) {
-    slow_imu_callback_triggers_safe_timeout<tx::ForcePositionController>();
+TEST(ImuMotorConcurrency, ForcePositionSlowImuIsIsolatedAndRealLossFaults) {
+    slow_imu_callback_isolated_and_real_loss_times_out<tx::ForcePositionController>();
 }
 
-TEST(ImuMotorConcurrency, ImpedanceSlowImuCallbackFaultsWithZeroTorque) {
-    slow_imu_callback_triggers_safe_timeout<tx::ImpedanceController>();
+TEST(ImuMotorConcurrency, ImpedanceSlowImuIsIsolatedAndRealLossFaults) {
+    slow_imu_callback_isolated_and_real_loss_times_out<tx::ImpedanceController>();
 }
 
 TEST(ImuMotorConcurrency, CloseJoinsActiveImuCallbackAndReleasesCaptures) {
@@ -268,4 +277,185 @@ TEST(ImuMotorConcurrency, CloseJoinsActiveImuCallbackAndReleasesCaptures) {
     EXPECT_EQ(gate->calls.load(), calls_before_release)
         << "close must discard queued DATA instead of entering more callbacks";
     EXPECT_GT(g->transport().stats().queue_dropped, 0u);
+}
+
+TEST(ImuMotorConcurrency, QueuedUserSamplesKeepReceiveTime) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_imu_v2_supported(true);
+    auto gate = std::make_shared<ImuCallbackGate>();
+    auto g = open_follower(pty);
+    ReleaseCallbackOnExit release_on_exit{gate};
+    std::atomic<bool> released{false};
+    std::atomic<unsigned> old_motor{0}, old_imu{0};
+    const auto motor_sub = g->motor().on_status([&](const tx::MotorStatusSample& s) {
+        if (released && std::chrono::steady_clock::now() - s.host_time >= Ms(80)) ++old_motor;
+    });
+    const auto imu_sub = g->imu().on_data([&](const tx::ImuSample& s) {
+        (*gate)();
+        if (released && std::chrono::steady_clock::now() - s.host_time >= Ms(80)) ++old_imu;
+    });
+    gate->arm();
+    g->start_streaming(100, 100);
+    ASSERT_TRUE(gate->wait_until_entered());
+    auto before = g->transport().stats().frames_received;
+    ASSERT_TRUE(wait_for([&] { return g->transport().stats().frames_received >= before + 20; }, Ms(1000)));
+    fw.freeze_stream(true);
+    std::this_thread::sleep_for(Ms(120));
+    released = true;
+    gate->release();
+    EXPECT_TRUE(wait_for([&] { return old_motor >= 5 && old_imu >= 5; }, Ms(1000)));
+    g->motor().off(motor_sub);
+    g->imu().off(imu_sub);
+    g->close();
+}
+
+template <class Controller>
+void sustained_slow_user_callbacks_do_not_retime_control() {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    const auto imu = g->imu().on_data([](const tx::ImuSample&) { std::this_thread::sleep_for(Ms(20)); });
+    const auto motor = g->motor().on_status([](const tx::MotorStatusSample&) { std::this_thread::sleep_for(Ms(5)); });
+    g->start_streaming(100, 100);
+    typename ControllerTraits<Controller>::Config config;
+    config.status_timeout_ms = 150;
+    Controller controller(*g, config);
+    controller.start();
+    const auto before = fw.submit_count();
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() >= before + 60; }, Ms(1200)));
+    EXPECT_NE(controller.state(), ControllerTraits<Controller>::fault);
+    EXPECT_TRUE(controller.snapshot().observation.valid);
+    EXPECT_EQ(g->transport().stats().control_queue_overflows, 0u);
+    fw.freeze_stream(true);
+    // State changes before submit() and the PTY peer consumes it. Observe both
+    // within the original deadline instead of racing the asynchronous send.
+    EXPECT_TRUE(wait_for([&] {
+        return controller.state() == ControllerTraits<Controller>::fault &&
+               is_zero_torque(fw.last_submit());
+    }, Ms(500)));
+    controller.stop();
+    g->motor().off(motor);
+    g->imu().off(imu);
+    g->close();
+}
+
+TEST(ImuMotorConcurrency, ForcePositionSustainedSlowCallbacksDoNotHideFeedbackLoss) {
+    sustained_slow_user_callbacks_do_not_retime_control<tx::ForcePositionController>();
+}
+
+TEST(ImuMotorConcurrency, ImpedanceSustainedSlowCallbacksDoNotHideFeedbackLoss) {
+    sustained_slow_user_callbacks_do_not_retime_control<tx::ImpedanceController>();
+}
+
+TEST(ImuMotorConcurrency, ControlQueueOverflowLatchesClosedAndRequiresReopen) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    tx::ForcePositionConfig config;
+    config.status_timeout_ms = 200;
+    tx::ForcePositionController controller(*g, config);
+    controller.start();
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() >= 4; }, Ms(1000)));
+    fw.freeze_stream(true);
+    // A deliberately faster-than-real-wire burst exercises overload handling,
+    // not physical throughput. Each write stays below the PTY buffer size.
+    tp::MotorStatus status{};
+    status.actual_pos = 0.60f;
+    const auto payload = taccap_test::pod_bytes(&status, sizeof(status));
+    std::vector<uint8_t> burst;
+    for (unsigned i = 0; i < 64; ++i) {
+        const auto frame = tx::bus::pack_frame(tp::Address::MCU, uint8_t(i), tp::FrameType::DATA,
+                                               tp::Cmd::GetMotorStatus, payload);
+        burst.insert(burst.end(), frame.begin(), frame.end());
+    }
+    for (unsigned i = 0; i < 40 && !g->transport().stats().control_queue_overflows; ++i) {
+        pty.send_raw(burst);
+        std::this_thread::sleep_for(Ms(5));
+    }
+    ASSERT_GT(g->transport().stats().control_queue_overflows, 0u);
+    EXPECT_GT(g->transport().stats().control_queue_dropped, 0u);
+    EXPECT_LE(g->transport().stats().control_queue_high_water, 8u);
+    fw.freeze_stream(false);
+    ASSERT_TRUE(wait_for([&] {
+        return controller.state() == tx::ForcePositionState::Fault &&
+               is_zero_torque(fw.last_submit());
+    }, Ms(1000)));
+    controller.stop();
+    const auto stopped_submits = fw.submit_count();
+    EXPECT_THROW(controller.start(), tx::IoError);
+    EXPECT_FALSE(controller.running());
+    EXPECT_FALSE(controller.snapshot().observation.valid);
+    EXPECT_EQ(fw.submit_count(), stopped_submits);
+    g->close();
+}
+
+template <class Controller>
+void fault_then_healthy_cannot_hide_safety_evidence() {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    Controller controller(*g);
+    controller.start();
+    ASSERT_TRUE(wait_for([&] { return fw.submit_count() >= 4; }, Ms(1000)));
+    fw.freeze_stream(true);
+    tp::MotorStatus healthy{};
+    healthy.actual_pos = 0.60f;
+    for (unsigned kind = 0; kind < 3; ++kind) {
+        auto bad = healthy;
+        if (kind == 0) bad.status = tp::MotorStatusBit::OverCurrent;
+        if (kind == 1) bad.actual_vel = std::numeric_limits<float>::quiet_NaN();
+        if (kind == 2) bad.actual_torque = 19.0f;
+        auto burst = tx::bus::pack_frame(tp::Address::MCU, 1, tp::FrameType::DATA,
+            tp::Cmd::GetMotorStatus, taccap_test::pod_bytes(&bad, sizeof(bad)));
+        const auto good = tx::bus::pack_frame(tp::Address::MCU, 2, tp::FrameType::DATA,
+            tp::Cmd::GetMotorStatus, taccap_test::pod_bytes(&healthy, sizeof(healthy)));
+        burst.insert(burst.end(), good.begin(), good.end());
+        pty.send_raw(burst);
+        ASSERT_TRUE(wait_for([&] { return controller.state() == ControllerTraits<Controller>::fault; }, Ms(1000)));
+        const auto reason = controller.snapshot().fault_reason;
+        EXPECT_NE(reason.find(kind == 0 ? "reports a fault" : kind == 1 ? "non-finite" : "torque exceeded"), std::string::npos);
+        EXPECT_TRUE(wait_for([&] { return is_zero_torque(fw.last_submit()); }, Ms(1000)));
+        EXPECT_EQ(g->transport().stats().control_queue_overflows, 0u);
+        controller.reset();  // explicit reset establishes a new receive epoch
+    }
+    controller.stop();
+    g->close();
+}
+
+TEST(ImuMotorConcurrency, ForcePositionFaultThenHealthyBurstStaysFaulted) {
+    fault_then_healthy_cannot_hide_safety_evidence<tx::ForcePositionController>();
+}
+
+TEST(ImuMotorConcurrency, ImpedanceFaultThenHealthyBurstStaysFaulted) {
+    fault_then_healthy_cannot_hide_safety_evidence<tx::ImpedanceController>();
+}
+
+template <class Controller>
+void initial_fault_ack_is_not_overwritten_by_healthy_stream() {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    fw.set_next_polled_status_word(tp::MotorStatusBit::OverCurrent);
+    Controller controller(*g);
+    controller.start();
+    EXPECT_TRUE(wait_for([&] { return controller.state() == ControllerTraits<Controller>::fault; }, Ms(1000)));
+    EXPECT_EQ(controller.snapshot().fault_reason, "motor status reports a fault");
+    EXPECT_TRUE(wait_for([&] { return is_zero_torque(fw.last_submit()); }, Ms(1000)));
+    controller.stop();
+    g->close();
+}
+
+TEST(ImuMotorConcurrency, ForcePositionInitialFaultAckIsLatched) {
+    initial_fault_ack_is_not_overwritten_by_healthy_stream<tx::ForcePositionController>();
+}
+
+TEST(ImuMotorConcurrency, ImpedanceInitialFaultAckIsLatched) {
+    initial_fault_ack_is_not_overwritten_by_healthy_stream<tx::ImpedanceController>();
 }

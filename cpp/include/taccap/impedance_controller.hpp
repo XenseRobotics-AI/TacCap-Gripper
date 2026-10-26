@@ -318,6 +318,8 @@ private:
     bool command_woke_ = false;
 
     MotorStatusSample latest_{};
+    const char* pending_status_fault_ = nullptr;
+    std::chrono::steady_clock::time_point feedback_epoch_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};
     std::unique_ptr<detail::ImpedancePolicy> policy_;

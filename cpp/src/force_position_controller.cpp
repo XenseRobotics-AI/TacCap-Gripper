@@ -182,6 +182,15 @@ bool has_serious_fault(uint16_t status) noexcept {
     return (status & mask) != 0;
 }
 
+const char* status_fault_reason(const MotorStatusSample& sample, float torque_limit) noexcept {
+    if (!std::isfinite(sample.actual_pos) || !std::isfinite(sample.actual_vel) ||
+        !std::isfinite(sample.actual_torque)) return "non-finite motor status";
+    if (has_serious_fault(sample.status)) return "motor status reports a fault";
+    if (std::abs(sample.actual_torque) > torque_limit + 1e-4f)
+        return "measured torque exceeded motion_torque_limit_nm";
+    return nullptr;
+}
+
 }  // namespace
 
 const char* to_string(ForcePositionState state) noexcept {
@@ -770,15 +779,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
 protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
         const MotorStatusSample& sample,
         std::chrono::steady_clock::time_point now) {
-    if (!std::isfinite(sample.actual_pos) || !std::isfinite(sample.actual_vel) ||
-        !std::isfinite(sample.actual_torque)) {
-        fail("non-finite motor status");
-    } else if (has_serious_fault(sample.status)) {
-        fail("motor status reports a fault");
-    } else if (std::abs(sample.actual_torque) >
-               cfg_.motion_torque_limit_nm + 1e-4f) {
-        fail("measured torque exceeded motion_torque_limit_nm");
-    }
+    if (const char* reason = status_fault_reason(sample, cfg_.motion_torque_limit_nm)) fail(reason);
 
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) {
         arrived_ = false;
@@ -1161,7 +1162,9 @@ void ForcePositionController::start() {
         policy_->reset(initial, now);
         queue_.clear();
         latest_ = initial;
-        latest_time_ = now;
+        latest_time_ = initial.host_time;
+        pending_status_fault_ = status_fault_reason(initial, cfg_.motion_torque_limit_nm);
+        feedback_epoch_ = now;
         have_sample_ = true;
         observation_ = GripperObservation{};
         observation_.valid = true;
@@ -1178,8 +1181,16 @@ void ForcePositionController::start() {
         stall_limit_nm_ = stall_limit_nm;
     }
 
-    sub_ = g_.motor().on_status(
-        [this](const MotorStatusSample& sample) { on_status_(sample); });
+    try {
+        sub_ = g_.motor().on_control_status_(
+            [this](const MotorStatusSample& sample) { on_status_(sample); });
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(mu_);
+        stop_requested_ = true;
+        have_sample_ = false;
+        observation_.valid = false;
+        throw;
+    }
     sub_active_ = true;
     try {
         start_motor_stream_();
@@ -1259,7 +1270,6 @@ void ForcePositionController::stop() {
 }
 
 void ForcePositionController::on_status_(const MotorStatusSample& sample) {
-    const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lk(mu_);
         // stop() unsubscribes only AFTER the zero frame and the disable ACK, so
@@ -1268,8 +1278,21 @@ void ForcePositionController::on_status_(const MotorStatusSample& sample) {
         // observation valid again -- ImpedanceControllerPty.StopCommandsZeroTorque
         // caught it roughly one run in five under CPU load.
         if (stop_requested_) return;
+        const auto now = std::chrono::steady_clock::now();
+        if (sample.host_time.time_since_epoch().count() <= 0 ||
+            sample.host_time > now || sample.host_time < feedback_epoch_) return;
+        // Preserve safety evidence before latest-value coalescing/age filtering.
+        // No logging, allocation or policy execution on the control worker.
+        if (!pending_status_fault_)
+            pending_status_fault_ = status_fault_reason(sample, cfg_.motion_torque_limit_nm);
+        if (pending_status_fault_) {
+            step_requested_ = true;
+            cv_.notify_one();
+        }
+        if ((have_sample_ && sample.host_time < latest_time_) ||
+            now - sample.host_time >= std::chrono::milliseconds(cfg_.status_timeout_ms)) return;
         latest_ = sample;
-        latest_time_ = now;
+        latest_time_ = sample.host_time;
         have_sample_ = true;
         observation_.valid = true;
         observation_.position = map_.to_position(sample.actual_pos);
@@ -1372,6 +1395,8 @@ void ForcePositionController::reset() {
         throw std::logic_error("ForcePositionController::reset called before start");
     }
     policy_->reset(latest_, std::chrono::steady_clock::now());
+    pending_status_fault_ = nullptr;
+    feedback_epoch_ = std::chrono::steady_clock::now();
     // The cached sample may still carry the fault bit that was true immediately
     // before Motor::clear_fault() ACKed. Wait for the next streamed status rather
     // than re-faulting the freshly reset policy on stale evidence.
@@ -1424,6 +1449,11 @@ void ForcePositionController::run_() {
             command_woke_ = false;
             const auto now = std::chrono::steady_clock::now();
             if (!policy_ || !have_sample_) continue;
+            if (pending_status_fault_) {
+                if (policy_->state() != ForcePositionState::Fault) policy_->fail(pending_status_fault_);
+                pending_status_fault_ = nullptr;
+                step_requested_ = true;
+            }
 
             // Staleness is checked unconditionally. Doing it only in the
             // !step_requested_ branch let set_target()/release()/hold_position()

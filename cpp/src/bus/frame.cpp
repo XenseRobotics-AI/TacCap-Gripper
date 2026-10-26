@@ -188,6 +188,13 @@ FrameParser::FrameParser(std::size_t max_buffered) : max_buffered_(max_buffered)
 
 void FrameParser::feed(const uint8_t* data, std::size_t len) {
     if (data && len) {
+        if (trace_enabled_.load(std::memory_order_relaxed)) {
+            for (std::size_t i = 0; i < len; i += 1024) {
+                const auto n = std::min<std::size_t>(1024, len - i);
+                trace_(TraceRecord::Kind::Input, ParseReason::None,
+                       rx_offset_ + rx_.size() + i, data + i, n, 0);
+            }
+        }
         rx_.insert(rx_.end(), data, data + len);
     }
     drain_();
@@ -205,8 +212,62 @@ bool FrameParser::try_pop(Frame& out) {
 }
 
 void FrameParser::reset() {
+    rx_offset_ += rx_.size();
     rx_.clear();
     ready_.clear();
+}
+
+void FrameParser::set_trace_enabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(trace_mu_);
+    trace_enabled_.store(false, std::memory_order_relaxed);
+    trace_ring_.clear();
+    trace_next_ = trace_count_ = 0;
+    trace_overwritten_ = 0;
+    if (enabled) trace_ring_.resize(256);
+    trace_enabled_.store(enabled, std::memory_order_relaxed);
+}
+
+FrameParser::TraceSnapshot FrameParser::take_trace() {
+    std::lock_guard<std::mutex> lock(trace_mu_);
+    TraceSnapshot result;
+    result.overwritten_records = trace_overwritten_;
+    result.records.reserve(trace_count_);
+    const auto start = trace_count_ == trace_ring_.size() ? trace_next_ : 0;
+    for (std::size_t i = 0; i < trace_count_; ++i)
+        result.records.push_back(trace_ring_[(start + i) % trace_ring_.size()]);
+    trace_count_ = trace_next_ = 0;
+    return result;
+}
+
+void FrameParser::trace_(TraceRecord::Kind kind, ParseReason reason,
+                         uint64_t offset, const uint8_t* data,
+                         std::size_t available, std::size_t consumed) {
+    if (!trace_enabled_.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lock(trace_mu_);
+    if (!trace_enabled_.load(std::memory_order_relaxed)) return;
+    auto& r = trace_ring_[trace_next_];
+    r.kind = kind;
+    r.reason = reason;
+    r.host_time = std::chrono::steady_clock::now();
+    r.offset = offset;
+    r.available = available;
+    r.consumed = consumed;
+    r.size = std::min(available, r.bytes.size());
+    std::copy_n(data, r.size, r.bytes.begin());
+    trace_next_ = (trace_next_ + 1) % trace_ring_.size();
+    if (trace_count_ == trace_ring_.size()) ++trace_overwritten_;
+    else ++trace_count_;
+}
+
+void FrameParser::rejected_(ParseReason reason) {
+    switch (reason) {
+        case ParseReason::NoHead: ++stats_.no_head; break;
+        case ParseReason::Oversize: ++stats_.oversize; break;
+        case ParseReason::ShortBody: ++stats_.short_body; break;
+        case ParseReason::BadLength: ++stats_.bad_length; break;
+        case ParseReason::BadCrc: ++stats_.crc_errors; break;
+        case ParseReason::None: break;
+    }
 }
 
 void FrameParser::drain_() {
@@ -221,8 +282,10 @@ void FrameParser::drain_() {
             continue;
         }
         if (r.status == ParseStatus::Resync) {
-            if (r.reason == ParseReason::BadCrc) ++stats_.crc_errors;
+            rejected_(r.reason);
             const std::size_t step = (r.consumed > 0 ? r.consumed : 1);
+            trace_(TraceRecord::Kind::Reject, r.reason, rx_offset_ + cursor,
+                   rx_.data() + cursor, rx_.size() - cursor, step);
             stats_.resync_bytes += step;
             cursor += step;
             continue;
@@ -247,12 +310,16 @@ void FrameParser::drain_() {
                 // Counted once here rather than per speculative step, so the
                 // scan below can't double-bill the same bytes.
                 stats_.resync_bytes += (alt - cursor);
+                trace_(TraceRecord::Kind::Reject, ParseReason::NoHead,
+                       rx_offset_ + cursor, rx_.data() + cursor, alt - cursor,
+                       alt - cursor);
                 cursor = alt + r2.consumed;
                 recovered = true;
                 break;
             }
             if (r2.status == ParseStatus::Resync) {
-                if (r2.reason == ParseReason::BadCrc) ++stats_.crc_errors;
+                // Speculative lookahead has not discarded anything. Do not
+                // count it repeatedly when subsequent reads revisit it.
                 alt += (r2.consumed > 0 ? r2.consumed : 1);
                 continue;
             }
@@ -267,6 +334,7 @@ void FrameParser::drain_() {
     // Drop everything we consumed from the front of the buffer. We use a
     // single erase rather than per-byte pops to keep this O(n) overall.
     if (cursor > 0) {
+        rx_offset_ += cursor;
         rx_.erase(rx_.begin(), rx_.begin() + static_cast<std::ptrdiff_t>(cursor));
     }
 
@@ -274,6 +342,9 @@ void FrameParser::drain_() {
     if (rx_.size() > max_buffered_) {
         const std::size_t excess = rx_.size() - max_buffered_;
         stats_.overflow_bytes += excess;
+        trace_(TraceRecord::Kind::Reject, ParseReason::Oversize, rx_offset_,
+               rx_.data(), excess, excess);
+        rx_offset_ += excess;
         rx_.erase(rx_.begin(), rx_.begin() + static_cast<std::ptrdiff_t>(excess));
     }
 }

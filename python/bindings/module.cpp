@@ -322,20 +322,22 @@ PYBIND11_MODULE(_taccap_native, m) {
         .def_readonly("unexpected_frames",   &tb::Transport::Stats::unexpected_frames)
         .def_readonly("callback_exceptions", &tb::Transport::Stats::callback_exceptions)
         // ---- Loss accounting ------------------------------------------
-        // Read together these localise a rate drop:
-        //   crc_errors / resync_bytes rising -> bytes lost before the parser
-        //       (the host stopped draining the tty long enough to overflow
-        //       the kernel/USB buffers). Check callback_max_us for the cause.
-        //   queue_dropped rising             -> bytes were fine, the
-        //       subscriber could not keep up and stale frames were evicted.
-        //   both flat, rate still low        -> the firmware really is
-        //       sending slower; nothing host-side to fix.
+        // Counters identify the rejecting/dropping stage, not the original
+        // cause. Length errors can reject bytes before CRC; raw receive trace
+        // and independent MCU/link evidence are needed to locate damage.
         .def_readonly("crc_errors",            &tb::Transport::Stats::crc_errors)
         .def_readonly("resync_bytes",          &tb::Transport::Stats::resync_bytes)
         .def_readonly("parser_overflow_bytes", &tb::Transport::Stats::parser_overflow_bytes)
+        .def_readonly("parser_no_head", &tb::Transport::Stats::parser_no_head)
+        .def_readonly("parser_oversize", &tb::Transport::Stats::parser_oversize)
+        .def_readonly("parser_short_body", &tb::Transport::Stats::parser_short_body)
+        .def_readonly("parser_bad_length", &tb::Transport::Stats::parser_bad_length)
         .def_readonly("queue_dropped",         &tb::Transport::Stats::queue_dropped)
         .def_readonly("queue_high_water",      &tb::Transport::Stats::queue_high_water)
         .def_readonly("callback_max_us",       &tb::Transport::Stats::callback_max_us)
+        .def_readonly("control_queue_dropped", &tb::Transport::Stats::control_queue_dropped)
+        .def_readonly("control_queue_high_water", &tb::Transport::Stats::control_queue_high_water)
+        .def_readonly("control_queue_overflows", &tb::Transport::Stats::control_queue_overflows)
         .def("__repr__", [](const tb::Transport::Stats& s) {
             char buf[320];
             std::snprintf(buf, sizeof(buf),
@@ -354,6 +356,28 @@ PYBIND11_MODULE(_taccap_native, m) {
         });
 
     py::class_<tb::Transport>(m, "Transport")
+        .def("enable_receive_trace", &tb::Transport::enable_receive_trace,
+             py::arg("enabled") = true)
+        .def("take_receive_trace", [](tb::Transport& transport) {
+            auto snapshot = transport.take_receive_trace();
+            py::dict result;
+            py::list records;
+            for (const auto& record : snapshot.records) {
+                py::dict row;
+                row["kind"] = record.kind == tb::FrameParser::TraceRecord::Kind::Input ? "input" : "reject";
+                row["reason"] = static_cast<unsigned>(record.reason);
+                row["host_time_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    record.host_time.time_since_epoch()).count();
+                row["offset"] = record.offset;
+                row["available"] = record.available;
+                row["consumed"] = record.consumed;
+                row["bytes"] = py::bytes(reinterpret_cast<const char*>(record.bytes.data()), record.size);
+                records.append(std::move(row));
+            }
+            result["records"] = std::move(records);
+            result["overwritten_records"] = snapshot.overwritten_records;
+            return result;
+        })
         .def(py::init([](const std::string& dev,
                          uint32_t baud,
                          tp::Address peer,

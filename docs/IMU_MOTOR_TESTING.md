@@ -10,7 +10,19 @@
 
 配套固件 `App/tasks/task_imu.c`、`task_slave_motor_control.c`、`task_data_stream.c`、`slave_imu.c` 中，电机控制、数据流、从爪 IMU 的线程优先级分别为 8、11、12；电机控制周期为 2 ms，电机状态最高 100 Hz；同时到期时先发电机状态。IMU 采样失败不将旧包伪装成新样本，也不主动停止电机控制。这些设计降低了干扰，但共享 CPU、UART 和主机处理仍可能产生时延。
 
-SDK 的 motor 与 IMU 回调共享 Transport 分发线程。慢 IMU 回调会拖延电机状态回调和控制器目标更新，即使串口读取线程仍在接收。当前控制器按分发时刻刷新状态年龄，积压的旧反馈仍可能使 `snapshot().observation.age_ms` 很小、`valid` 为真；这些字段与 TRACKING 状态不能单独用于实时性验收。必须同时测量设备反馈时间、主机接收/分发积压和目标更新节奏。软件替身测试不能证明真实 RTOS 抢占、SPI/CAN/UART 时序、电源稳定或夹爪运动质量。
+当前修复版将 SDK 内部电机控制反馈放入独立有界队列和工作线程；普通 motor/IMU 用户回调仍共享用户分发线程，慢回调会延迟用户观测，但不再阻塞两个控制器的反馈入口。控制队列溢出会锁存关闭该通道、停止继续交付反馈，由控制器现有状态超时逻辑进入 Fault/零输出；必须重建 Transport 才能清除锁存，不能自动恢复运动。`control_queue_overflows`、`control_queue_dropped` 和 `control_queue_high_water` 可观测此边界。
+
+控制回调还会按现有策略的严重故障位、非有限数值及超量程力矩条件锁存安全异常，避免同批次的后续健康帧覆盖故障；判据及阈值不变，日志与策略处理仍在控制器线程。属于当前控制会话但已过期的故障可锁存，却不能刷新反馈年龄；显式 `reset()` 建立新接收边界，忽略 reset 前积压帧。
+
+Frame/ACK 的本机单调接收时间贯穿 IMU、motor、encoder 样本至控制器；完整帧以其最后字节所在 `read()` 返回时刻为准，不再在延迟分发时重标为“现在”。控制器拒绝过期、未来或倒序的反馈。`host_time` 仍不是硬件采样/相机曝光时间，串口之前的缓存延迟和 MCU 重复缓存反馈仍须结合设备时间戳判断。直接调用静态 `decode()` 无接收上下文，保留调用时刻的旧行为。
+
+历史 `c06bc34` 的共享控制/用户队列及分发时刻计龄缺陷，保留在已有测试报告中，不应当作修复版结果。需同源重建 C++ core 和 Python native（结构布局已扩展），不能把新 Python 与旧 `.so` 混用。软件替身测试不证明真实 RTOS 抢占、SPI/CAN/UART 时序、电源稳定或夹爪运动质量；仍须测量设备反馈时间、主机接收/分发积压和目标更新节奏。
+
+### 原始接收证据（默认关闭）
+
+`g.transport.enable_receive_trace(True)` 开启 SDK 解析前字节与拒帧记录，存入最多 256 条内存环；不在接收线程调用用户回调或写磁盘。完成采集后建议先停流，再调用 `g.transport.take_receive_trace()` 导出、随后 `enable_receive_trace(False)` 关闭。导出结果含 `records` 和 `overwritten_records`：覆盖计数不为零说明早期记录已丢失，不能宣称完整捕获。
+
+每条记录给出 `kind`（input/reject）、`host_time_ns`、全局字节 `offset`、`available`、`consumed` 及 `bytes`。原始输入较大时拆分保存；拒帧保存最多 1024 字节前缀，按 offset 对齐 input。`reason` 数值：0 无错误、1 无帧头、2 超长、3 短正文、4 长度不符、5 CRC不符。Transport Stats 同时提供 `parser_no_head/oversize/short_body/bad_length`；长度检查先于 CRC，故 `crc_errors=0` 不能排除损坏输入。此证据只能证明字节到达 SDK 之前的状态；MCU 发送、桥接器、线路责任仍需独立抓取对齐。
 
 ## 2. 设备、环境与运行身份
 
@@ -206,7 +218,7 @@ finally:
 | 测试 | 证明范围 |
 | --- | --- |
 | [test_follower_imu_pty.cpp](../cpp/tests/test_follower_imu_pty.cpp) | motor-only 默认、旧固件拒绝不改流、双回调、非法频率和校准协议流程 |
-| [test_imu_motor_concurrency.cpp](../cpp/tests/test_imu_motor_concurrency.cpp) | 两类控制器保留预先开启的混合流；特定慢回调时序下故障/零输出；活动回调期间关闭的生命周期，共 5 项。不能据此推断持续积压时能及时识别旧反馈 |
+| [test_imu_motor_concurrency.cpp](../cpp/tests/test_imu_motor_concurrency.cpp) | 两类控制器保留混合流；阻塞/持续慢用户回调与控制隔离，真实断流仍零输出；旧用户样本保持接收时间；控制队列溢出锁存与重启拒绝；故障后紧跟健康帧仍锁存；关闭生命周期。PTY 不代表真实调度/运动验收 |
 | [test_imu_time.cpp](../cpp/tests/test_imu_time.cpp)、[test_imu_time.py](../python/tests/test_imu_time.py) | 时间协商、回绕/歧义、会话、重复样本等协议与绑定行为 |
 | [test_transport_concurrent_write.cpp](../cpp/tests/test_transport_concurrent_write.cpp)、[test_dispatch_decoupling.py](../python/tests/test_dispatch_decoupling.py)、[test_port_release.py](../python/tests/test_port_release.py) | 并发写入、读/分发分离、端口释放相关行为 |
 | [control_ripple.py](../python/examples/control_ripple.py) | 实机速度纹波统计可供复用；现有脚本包含实际运动且无 IMU A/B 参数，不能直接等同本文完整验收 |
@@ -233,6 +245,8 @@ env -u PYTHONPATH python -m pytest python/tests -q
 # 或使用 CTest 运行已注册的 C++ 测试。
 ctest --test-dir build --output-on-failure
 ```
+
+若不能覆盖源码目录中正在使用的 native，可将上述配置增加 `-DSKBUILD=ON`，使扩展保留在独立构建目录 `build/python/`；随后用 `TACCAP_TEST_NATIVE_DIR="$(pwd)/build/python" python -m pytest python/tests -q`。该测试入口严格验证实际 native 路径，无效目录立即拒绝。仍须用 `ldd` 或进程模块映射确认 core 也来自同一构建，不要用这个入口绕过来源核验；默认未设置时继续要求源码目录的 native。
 
 若另有对应固件仓库 checkout，从该仓库根目录执行，不依赖某台开发机的绝对路径：
 

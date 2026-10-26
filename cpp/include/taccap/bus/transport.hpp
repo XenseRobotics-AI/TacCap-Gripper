@@ -1,16 +1,18 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
 // Asynchronous transport for TC-GU-01:
-//   - owns a SerialBus + FrameParser + a reader thread + a dispatcher thread
+//   - owns a SerialBus, parser, reader, user dispatcher and control worker
 //   - matches CMD_NEED_ACK frames to incoming ACK frames by seq, with
 //     host-side timeout/retry honouring the firmware's 10ms / 3-attempt spec
 //   - dispatches DATA frames to per-Cmd subscriber callbacks
 //
-// Threading contract (two threads, deliberately):
+// Threading contract:
 //
 //   reader thread      read() -> parse -> { ACK: fulfil the promise inline
-//                                           DATA: push to dispatch_queue_ }
+//                                           DATA: push to bounded queues }
 //   dispatcher thread  pop -> fan out to matching subscriber callbacks
+//   control worker     motor DATA -> private SDK controller subscriptions
+//                      (no user/Python callbacks, no logging on this path)
 //
 // The split exists because subscriber callbacks are user code: a Python
 // callback must take the GIL, and CPython's default 5ms switch interval means
@@ -51,11 +53,13 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+namespace xense::taccap { class Motor; }
 namespace xense::taccap::bus {
 
 // Decoded ACK / NACK from the firmware. The wire format mirrors firmware
@@ -77,6 +81,7 @@ struct AckResponse {
     protocol::ErrorCode  error_code;  // Ok on success; payload[0] on NACK
     std::vector<uint8_t> data;        // wire payload as-is (response data on
                                       // success, [err_code] on NACK)
+    std::chrono::steady_clock::time_point receive_time{};
 };
 
 // Recover the firmware's error code from a response, including the echoed-cmd
@@ -140,6 +145,10 @@ public:
         // queue_dropped) — lower this when latency matters more than
         // surviving hiccups. Clamped to >= 1.
         std::size_t               dispatch_queue_frames = 256;
+        // Private motor-control lane, independent of all user callbacks.
+        // Overflow latches the lane closed until transport recreation: a
+        // dropped fault cannot be replaced silently with a healthy sample.
+        std::size_t               control_queue_frames = 8;
     };
 
     struct Stats {
@@ -173,15 +182,22 @@ public:
         uint64_t crc_errors           = 0;  // framing/length valid; CRC mismatch
         uint64_t resync_bytes         = 0;  // bytes discarded without a frame
         uint64_t parser_overflow_bytes = 0; // dropped by the parser_max_buf cap
+        uint64_t parser_no_head = 0;
+        uint64_t parser_oversize = 0;
+        uint64_t parser_short_body = 0;
+        uint64_t parser_bad_length = 0;
         uint64_t queue_dropped        = 0;  // DATA frames evicted, queue full
         uint64_t queue_high_water     = 0;  // deepest the queue has ever been
         uint64_t callback_max_us      = 0;  // slowest single fan-out, in us
+        uint64_t control_queue_dropped = 0;
+        uint64_t control_queue_high_water = 0;
+        uint64_t control_queue_overflows = 0; // latched; controller times out
     };
 
     // Opens the serial port, starts the reader thread.
     explicit Transport(const Config& cfg);
 
-    // Stops the reader, fails any pending ACKs with IoError, joins.
+// Stops all workers, fails any pending ACKs with IoError, joins.
     ~Transport();
 
     Transport(const Transport&)            = delete;
@@ -226,10 +242,28 @@ public:
     bool is_open() const noexcept { return serial_.is_open(); }
 
     Stats stats() const noexcept;
+    void enable_receive_trace(bool enabled) { parser_.set_trace_enabled(enabled); }
+    FrameParser::TraceSnapshot take_receive_trace() { return parser_.take_trace(); }
 
     const Config& config() const noexcept { return cfg_; }
 
 private:
+    friend class ::xense::taccap::Motor;
+    // Only SDK-owned controller subscribers may use this lane. Never expose
+    // arbitrary user/Python callbacks here or on the serial reader.
+    SubscriptionId subscribe_control_(DataCallback cb);
+    void control_loop_();
+    void enqueue_control_(const Frame& f);
+    bool unsubscribe_control_(SubscriptionId id);
+    struct ControlSub {
+        SubscriptionId id;
+        DataCallback cb;
+        std::chrono::steady_clock::time_point since;
+        std::mutex mutex;
+        std::condition_variable idle;
+        bool active = true;
+        unsigned inflight = 0;
+    };
     struct PendingAck {
         std::promise<AckResponse> promise;
     };
@@ -279,6 +313,14 @@ private:
     std::atomic<bool>          running_{false};
     std::thread                reader_;
     std::thread                dispatcher_;
+    std::thread                control_worker_;
+    std::mutex                 control_queue_mu_;
+    std::condition_variable    control_queue_cv_;
+    std::deque<Frame>          control_queue_;
+    bool                      control_failed_ = false; // control_queue_mu_
+    std::mutex                control_sub_mu_;
+    std::vector<std::shared_ptr<ControlSub>> control_subs_;
+    std::atomic<unsigned>     control_sub_count_{0};
 
     // Serialises writers; see write_frame_().
     std::mutex                 write_mu_;
@@ -312,9 +354,16 @@ private:
     std::atomic<uint64_t> stat_crc_errors_         {0};
     std::atomic<uint64_t> stat_resync_bytes_       {0};
     std::atomic<uint64_t> stat_parser_overflow_    {0};
+    std::atomic<uint64_t> stat_parser_no_head_     {0};
+    std::atomic<uint64_t> stat_parser_oversize_    {0};
+    std::atomic<uint64_t> stat_parser_short_body_  {0};
+    std::atomic<uint64_t> stat_parser_bad_length_  {0};
     std::atomic<uint64_t> stat_queue_dropped_      {0};
     std::atomic<uint64_t> stat_queue_high_water_   {0};
     std::atomic<uint64_t> stat_callback_max_us_    {0};
+    std::atomic<uint64_t> stat_control_queue_dropped_{0};
+    std::atomic<uint64_t> stat_control_queue_high_water_{0};
+    std::atomic<uint64_t> stat_control_queue_overflows_{0};
 };
 
 }  // namespace xense::taccap::bus

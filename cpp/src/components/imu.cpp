@@ -139,7 +139,7 @@ ImuSample IMU::read_once(std::chrono::milliseconds timeout) {
     }
     if (ack.data.size() != (cmd == protocol::Cmd::GetImuV2 ? 44U : 28U))
         throw ProtocolError("IMU response does not match negotiated format");
-    return polling_time_.decode(ack.data.data(), ack.data.size());
+    return polling_time_.decode(ack.data.data(), ack.data.size(), ack.receive_time);
 }
 
 IMU::SubId IMU::on_data(Callback cb) {
@@ -159,7 +159,7 @@ IMU::SubId IMU::on_data(Callback cb) {
                 // Legacy devices may send the identical cache at 1000 Hz
                 // although acquisition is 100 Hz. Do not integrate it twice.
                 if (f.payload == state->last_payload) return;
-                auto sample = state->timeline.decode(f.payload.data(), f.payload.size());
+                auto sample = state->timeline.decode(f.payload.data(), f.payload.size(), f.receive_time);
                 state->last_payload = f.payload;
                 cb(sample);
             } catch (...) {}

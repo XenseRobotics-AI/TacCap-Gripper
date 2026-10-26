@@ -82,6 +82,12 @@ public:
         status_.status = bits;
     }
 
+    // Next polling ACK can carry a fault while subsequent DATA is healthy.
+    void set_next_polled_status_word(uint16_t bits) {
+        std::lock_guard<std::mutex> lk(mu_);
+        next_polled_status_word_ = bits;
+    }
+
     std::optional<tp::MotorImpedanceCtrl> last_submit() const {
         std::lock_guard<std::mutex> lk(mu_);
         return last_submit_;
@@ -333,8 +339,13 @@ private:
             }
             case tp::Cmd::GetMotorStatus: {
                 std::lock_guard<std::mutex> lk(mu_);
+                auto reply = status_;
+                if (next_polled_status_word_) {
+                    reply.status = *next_polled_status_word_;
+                    next_polled_status_word_.reset();
+                }
                 pty_.send_response(f.seq, f.cmd,
-                                   pod_bytes(&status_, sizeof(status_)));
+                                   pod_bytes(&reply, sizeof(reply)));
                 return;
             }
             case tp::Cmd::TimeSession: {
@@ -428,6 +439,7 @@ private:
     std::string sn_ = "TCGU01A28Z0001s";
     mutable std::mutex mu_;
     tp::MotorStatus status_{};
+    std::optional<uint16_t> next_polled_status_word_;
     std::optional<tp::MotorImpedanceCtrl> last_submit_;
 
     // Factory state: a valid travel calibration and a ZEROED envelope, which

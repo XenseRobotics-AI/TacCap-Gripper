@@ -534,6 +534,57 @@ TEST(HardwareFrameReplay, CapturedShortMotorFrameIsRejectedBeforeCrc) {
     EXPECT_EQ(parser.stats().resync_bytes, bad.size());
     EXPECT_EQ(parser.stats().crc_errors, 0u)
         << "zero CRC errors cannot establish intact input when LEN already fails";
+    EXPECT_EQ(parser.stats().bad_length, 1u);
+}
+
+TEST(FrameTrace, DisabledByDefaultAndRawBytesPreservedAcrossReads) {
+    tb::FrameParser parser;
+    const auto bad = captured_short_motor_frame();
+    parser.feed(bad);
+    EXPECT_TRUE(parser.take_trace().records.empty());
+    parser.set_trace_enabled(true);
+    const auto good = captured_stream(captured_good_frames());
+    parser.feed(good.data(), 13);
+    parser.feed(good.data() + 13, good.size() - 13);
+    parser.feed(bad);
+    const auto snapshot = parser.take_trace();
+    std::vector<uint8_t> input;
+    bool saw_length = false;
+    uint64_t offset = bad.size();
+    for (const auto& r : snapshot.records) {
+        if (r.kind == tb::FrameParser::TraceRecord::Kind::Input) {
+            EXPECT_EQ(r.offset, offset);
+            offset += r.size;
+            input.insert(input.end(), r.bytes.begin(), r.bytes.begin() + r.size);
+        } else if (r.reason == tb::ParseReason::BadLength) {
+            saw_length = true;
+            EXPECT_EQ(r.offset, bad.size() + good.size());
+            EXPECT_EQ(r.available, bad.size());
+            EXPECT_EQ(r.bytes[0], 0xAA);
+        }
+    }
+    auto expected = good;
+    expected.insert(expected.end(), bad.begin(), bad.end());
+    EXPECT_EQ(input, expected);
+    EXPECT_TRUE(saw_length);
+    EXPECT_EQ(snapshot.overwritten_records, 0u);
+    EXPECT_TRUE(parser.take_trace().records.empty());
+}
+
+TEST(FrameTrace, BoundedRingReportsOverwriteAndDisableClearsEvidence) {
+    tb::FrameParser parser;
+    parser.set_trace_enabled(true);
+    const auto frame = captured_good_frames().front().wire;
+    for (unsigned i = 0; i < 300; ++i) parser.feed(frame);
+    const auto snapshot = parser.take_trace();
+    ASSERT_EQ(snapshot.records.size(), 256u);
+    EXPECT_EQ(snapshot.overwritten_records, 44u);
+    EXPECT_EQ(snapshot.records.front().offset, 44 * frame.size());
+    EXPECT_EQ(snapshot.records.back().offset, 299 * frame.size());
+    EXPECT_EQ(parser.pending(), 300u);
+    parser.set_trace_enabled(false);
+    parser.feed(frame);
+    EXPECT_TRUE(parser.take_trace().records.empty());
 }
 
 TEST(HardwareFrameReplay, RecoversAfterCapturedDamageAtEverySingleSplit) {

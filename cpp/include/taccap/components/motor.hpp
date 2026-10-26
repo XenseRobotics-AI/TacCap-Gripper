@@ -522,6 +522,11 @@ public:
     static MotorStatusSample decode(const std::uint8_t* payload, std::size_t len);
 
 private:
+    friend class ForcePositionController;
+    friend class ImpedanceController;
+    // SDK-owned bounded control callbacks only; never user code.
+    SubId on_control_status_(Callback cb);
+    SubId subscribe_status_(Callback cb, bool control);
     bus::Transport& t_;
 };
 

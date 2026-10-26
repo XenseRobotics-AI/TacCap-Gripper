@@ -458,6 +458,9 @@ private:
     std::vector<QueuedCommand> queue_;
     void enqueue_(const QueuedCommand& c);
     MotorStatusSample latest_{};
+    // Lightweight first-fault latch, consumed/logged only by run_().
+    const char* pending_status_fault_ = nullptr;
+    std::chrono::steady_clock::time_point feedback_epoch_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};
     std::unique_ptr<detail::ForcePositionPolicy> policy_;
