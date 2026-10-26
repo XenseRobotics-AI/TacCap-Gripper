@@ -7,6 +7,7 @@
 #include <taccap/protocol/commands.hpp>
 
 #include <random>
+#include <string>
 
 namespace tb = xense::taccap::bus;
 namespace tp = xense::taccap::protocol;
@@ -382,4 +383,179 @@ TEST(FrameParser, ResetKeepsDamageCounters) {
     p.reset();
     EXPECT_EQ(p.buffered_bytes(), 0u);
     EXPECT_EQ(p.stats().crc_errors, 1u);
+}
+
+namespace {
+
+// Real follower bytes captured before SDK parsing on 2026-10-26, motor
+// disabled; no pack_frame()/SDK encoder is used to construct these fixtures.
+// Evidence: dist/debug/runs/imu-link-fix-504134a-20261026/logs/idle-uart.strace
+// SHA-256: 9c939e9728d2e20b67a448536fb6db06cf89ec8a75d1cce627c96cb7c5010afb
+// RX offsets below refer to the concatenated successful read() buffers.
+// These bytes prove parser behavior, not firmware timing or loss origin.
+std::vector<uint8_t> captured_hex(const char* text) {
+    const std::string hex(text);
+    std::vector<uint8_t> bytes;
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+        bytes.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+    return bytes;
+}
+
+struct CapturedFrame {
+    const char* name;
+    std::vector<uint8_t> wire;
+    uint8_t seq;
+    tp::FrameType type;
+    tp::Cmd cmd;
+    std::vector<uint8_t> payload;
+};
+
+std::vector<CapturedFrame> captured_good_frames() {
+    return {
+        // Line 30, RX offset 307, 69 wire bytes; extended motor status.
+        {"motor DATA", captured_hex(
+            "aa025703503b00c05987bf001048bc0010c0ba000004420000262887bf"
+            "000000000000000004021301850000000000000000db587b00e85a7b00"
+            "00000000af2d78005b0a55"),
+         0x57, tp::FrameType::DATA, tp::Cmd::GetMotorStatus, captured_hex(
+            "c05987bf001048bc0010c0ba000004420000262887bf0000000000000000"
+            "04021301850000000000000000db587b00e85a7b0000000000af2d7800")},
+        // Line 7627, RX offset 245546, 55 wire bytes; payload contains 7d75.
+        {"IMU V2 DATA", captured_hex(
+            "aa022803172c00016a749d0f000300ffffe803f4ff1200faff7d75f65f"
+            "ecb211360e1e7c016a749d060000002bf06c202a29f306c7dd55"),
+         0x28, tp::FrameType::DATA, tp::Cmd::GetImuV2, captured_hex(
+            "016a749d0f000300ffffe803f4ff1200faff55f65fecb211360e1e7c01"
+            "6a749d060000002bf06c202a29f306")},
+        // Line 29, RX offset 248, 59 wire bytes; CRC contains escaped 0x55.
+        {"control stats ACK", captured_hex(
+            "aa020a025130000004f4010200ffff00000000344a0100324a0100fe71"
+            "0600000000002200000000000000000000000000000000000000637d7555"),
+         0x0a, tp::FrameType::ACK, tp::Cmd::GetMotorControlStats, captured_hex(
+            "0004f4010200ffff00000000344a0100324a0100fe7106000000000022"
+            "00000000000000000000000000000000000000")},
+    };
+}
+
+std::vector<uint8_t> captured_short_motor_frame() {
+    // Lines 55 and 58 (unfinished/resumed read), RX offset 1138, 67 wire
+    // bytes. LEN is 59 but the unstuffed body is 65 bytes instead of 67.
+    // This is the captured damage, not a test-side deletion from a good frame.
+    return captured_hex(
+        "aa025e03503b00c05987bf001048bc0010c0ba000004420000262887bf"
+        "00000000000000000402130185000000000000db587b00245b7b000000"
+        "0000af2d78008f5155");
+}
+
+std::vector<uint8_t> captured_stream(const std::vector<CapturedFrame>& frames,
+                                     bool include_damage = false) {
+    std::vector<uint8_t> stream;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        stream.insert(stream.end(), frames[i].wire.begin(), frames[i].wire.end());
+        if (include_damage && i == 0) {
+            const auto bad = captured_short_motor_frame();
+            stream.insert(stream.end(), bad.begin(), bad.end());
+        }
+    }
+    return stream;
+}
+
+void expect_captured_frames(tb::FrameParser& parser,
+                            const std::vector<CapturedFrame>& expected) {
+    ASSERT_EQ(parser.pending(), expected.size());
+    for (const auto& fixture : expected) {
+        SCOPED_TRACE(fixture.name);
+        tb::Frame frame;
+        ASSERT_TRUE(parser.try_pop(frame));
+        expect_frame_eq(frame, tp::Address::MCU, fixture.seq, fixture.type,
+                        fixture.cmd, fixture.payload);
+    }
+    tb::Frame extra;
+    EXPECT_FALSE(parser.try_pop(extra));
+    EXPECT_EQ(parser.buffered_bytes(), 0u);
+    EXPECT_EQ(parser.stats().overflow_bytes, 0u);
+}
+
+}  // namespace
+
+TEST(HardwareFrameReplay, ValidFramesAtEverySingleSplit) {
+    for (const auto& fixture : captured_good_frames()) {
+        SCOPED_TRACE(fixture.name);
+        for (std::size_t split = 0; split <= fixture.wire.size(); ++split) {
+            SCOPED_TRACE(split);
+            tb::FrameParser parser;
+            parser.feed(fixture.wire.data(), split);
+            EXPECT_EQ(parser.pending(), split == fixture.wire.size() ? 1u : 0u);
+            parser.feed(fixture.wire.data() + split, fixture.wire.size() - split);
+            expect_captured_frames(parser, {fixture});
+            EXPECT_EQ(parser.stats().resync_bytes, 0u);
+            EXPECT_EQ(parser.stats().crc_errors, 0u);
+        }
+    }
+}
+
+TEST(HardwareFrameReplay, CoalescedValidFramesAtEverySingleSplit) {
+    const auto fixtures = captured_good_frames();
+    const auto stream = captured_stream(fixtures);
+    // Includes one coalesced read and every boundary across DATA and ACK,
+    // including a split immediately after ESC in payload or CRC.
+    for (std::size_t split = 0; split <= stream.size(); ++split) {
+        SCOPED_TRACE(split);
+        tb::FrameParser parser;
+        parser.feed(stream.data(), split);
+        parser.feed(stream.data() + split, stream.size() - split);
+        expect_captured_frames(parser, fixtures);
+        EXPECT_EQ(parser.stats().resync_bytes, 0u);
+        EXPECT_EQ(parser.stats().crc_errors, 0u);
+    }
+}
+
+TEST(HardwareFrameReplay, ValidFramesByteByByte) {
+    const auto fixtures = captured_good_frames();
+    const auto stream = captured_stream(fixtures);
+    tb::FrameParser parser;
+    for (const auto byte : stream) parser.feed(&byte, 1);
+    expect_captured_frames(parser, fixtures);
+    EXPECT_EQ(parser.stats().resync_bytes, 0u);
+    EXPECT_EQ(parser.stats().crc_errors, 0u);
+}
+
+TEST(HardwareFrameReplay, CapturedShortMotorFrameIsRejectedBeforeCrc) {
+    const auto bad = captured_short_motor_frame();
+    ASSERT_EQ(bad.size(), 67u);
+    const auto result = tb::try_parse_frame(bad.data(), bad.size());
+    EXPECT_EQ(result.status, tb::ParseStatus::Resync);
+    EXPECT_EQ(result.reason, tb::ParseReason::BadLength);
+    tb::FrameParser parser;
+    parser.feed(bad);
+    EXPECT_EQ(parser.pending(), 0u);
+    EXPECT_EQ(parser.buffered_bytes(), 0u);
+    EXPECT_EQ(parser.stats().resync_bytes, bad.size());
+    EXPECT_EQ(parser.stats().crc_errors, 0u)
+        << "zero CRC errors cannot establish intact input when LEN already fails";
+}
+
+TEST(HardwareFrameReplay, RecoversAfterCapturedDamageAtEverySingleSplit) {
+    const auto fixtures = captured_good_frames();
+    const auto stream = captured_stream(fixtures, true);
+    for (std::size_t split = 0; split <= stream.size(); ++split) {
+        SCOPED_TRACE(split);
+        tb::FrameParser parser;
+        parser.feed(stream.data(), split);
+        parser.feed(stream.data() + split, stream.size() - split);
+        expect_captured_frames(parser, fixtures);
+        EXPECT_EQ(parser.stats().resync_bytes, captured_short_motor_frame().size());
+        EXPECT_EQ(parser.stats().crc_errors, 0u);
+    }
+}
+
+TEST(HardwareFrameReplay, RecoversAfterCapturedDamageByteByByte) {
+    const auto fixtures = captured_good_frames();
+    const auto stream = captured_stream(fixtures, true);
+    tb::FrameParser parser;
+    for (const auto byte : stream) parser.feed(&byte, 1);
+    expect_captured_frames(parser, fixtures);
+    EXPECT_EQ(parser.stats().resync_bytes, captured_short_motor_frame().size());
+    EXPECT_EQ(parser.stats().crc_errors, 0u);
 }

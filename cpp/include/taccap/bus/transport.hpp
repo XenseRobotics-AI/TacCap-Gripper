@@ -153,27 +153,24 @@ public:
         uint64_t callback_exceptions  = 0;
 
         // ---- Loss accounting ------------------------------------------
-        // Three distinct ways a frame can fail to reach a subscriber. Read
-        // together they say *where* a rate drop came from:
+        // These counters identify the stage that observed damage or dropped
+        // data, not the component that originally caused a rate drop:
         //
-        //   crc_errors / resync_bytes > 0  -> bytes were lost before the
-        //       parser. Two different causes, told apart by bytes_read:
-        //         - bytes_read also down: the host stopped draining the tty
-        //           long enough to overflow the kernel/USB buffers.
-        //           Cross-check callback_max_us.
-        //         - bytes_read at full volume, crc_errors flat, resync_bytes
-        //           climbing in ~one-frame steps: the MCU dropped bytes out of
-        //           the middle of a frame it was transmitting, which it does
-        //           when host->MCU traffic overlaps its own send. The short
-        //           payload fails the LEN check before CRC is ever reached,
-        //           which is why crc_errors stays at zero. Nothing on the host
-        //           is broken; stop overlapping the writes (submit on the
-        //           status-frame doorbell, as both controllers do).
-        //   queue_dropped > 0              -> bytes arrived fine, but the
-        //       subscriber could not keep up and old frames were evicted.
-        //   both zero, rate still low      -> the firmware really is sending
-        //       slower; nothing on the host side to fix.
-        uint64_t crc_errors           = 0;  // well-framed, bad CRC → byte loss
+        //   crc_errors / resync_bytes > 0 -> framing, length or CRC validation
+        //       rejected bytes. A short frame can fail LEN before CRC, leaving
+        //       crc_errors at zero. Neither bytes_read nor these counters can
+        //       distinguish firmware TX, UART/USB/driver loss, host buffering,
+        //       or a parser defect. Capturing malformed bytes in read() proves
+        //       they reached the host before SDK parsing; locating the cause
+        //       still needs independent link/firmware evidence. Nearby host
+        //       writes alone do not prove physical TX/RX interference.
+        //   queue_dropped > 0 -> parsed DATA was evicted from a full dispatch
+        //       queue, or discarded during shutdown. Check callback_max_us and
+        //       the run/cleanup boundaries before attributing this to load.
+        //   all zero, rate still low -> whole-frame loss, delayed callbacks,
+        //       component filtering or slower firmware production remain
+        //       possible. Compare raw frames, device time and delivered data.
+        uint64_t crc_errors           = 0;  // framing/length valid; CRC mismatch
         uint64_t resync_bytes         = 0;  // bytes discarded without a frame
         uint64_t parser_overflow_bytes = 0; // dropped by the parser_max_buf cap
         uint64_t queue_dropped        = 0;  // DATA frames evicted, queue full
