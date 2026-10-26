@@ -37,6 +37,7 @@ add_executable(taccap_unit_tests
     test_log.cpp
     test_stream_rate.cpp
     test_follower_imu_pty.cpp
+    test_imu_motor_concurrency.cpp
     test_imu_time.cpp
 )
 
