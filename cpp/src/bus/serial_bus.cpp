@@ -146,7 +146,7 @@ void SerialBus::apply_termios_() {
     tio.c_cflag &= ~(CSIZE | PARENB | CSTOPB | CRTSCTS);
     tio.c_cflag |= CS8 | CREAD | CLOCAL;
 
-    tio.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP |
+    tio.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INPCK | IGNPAR |
                      INLCR  | IGNCR  | ICRNL | IXON | IXOFF | IXANY);
     tio.c_oflag &= ~(OPOST);
     tio.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);

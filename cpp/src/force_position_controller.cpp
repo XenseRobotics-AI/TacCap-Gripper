@@ -1326,13 +1326,11 @@ void ForcePositionController::enqueue_(const QueuedCommand& c) {
 
 // Caller commands are QUEUED, not applied here.
 //
-// Applying them on the caller's thread also submitted on the caller's thread,
-// at whatever moment that thread happened to call in. The MCU drops bytes out
-// of the middle of a status frame it is transmitting if host->MCU traffic
-// overlaps it, so an off-phase write costs a telemetry frame. Every submit now
-// happens in run_() on the status-frame doorbell, inside the ~9.8 ms the MCU
-// is known to be idle. The cost is that a command takes effect on the next status frame
-// instead of instantly: at motor_stream_hz = 100 that is under 10 ms.
+// Applying targets on the controller worker keeps control state ordered with
+// the latest feedback. A received status frame does NOT establish a UART idle
+// window: IMU/ACK traffic can follow it immediately. This is feedback-paced,
+// not a hard 100 Hz timer or a guarantee of loss-free full-duplex transport.
+// Use motor.target_writes()/delivery_snapshot() to observe gaps and acceptance.
 //
 // QUEUED IN ORDER AND STAMPED HERE (0.4.2). Each target carries the time this
 // call was made, on the caller's thread, because the policy builds its

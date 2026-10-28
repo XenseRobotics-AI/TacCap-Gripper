@@ -238,6 +238,14 @@ UartStats decode_uart_stats(const uint8_t* data, std::size_t len) {
     return out;
 }
 
+UartRxErrors decode_uart_rx_errors(const uint8_t* data, std::size_t len) {
+    if (!data || len != 72)
+        throw ProtocolError("decode UartRxErrors: expected 72-byte extended reply");
+    UartRxErrors out{};
+    std::memcpy(&out, data + 44, sizeof(out));
+    return out;
+}
+
 LogConfig decode_log_config(const uint8_t* data, std::size_t len) {
     return pod_from_bytes<LogConfig>(data, len, "LogConfig");
 }

@@ -156,6 +156,11 @@ namespace detail {
 bool is_stray_fault_reply_frame(bool seen_real_temp, float motor_temp_c) noexcept;
 }  // namespace detail
 
+struct MotorDeliverySnapshot {
+    bus::Transport::TargetWrites before, after;
+    protocol::MotorControlStats firmware{};
+};
+
 class Motor {
 public:
     using SubId    = bus::Transport::SubscriptionId;
@@ -192,34 +197,23 @@ public:
     // NO NACK, NO retry, NO timeout, and NO throw on a target the firmware
     // rejects. The firmware's slave control task consumes the *latest*
     // submitted target. Unlike set_*(), which block on an ACK and throw
-    // ProtocolError on NACK, submit() never blocks.
+    // ProtocolError on NACK, submit() does not wait for an ACK; its serial
+    // write can still block or throw an I/O error.
     //
     // ---- On submission rate ------------------------------------------------
     // This used to say you could submit "up to the firmware's 500Hz slave
     // control rate", which read as a budget to spend. It is not one.
     //
-    // The 500Hz figure is real — that is how often the firmware's control task
-    // applies the latest target — but it says nothing about what submitting at
-    // that rate costs you. Every host->MCU frame that lands while the MCU is
-    // transmitting makes it drop bytes out of the middle of the frame it is
-    // sending, and that frame is then discarded whole (tc-gu-01 issue #1). A
-    // 41-byte status frame at 3 Mbps fills only ~137us of each 10ms period, so
-    // whether a given submit collides is down to *when* it lands, not how many
-    // you send:
+    // The MCU control task applies the latest accepted target at 500 Hz.
+    // This is not a guarantee of host throughput or loss-free delivery.
+    // Historical concurrent-traffic tests found intermittent short telemetry
+    // frames; the rate alone did not predict them or establish the failing
+    // layer. Full-duplex overlap is not itself evidence of a firmware defect.
     //
-    //   - 250Hz lost 154 status frames on one 60s run and none on the next.
-    //   - 300Hz was clean on a run where 250Hz was not.
-    //   - 1000Hz has produced both 0 and 146 lost frames on the same firmware.
-    //
-    // So rate does not predict loss; it only sets how many chances to collide
-    // you take per second. Submitting faster than the status stream also buys
-    // nothing on the observation side, since motor status is capped at 100Hz.
-    //
-    // Prefer ImpedanceController or ForcePositionController, which submit once
-    // per received status frame and therefore never overlap a transmission —
-    // stream-locked submission measured at zero lost frames across 8 runs while
-    // sending MORE frames than the free-running comparison. Reach for raw submit() at your own cadence
-    // only when you cannot ride the status stream.
+    // The controllers pace updates from status feedback. That does not prove
+    // the UART is idle: IMU or ACK frames may immediately follow status.
+    // target_writes() observes host cadence without I/O; delivery_snapshot()
+    // explicitly queries MCU acceptance off the control thread.
     //
     // Separately: sustained input above a few hundred Hz used to livelock the
     // firmware's command handler outright (tc-gu-01 issue #2, fixed in firmware
@@ -493,6 +487,15 @@ public:
     // boot and needs no parameter access at all.
     protocol::MotorPrivateParam get_private_param(uint16_t index);
     void set_private_param(uint16_t index, uint32_t raw_value);
+    // One explicit 0x51 query, bracketed by local target-write counters.
+    // Compare two snapshots on the same connection/boot. The range captures
+    // query overlap, NOT arbitrary in-flight buffering. Counter differences
+    // indicate a health concern, not exact packet loss. No automatic retries
+    // of control targets, logging, background queries or stop policy changes.
+    MotorDeliverySnapshot delivery_snapshot(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
+    bus::Transport::TargetWrites target_writes() { return t_.target_writes(); }
+
     protocol::MotorControlStats control_stats(                 // Cmd 0x51
         std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 

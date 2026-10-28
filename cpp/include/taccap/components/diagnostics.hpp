@@ -26,20 +26,10 @@ public:
 
     // Free-running UART counters since MCU boot (Cmd 0x54).
     //
-    // The reason this exists: when the host sees a status frame arrive short a
-    // couple of bytes, nothing on the host can say whether the MCU failed to
-    // send them or whether they were lost after leaving it. `tx_bytes_ok` and
-    // `tx_calls_ok` count only what the firmware's transmit call accepted, so
-    // comparing them against what the host decoded over the same window
-    // separates the two:
-    //
-    //   firmware frame count == host (received + missing), bytes short
-    //       -> lost downstream of the MCU's transmit register. Cable or
-    //          USB-serial bridge; no firmware change reaches it.
-    //   tx_fail_timeout > 0
-    //       -> the firmware truncated frames itself.
-    //   rx_overflow > 0
-    //       -> the firmware's command task could not keep up with the host.
+    // Successful HAL-call counts are not pin-level capture. Differences from
+    // aligned host byte counts narrow the fault domain but cannot by themselves
+    // exclude MCU firmware or identify the bridge/USB/TTY layer. RX errors
+    // describe host-to-MCU reception, not MCU-to-host telemetry loss.
     //
     // Counters are cumulative, so take a reading before and after a
     // measurement window and subtract.
@@ -48,6 +38,11 @@ public:
     // 32-byte packet that had no such field — it is not distinguishable from a
     // genuine zero, so gate on firmware_version() if that matters to you.
     protocol::UartStats uart_stats(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
+
+    // Explicit opt-in; unsupported firmware raises ProtocolError. Never
+    // silently report missing subtype counters as zero. No periodic polling.
+    protocol::UartRxErrors uart_rx_errors(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 
     // Turn firmware logging on or off at runtime (Cmd 0x55). Returns the

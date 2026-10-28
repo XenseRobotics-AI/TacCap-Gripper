@@ -755,13 +755,8 @@ static_assert(sizeof(GripperEnvelope) == 16,
 
 // ---- UART counters (fw 1.1.3 — Cmd::GetUartStats 0x54) --------------------
 //
-// Exists to answer "which side dropped the bytes". tx_bytes_ok counts only
-// what HAL_UART_Transmit accepted, i.e. what actually reached the MCU's
-// transmit register. When that disagrees with what the host received, the loss
-// happened downstream of the MCU — cable or USB-serial bridge — and no
-// firmware change can help. tx_fail_timeout is called out separately because a
-// polled transmit that times out mid-frame leaves a short frame on the wire,
-// which looks identical to bytes lost in transit.
+// Counts successful HAL calls, not pin-level observations. Aligned byte
+// differences do not alone distinguish MCU, bridge, USB and TTY faults.
 //
 // All counters are free-running since boot; take deltas across a measurement
 // window rather than reading absolutes.
@@ -782,6 +777,13 @@ struct UartStats {
                                 // Nonzero means the stall that, up to 1.2.10,
                                 // silenced the command channel for good.
 };
+
+// Optional 0x54 payload {1}: 44-byte legacy prefix + seven uint32 LE fields.
+struct UartRxErrors {
+    uint32_t overrun, framing, noise, parity, receiver_timeout;
+    uint32_t last_error, last_error_ms;
+};
+static_assert(sizeof(UartRxErrors) == 28);
 
 // ---- Log configuration (fw 1.1.4 — Cmd::SetLogConfig 0x55) ----------------
 //

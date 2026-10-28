@@ -153,6 +153,9 @@ ForcePositionController = _taccap_native.ForcePositionController
 FORCE_POSITION_MAX_HOLD_TORQUE_NM = _taccap_native.FORCE_POSITION_MAX_HOLD_TORQUE_NM
 FORCE_POSITION_MAX_MOTION_TORQUE_NM = _taccap_native.FORCE_POSITION_MAX_MOTION_TORQUE_NM
 Diagnostics = _taccap_native.Diagnostics  # firmware UART counters + log control
+UartRxErrors = _taccap_native.UartRxErrors
+MotorTargetWrites = _taccap_native.MotorTargetWrites
+MotorDeliverySnapshot = _taccap_native.MotorDeliverySnapshot
 UartStats = _taccap_native.UartStats  # Cmd 0x54 payload
 LogConfig = _taccap_native.LogConfig  # Cmd 0x55 payload
 LogLevel = _taccap_native.LogLevel  # firmware log verbosity
@@ -310,7 +313,7 @@ __all__ = [
     "FORCE_POSITION_MAX_HOLD_TORQUE_NM",
     "FORCE_POSITION_MAX_MOTION_TORQUE_NM",
     "Diagnostics",
-    "UartStats",
+    "UartStats", "UartRxErrors", "MotorTargetWrites", "MotorDeliverySnapshot",
     "LogConfig",
     "LogLevel",
     "LOG_OUTPUT_NONE",

@@ -46,6 +46,7 @@
 #include <taccap/protocol/payloads.hpp>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -194,6 +195,15 @@ public:
         uint64_t control_queue_overflows = 0; // latched; controller times out
     };
 
+    // Successful local writes of the four motor target commands. Counts wire
+    // attempts, not MCU acceptance; retries count again. No extra traffic.
+    struct TargetWrites {
+        uint64_t count = 0;
+        int64_t last_write_ns = 0; // steady_clock, host only
+        uint64_t last_gap_us = 0, max_gap_us = 0;
+    };
+    TargetWrites target_writes();
+
     // Opens the serial port, starts the reader thread.
     explicit Transport(const Config& cfg);
 
@@ -265,6 +275,7 @@ private:
         unsigned inflight = 0;
     };
     struct PendingAck {
+        protocol::Cmd cmd{};
         std::promise<AckResponse> promise;
     };
     struct Sub {
@@ -282,7 +293,8 @@ private:
     // the kernel tty layer's, which a non-blocking fd or a non-tty transport
     // would quietly take away. Held across the (blocking) write, so a submit
     // can queue behind a large frame; that is the cost of one link.
-    void write_frame_(const std::vector<uint8_t>& wire);
+    void write_frame_(const std::vector<uint8_t>& wire, protocol::Cmd cmd);
+    uint8_t allocate_seq_locked_();
 
     void reader_loop_();
     void dispatch_loop_();
@@ -324,6 +336,7 @@ private:
 
     // Serialises writers; see write_frame_().
     std::mutex                 write_mu_;
+    TargetWrites target_writes_; // write_mu_
 
     // reader -> dispatcher hand-off. Bounded; drop-oldest on overflow.
     std::mutex                 queue_mu_;
@@ -332,8 +345,9 @@ private:
 
     // ACK matching
     std::mutex                                 pending_mu_;
-    std::unordered_map<uint8_t, PendingAck>    pending_acks_;
-    std::atomic<uint8_t>                       next_seq_{0};
+    std::unordered_map<uint8_t, std::shared_ptr<PendingAck>> pending_acks_;
+    std::array<bool, 256> reserved_seqs_{};
+    uint8_t next_seq_{0}; // pending_mu_
 
     // Subscriptions
     std::mutex                                 sub_mu_;

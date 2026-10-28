@@ -433,6 +433,14 @@ void Motor::set_private_param(uint16_t index, uint32_t raw_value) {
     send_or_throw(t_, protocol::Cmd::MotorSetPrivateParam, req, "set_private_param");
 }
 
+MotorDeliverySnapshot Motor::delivery_snapshot(std::chrono::milliseconds timeout) {
+    MotorDeliverySnapshot out;
+    out.before = t_.target_writes();
+    out.firmware = control_stats(timeout);
+    out.after = t_.target_writes();
+    return out;
+}
+
 protocol::MotorControlStats Motor::control_stats(std::chrono::milliseconds timeout) {
     auto ack = t_.send_cmd(protocol::Cmd::GetMotorControlStats, {}, timeout);
     if (ack.is_nack) {

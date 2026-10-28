@@ -62,84 +62,113 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
                                 const std::vector<uint8_t>& payload,
                                 std::chrono::milliseconds timeout,
                                 RetryMode retry) {
-    if (!running_.load(std::memory_order_acquire)) {
-        throw IoError("send_cmd on stopped transport", EBADF);
-    }
     const auto t = (timeout.count() == 0) ? cfg_.ack_timeout : timeout;
-
-    uint8_t seq           = 0;
-    bool    seq_allocated = false;
-
-    for (unsigned attempt = 0; attempt <= cfg_.max_retries; ++attempt) {
-        // SameSeq keeps the first attempt's seq for every retry so the
-        // firmware recognises the repeat and replays its cached response
-        // rather than running a non-idempotent handler twice. Allocating
-        // lazily keeps NewSeq's wire behaviour byte-for-byte unchanged.
-        if (!seq_allocated || retry == RetryMode::NewSeq) {
-            seq           = next_seq_.fetch_add(1, std::memory_order_relaxed);
-            seq_allocated = true;
-        }
-        std::future<AckResponse> fut;
-        {
-            std::lock_guard<std::mutex> lk(pending_mu_);
-            // unique_ptr-style emplace: default-construct the PendingAck.
-            auto& p = pending_acks_[seq];
-            // If the slot was somehow taken (uint8 wrap collision with a
-            // very-late stray ACK), reset its promise.
-            p.promise = std::promise<AckResponse>{};
-            fut = p.promise.get_future();
-        }
-
-        try {
+    uint8_t seq = 0;
+    bool reserved = false;
+    std::shared_ptr<PendingAck> pending;
+    auto release = [&]() {
+        std::lock_guard<std::mutex> lk(pending_mu_);
+        if (!reserved) return;
+        auto it = pending_acks_.find(seq);
+        if (it != pending_acks_.end() && it->second == pending)
+            pending_acks_.erase(it);
+        reserved_seqs_[seq] = false;
+        reserved = false;
+    };
+    try {
+        for (unsigned attempt = 0; attempt <= cfg_.max_retries; ++attempt) {
+            if (reserved && retry == RetryMode::NewSeq) release();
+            std::future<AckResponse> fut;
+            {
+                std::lock_guard<std::mutex> lk(pending_mu_);
+                if (!running_.load(std::memory_order_acquire))
+                    throw IoError("send_cmd on stopped transport", EBADF);
+                if (!reserved) {
+                    seq = allocate_seq_locked_();
+                    reserved_seqs_[seq] = true;
+                    reserved = true;
+                }
+                pending = std::make_shared<PendingAck>();
+                pending->cmd = cmd;
+                fut = pending->promise.get_future();
+                pending_acks_[seq] = pending;
+            }
             write_frame_(pack_frame(cfg_.peer, seq,
-                                    protocol::FrameType::CMD_NEED_ACK,
-                                    cmd, payload));
-        } catch (...) {
-            std::lock_guard<std::mutex> lk(pending_mu_);
-            pending_acks_.erase(seq);
-            throw;
+                         protocol::FrameType::CMD_NEED_ACK, cmd, payload), cmd);
+            if (fut.wait_for(t) == std::future_status::ready) {
+                auto ack = fut.get();
+                release();
+                return ack;
+            }
+            {
+                std::lock_guard<std::mutex> lk(pending_mu_);
+                auto it = pending_acks_.find(seq);
+                if (it != pending_acks_.end() && it->second == pending)
+                    pending_acks_.erase(it);
+            }
+            // SameSeq owns its slot throughout retry delays (OTA deduplication).
+            stat_ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+            if (attempt < cfg_.max_retries) {
+                stat_retries_.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(cfg_.retry_interval);
+            }
         }
-
-        const auto status = fut.wait_for(t);
-        if (status == std::future_status::ready) {
-            // Note: pending entry already erased by handle_ack_ on fulfilment.
-            return fut.get();   // may rethrow IoError set by fail_pending_
-        }
-
-        // Timeout — clean up entry, retry.
-        {
-            std::lock_guard<std::mutex> lk(pending_mu_);
-            pending_acks_.erase(seq);
-        }
-        stat_ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
-        if (attempt < cfg_.max_retries) {
-            stat_retries_.fetch_add(1, std::memory_order_relaxed);
-            std::this_thread::sleep_for(cfg_.retry_interval);
-        }
+        throw TimeoutError("send_cmd " + std::string(protocol::to_string(cmd)) +
+                           ": no ACK after " + std::to_string(cfg_.max_retries + 1) +
+                           " attempts", ETIMEDOUT);
+    } catch (...) {
+        release();
+        throw;
     }
+}
 
-    throw TimeoutError("send_cmd " + std::string(protocol::to_string(cmd)) +
-                       ": no ACK after " +
-                       std::to_string(cfg_.max_retries + 1) + " attempts",
-                       ETIMEDOUT);
+// pending_mu_ guards reservation across the entire request lifetime, including
+// timeout/ACK races and SameSeq retries. Never overwrite another promise.
+uint8_t Transport::allocate_seq_locked_() {
+    for (unsigned i = 0; i < 256; ++i) {
+        const uint8_t seq = next_seq_++;
+        if (!reserved_seqs_[seq]) return seq;
+    }
+    throw IoError("Transport: all ACK sequence slots occupied", EBUSY);
 }
 
 void Transport::send_cmd_no_ack(protocol::Cmd cmd,
                                 const std::vector<uint8_t>& payload) {
-    if (!running_.load(std::memory_order_acquire)) {
-        throw IoError("send_cmd_no_ack on stopped transport", EBADF);
+    uint8_t seq;
+    {
+        std::lock_guard<std::mutex> lk(pending_mu_);
+        if (!running_.load(std::memory_order_acquire))
+            throw IoError("send_cmd_no_ack on stopped transport", EBADF);
+        seq = allocate_seq_locked_();
     }
-    const uint8_t seq = next_seq_.fetch_add(1, std::memory_order_relaxed);
     write_frame_(pack_frame(cfg_.peer, seq,
-                            protocol::FrameType::CMD_NO_ACK, cmd, payload));
+                 protocol::FrameType::CMD_NO_ACK, cmd, payload), cmd);
+}
+
+Transport::TargetWrites Transport::target_writes() {
+    std::lock_guard<std::mutex> lk(write_mu_);
+    return target_writes_;
 }
 
 // The one place bytes leave for the MCU. Packing stays outside the lock; only
 // the write is serialised.
-void Transport::write_frame_(const std::vector<uint8_t>& wire) {
+void Transport::write_frame_(const std::vector<uint8_t>& wire, protocol::Cmd cmd) {
     {
         std::lock_guard<std::mutex> lk(write_mu_);
         serial_.write(wire);
+        if (cmd == protocol::Cmd::MotorPosCtrl || cmd == protocol::Cmd::MotorVelCtrl ||
+            cmd == protocol::Cmd::MotorTorqueCtrl || cmd == protocol::Cmd::MotorImpedanceCtrl) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                now.time_since_epoch()).count();
+            if (target_writes_.count != 0) {
+                target_writes_.last_gap_us = (ns - target_writes_.last_write_ns) / 1000;
+                target_writes_.max_gap_us = std::max(target_writes_.max_gap_us,
+                                                    target_writes_.last_gap_us);
+            }
+            ++target_writes_.count;
+            target_writes_.last_write_ns = ns;
+        }
     }
     stat_bytes_written_.fetch_add(wire.size(), std::memory_order_relaxed);
     stat_frames_sent_.fetch_add(1, std::memory_order_relaxed);
@@ -358,8 +387,10 @@ void Transport::handle_ack_(const Frame& f) {
     {
         std::lock_guard<std::mutex> lk(pending_mu_);
         auto it = pending_acks_.find(f.seq);
-        if (it != pending_acks_.end()) {
-            winning_promise = std::move(it->second.promise);
+        if (it != pending_acks_.end() &&
+            (f.cmd == it->second->cmd ||
+             (static_cast<uint8_t>(f.cmd) == 0 && f.payload.size() == 1))) {
+            winning_promise = std::move(it->second->promise);
             pending_acks_.erase(it);
             found = true;
         }
@@ -568,7 +599,7 @@ void Transport::fail_pending_(const std::string& reason) noexcept {
     std::lock_guard<std::mutex> lk(pending_mu_);
     for (auto& kv : pending_acks_) {
         try {
-            kv.second.promise.set_exception(std::make_exception_ptr(
+            kv.second->promise.set_exception(std::make_exception_ptr(
                 IoError("transport: " + reason, EIO)));
         } catch (...) { /* already satisfied */ }
     }

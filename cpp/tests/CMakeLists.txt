@@ -19,6 +19,7 @@ add_executable(taccap_unit_tests
     test_ota_retry_pty.cpp
     test_python_compat.cpp
     test_stuff.cpp
+    test_transport_reliability.cpp
     test_transport.cpp
     test_transport_concurrent_write.cpp
     test_diagnostics_codec.cpp
