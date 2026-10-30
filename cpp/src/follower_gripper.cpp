@@ -3,6 +3,7 @@
 #include <taccap/follower_gripper.hpp>
 #include "wrist_fisheye.hpp"
 #include "stream_rate.hpp"
+#include "follower_exchange.hpp"
 #include <taccap/error.hpp>
 #include <taccap/log.hpp>
 #include <taccap/protocol/codec.hpp>
@@ -295,6 +296,7 @@ FollowerGripper::~FollowerGripper() {
 }
 
 void FollowerGripper::close() noexcept {
+    stop_exchange_();
     if (!t_.is_open()) return;
     if (t_.is_running()) {
         try { stop_streaming(); } catch (...) {}
@@ -375,7 +377,63 @@ void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
     streaming_ = true;
 }
 
+void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
+                                     unsigned exchange_hz) {
+    if (imu_hz > 100) throw IoError("Follower IMU rate must be 0..100 Hz", EINVAL);
+    if (motor_hz > 100) throw IoError("Follower motor status rate must be 0..100 Hz", EINVAL);
+    if (motor_hz == 0 && imu_hz == 0)
+        throw IoError("FollowerGripper::start_exchange: both rates are 0", EINVAL);
+    if (exchange_hz == 0) exchange_hz = std::max({motor_hz, imu_hz, 1u});
+    if (exchange_hz > 500) throw IoError("FollowerGripper::start_exchange: exchange_hz must be <= 500", EINVAL);
+    if (streaming_) throw IoError("FollowerGripper: stop streaming before start_exchange", EBUSY);
+
+    if (imu_hz) (void)imu_.read_once(std::chrono::milliseconds{500});
+    try {
+        t_.send_cmd(protocol::Cmd::StopStream, {}, std::chrono::milliseconds(500));
+    } catch (...) { /* expected when fw is already idle */ }
+
+    protocol::StreamConfig sc{};
+    sc.source_mask  = detail::stream_source_mask(imu_hz, 0, motor_hz);
+    const auto logical_sources = sc.source_mask;
+    if (imu_hz) sc.source_mask = (sc.source_mask & ~protocol::StreamSrc::Imu) | imu_.negotiate_time();
+    sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Polled);
+    sc.imu_rate     = static_cast<uint16_t>(imu_hz);
+    sc.motor_rate   = static_cast<uint16_t>(motor_hz);
+    sc.output_iface = static_cast<uint8_t>(protocol::StreamInterface::Uart);
+    auto ack = t_.send_cmd(protocol::Cmd::StartStream, protocol::encode(sc));
+    if (ack.is_nack) {
+        throw ProtocolError(std::string("FollowerGripper::start_exchange NACK (firmware "
+                            "without polled mode / 0x5D?): ") + protocol::to_string(ack.error_code));
+    }
+
+    t_.set_half_duplex(true);
+    // A stuck reply must not hold the link longer than a couple of periods.
+    const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
+    const auto timeout = std::chrono::milliseconds(std::max<long long>(
+        5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
+    exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout);
+    std::weak_ptr<detail::FollowerExchange> weak = exchange_;
+    motor_.set_target_router_([weak](protocol::Cmd cmd, std::vector<uint8_t> payload) {
+        if (auto ex = weak.lock()) ex->submit(cmd, std::move(payload));
+    });
+    streaming_sources_ = logical_sources;
+    streaming_ = true;
+}
+
+ExchangeStats FollowerGripper::exchange_stats() const {
+    return exchange_ ? exchange_->stats() : ExchangeStats{};
+}
+
+void FollowerGripper::stop_exchange_() noexcept {
+    if (!exchange_) return;
+    motor_.set_target_router_({});
+    exchange_->stop();
+    exchange_.reset();
+    t_.set_half_duplex(false);
+}
+
 void FollowerGripper::stop_streaming() {
+    stop_exchange_();
     if (!streaming_) return;
     streaming_ = false;
     try {

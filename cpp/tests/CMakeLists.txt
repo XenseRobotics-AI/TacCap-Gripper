@@ -40,6 +40,7 @@ add_executable(taccap_unit_tests
     test_follower_imu_pty.cpp
     test_imu_motor_concurrency.cpp
     test_imu_time.cpp
+    test_follower_exchange_pty.cpp
 )
 
 # stream_rate.hpp is a private helper under src/ (not an installed header),

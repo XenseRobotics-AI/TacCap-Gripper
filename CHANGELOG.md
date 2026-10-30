@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Follower half-duplex exchange: `FollowerGripper.start_exchange(motor_hz,
+  imu_hz, exchange_hz)`.** Requires follower firmware with `StreamMode::Polled`
+  and `Cmd::SlaveExchange` (0x5D, tc-gu-01 `docs/HALF_DUPLEX_EXCHANGE.md`).
+  The follower stops pushing frames; the SDK polls it and delivers motor
+  status / IMU to the usual subscribers, `Motor.submit_*()` targets ride on the
+  exchange, and every request on the link takes turns, so host and follower
+  never transmit at the same time. Existing controllers run unchanged on top.
+  `exchange_stats()` reports timeouts, resent and rejected targets and round
+  trips. Older firmware raises `ProtocolError` and nothing is left running.
+  `bus::RetryMode::Once` sends exactly one attempt.
+
 - **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
   a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
   takes the image as optional: without one it picks the shipped image for the

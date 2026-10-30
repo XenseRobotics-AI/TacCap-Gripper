@@ -138,6 +138,10 @@ enum class Cmd : uint8_t {
     MotorCanExtXfer          = 0x5B,  // extended-frame passthrough (req 24B / resp 16B)
     SetMotorFwVersion        = 0x5C,  // store motor fw version in flash (req 4B / resp 8B),
                                       // fw >= 1.2.14
+    // Follower half-duplex exchange: request may carry one 0x40..0x43 target,
+    // reply carries motor status V2 + new IMU samples. Used with
+    // StreamMode::Polled; see FollowerGripper::start_exchange().
+    SlaveExchange            = 0x5D,
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

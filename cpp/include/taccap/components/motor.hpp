@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace xense::taccap {
@@ -527,10 +529,18 @@ public:
 private:
     friend class ForcePositionController;
     friend class ImpedanceController;
+    friend class FollowerGripper;
     // SDK-owned bounded control callbacks only; never user code.
     SubId on_control_status_(Callback cb);
     SubId subscribe_status_(Callback cb, bool control);
+    // While FollowerGripper runs the half-duplex exchange, submit() hands the
+    // encoded target to it instead of writing a no-ACK frame. Empty = direct.
+    using TargetRouter = std::function<void(protocol::Cmd, std::vector<uint8_t>)>;
+    void set_target_router_(TargetRouter router);
+    void submit_(protocol::Cmd cmd, std::vector<uint8_t> payload);
     bus::Transport& t_;
+    std::mutex router_mu_;
+    std::shared_ptr<const TargetRouter> router_;
 };
 
 }  // namespace xense::taccap

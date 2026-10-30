@@ -121,6 +121,10 @@ enum class RetryMode : uint8_t {
     // The firmware caches exactly one request, so nothing else may be sent on
     // this transport between attempts — true for the single-threaded OTA flow.
     SameSeq,
+    // Exactly one attempt regardless of Config::max_retries. For the follower
+    // exchange loop, which owns its own resend policy and must never write a
+    // second frame while the first one's reply may still be on the wire.
+    Once,
 };
 
 class Transport {
@@ -252,6 +256,21 @@ public:
     bool is_open() const noexcept { return serial_.is_open(); }
 
     Stats stats() const noexcept;
+
+    // ---- Follower half-duplex exchange support (SDK-internal) --------------
+    // While enabled, every request holds one link-wide turn from its write
+    // until its ACK or timeout, and no-ACK writes take the same turn: at most
+    // one host frame is ever waiting for the MCU, so a request is never
+    // written while the MCU may still be answering the previous one. Only
+    // meaningful when the MCU itself pushes nothing (StreamMode::Polled).
+    void set_half_duplex(bool enabled) noexcept {
+        half_duplex_.store(enabled, std::memory_order_release);
+    }
+    bool half_duplex() const noexcept { return half_duplex_.load(std::memory_order_acquire); }
+    // Dispatch a DATA frame decoded from an exchange reply exactly as if it
+    // had been received: control lane for motor status, then subscribers.
+    void inject_data(Frame f);
+
     void enable_receive_trace(bool enabled) { parser_.set_trace_enabled(enabled); }
     FrameParser::TraceSnapshot take_receive_trace() { return parser_.take_trace(); }
 
@@ -295,6 +314,11 @@ private:
     // can queue behind a large frame; that is the cost of one link.
     void write_frame_(const std::vector<uint8_t>& wire, protocol::Cmd cmd);
     uint8_t allocate_seq_locked_();
+    // Taken (only while half_duplex_) around one request's write and wait.
+    // Never held by the reader or dispatcher, so callbacks may still send.
+    std::unique_lock<std::mutex> half_duplex_turn_();
+    std::mutex        half_duplex_mu_;
+    std::atomic<bool> half_duplex_{false};
 
     void reader_loop_();
     void dispatch_loop_();

@@ -95,16 +95,33 @@ void Motor::set_impedance(float pos, float kp, float kd, float ff_torque,
 // throw on NACK (there is none). The struct overloads are the single source of
 // truth; the float wrappers delegate. See motor.hpp for the health contract.
 void Motor::submit(const protocol::MotorImpedanceCtrl& c) {
-    t_.send_cmd_no_ack(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c));
+    submit_(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorPosCtrl& c) {
-    t_.send_cmd_no_ack(protocol::Cmd::MotorPosCtrl, protocol::encode(c));
+    submit_(protocol::Cmd::MotorPosCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorVelCtrl& c) {
-    t_.send_cmd_no_ack(protocol::Cmd::MotorVelCtrl, protocol::encode(c));
+    submit_(protocol::Cmd::MotorVelCtrl, protocol::encode(c));
 }
 void Motor::submit(const protocol::MotorTorqueCtrl& c) {
-    t_.send_cmd_no_ack(protocol::Cmd::MotorTorqueCtrl, protocol::encode(c));
+    submit_(protocol::Cmd::MotorTorqueCtrl, protocol::encode(c));
+}
+
+void Motor::set_target_router_(TargetRouter router) {
+    std::shared_ptr<const TargetRouter> next;
+    if (router) next = std::make_shared<const TargetRouter>(std::move(router));
+    std::lock_guard<std::mutex> lk(router_mu_);
+    router_ = std::move(next);
+}
+
+void Motor::submit_(protocol::Cmd cmd, std::vector<uint8_t> payload) {
+    std::shared_ptr<const TargetRouter> router;
+    {
+        std::lock_guard<std::mutex> lk(router_mu_);
+        router = router_;
+    }
+    if (router) (*router)(cmd, std::move(payload));
+    else t_.send_cmd_no_ack(cmd, payload);
 }
 
 void Motor::submit_impedance(float pos, float kp, float kd, float ff_torque,

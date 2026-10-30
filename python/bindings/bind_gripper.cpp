@@ -371,6 +371,36 @@ void bind_gripper(py::module_& m) {
                    "." + std::to_string(v.build) + ")";
         });
 
+    py::class_<ExchangeStats>(m, "ExchangeStats",
+        "Counters of FollowerGripper's half-duplex exchange since start_exchange().")
+        .def_readonly("exchanges",           &ExchangeStats::exchanges)
+        .def_readonly("telemetry_exchanges", &ExchangeStats::telemetry_exchanges)
+        .def_readonly("target_exchanges",    &ExchangeStats::target_exchanges)
+        .def_readonly("timeouts",            &ExchangeStats::timeouts,
+                      "Exchanges without a reply; a carried target is resent.")
+        .def_readonly("nacks",               &ExchangeStats::nacks)
+        .def_readonly("malformed",           &ExchangeStats::malformed)
+        .def_readonly("targets_submitted",   &ExchangeStats::targets_submitted)
+        .def_readonly("targets_superseded",  &ExchangeStats::targets_superseded,
+                      "Targets replaced by a newer one before they went out.")
+        .def_readonly("targets_resent",      &ExchangeStats::targets_resent)
+        .def_readonly("targets_rejected",    &ExchangeStats::targets_rejected)
+        .def_readonly("last_target_result",  &ExchangeStats::last_target_result,
+                      "Raw ErrorCode byte of the latest target reply; 0xFF before any.")
+        .def_readonly("motor_samples",       &ExchangeStats::motor_samples)
+        .def_readonly("imu_samples",         &ExchangeStats::imu_samples)
+        .def_readonly("imu_dropped",         &ExchangeStats::imu_dropped,
+                      "IMU samples the firmware queue overflowed before they were fetched.")
+        .def_readonly("last_rtt_us",         &ExchangeStats::last_rtt_us)
+        .def_readonly("max_rtt_us",          &ExchangeStats::max_rtt_us)
+        .def("__repr__", [](const ExchangeStats& s) {
+            return "ExchangeStats(exchanges=" + std::to_string(s.exchanges) +
+                   ", timeouts=" + std::to_string(s.timeouts) +
+                   ", targets=" + std::to_string(s.target_exchanges) +
+                   ", rejected=" + std::to_string(s.targets_rejected) +
+                   ", max_rtt_us=" + std::to_string(s.max_rtt_us) + ")";
+        });
+
     py::class_<FollowerGripper>(m, "FollowerGripper",
         "One TacCap-Gripper follower (robot-side executor).\n\n"
         "The leader's sensor surface plus a Motor driving the FDCAN-attached\n"
@@ -486,6 +516,22 @@ void bind_gripper(py::module_& m) {
            "tick by an integer, so only divisors of 1000 arrive at the requested\n"
            "rate. It never NACKs a rate it had to adjust, so the SDK logs a\n"
            "warning when that happens.")
+        .def("start_exchange", [](FollowerGripper& self, unsigned motor_hz, unsigned imu_hz,
+                                  unsigned exchange_hz) {
+            py::gil_scoped_release gil;
+            self.start_exchange(motor_hz, imu_hz, exchange_hz);
+        }, py::arg("motor_hz") = 100u, py::arg("imu_hz") = 0u, py::arg("exchange_hz") = 0u,
+           "Half-duplex alternative to start_streaming() (firmware with 0x5D).\n\n"
+           "The follower stops pushing frames; the SDK polls it once per\n"
+           "1/exchange_hz s and delivers motor status / IMU to the usual\n"
+           "subscribers. motor.submit_*() targets ride on the exchange. Every\n"
+           "request on this link takes turns, so host and follower never transmit\n"
+           "at the same time. exchange_hz=0 means max(motor_hz, imu_hz). End it with\n"
+           "stop_streaming(). Old firmware raises ProtocolError.")
+        .def_property_readonly("is_exchanging", &FollowerGripper::is_exchanging,
+                               "True between start_exchange() and stop_streaming().")
+        .def("exchange_stats", &FollowerGripper::exchange_stats,
+             "ExchangeStats of the running exchange (zeros when not exchanging).")
         .def("stop_streaming", [](FollowerGripper& self) {
             py::gil_scoped_release gil;
             self.stop_streaming();

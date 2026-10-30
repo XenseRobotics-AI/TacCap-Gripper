@@ -75,8 +75,9 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
         reserved_seqs_[seq] = false;
         reserved = false;
     };
+    const unsigned max_retries = retry == RetryMode::Once ? 0u : cfg_.max_retries;
     try {
-        for (unsigned attempt = 0; attempt <= cfg_.max_retries; ++attempt) {
+        for (unsigned attempt = 0; attempt <= max_retries; ++attempt) {
             if (reserved && retry == RetryMode::NewSeq) release();
             std::future<AckResponse> fut;
             {
@@ -93,9 +94,12 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
                 fut = pending->promise.get_future();
                 pending_acks_[seq] = pending;
             }
+            auto turn = half_duplex_turn_();
             write_frame_(pack_frame(cfg_.peer, seq,
                          protocol::FrameType::CMD_NEED_ACK, cmd, payload), cmd);
-            if (fut.wait_for(t) == std::future_status::ready) {
+            const bool answered = fut.wait_for(t) == std::future_status::ready;
+            if (turn.owns_lock()) turn.unlock();
+            if (answered) {
                 auto ack = fut.get();
                 release();
                 return ack;
@@ -108,13 +112,13 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
             }
             // SameSeq owns its slot throughout retry delays (OTA deduplication).
             stat_ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
-            if (attempt < cfg_.max_retries) {
+            if (attempt < max_retries) {
                 stat_retries_.fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(cfg_.retry_interval);
             }
         }
         throw TimeoutError("send_cmd " + std::string(protocol::to_string(cmd)) +
-                           ": no ACK after " + std::to_string(cfg_.max_retries + 1) +
+                           ": no ACK after " + std::to_string(max_retries + 1) +
                            " attempts", ETIMEDOUT);
     } catch (...) {
         release();
@@ -141,8 +145,20 @@ void Transport::send_cmd_no_ack(protocol::Cmd cmd,
             throw IoError("send_cmd_no_ack on stopped transport", EBADF);
         seq = allocate_seq_locked_();
     }
+    auto turn = half_duplex_turn_();
     write_frame_(pack_frame(cfg_.peer, seq,
                  protocol::FrameType::CMD_NO_ACK, cmd, payload), cmd);
+}
+
+std::unique_lock<std::mutex> Transport::half_duplex_turn_() {
+    if (!half_duplex_.load(std::memory_order_acquire)) return {};
+    return std::unique_lock<std::mutex>(half_duplex_mu_);
+}
+
+void Transport::inject_data(Frame f) {
+    f.type = protocol::FrameType::DATA;
+    if (f.cmd == protocol::Cmd::GetMotorStatus) enqueue_control_(f);
+    enqueue_data_(std::move(f));
 }
 
 Transport::TargetWrites Transport::target_writes() {

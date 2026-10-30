@@ -214,7 +214,24 @@ std::optional<bool> expected_open_reverse(std::uint8_t model_id,
 std::optional<std::uint8_t> expected_motor_can_id(std::uint8_t model_id,
                                                   discovery::Side side) noexcept;
 
+class FollowerExchange;
+
 }  // namespace detail
+
+// Counters of FollowerGripper's half-duplex exchange since start_exchange().
+// timeouts are exchanges without a reply; a target in one is resent in the
+// next exchange unless superseded (targets_resent). targets_rejected counts
+// replies whose target_result was not Ok; last_target_result is the raw
+// ErrorCode byte of the latest target reply (0xFF before any).
+struct ExchangeStats {
+    uint64_t exchanges = 0, telemetry_exchanges = 0, target_exchanges = 0;
+    uint64_t timeouts = 0, nacks = 0, malformed = 0;
+    uint64_t targets_submitted = 0, targets_superseded = 0, targets_resent = 0;
+    uint64_t targets_rejected = 0;
+    uint8_t  last_target_result = 0xFF;
+    uint64_t motor_samples = 0, imu_samples = 0, imu_dropped = 0;
+    uint64_t last_rtt_us = 0, max_rtt_us = 0;
+};
 
 class FollowerGripper {
 public:
@@ -510,6 +527,26 @@ public:
     void stop_streaming();
     bool is_streaming() const noexcept { return streaming_; }
 
+    // Half-duplex alternative to start_streaming() (firmware with 0x5D).
+    //
+    // The follower is put in StreamMode::Polled: it samples as configured but
+    // pushes nothing. A host thread sends one exchange per 1/exchange_hz s and
+    // receives motor status and new IMU samples in the reply; Motor::submit*()
+    // targets ride on the next exchange (sent at once if the link is idle).
+    // All requests on this transport, including user queries, take turns, so
+    // the host never writes while the follower may be answering. This removes
+    // the full-duplex overlap that loses uplink bytes on the current hardware.
+    //
+    // Subscribers (motor().on_status, imu().on_data) and the controllers see
+    // the same frames as with start_streaming(); is_streaming() is true and
+    // stop_streaming() ends the exchange. exchange_hz=0 means max(motor_hz,
+    // imu_hz, 1). Firmware without the polled mode NACKs: ProtocolError, and
+    // nothing is left running.
+    void start_exchange(unsigned motor_hz = 100, unsigned imu_hz = 0,
+                        unsigned exchange_hz = 0);
+    bool is_exchanging() const noexcept { return exchange_ != nullptr; }
+    ExchangeStats exchange_stats() const;
+
     const Config& config() const noexcept { return cfg_; }
 
 private:
@@ -548,6 +585,8 @@ private:
     std::unique_ptr<Camera>         wrist_;
     bool                            streaming_ = false;
     uint16_t                        streaming_sources_ = 0;
+    std::shared_ptr<detail::FollowerExchange> exchange_;
+    void stop_exchange_() noexcept;
     GripperPosition                 pos_map_;             // raw<->position, cached
     bool                            pos_map_loaded_ = false;
 };

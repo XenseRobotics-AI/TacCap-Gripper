@@ -85,6 +85,7 @@ const char* to_string(Cmd c) noexcept {
         case Cmd::SetMotorModel:       return "SetMotorModel";
         case Cmd::MotorCanExtXfer:     return "MotorCanExtXfer";
         case Cmd::SetMotorFwVersion:   return "SetMotorFwVersion";
+        case Cmd::SlaveExchange:       return "SlaveExchange";
         case Cmd::GetUartStats:        return "GetUartStats";
         case Cmd::SetLogConfig:        return "SetLogConfig";
 
