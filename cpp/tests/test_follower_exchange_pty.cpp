@@ -220,3 +220,29 @@ TEST(FollowerExchangePty, ForcePositionControllerRunsUnmodifiedOverTheExchange) 
     EXPECT_TRUE(g->is_exchanging()) << "controller must not stop a stream it did not start";
     g->stop_streaming();
 }
+
+TEST(FollowerExchangePty, WaitingForTheLinkCountsAgainstTheRequestTimeout) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    g->transport().set_half_duplex(true);
+    fw.drop_exchange_replies(1);   // the first request holds the turn for its full 600 ms
+
+    const std::vector<uint8_t> req{tp::EXCHANGE_VERSION, tp::ExchangeFlag::Telemetry, 0, 0};
+    std::thread holder([&] {
+        EXPECT_THROW(g->transport().send_cmd(tp::Cmd::SlaveExchange, req, std::chrono::milliseconds(600),
+                                             tx::bus::RetryMode::Once),
+                     tx::TimeoutError);
+    });
+    ASSERT_TRUE(wait_for([&] { return fw.exchanges() >= 1; }, kSecond));
+    const auto t0 = std::chrono::steady_clock::now();
+    EXPECT_THROW(g->transport().send_cmd(tp::Cmd::Heartbeat, {}, std::chrono::milliseconds(50)),
+                 tx::TimeoutError);
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    EXPECT_LT(waited, std::chrono::milliseconds(300)) << "query waited behind a long request";
+    holder.join();
+    // Once the turn is free a query goes through normally.
+    EXPECT_NO_THROW(g->transport().send_cmd(tp::Cmd::Heartbeat, {}, std::chrono::milliseconds(200)));
+    g->transport().set_half_duplex(false);
+}

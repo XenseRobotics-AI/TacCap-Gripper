@@ -316,8 +316,11 @@ private:
     uint8_t allocate_seq_locked_();
     // Taken (only while half_duplex_) around one request's write and wait.
     // Never held by the reader or dispatcher, so callbacks may still send.
-    std::unique_lock<std::mutex> half_duplex_turn_();
-    std::mutex        half_duplex_mu_;
+    // Waiting for the turn counts against the request's own timeout: a long
+    // command (IMU calibration, 15 s) must not stretch a 100 ms query.
+    std::unique_lock<std::timed_mutex> half_duplex_turn_(std::chrono::milliseconds wait,
+                                                         protocol::Cmd cmd);
+    std::timed_mutex  half_duplex_mu_;
     std::atomic<bool> half_duplex_{false};
 
     void reader_loop_();

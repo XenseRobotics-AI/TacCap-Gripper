@@ -94,10 +94,14 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
                 fut = pending->promise.get_future();
                 pending_acks_[seq] = pending;
             }
-            auto turn = half_duplex_turn_();
+            const auto attempt_start = std::chrono::steady_clock::now();
+            auto turn = half_duplex_turn_(t, cmd);
             write_frame_(pack_frame(cfg_.peer, seq,
                          protocol::FrameType::CMD_NEED_ACK, cmd, payload), cmd);
-            const bool answered = fut.wait_for(t) == std::future_status::ready;
+            const auto left = t - std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::steady_clock::now() - attempt_start);
+            const bool answered =
+                fut.wait_for(std::max(left, std::chrono::milliseconds(1))) == std::future_status::ready;
             if (turn.owns_lock()) turn.unlock();
             if (answered) {
                 auto ack = fut.get();
@@ -145,14 +149,21 @@ void Transport::send_cmd_no_ack(protocol::Cmd cmd,
             throw IoError("send_cmd_no_ack on stopped transport", EBADF);
         seq = allocate_seq_locked_();
     }
-    auto turn = half_duplex_turn_();
+    auto turn = half_duplex_turn_(cfg_.ack_timeout, cmd);
     write_frame_(pack_frame(cfg_.peer, seq,
                  protocol::FrameType::CMD_NO_ACK, cmd, payload), cmd);
 }
 
-std::unique_lock<std::mutex> Transport::half_duplex_turn_() {
+std::unique_lock<std::timed_mutex> Transport::half_duplex_turn_(std::chrono::milliseconds wait,
+                                                                 protocol::Cmd cmd) {
     if (!half_duplex_.load(std::memory_order_acquire)) return {};
-    return std::unique_lock<std::mutex>(half_duplex_mu_);
+    std::unique_lock<std::timed_mutex> turn(half_duplex_mu_, std::defer_lock);
+    if (!turn.try_lock_for(wait)) {
+        throw TimeoutError("send " + std::string(protocol::to_string(cmd)) +
+                           ": half-duplex link busy for " + std::to_string(wait.count()) + " ms",
+                           ETIMEDOUT);
+    }
+    return turn;
 }
 
 void Transport::inject_data(Frame f) {
