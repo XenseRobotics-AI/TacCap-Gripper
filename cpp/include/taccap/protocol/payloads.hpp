@@ -995,9 +995,34 @@ namespace StreamSrc {
 enum class StreamMode : uint8_t {
     Separate = 0,
     Combined = 1,
-    // Follower only: acquisition runs as configured but nothing is pushed;
-    // the host pulls it with Cmd::SlaveExchange. Older firmware NACKs it.
+    // Acquisition runs as configured but nothing is pushed; the host pulls it
+    // with Cmd::SlaveExchange (follower) or Cmd::LeaderExchange (leader).
+    // Older firmware NACKs it.
     Polled   = 2,
+};
+
+// ---- Leader half-duplex exchange (Cmd::LeaderExchange, 0x5E) --------------
+// Request: LeaderExchangeRequest, exact length, flags/reserved zero.
+// Reply: LeaderExchangeResponseHeader, then record_count records, oldest first:
+//   [cmd:1][len:1][payload:len]
+// Each record is the DATA frame the leader would have pushed outside the
+// exchange (same cmd, same payload): IMU, encoder, key, sensor error.
+namespace LeaderExchangeRespFlag { constexpr uint8_t Polled = 0x01; }
+constexpr uint8_t LEADER_EXCHANGE_VERSION = 1;
+
+struct LeaderExchangeRequest {
+    uint8_t version;       // LEADER_EXCHANGE_VERSION
+    uint8_t flags;         // 0
+    uint8_t reserved[2];
+};
+
+struct LeaderExchangeResponseHeader {
+    uint8_t  version;      // LEADER_EXCHANGE_VERSION
+    uint8_t  flags;        // LeaderExchangeRespFlag
+    uint8_t  record_count;
+    uint8_t  reserved;
+    uint16_t dropped;      // records the firmware queue overflowed since the previous take
+    uint16_t pending;      // records still queued after this reply
 };
 
 // ---- Follower half-duplex exchange (Cmd::SlaveExchange, 0x5D) -------------
@@ -1197,6 +1222,8 @@ static_assert(sizeof(SnInfo)             == 17);
 static_assert(sizeof(ImuData)            == 28);  // IMU_PACKET_SIZE
 static_assert(sizeof(ExchangeRequestHeader)  == 4);
 static_assert(sizeof(ExchangeResponseHeader) == 8);
+static_assert(sizeof(LeaderExchangeRequest)        == 4);
+static_assert(sizeof(LeaderExchangeResponseHeader) == 8);
 static_assert(sizeof(ImuConfig)          == 10);
 static_assert(sizeof(EncoderData)        == 16);  // ENCODER_PACKET_SIZE
 static_assert(sizeof(EncoderConfig)      == 5);   // firmware 0086da6 (was 14)

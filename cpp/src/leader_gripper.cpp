@@ -1,6 +1,7 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 
 #include <taccap/leader_gripper.hpp>
+#include "leader_exchange.hpp"
 #include "wrist_fisheye.hpp"
 #include "stream_rate.hpp"
 #include <taccap/error.hpp>
@@ -10,6 +11,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <algorithm>
 #include <cstring>
 #include <optional>
 
@@ -40,6 +42,35 @@ Camera::Config make_wrist_config(const LeaderGripper::Config& cfg) {
     if (c.height <= 0) c.height = 480;
     if (c.fps    <= 0) c.fps    = 30.0;
     return c;
+}
+
+// The StreamConfig both start_streaming() and start_exchange() send. A rate of
+// 0 means "off", and the only way to say that to the firmware is to leave the
+// source's mask bit clear -- the rate field alone would fall through to the
+// firmware's 100 Hz default. See stream_rate.hpp.
+protocol::StreamConfig leader_stream_config(const char* caller, IMU& imu, unsigned imu_hz,
+                                            unsigned encoder_hz, protocol::StreamMode mode) {
+    const uint16_t mask = detail::stream_source_mask(imu_hz, encoder_hz, 0);
+    if (mask == 0) {
+        throw IoError(std::string("LeaderGripper::") + caller + ": both rates are 0, so "
+                      "nothing would be streamed — pass a non-zero rate for at "
+                      "least one source, or just don't start the stream",
+                      EINVAL);
+    }
+    detail::warn_if_rate_adjusted("LeaderGripper", "IMU", imu_hz, 0);
+    detail::warn_if_rate_adjusted("LeaderGripper", "encoder", encoder_hz, 0);
+
+    // Build StreamConfig (12 bytes — see protocol::StreamConfig).
+    protocol::StreamConfig sc{};
+    sc.source_mask  = mask;
+    if (imu_hz) sc.source_mask = (mask & ~protocol::StreamSrc::Imu) | imu.negotiate_time();
+    sc.mode         = static_cast<uint8_t>(mode);
+    sc.imu_rate     = static_cast<uint16_t>(imu_hz);
+    sc.encoder_rate = static_cast<uint16_t>(encoder_hz);
+    sc.eskin_rate   = 0;
+    sc.motor_rate   = 0;
+    sc.output_iface = static_cast<uint8_t>(protocol::StreamInterface::Uart);
+    return sc;
 }
 
 }  // namespace
@@ -129,6 +160,7 @@ LeaderGripper::LeaderGripper(const Config& cfg)
 
 LeaderGripper::~LeaderGripper() {
     try { stop_streaming(); } catch (...) {}
+    stop_exchange_();
 }
 
 void LeaderGripper::close() noexcept {
@@ -136,6 +168,7 @@ void LeaderGripper::close() noexcept {
     if (t_.is_running()) {
         try { stop_streaming(); } catch (...) {}
     }
+    stop_exchange_();
     if (wrist_) {
         try { wrist_->stop(); } catch (...) {}
     }
@@ -168,30 +201,8 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz) {
                     std::chrono::milliseconds(500));
     } catch (...) { /* expected when fw is already idle */ }
 
-    // A rate of 0 means "off", and the only way to say that to the firmware
-    // is to leave the source's mask bit clear — the rate field alone would
-    // fall through to the firmware's 100 Hz default. See stream_rate.hpp.
-    const uint16_t mask = detail::stream_source_mask(imu_hz, encoder_hz, 0);
-    if (mask == 0) {
-        throw IoError("LeaderGripper::start_streaming: both rates are 0, so "
-                      "nothing would be streamed — pass a non-zero rate for at "
-                      "least one source, or just don't start the stream",
-                      EINVAL);
-    }
-    detail::warn_if_rate_adjusted("LeaderGripper", "IMU", imu_hz, 0);
-    detail::warn_if_rate_adjusted("LeaderGripper", "encoder", encoder_hz, 0);
-
-    // Build StreamConfig (12 bytes — see protocol::StreamConfig).
-    protocol::StreamConfig sc{};
-    sc.source_mask  = mask;
-    if (imu_hz) sc.source_mask = (mask & ~protocol::StreamSrc::Imu) | imu_.negotiate_time();
-    sc.mode         = static_cast<uint8_t>(protocol::StreamMode::Separate);
-    sc.imu_rate     = static_cast<uint16_t>(imu_hz);
-    sc.encoder_rate = static_cast<uint16_t>(encoder_hz);
-    sc.eskin_rate   = 0;
-    sc.motor_rate   = 0;
-    sc.output_iface = static_cast<uint8_t>(protocol::StreamInterface::Uart);
-
+    const auto sc = leader_stream_config("start_streaming", imu_, imu_hz, encoder_hz,
+                                         protocol::StreamMode::Separate);
     auto wire = protocol::encode(sc);
     auto ack = t_.send_cmd(protocol::Cmd::StartStream, wire);
     if (ack.is_nack) {
@@ -205,9 +216,74 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz) {
     streaming_ = true;
 }
 
+bool LeaderGripper::start_exchange(unsigned imu_hz, unsigned encoder_hz,
+                                   unsigned exchange_hz, bool fallback_to_streaming) {
+    if (exchange_) return true;
+    if (streaming_) throw IoError("LeaderGripper: stop streaming before start_exchange", EBUSY);
+    if (exchange_hz == 0) exchange_hz = std::max({imu_hz, encoder_hz, 1u});
+    if (exchange_hz > 500)
+        throw IoError("LeaderGripper::start_exchange: exchange_hz must be <= 500", EINVAL);
+    if (detail::stream_source_mask(imu_hz, encoder_hz, 0) == 0)
+        (void)leader_stream_config("start_exchange", imu_, imu_hz, encoder_hz,
+                                   protocol::StreamMode::Polled);   // throws EINVAL
+
+    try {
+        t_.send_cmd(protocol::Cmd::StopStream, {}, std::chrono::milliseconds(500));
+    } catch (...) { /* expected when fw is already idle */ }
+
+    // Probe with the exchange itself: firmware without it answers InvalidCmd
+    // (the device version is not a capability signal -- it stays 1.2.6).
+    auto unsupported = [&](const std::string& why) {
+        if (!fallback_to_streaming)
+            throw ProtocolError("LeaderGripper::start_exchange: " + why);
+        logger()->info("LeaderGripper: {}; falling back to start_streaming", why);
+        start_streaming(imu_hz, encoder_hz);
+        return false;
+    };
+    protocol::LeaderExchangeRequest req{};
+    req.version = protocol::LEADER_EXCHANGE_VERSION;
+    std::vector<uint8_t> probe(sizeof(req));
+    std::memcpy(probe.data(), &req, sizeof(req));
+    try {
+        t_.send_cmd(protocol::Cmd::LeaderExchange, probe, std::chrono::milliseconds(500));
+    } catch (const NackError& e) {
+        if (e.code() != static_cast<uint8_t>(protocol::ErrorCode::InvalidCmd)) throw;
+        return unsupported("firmware without the leader exchange (0x5E)");
+    }
+
+    const auto sc = leader_stream_config("start_exchange", imu_, imu_hz, encoder_hz,
+                                         protocol::StreamMode::Polled);
+    try {
+        t_.send_cmd(protocol::Cmd::StartStream, protocol::encode(sc));
+    } catch (const NackError& e) {
+        return unsupported(std::string("firmware rejected the polled stream mode: ") + e.what());
+    }
+
+    t_.set_half_duplex(true);
+    // A stuck reply must not hold the link longer than a couple of periods.
+    const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
+    const auto timeout = std::chrono::milliseconds(std::max<long long>(
+        5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
+    exchange_ = std::make_shared<detail::LeaderExchange>(t_, period, timeout);
+    streaming_ = true;
+    return true;
+}
+
+LeaderExchangeStats LeaderGripper::exchange_stats() const {
+    return exchange_ ? exchange_->stats() : LeaderExchangeStats{};
+}
+
+void LeaderGripper::stop_exchange_() noexcept {
+    if (!exchange_) return;
+    exchange_->stop();
+    exchange_.reset();
+    t_.set_half_duplex(false);
+}
+
 void LeaderGripper::stop_streaming() {
     if (!streaming_) return;
     streaming_ = false;
+    stop_exchange_();
     try {
         t_.send_cmd(protocol::Cmd::StopStream, {}, std::chrono::milliseconds{500});
     } catch (...) {

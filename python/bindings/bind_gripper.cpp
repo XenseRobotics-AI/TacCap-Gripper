@@ -150,6 +150,35 @@ void bind_gripper(py::module_& m) {
           "Unknown and never matches.");
 
     // ---- LeaderGripper --------------------------------------------------
+    py::class_<LeaderExchangeStats>(m, "LeaderExchangeStats",
+        "Counters of LeaderGripper's half-duplex exchange since start_exchange().")
+        .def_readonly("exchanges",              &LeaderExchangeStats::exchanges)
+        .def_readonly("continuation_exchanges", &LeaderExchangeStats::continuation_exchanges,
+                      "Exchanges sent at once because the firmware reported a backlog.")
+        .def_readonly("timeouts",               &LeaderExchangeStats::timeouts,
+                      "Exchanges without a reply even after same-seq retries.")
+        .def_readonly("nacks",                  &LeaderExchangeStats::nacks)
+        .def_readonly("malformed",              &LeaderExchangeStats::malformed)
+        .def_readonly("not_polled",             &LeaderExchangeStats::not_polled,
+                      "Replies saying the firmware left the exchange (stream restarted or reboot).")
+        .def_readonly("records",                &LeaderExchangeStats::records)
+        .def_readonly("records_dropped",        &LeaderExchangeStats::records_dropped,
+                      "Records the firmware queue overflowed before they were fetched.")
+        .def_readonly("imu_samples",            &LeaderExchangeStats::imu_samples)
+        .def_readonly("encoder_samples",        &LeaderExchangeStats::encoder_samples)
+        .def_readonly("key_events",             &LeaderExchangeStats::key_events)
+        .def_readonly("sensor_errors",          &LeaderExchangeStats::sensor_errors)
+        .def_readonly("other_records",          &LeaderExchangeStats::other_records)
+        .def_readonly("last_rtt_us",            &LeaderExchangeStats::last_rtt_us)
+        .def_readonly("max_rtt_us",             &LeaderExchangeStats::max_rtt_us)
+        .def("__repr__", [](const LeaderExchangeStats& s) {
+            return "LeaderExchangeStats(exchanges=" + std::to_string(s.exchanges) +
+                   ", records=" + std::to_string(s.records) +
+                   ", dropped=" + std::to_string(s.records_dropped) +
+                   ", timeouts=" + std::to_string(s.timeouts) +
+                   ", max_rtt_us=" + std::to_string(s.max_rtt_us) + ")";
+        });
+
     py::class_<LeaderGripper>(m, "LeaderGripper",
         "One TacCap-Gripper leader (teleop master end).\n\n"
         "Owns the MCU control link plus IMU, encoder, button, LED and -- only when\n"
@@ -237,6 +266,24 @@ void bind_gripper(py::module_& m) {
             self.start_streaming(imu_hz, enc_hz);
         }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u,
            "Start the MCU sensor stream.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
+        .def("start_exchange", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz,
+                                  unsigned exchange_hz, bool fallback) {
+            py::gil_scoped_release gil;
+            return self.start_exchange(imu_hz, enc_hz, exchange_hz, fallback);
+        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u, py::arg("exchange_hz") = 0u,
+           py::arg("fallback_to_streaming") = true,
+           "Half-duplex alternative to start_streaming() (firmware with 0x5E).\n\n"
+           "The leader stops pushing frames and holds IMU, encoder, key and sensor-error\n"
+           "frames; the SDK fetches them once per 1/exchange_hz s and delivers them to the\n"
+           "same subscribers. The host never writes while the leader is answering, which\n"
+           "removes the overlap that loses uplink bytes. exchange_hz=0 means\n"
+           "max(imu_hz, encoder_hz, 1). Returns True when the exchange runs; on firmware\n"
+           "without 0x5E it falls back to start_streaming() and returns False, or raises\n"
+           "ProtocolError when fallback_to_streaming=False. stop_streaming() ends it.")
+        .def_property_readonly("is_exchanging", &LeaderGripper::is_exchanging,
+                               "True between a successful start_exchange() and stop_streaming().")
+        .def("exchange_stats", &LeaderGripper::exchange_stats,
+             "LeaderExchangeStats of the running exchange (zeros when not exchanging).")
         .def("stop_streaming", [](LeaderGripper& self) {
             py::gil_scoped_release gil;
             self.stop_streaming();

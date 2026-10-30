@@ -142,6 +142,9 @@ enum class Cmd : uint8_t {
     // reply carries motor status V2 + new IMU samples. Used with
     // StreamMode::Polled; see FollowerGripper::start_exchange().
     SlaveExchange            = 0x5D,
+    // Leader half-duplex exchange: reply carries the DATA frames the leader
+    // held in StreamMode::Polled. See LeaderGripper::start_exchange().
+    LeaderExchange           = 0x5E,
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

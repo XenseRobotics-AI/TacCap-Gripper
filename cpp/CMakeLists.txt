@@ -21,6 +21,7 @@ add_library(taccap_core SHARED
     src/leader_gripper.cpp
     src/follower_gripper.cpp
     src/follower_exchange.cpp
+    src/leader_exchange.cpp
     src/force_position_controller.cpp
     src/impedance_controller.cpp
     src/ota.cpp

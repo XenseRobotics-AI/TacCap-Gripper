@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Leader half-duplex exchange: `LeaderGripper.start_exchange(imu_hz,
+  encoder_hz, exchange_hz, fallback_to_streaming=True)`.** Requires leader
+  firmware with `StreamMode::Polled` and `Cmd::LeaderExchange` (0x5E, tc-gu-01
+  `docs/LEADER_EXCHANGE.md`). The leader holds IMU, encoder, key and
+  sensor-error frames instead of pushing them; the SDK fetches them (again at
+  once while a backlog remains) and delivers them to the usual subscribers,
+  and every request on the link takes turns, so host and leader never
+  transmit at the same time. A lost reply is retried with the same seq, so the
+  firmware replays it and no records are lost. On firmware without 0x5E it
+  falls back to `start_streaming()` and returns `False` (or raises
+  `ProtocolError` with `fallback_to_streaming=False`); the device version is
+  not used to decide, since it stays 1.2.6. `exchange_stats()` returns
+  `LeaderExchangeStats`. `start_streaming()` and the wire protocol of older
+  commands are unchanged.
+
 - **Follower half-duplex exchange: `FollowerGripper.start_exchange(motor_hz,
   imu_hz, exchange_hz)`.** Requires follower firmware with `StreamMode::Polled`
   and `Cmd::SlaveExchange` (0x5D, tc-gu-01 `docs/HALF_DUPLEX_EXCHANGE.md`).
