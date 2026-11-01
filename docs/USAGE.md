@@ -669,7 +669,7 @@ with `--help`.
 
 **This part is not in this SDK.** `xense.taccap` covers the gripper protocol and the
 wrist camera only; OG capture, rectification and force/depth inference all live in the
-`xensesdk` wheel (version 2.1.1 on this machine). What follows is the shortest path to
+`xensesdk` wheel (2.2.2, pinned in `environment.yml`). What follows is the shortest path to
 getting it running; the wheel you have installed is the authority on the interface.
 
 ```python
@@ -715,12 +715,104 @@ A few practical points:
 - The force and mesh outputs have fixed shapes (force distribution `(35, 20, 3)`,
   resultant force `(6,)`); the image outputs change shape with `rectify_size`.
 
+### 3.1 Which sensor is which
+
+Each gripper carries two sensors, one per jaw. Two separate facts identify one,
+and they come from different places:
+
+| | Meaning | Comes from |
+| --- | --- | --- |
+| **side** | which gripper it is mounted on | the gripper on the **same USB hub** (that gripper's firmware SN gives the side) |
+| **finger** | which jaw of that gripper | the GSPS serial's **last digit**: odd = left jaw, even = right jaw |
+
+So the GSPS parity is **not** the gripper side: `GSPS01A41Z0008` is the right-jaw
+sensor, and here it sits on a *left* gripper. To get the side, the gripper has to be
+plugged in. `tactile_sensor.py --list` resolves both:
+
+```
+serial          gripper finger  gripper SN        device
+GSPS01A41Z0007  left    left    TCGU01A28Z0089s   /dev/v4l/by-id/usb-Xense_..._GSPS01A41Z0007-video-index0
+GSPS01A41Z0008  left    right   TCGU01A28Z0089s   /dev/v4l/by-id/usb-Xense_..._GSPS01A41Z0008-video-index0
+```
+
+The LeRobot integration pairs sensors to grippers with the same rule.
+
+### 3.2 What comes back
+
+Measured on a GSPS01 with xensesdk 2.2.2:
+
+| Output | Shape, type | Notes |
+| --- | --- | --- |
+| `Rectify`, `AugDifference` | `(700, 400, 3)` uint8 | **BGR**, portrait. Flip to RGB for anything but OpenCV |
+| `Depth` | `(700, 400)` float32 | mm; well under 0.01 at rest |
+| `Force` | `(35, 20, 3)` float | one cell per 20×20 px of the rectified image |
+| `ForceResultant` | `(6,)` float32 | Fx Fy Fz Mx My Mz |
+| `Marker2D` | `(35, 20, 2)` float64 | marker positions (x, y) in px; at rest `((j+1)·400/21, (i+1)·700/36)` |
+| `TimeStamp` | float | **wall clock** (`time.time()`), ~3 ms before the call returns |
+
+The sensor streams MJPEG at **120 fps**, and `selectSensorInfo()` blocks until the
+next frame, so a loop that calls it runs at the sensor rate. To line tactile
+frames up with this SDK's samples, whose `host_time` is on the monotonic clock,
+convert: `time.monotonic() - (time.time() - timestamp)`.
+
+**What the viewers show is what LeRobot records.** The LeRobot integration flips
+the images to RGB and **transposes** them to `(400, 700)` (a mirror about the
+diagonal, not a rotation); `tactile_sensor.py`, `rerun_viewer.py` and
+`gripper_console.py --rerun` do the same, and put the force field through the same
+transpose so each arrow sits on its marker. They also open the sensor with the
+same `process.diff_gain = 1.0` (the sensors ship at 1.5). The helpers are in
+`python/examples/_tactile.py`.
+
+The no-contact reference that `AugDifference` and the force are measured against
+is taken when the sensor opens. **Open it with nothing touching the gel**;
+`sensor.calibrateSensor()` takes the reference again.
+
+### 3.3 One command to see it
+
+```bash
+python python/examples/tactile_sensor.py --list            # sensors, gripper side, finger
+python python/examples/tactile_sensor.py left              # both jaws of the left gripper
+python python/examples/tactile_sensor.py left --finger right --outputs rectify,difference
+python python/examples/tactile_sensor.py left --no-display --duration 10   # print force + rate
+```
+
+The window shows rectify | difference | depth | force field for each sensor; `c`
+takes the reference again, `s` saves a PNG. With only `rectify` / `difference`
+requested, the inference engine is not loaded.
+
 For full production-grade usage (async reads, config overrides, multi-sensor
 orchestration), see `lerobot/cameras/xense/camera_xense.py` on the `lerobot` side.
 
 ---
 
 ## 4. Running all three at once
+
+To see all three in one place, `rerun_viewer.py` streams gripper state, the wrist
+camera and both tactile sensors into a [Rerun](https://rerun.io) viewer on one
+timeline. It is read-only (the motor is never enabled):
+
+```bash
+python python/examples/rerun_viewer.py                      # every gripper plugged in
+python python/examples/rerun_viewer.py left --depth
+python python/examples/rerun_viewer.py left --save rig.rrd --duration 20
+```
+
+It also works as a reference for wiring the three streams together in your own
+code: one thread per stream, all on the host monotonic clock. `rerun-sdk` and
+`xensesdk` come with `environment.yml`.
+
+To **drive** the jaw while watching all of it, use the console instead — the
+full-chain check to run before recording a rig:
+
+```bash
+python python/examples/gripper_console.py left --rerun
+python python/examples/gripper_console.py left --mode force-position --rerun --depth
+```
+
+j/k/o/c move the jaw as usual; the viewer adds the target and the commanded
+torque next to the measured opening and torque, and the controller state as a
+text log. Close on an object and check that the opening stops short of the
+target, torque rises, and the tactile image and force field respond.
 
 They are independent, but running them together has a few known traps:
 
