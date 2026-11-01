@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-01
+
 ### Added
 
 - **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
