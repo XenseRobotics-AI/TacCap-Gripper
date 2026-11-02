@@ -122,29 +122,40 @@ void bind_gripper(py::module_& m) {
                    " fw_sn=" + e.firmware_sn +
                    (e.in_use ? " IN USE" : "") + ")";
         });
+    // Discovery opens and probes every serial port (~100+ ms per free device,
+    // up to the ACK timeout on a silent one). Drop the GIL so a scan on a
+    // background thread does not freeze the caller's other Python threads
+    // (e.g. a GUI pushing 100 Hz targets). Results are converted after the
+    // GIL is re-acquired.
     m.def("scan_grippers",  &discovery::scan_all,
+          py::call_guard<py::gil_scoped_release>(),
           "Enumerate every gripper currently plugged in.\n\n"
           "Opens a transient link to each MCU and probes it for DEV_TYPE and the\n"
           "SN before closing it again, so a scan is not free and cannot run while\n"
           "another process holds the port. Returns an empty list rather than\n"
           "raising when nothing is attached.");
     m.def("find_one",       &discovery::find_one,
+          py::call_guard<py::gil_scoped_release>(),
           "The single attached gripper, whatever its side or role.\n\n"
           "Raises IoError when none is attached, and again when more than one is --\n"
           "pick with find_left()/find_right() or find_leader()/find_follower().");
     m.def("find_left",      &discovery::find_left,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Left.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
     m.def("find_right",     &discovery::find_right,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Right.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
     m.def("find_leader",    &discovery::find_leader,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose SN patch suffix is 'm' (Master).\n\n"
           "Raises IoError when none matches; a legacy or unburned SN reports role\n"
           "Unknown and never matches.");
     m.def("find_follower",  &discovery::find_follower,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose SN patch suffix is 's' (Slave).\n\n"
           "Raises IoError when none matches; a legacy or unburned SN reports role\n"
           "Unknown and never matches.");

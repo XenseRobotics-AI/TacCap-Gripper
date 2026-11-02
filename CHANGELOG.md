@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Python discovery no longer freezes other threads.** `scan_grippers()` and
+  the `find_*()` helpers held the GIL for the whole scan (~280 ms with two idle
+  grippers attached, up to the ACK timeout on a silent port), so a GUI scanning
+  on a background thread stalled its own 100 Hz target thread for the same
+  time. The PC config tool rescans every 3 s while one role's gripper is held
+  by another process, which made reciprocation stutter every 3 s whenever the
+  leader was in use elsewhere. The bindings now release the GIL; measured
+  stall during a scan: 263-280 ms before, 0 ms after.
+
 ### Added
 
 - **Leader half-duplex exchange: `LeaderGripper.start_exchange(imu_hz,
