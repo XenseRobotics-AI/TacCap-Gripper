@@ -85,7 +85,7 @@ python python/examples/ota_update.py --get-status right
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
 | `tactile_sensor.py` | 只读 | 通过 `xensesdk` 读视触觉传感器。`left` / `right` 选这台夹爪的两个爪(夹爪须插着,左右由同 hub 的夹爪决定),`--finger` 只看一个爪,也可直接给 GSPS 序列号;`--list` 列出每个传感器所在夹爪与爪位。`--outputs` 选 `rectify` / `difference` / `depth` / `marker` / `force` / `force_resultant`,只要前两个时不加载推理引擎。窗口内 `c` 重采无接触参考帧(先松开),`s` 存图;`--no-display` 打印合力与帧率。打开时不要碰凝胶。|
-| `rerun_viewer.py` | 只读 | 把一台或两台夹爪的全部数据流放进同一个 Rerun 查看器、同一条 `host_time` 时间轴:主爪编码器 / IMU / 按键,或从爪电机状态(开口度、速度、力矩、温度、状态位);XC 腕相机(`--undistort` 去畸变);两个视触觉传感器的图像 + 叠加力场箭头 + 合力曲线(`--depth` 加深度图,`--tactile-image difference` 看差分图)。不会使能电机。`--save x.rrd` 存文件,`--connect URL` 推到别的机器;有相机服务占着腕相机时用 `--no-wrist`。触觉传感器 120 fps 全部读取,但只按 `--tactile-hz`(默认 30)记录,否则几秒就是 GB 级。|
+| `rerun_viewer.py` | 只读 | 把一台或两台夹爪的全部数据流放进同一个 Rerun 查看器、同一条 `host_time` 时间轴:主爪编码器 / IMU / 按键,或从爪电机状态(开口度、速度、力矩、温度、状态位);XC 腕相机(`--undistort` 去畸变);两个视触觉传感器的图像 + 叠加 marker flow 箭头(与 SDK `drawMarkerMove` 一致,1:1 不放大) + 合力曲线(`--depth` 加深度图,`--tactile-image difference` 看差分图)。不会使能电机。`--save x.rrd` 存文件,`--connect URL` 推到别的机器;有相机服务占着腕相机时用 `--no-wrist`。触觉传感器 120 fps 全部读取,但只按 `--tactile-hz`(默认 30)记录,否则几秒就是 GB 级。|
 
 ### 固件
 

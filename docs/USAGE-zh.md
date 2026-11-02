@@ -651,9 +651,14 @@ LeRobot 集成用同一条规则把传感器配对到夹爪。
 
 **查看器显示的就是 LeRobot 录下来的样子。** LeRobot 集成把图像转成 RGB 并**转置**为
 `(400, 700)`(沿对角线镜像,不是旋转);`tactile_sensor.py`、`rerun_viewer.py`、
-`gripper_console.py --rerun` 做同样处理,力场也做同样的转置,箭头落在各自的标记点上。
+`gripper_console.py --rerun` 做同样处理。
 打开传感器时同样设置 `process.diff_gain = 1.0`(出厂为 1.5)。相关函数在
 `python/examples/_tactile.py`。
+
+**触觉图像上的箭头是 marker flow**,画法与 SDK 自带的 `Sensor.drawMarkerMove()` 一致:
+从每个标记点的初始位置(`Marker2DInit`)指向当前位置(`Marker2D`),**1:1 不放大**,箭头长度
+就是真实的像素位移。网格降采样到传感器的 `dim.viz_marker2d_shape`(GSPS01 为 20 × 12)。
+用力按压并横搓时实测可达约 40 px。Marker2D 来自推理引擎。
 
 `AugDifference` 和力都是相对"无接触参考帧"算的,参考帧在打开传感器时采集。
 **打开时不要碰凝胶**;`sensor.calibrateSensor()` 可以重新采一次参考帧。
@@ -667,7 +672,7 @@ python python/examples/tactile_sensor.py left --finger right --outputs rectify,d
 python python/examples/tactile_sensor.py left --no-display --duration 10   # 打印力与帧率
 ```
 
-窗口里每个传感器一行:rectify | difference | depth | 力场;`c` 重新采参考帧,
+窗口里每个传感器一列:rectify | flow | difference | depth;`c` 重新采参考帧,
 `s` 存 PNG。只要 `rectify` / `difference` 时不加载推理引擎。
 
 要看完整的产品级用法(异步读、配置覆盖、多传感器编排),参考
@@ -697,7 +702,7 @@ python python/examples/gripper_console.py left --mode force-position --rerun --d
 ```
 
 j/k/o/c 照常开合;查看器里在实测开口度和力矩旁边多了目标值和命令力矩,控制器状态
-以文本日志显示。夹住一个物体,检查开口度停在目标之前、力矩上升、触觉图像和力场有响应。
+以文本日志显示。夹住一个物体,检查开口度停在目标之前、力矩上升、触觉图像和 marker flow 有响应。
 
 各自独立,但同时开有几个已知的坑:
 

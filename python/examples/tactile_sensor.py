@@ -39,9 +39,12 @@ loop reads two. `--outputs` picks the types:
     rectify          rectified gel image                       no inference
     difference       contact vs. the no-contact reference      no inference
     depth            indentation map, mm                       inference
-    marker           (35, 20, 2) tangential marker shift       inference
-    force            (35, 20, 3) force distribution            inference
+    flow             marker flow drawn over rectify            inference
     force_resultant  (6,) net force / torque                   inference
+
+`flow` is the SDK's own marker-flow view, `sensor.drawMarkerMove(rectify)`:
+an arrow from each marker's rest position to where it is now, at 1:1 (the
+arrow is the real displacement in pixels), on the sensor's thinned grid.
 
 When only the first two are asked for, the inference engine is not loaded
 (`disable_infer=True`), so the sensor opens faster and uses no GPU.
@@ -61,7 +64,7 @@ Usage:
 
 The window shows each sensor as one column, outputs stacked, in the
 orientation the LeRobot integration records: the SDK's portrait (700, 400)
-image transposed to (400, 700). Force arrows sit on the markers they belong to.
+image transposed to (400, 700).
 
 Keys (viewer window):
     q / ESC   quit        c   take the no-contact reference again
@@ -94,45 +97,17 @@ def render(cv2, name: str, data, size: tuple[int, int], args) -> np.ndarray:
     landscape the way the dataset stores it — see _tactile.py.
     """
     w, h = size
-    if name in ("rectify", "difference"):
+    if name in ("rectify", "difference", "flow"):
         tile = _tactile.to_display(data)
     elif name == "depth":
         d = np.clip(np.asarray(data, dtype=np.float32) / args.depth_max_mm, 0.0, 1.0)
         d = _tactile.to_display((d * 255).astype(np.uint8))
         tile = cv2.applyColorMap(d, cv2.COLORMAP_VIRIDIS)
-    elif name in ("force", "marker"):
-        tile = np.zeros((h, w, 3), np.uint8)
-        if name == "force":
-            draw_field(cv2, tile, data, args.force_scale * w / 700)
-        else:  # positions, not displacements: show where each marker is
-            draw_markers(cv2, tile, data)
-    else:  # force_resultant has no image; it is printed onto the first tile
+    else:  # the rest have no tile of their own; force_resultant is printed
         return None
     if tile.shape[:2] != (h, w):
         tile = cv2.resize(tile, (w, h))
     return label(cv2, tile, name)
-
-
-def draw_field(cv2, canvas: np.ndarray, field, scale: float) -> None:
-    """In-plane force as arrows on the markers; the dot size is the normal part."""
-    origins, vectors = _tactile.field_arrows(field, canvas.shape[:2], scale)
-    normal = np.abs(np.asarray(field, dtype=np.float32)[..., 2]).reshape(-1)
-    for (x0, y0), (dx, dy), fz in zip(origins, vectors, normal):
-        p0 = (int(x0), int(y0))
-        cv2.arrowedLine(
-            canvas, p0, (int(x0 + dx), int(y0 + dy)), (80, 220, 80), 1, tipLength=0.3
-        )
-        r = int(min(8.0, fz * scale * 0.5))
-        if r > 0:
-            cv2.circle(canvas, p0, r, (60, 120, 255), -1)
-
-
-def draw_markers(cv2, canvas: np.ndarray, markers) -> None:
-    """Marker2D: (x, y) positions in the portrait image, transposed to fit."""
-    h, w = canvas.shape[:2]
-    pts = np.asarray(markers, dtype=np.float32).reshape(-1, 2)
-    for x, y in pts * (w / 700.0):  # portrait 700 tall -> display width w
-        cv2.circle(canvas, (int(y), int(x)), 2, (80, 220, 80), -1)
 
 
 def label(cv2, tile: np.ndarray, text: str, row: int = 0) -> np.ndarray:
@@ -167,20 +142,15 @@ def main() -> int:
     p.add_argument("--finger", choices=("left", "right"), help="only this jaw's sensor")
     p.add_argument(
         "--outputs",
-        default="rectify,difference,depth,force,force_resultant",
-        help=f"comma-separated, from: {', '.join(_tactile.OUTPUTS)}",
+        default="rectify,difference,depth,flow,force_resultant",
+        help="comma-separated, from: rectify, difference, depth, flow, "
+        "force_resultant (see above)",
     )
     p.add_argument(
         "--depth-max-mm",
         type=float,
         default=DEFAULT_DEPTH_MAX_MM,
         help="depth that maps to the top of the colour scale",
-    )
-    p.add_argument(
-        "--force-scale",
-        type=float,
-        default=20.0,
-        help="pixels per force unit for the force arrows",
     )
     p.add_argument("--tile-width", type=int, default=420, help="viewer tile width, px")
     p.add_argument("--no-display", action="store_true", help="print, no window")
@@ -195,9 +165,17 @@ def main() -> int:
         return 0
 
     names = [n.strip() for n in args.outputs.split(",") if n.strip()]
+    if "flow" in names:
+        names.remove("flow")
+        # drawMarkerMove reads the frame's Marker2D / Marker2DInit, so request
+        # them, and it draws over rectify.
+        extra = ["rectify", "marker", "marker_init"]
+        names = list(dict.fromkeys(names + [n for n in extra if n not in names]))
+        names.insert(names.index("rectify") + 1, "flow")
     Sensor = _tactile.import_sensor_class()
-    types = _tactile.output_types(Sensor, names)
-    disable_infer = not _tactile.needs_inference(names)
+    requested = [n for n in names if n != "flow"]
+    types = _tactile.output_types(Sensor, requested)
+    disable_infer = not _tactile.needs_inference(requested)
     targets = _tactile.select_tactile(args.target, args.finger)
 
     sensors = []  # (info, Sensor)
@@ -239,7 +217,11 @@ def run(args, names, types, sensors) -> int:
         for info, sensor in sensors:
             out = sensor.selectSensorInfo(*types)
             out = out if isinstance(out, tuple) else (out,)
-            frame = dict(zip(names, out))
+            frame = dict(zip([n for n in names if n != "flow"], out))
+            if "flow" in names:
+                # Right after selectSensorInfo, so it draws this frame's markers.
+                frame["flow"] = sensor.drawMarkerMove(frame["rectify"].copy())
+                frame = {n: frame[n] for n in names}  # tile order = names
             counts[info.serial] += 1
             if "force_resultant" in frame:
                 lines.append(

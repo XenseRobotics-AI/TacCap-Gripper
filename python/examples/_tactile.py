@@ -14,7 +14,7 @@ What is here:
     ``release_sensor()``, with the work-arounds every caller otherwise rediscovers
   - ``OUTPUTS`` — the output names the examples accept, mapped to
     ``Sensor.OutputType``
-  - display conventions — ``to_rgb()``, ``to_display()``, ``field_arrows()``,
+  - display conventions — ``to_rgb()`` and ``to_display()``,
     the same orientation and channel order the LeRobot integration records
 
 Two numbers identify a tactile sensor, and they mean different things:
@@ -61,7 +61,10 @@ OUTPUTS = {
     "rectify": ("Rectify", False),  # (700, 400, 3) BGR rectified gel image
     "difference": ("AugDifference", False),  # (700, 400, 3) BGR, vs. reference
     "depth": ("Depth", True),  # (700, 400) indentation, mm
-    "marker": ("Marker2D", True),  # (35, 20, 2) marker positions (x, y), px
+    # Marker flow: positions (x, y) in px, now and at rest. Marker2D comes from
+    # the inference engine's optical flow, so it needs inference too.
+    "marker": ("Marker2D", True),  # (35, 20, 2)
+    "marker_init": ("Marker2DInit", True),  # (35, 20, 2)
     "force": ("Force", True),  # (35, 20, 3) force distribution
     "force_resultant": ("ForceResultant", True),  # (6,) Fx Fy Fz Mx My Mz
 }
@@ -298,8 +301,8 @@ def open_sensor(Sensor, serial: str, *, disable_infer: bool):
 #                 a transpose, i.e. a mirror about the diagonal, not a rotation
 #   channels      BGR -> RGB for anything but OpenCV
 #
-# Force and marker fields go through the same transpose, so arrows stay on the
-# markers they belong to.
+# Marker flow is drawn by the SDK (Sensor.drawMarkerMove) onto the portrait
+# image before the transpose, so the arrows move with it.
 
 
 def to_display(arr: np.ndarray) -> np.ndarray:
@@ -309,28 +312,6 @@ def to_display(arr: np.ndarray) -> np.ndarray:
 
 def to_rgb(bgr: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(bgr[..., ::-1])
-
-
-def field_arrows(field, display_hw: tuple[int, int], scale: float):
-    """``(origins, vectors)``, (N, 2) each, for a (rows, cols, >=2) field.
-
-    In the coordinates of a ``to_display()`` image of size ``display_hw``. The
-    field's components are (x, y) in the SDK's portrait image, and cell (i, j)
-    sits on marker (i, j), whose rest position is
-    ((j + 1) * W / (cols + 1), (i + 1) * H / (rows + 1)) — measured from
-    Marker2D, which puts a 35 x 20 grid 19.05 px apart in x, 19.44 in y. Both
-    the positions and the components are then swapped, the same transpose the
-    image went through.
-    """
-    field = np.asarray(field, dtype=np.float32)
-    rows, cols = field.shape[:2]
-    h, w = display_hw[1], display_hw[0]  # portrait size, before the transpose
-    jj, ii = np.meshgrid(np.arange(cols), np.arange(rows))
-    x = (jj + 1) * w / (cols + 1)
-    y = (ii + 1) * h / (rows + 1)
-    origins = np.stack([y, x], axis=-1).reshape(-1, 2)  # transposed: (x, y) -> (y, x)
-    vectors = field[..., [1, 0]].reshape(-1, 2) * scale
-    return origins, vectors
 
 
 def release_sensor(sensor) -> None:

@@ -24,7 +24,7 @@ Entity layout, per side (``left`` / ``right``):
     {side}/gripper/{temperature,status,state}
     {side}/gripper/encoder_rad, {side}/imu/{accel,gyro}, {side}/button  (leader)
     {side}/wrist/image
-    {side}/tactile/{finger}/image      + force_field (arrows) on the same image
+    {side}/tactile/{finger}/image      with the SDK's marker flow drawn on it
     {side}/tactile/{finger}/depth
     {side}/tactile/{finger}/force_resultant   Fx Fy Fz Mx My Mz
 """
@@ -92,7 +92,7 @@ def add_arguments(parser) -> None:
         "--no-force",
         dest="force",
         action="store_false",
-        help="tactile images only: no force, no inference engine",
+        help="tactile images only: no marker flow, no force, no inference engine",
     )
     g.add_argument("--depth", action="store_true", help="also show the tactile depth")
     g.add_argument(
@@ -100,12 +100,6 @@ def add_arguments(parser) -> None:
         type=float,
         default=30.0,
         help="tactile frames logged per second (the sensor runs at 120)",
-    )
-    g.add_argument(
-        "--force-scale",
-        type=float,
-        default=20.0,
-        help="pixels per force unit for the arrows",
     )
     g.add_argument(
         "--jpeg-quality", type=int, default=80, help="0 = log images uncompressed"
@@ -217,7 +211,7 @@ class TactileStream:
         self.root = f"{side}/tactile/{info.finger}"
         self.names = [args.tactile_image]
         if args.force:
-            self.names += ["force", "force_resultant"]
+            self.names += ["marker", "marker_init", "force_resultant"]
         if args.depth:
             self.names.append("depth")
         # TimeStamp rides last, so zip() with self.names never sees it.
@@ -268,18 +262,21 @@ class TactileStream:
             frame = dict(zip(self.names, out))
             # Same orientation and channel order as the LeRobot dataset — see
             # the display conventions in _tactile.py.
-            image = _tactile.to_display(frame[self.args.tactile_image])
+            image = frame[self.args.tactile_image]
+            if "marker" in frame:
+                # Marker flow drawn by the SDK itself, onto the image: rest ->
+                # current position, 1:1, its thinned grid, its line width, a dot
+                # where nothing moved. Drawn here rather than as Rerun arrows,
+                # whose width is in image pixels and vanished once the view was
+                # scaled down. Same thread, right after selectSensorInfo, so it
+                # draws this frame's markers.
+                image = self.sensor.drawMarkerMove(np.ascontiguousarray(image))
             log_image(
-                f"{self.root}/image", _tactile.to_rgb(image), self.args.jpeg_quality
+                f"{self.root}/image",
+                _tactile.to_rgb(_tactile.to_display(image)),
+                self.args.jpeg_quality,
             )
-            if "force" in frame:
-                origins, vectors = _tactile.field_arrows(
-                    frame["force"], image.shape[:2], self.args.force_scale
-                )
-                rr.log(
-                    f"{self.root}/force_field",
-                    rr.Arrows2D(origins=origins, vectors=vectors, colors=[80, 220, 80]),
-                )
+            if "marker" in frame:
                 rr.log(
                     f"{self.root}/force_resultant",
                     rr.Scalars(np.asarray(frame["force_resultant"], dtype=float)),
@@ -405,7 +402,7 @@ def blueprint(rigs: list[Rig], args):
             images.append(
                 rrb.Spatial2DView(
                     origin=t.root,
-                    contents=[f"{t.root}/image", f"{t.root}/force_field"],
+                    contents=f"{t.root}/image",
                     name=f"{side} tactile {t.info.finger}",
                 )
             )

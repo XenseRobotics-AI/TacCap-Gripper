@@ -39,7 +39,7 @@ Full-chain check (--rerun)
     next to the wrist camera and both visuotactile sensors, on one timeline. Drive
     the jaw with the keys and check, in one place, that everything responds: the
     opening follows the target, torque rises on contact, the tactile image and
-    force field react when the jaw closes on something, the wrist camera keeps
+    marker flow react when the jaw closes on something, the wrist camera keeps
     its frame rate. Before recording a rig, this is the run to do.
 
     Gripper state is logged from the controller's own snapshot() — the controller
