@@ -58,10 +58,13 @@ class LeaderExchange;
 // fetched. timeouts are exchanges without a reply even after same-seq retries.
 // continuation_exchanges went out immediately because the firmware reported a
 // backlog. not_polled counts replies saying the firmware is not in the
-// exchange (another process restarted the stream, or the leader rebooted).
+// exchange: its 1 s lease expired while this host stalled, another process
+// restarted the stream, or the leader rebooted. Each such reply makes the SDK
+// re-send the polled StartStream (rearms; rearm_failures when that failed).
 struct LeaderExchangeStats {
     uint64_t exchanges = 0, continuation_exchanges = 0;
     uint64_t timeouts = 0, nacks = 0, malformed = 0, not_polled = 0;
+    uint64_t rearms = 0, rearm_failures = 0;
     uint64_t records = 0, records_dropped = 0;
     uint64_t imu_samples = 0, encoder_samples = 0, key_events = 0;
     uint64_t sensor_errors = 0, other_records = 0;
@@ -241,7 +244,22 @@ public:
     // overlap that loses uplink bytes on the current hardware.
     //
     // is_streaming() is true and stop_streaming() ends the exchange.
-    // exchange_hz=0 means max(imu_hz, encoder_hz, 1), at most 500.
+    // exchange_hz=0 means max(imu_hz, encoder_hz, 1), at most 500. A sample is
+    // fetched on the next exchange after it is taken, so it waits at most one
+    // exchange period; at exchange_hz == data rate the two clocks drift, and a
+    // sample occasionally waits one extra period (~10 ms at 100 Hz, measured
+    // ~330 times per hour). Pass exchange_hz = 2x the data rate (e.g. 200) to
+    // remove that, at the cost of twice the (small) request traffic.
+    //
+    // Timestamps: every sample delivered from one exchange reply carries that
+    // reply's arrival time as host_time, i.e. up to one exchange period after
+    // the sample was taken. Use mcu_timestamp_us for the sampling instant.
+    //
+    // The firmware leaves the exchange by itself if no exchange arrives for
+    // 1 s (host crashed or stalled): it flushes what it held as ordinary DATA
+    // frames and goes back to pushing, so a dead host never leaves the leader
+    // silent. If this process was only stalled, the next reply says so and the
+    // SDK re-enters the exchange; nothing is lost in between.
     //
     // Firmware without 0x5E answers InvalidCmd. With fallback_to_streaming
     // (the default) the SDK then calls start_streaming(imu_hz, encoder_hz)

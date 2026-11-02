@@ -160,7 +160,10 @@ void bind_gripper(py::module_& m) {
         .def_readonly("nacks",                  &LeaderExchangeStats::nacks)
         .def_readonly("malformed",              &LeaderExchangeStats::malformed)
         .def_readonly("not_polled",             &LeaderExchangeStats::not_polled,
-                      "Replies saying the firmware left the exchange (stream restarted or reboot).")
+                      "Replies saying the firmware left the exchange (1 s lease expired, stream restarted or reboot).")
+        .def_readonly("rearms",                 &LeaderExchangeStats::rearms,
+                      "Times the SDK re-sent the polled StartStream after a not_polled reply.")
+        .def_readonly("rearm_failures",         &LeaderExchangeStats::rearm_failures)
         .def_readonly("records",                &LeaderExchangeStats::records)
         .def_readonly("records_dropped",        &LeaderExchangeStats::records_dropped,
                       "Records the firmware queue overflowed before they were fetched.")
@@ -277,7 +280,11 @@ void bind_gripper(py::module_& m) {
            "frames; the SDK fetches them once per 1/exchange_hz s and delivers them to the\n"
            "same subscribers. The host never writes while the leader is answering, which\n"
            "removes the overlap that loses uplink bytes. exchange_hz=0 means\n"
-           "max(imu_hz, encoder_hz, 1). Returns True when the exchange runs; on firmware\n"
+           "max(imu_hz, encoder_hz, 1); pass 2x the data rate (e.g. 200) to avoid a sample\n"
+           "occasionally waiting one extra period. Samples from one reply share its arrival\n"
+           "time as host_time; use mcu_timestamp_us for the sampling instant. If the host stalls\n"
+           "for more than 1 s the leader returns to pushing on its own and the SDK re-enters\n"
+           "the exchange afterwards. Returns True when the exchange runs; on firmware\n"
            "without 0x5E it falls back to start_streaming() and returns False, or raises\n"
            "ProtocolError when fallback_to_streaming=False. stop_streaming() ends it.")
         .def_property_readonly("is_exchanging", &LeaderGripper::is_exchanging,

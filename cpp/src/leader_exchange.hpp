@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <thread>
 
@@ -32,8 +33,11 @@ namespace xense::taccap::detail {
 
 class LeaderExchange {
 public:
+    // rearm re-sends the polled StartStream; it runs on the worker when a reply
+    // says the firmware left the exchange (its 1 s lease expired, or another
+    // process restarted the stream).
     LeaderExchange(bus::Transport& transport, std::chrono::microseconds period,
-                   std::chrono::milliseconds timeout);
+                   std::chrono::milliseconds timeout, std::function<void()> rearm = {});
     ~LeaderExchange();
 
     LeaderExchange(const LeaderExchange&)            = delete;
@@ -56,6 +60,7 @@ private:
     bus::Transport&                 t_;
     const std::chrono::microseconds period_;
     const std::chrono::milliseconds timeout_;
+    const std::function<void()>     rearm_;
 
     mutable std::mutex       mu_;
     std::condition_variable  cv_;

@@ -264,7 +264,12 @@ bool LeaderGripper::start_exchange(unsigned imu_hz, unsigned encoder_hz,
     const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
     const auto timeout = std::chrono::milliseconds(std::max<long long>(
         5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
-    exchange_ = std::make_shared<detail::LeaderExchange>(t_, period, timeout);
+    // Re-enter the exchange after the firmware's lease fallback with the same
+    // configuration (sources, rates and the negotiated IMU format).
+    auto rearm = [this, wire = protocol::encode(sc)] {
+        t_.send_cmd(protocol::Cmd::StartStream, wire, std::chrono::milliseconds(200));
+    };
+    exchange_ = std::make_shared<detail::LeaderExchange>(t_, period, timeout, std::move(rearm));
     streaming_ = true;
     return true;
 }

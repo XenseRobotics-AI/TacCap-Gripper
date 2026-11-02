@@ -16,13 +16,17 @@ using clock = std::chrono::steady_clock;
 // Back-to-back exchanges allowed per period while the firmware reports a
 // backlog; a backlog larger than this is left for the next period.
 constexpr unsigned kMaxContinuations = 8;
+// At most one re-arm attempt in this interval, so a firmware that keeps
+// refusing the polled mode is not hammered with StartStream.
+constexpr auto kRearmInterval = std::chrono::milliseconds(200);
 
 }  // namespace
 
 LeaderExchange::LeaderExchange(bus::Transport& transport,
                                std::chrono::microseconds period,
-                               std::chrono::milliseconds timeout)
-    : t_(transport), period_(period), timeout_(timeout) {
+                               std::chrono::milliseconds timeout,
+                               std::function<void()> rearm)
+    : t_(transport), period_(period), timeout_(timeout), rearm_(std::move(rearm)) {
     worker_ = std::thread([this] { run_(); });
 }
 
@@ -74,6 +78,7 @@ void LeaderExchange::run_() {
     std::memcpy(wire.data(), &req, sizeof(req));
 
     auto next_tick = clock::now();
+    auto last_rearm = clock::now() - kRearmInterval;
     unsigned continuations = 0;
     std::unique_lock<std::mutex> lk(mu_);
     while (!stop_) {
@@ -137,6 +142,18 @@ void LeaderExchange::run_() {
             ++stats_.timeouts;
         }
         if (link_down) break;
+        // Firmware fell back to pushing (lease expired while this host stalled,
+        // or another process restarted the stream): its pushed frames are being
+        // dispatched normally meanwhile; ask for the exchange again.
+        if (ok && !(h.flags & protocol::LeaderExchangeRespFlag::Polled) && rearm_ &&
+            clock::now() - last_rearm >= kRearmInterval) {
+            last_rearm = clock::now();
+            lk.unlock();
+            bool rearmed = false;
+            try { rearm_(); rearmed = true; } catch (const std::exception&) {}
+            lk.lock();
+            if (rearmed) ++stats_.rearms; else ++stats_.rearm_failures;
+        }
         if (ok && h.pending && continuations < kMaxContinuations) {
             ++continuations;            // backlog: fetch again now, keep the tick
             continue;

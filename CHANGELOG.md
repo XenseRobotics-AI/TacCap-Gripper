@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LeaderExchangeStats`. `start_streaming()` and the wire protocol of older
   commands are unchanged.
 
+- **Leader exchange survives the firmware lease.** Leader firmware leaves the
+  exchange by itself after 1 s without `Cmd::LeaderExchange` (host crashed or
+  stalled), flushes what it held as ordinary DATA frames and goes back to
+  pushing. A reply without `LeaderExchangeRespFlag::Polled` now makes the SDK
+  re-send the polled `StartStream` (at most every 200 ms), so a stalled host
+  returns to the exchange with nothing lost; `LeaderExchangeStats` gains
+  `rearms` and `rearm_failures`. `start_exchange` documents `exchange_hz`
+  (2x the data rate removes the occasional one-period wait) and that samples
+  from one reply share its arrival time as `host_time`.
+
+  Known limit: the half-duplex turn lock is not fair. A user thread issuing
+  requests back-to-back with no pause can delay exchanges (seen in a test at
+  ~10 kHz of heartbeats); health checks at realistic rates (<= 1 kHz) are
+  unaffected.
+
 - **Follower half-duplex exchange: `FollowerGripper.start_exchange(motor_hz,
   imu_hz, exchange_hz)`.** Requires follower firmware with `StreamMode::Polled`
   and `Cmd::SlaveExchange` (0x5D, tc-gu-01 `docs/HALF_DUPLEX_EXCHANGE.md`).

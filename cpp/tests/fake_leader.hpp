@@ -44,6 +44,9 @@ public:
     void drop_exchange_replies(unsigned n) { drop_.store(n); }
     // Make the next exchange reply's record lengths inconsistent.
     void corrupt_next_reply() { corrupt_.store(true); }
+    // Firmware lease fallback (tc-gu-01 LEADER_EXCHANGE.md): leave the exchange,
+    // flush held records as DATA frames, then push as the original firmware.
+    void expire_lease() { expire_.store(true); }
     // A button event, held or pushed like any other DATA frame. Emitted from
     // the fake's own thread so the PTY never has two writers.
     void press_key(uint8_t state) { key_state_.store(static_cast<int>(state)); }
@@ -52,6 +55,8 @@ public:
     bool streaming() const { return streaming_.load(); }
     uint8_t stream_mode() const { return mode_.load(); }
     unsigned exchanges() const { return exchanges_.load(); }
+    unsigned lease_expiries() const { return lease_expiries_.load(); }
+    unsigned polled_starts() const { return polled_starts_.load(); }
     unsigned replays() const { return replays_.load(); }
     unsigned overlaps() const { return overlaps_.load(); }
     // DATA frames written on the wire (only outside StreamMode::Polled).
@@ -143,6 +148,7 @@ private:
                     std::lock_guard<std::mutex> lk(mu_);
                     queue_.clear(); queue_bytes_ = 0; dropped_ = 0;
                     polled_.store(sc.mode == static_cast<uint8_t>(tp::StreamMode::Polled));
+                    if (polled_.load()) ++polled_starts_;
                 }
                 mode_.store(sc.mode);
                 streaming_.store(true);
@@ -203,6 +209,14 @@ private:
             } else if (auto f = pty_.expect_frame(1)) {
                 handle_(*f);
             }
+            if (expire_.exchange(false) && polled_.load()) {
+                std::lock_guard<std::mutex> lk(mu_);
+                polled_.store(false);
+                mode_.store(static_cast<uint8_t>(tp::StreamMode::Separate));
+                for (auto& rec : queue_) { pty_.send_data(0, static_cast<tp::Cmd>(rec.cmd), rec.payload); ++pushed_; }
+                queue_.clear(); queue_bytes_ = 0;
+                ++lease_expiries_;
+            }
             const int key = key_state_.exchange(-1);
             if (key >= 0) {
                 tp::KeyStatusPayload k{0, static_cast<uint8_t>(key)};
@@ -228,6 +242,8 @@ private:
     std::atomic<uint8_t>    mode_{0};
     std::atomic<unsigned>   exchanges_{0}, replays_{0}, overlaps_{0}, pushed_{0};
     std::atomic<int>        key_state_{-1};
+    std::atomic<bool>       expire_{false};
+    std::atomic<unsigned>   lease_expiries_{0}, polled_starts_{0};
     std::atomic<uint16_t>   imu_seq_{0};
     bool                    pending_reply_ = false;
     std::vector<tb::Frame>  deferred_;

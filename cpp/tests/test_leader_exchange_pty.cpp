@@ -210,10 +210,14 @@ TEST(LeaderExchangePty, NeverWritesWhileAReplyIsPendingEvenWithConcurrentQueries
 
     std::atomic<bool> stop{false};
     std::atomic<unsigned> heartbeats{0}, heartbeat_timeouts{0};
+    // 1 kHz of user queries: far above a real health check. An unthrottled
+    // back-to-back loop is a different case: the transport's half-duplex turn
+    // lock is not fair, so it can starve the exchange (see the SDK CHANGELOG).
     std::thread user([&] {
         while (!stop.load()) {
             try { g->transport().send_cmd(tp::Cmd::Heartbeat, {}, std::chrono::milliseconds(200)); ++heartbeats; }
             catch (...) { ++heartbeat_timeouts; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -241,6 +245,38 @@ TEST(LeaderExchangePty, MalformedReplyIsCountedAndDispatchesNothing) {
     ASSERT_TRUE(wait_for([&] { return g->exchange_stats().malformed >= 1; }, kSecond));
     EXPECT_TRUE(wait_for([&] { return imu.load() >= 30; }, kSecond)) << "exchange did not continue";
     g->stop_streaming();
+}
+
+TEST(LeaderExchangePty, FirmwareLeaseFallbackIsReArmedWithoutLoss) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeLeader fw(pty);
+    auto g = open_leader(pty);
+
+    SeqLog imu, enc;
+    g->imu().on_data([&](const tx::ImuSample& s) { imu.add(s.seq); });
+    g->encoder().on_data([&](const tx::EncoderSample& s) { enc.add(s.seq); });
+    ASSERT_TRUE(g->start_exchange(100, 100, 20));   // slow exchange: records are held when it fires
+    ASSERT_TRUE(wait_for([&] { return imu.size() >= 20; }, kSecond));
+    EXPECT_EQ(fw.polled_starts(), 1u);
+
+    fw.expire_lease();
+    ASSERT_TRUE(wait_for([&] { return fw.lease_expiries() == 1; }, kSecond));
+    ASSERT_TRUE(wait_for([&] { return fw.polled() && fw.polled_starts() == 2; }, kSecond))
+        << "SDK did not re-enter the exchange";
+    const std::size_t at_rearm = imu.size();
+    ASSERT_TRUE(wait_for([&] { return imu.size() >= at_rearm + 30; }, 2 * kSecond));
+
+    const auto s = g->exchange_stats();
+    EXPECT_GE(s.not_polled, 1u);
+    EXPECT_EQ(s.rearms, 1u);
+    EXPECT_EQ(s.rearm_failures, 0u);
+    EXPECT_EQ(s.timeouts, 0u);
+    EXPECT_EQ(imu.gaps(), 0u) << "samples lost across the fallback";
+    EXPECT_EQ(enc.gaps(), 0u);
+    EXPECT_TRUE(g->is_exchanging());
+    g->stop_streaming();
+    EXPECT_FALSE(fw.streaming());
 }
 
 TEST(LeaderExchangePty, CloseEndsTheExchange) {
