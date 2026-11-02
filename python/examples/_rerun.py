@@ -24,7 +24,7 @@ Entity layout, per side (``left`` / ``right``):
     {side}/gripper/{temperature,status,state}
     {side}/gripper/encoder_rad, {side}/imu/{accel,gyro}, {side}/button  (leader)
     {side}/wrist/image
-    {side}/tactile/{finger}/image      + marker_flow (arrows) on the same image
+    {side}/tactile/{finger}/image      with the SDK's marker flow drawn on it
     {side}/tactile/{finger}/depth
     {side}/tactile/{finger}/force_resultant   Fx Fy Fz Mx My Mz
 """
@@ -221,7 +221,6 @@ class TactileStream:
         self.sensor = _tactile.open_sensor(
             Sensor, info.serial, disable_infer=not _tactile.needs_inference(self.names)
         )
-        self.viz_shape = _tactile.viz_marker_shape(self.sensor)
         self.frames = 0
         self._next_log = 0.0
         self._stop = threading.Event()
@@ -263,25 +262,21 @@ class TactileStream:
             frame = dict(zip(self.names, out))
             # Same orientation and channel order as the LeRobot dataset — see
             # the display conventions in _tactile.py.
-            image = _tactile.to_display(frame[self.args.tactile_image])
+            image = frame[self.args.tactile_image]
+            if "marker" in frame:
+                # Marker flow drawn by the SDK itself, onto the image: rest ->
+                # current position, 1:1, its thinned grid, its line width, a dot
+                # where nothing moved. Drawn here rather than as Rerun arrows,
+                # whose width is in image pixels and vanished once the view was
+                # scaled down. Same thread, right after selectSensorInfo, so it
+                # draws this frame's markers.
+                image = self.sensor.drawMarkerMove(np.ascontiguousarray(image))
             log_image(
-                f"{self.root}/image", _tactile.to_rgb(image), self.args.jpeg_quality
+                f"{self.root}/image",
+                _tactile.to_rgb(_tactile.to_display(image)),
+                self.args.jpeg_quality,
             )
             if "marker" in frame:
-                # The SDK's own marker-flow view (Sensor.drawMarkerMove): rest
-                # -> current position, 1:1, on its thinned grid, same green.
-                starts, ends = _tactile.marker_flow(
-                    frame["marker_init"], frame["marker"], self.viz_shape
-                )
-                rr.log(
-                    f"{self.root}/marker_flow",
-                    rr.Arrows2D(
-                        origins=starts,
-                        vectors=ends - starts,
-                        colors=[3, 253, 3],
-                        radii=1.0,
-                    ),
-                )
                 rr.log(
                     f"{self.root}/force_resultant",
                     rr.Scalars(np.asarray(frame["force_resultant"], dtype=float)),
@@ -407,7 +402,7 @@ def blueprint(rigs: list[Rig], args):
             images.append(
                 rrb.Spatial2DView(
                     origin=t.root,
-                    contents=[f"{t.root}/image", f"{t.root}/marker_flow"],
+                    contents=f"{t.root}/image",
                     name=f"{side} tactile {t.info.finger}",
                 )
             )
