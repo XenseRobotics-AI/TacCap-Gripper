@@ -758,10 +758,16 @@ convert: `time.monotonic() - (time.time() - timestamp)`.
 **What the viewers show is what LeRobot records.** The LeRobot integration flips
 the images to RGB and **transposes** them to `(400, 700)` (a mirror about the
 diagonal, not a rotation); `tactile_sensor.py`, `rerun_viewer.py` and
-`gripper_console.py --rerun` do the same, and put the force field through the same
-transpose so each arrow sits on its marker. They also open the sensor with the
+`gripper_console.py --rerun` do the same. They also open the sensor with the
 same `process.diff_gain = 1.0` (the sensors ship at 1.5). The helpers are in
 `python/examples/_tactile.py`.
+
+**The arrows on the tactile image are marker flow**, drawn the way the SDK's own
+`Sensor.drawMarkerMove()` draws them: from each marker's rest position
+(`Marker2DInit`) to where it is now (`Marker2D`), **at 1:1** — the arrow is the
+real displacement in pixels, no gain. The grid is thinned to the sensor's
+`dim.viz_marker2d_shape` (20 × 12 on a GSPS01). A firm press with a sideways rub
+measured up to ~40 px. Marker2D comes from the inference engine.
 
 The no-contact reference that `AugDifference` and the force are measured against
 is taken when the sensor opens. **Open it with nothing touching the gel**;
@@ -776,7 +782,7 @@ python python/examples/tactile_sensor.py left --finger right --outputs rectify,d
 python python/examples/tactile_sensor.py left --no-display --duration 10   # print force + rate
 ```
 
-The window shows rectify | difference | depth | force field for each sensor; `c`
+The window shows rectify | flow | difference | depth for each sensor; `c`
 takes the reference again, `s` saves a PNG. With only `rectify` / `difference`
 requested, the inference engine is not loaded.
 
@@ -812,7 +818,7 @@ python python/examples/gripper_console.py left --mode force-position --rerun --d
 j/k/o/c move the jaw as usual; the viewer adds the target and the commanded
 torque next to the measured opening and torque, and the controller state as a
 text log. Close on an object and check that the opening stops short of the
-target, torque rises, and the tactile image and force field respond.
+target, torque rises, and the tactile image and marker flow respond.
 
 They are independent, but running them together has a few known traps:
 

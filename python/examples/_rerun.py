@@ -24,7 +24,7 @@ Entity layout, per side (``left`` / ``right``):
     {side}/gripper/{temperature,status,state}
     {side}/gripper/encoder_rad, {side}/imu/{accel,gyro}, {side}/button  (leader)
     {side}/wrist/image
-    {side}/tactile/{finger}/image      + force_field (arrows) on the same image
+    {side}/tactile/{finger}/image      + marker_flow (arrows) on the same image
     {side}/tactile/{finger}/depth
     {side}/tactile/{finger}/force_resultant   Fx Fy Fz Mx My Mz
 """
@@ -92,7 +92,7 @@ def add_arguments(parser) -> None:
         "--no-force",
         dest="force",
         action="store_false",
-        help="tactile images only: no force, no inference engine",
+        help="tactile images only: no marker flow, no force, no inference engine",
     )
     g.add_argument("--depth", action="store_true", help="also show the tactile depth")
     g.add_argument(
@@ -100,12 +100,6 @@ def add_arguments(parser) -> None:
         type=float,
         default=30.0,
         help="tactile frames logged per second (the sensor runs at 120)",
-    )
-    g.add_argument(
-        "--force-scale",
-        type=float,
-        default=20.0,
-        help="pixels per force unit for the arrows",
     )
     g.add_argument(
         "--jpeg-quality", type=int, default=80, help="0 = log images uncompressed"
@@ -217,7 +211,7 @@ class TactileStream:
         self.root = f"{side}/tactile/{info.finger}"
         self.names = [args.tactile_image]
         if args.force:
-            self.names += ["force", "force_resultant"]
+            self.names += ["marker", "marker_init", "force_resultant"]
         if args.depth:
             self.names.append("depth")
         # TimeStamp rides last, so zip() with self.names never sees it.
@@ -227,6 +221,7 @@ class TactileStream:
         self.sensor = _tactile.open_sensor(
             Sensor, info.serial, disable_infer=not _tactile.needs_inference(self.names)
         )
+        self.viz_shape = _tactile.viz_marker_shape(self.sensor)
         self.frames = 0
         self._next_log = 0.0
         self._stop = threading.Event()
@@ -272,13 +267,20 @@ class TactileStream:
             log_image(
                 f"{self.root}/image", _tactile.to_rgb(image), self.args.jpeg_quality
             )
-            if "force" in frame:
-                origins, vectors = _tactile.field_arrows(
-                    frame["force"], image.shape[:2], self.args.force_scale
+            if "marker" in frame:
+                # The SDK's own marker-flow view (Sensor.drawMarkerMove): rest
+                # -> current position, 1:1, on its thinned grid, same green.
+                starts, ends = _tactile.marker_flow(
+                    frame["marker_init"], frame["marker"], self.viz_shape
                 )
                 rr.log(
-                    f"{self.root}/force_field",
-                    rr.Arrows2D(origins=origins, vectors=vectors, colors=[80, 220, 80]),
+                    f"{self.root}/marker_flow",
+                    rr.Arrows2D(
+                        origins=starts,
+                        vectors=ends - starts,
+                        colors=[3, 253, 3],
+                        radii=1.0,
+                    ),
                 )
                 rr.log(
                     f"{self.root}/force_resultant",
@@ -405,7 +407,7 @@ def blueprint(rigs: list[Rig], args):
             images.append(
                 rrb.Spatial2DView(
                     origin=t.root,
-                    contents=[f"{t.root}/image", f"{t.root}/force_field"],
+                    contents=[f"{t.root}/image", f"{t.root}/marker_flow"],
                     name=f"{side} tactile {t.info.finger}",
                 )
             )

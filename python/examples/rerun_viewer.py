@@ -10,7 +10,7 @@ For each selected gripper:
                           enabled / fault / stalled bits
     wrist       the XC wrist camera, through this SDK's Camera
     tactile     both visuotactile sensors, through xensesdk — the gel image, the
-                force field drawn over it, the resultant force, optionally depth
+                marker flow drawn over it, the resultant force, optionally depth
 
 Read-only: the motor is never enabled, nothing is written to flash. Use it to
 check a rig before recording. To drive the jaw while watching all of this, use
