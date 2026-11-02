@@ -42,7 +42,11 @@ dependencies:
   - python=3.12
   - pybind11
   - scikit-build-core
-  - numpy
+  # xensesdk (below) requires numpy<=2.2.4. Pin it here so conda installs a
+  # numpy pip will accept; leave it floating and pip replaces conda's numpy
+  # with its own wheel on every env create, two copies fighting over one
+  # site-packages.
+  - numpy=2.2.4
   - pytest
   # Needed for `pre-commit install`, which .pre-commit-config.yaml asks every
   # clone to run once. Without it the repo has rules that only CI enforces.
@@ -64,3 +68,10 @@ dependencies:
       # inside Markdown fences. A dev running a different build than the gate
       # finds out from a red CI. Bump this and .github/workflows/ci.yml together.
       - ruff==0.16.8
+      # Visuotactile (GSPS/OG) sensors are read through xensesdk, not this SDK;
+      # the tactile examples and gripper_console.py --rerun need it. Its own
+      # pins (numpy<=2.2.4, opencv-python<=4.12.0.88, cryptography==43.0.3)
+      # are why numpy is pinned above.
+      - xensesdk==2.2.2
+      # The viewer behind rerun_viewer.py and gripper_console.py --rerun.
+      - rerun-sdk==0.41.0

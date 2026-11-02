@@ -186,7 +186,9 @@ def scan_video_devices() -> dict[str, list[dict]]:
                 {
                     "serial": tac.group(1),
                     "path": path,
-                    "side": side_of_serial(tac.group(1)),
+                    # A GSPS serial's parity is the jaw (finger) the sensor sits
+                    # in, not the gripper side — that comes from the USB hub.
+                    "finger": side_of_serial(tac.group(1)),
                 }
             )
         else:
@@ -206,10 +208,10 @@ def print_devices() -> None:
     if devs["tactile"]:
         print(_bold("\nGSPS visuotactile sensors — NOT openable here"))
         for d in devs["tactile"]:
-            print(f"  {d['serial']:<14} {d['side']:<5} {'':<9} {d['path']}")
+            print(f"  {d['serial']:<14} {d['finger'] + ' finger':<15} {d['path']}")
         print(
-            "  These go through xensesdk, not this SDK: Sensor.create(<serial>) — "
-            "see docs/USAGE.md"
+            "  These go through xensesdk, not this SDK — tactile_sensor.py reads them "
+            "(its --list also shows which gripper each one is on)"
         )
 
     if devs["other"]:

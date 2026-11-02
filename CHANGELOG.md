@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trips. Older firmware raises `ProtocolError` and nothing is left running.
   `bus::RetryMode::Once` sends exactly one attempt.
 
+## [0.4.4] - 2026-11-01
+
+### Added
+
 - **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
   a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
   takes the image as optional: without one it picks the shipped image for the
@@ -68,8 +72,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default is known), and a shipped image is checked against the manifest's
   CRC32. A bare image name also resolves under `firmware/`.
 
+- **Visuotactile examples.** `tactile_sensor.py` reads the GSPS sensors through
+  `xensesdk` (rectify / difference / depth / force / resultant) and lists which
+  gripper and which jaw each one is on: the side comes from the gripper on the
+  same USB hub, the jaw from the GSPS serial's last digit. Images are shown the
+  way the LeRobot integration records them: RGB, transposed to (400, 700),
+  `process.diff_gain = 1.0`.
+- **Full-chain Rerun view.** `rerun_viewer.py` puts gripper state, the wrist
+  camera and both tactile sensors on one `host_time` timeline, read-only.
+  `gripper_console.py --rerun` shows the same while the keys drive the jaw,
+  adding the target, the commanded torque and the controller state.
+
 ### Changed
 
+- **`environment.yml` installs `xensesdk==2.2.2` and `rerun-sdk==0.41.0`, and
+  pins numpy to 2.2.4** (xensesdk requires `numpy<=2.2.4`). Update an existing
+  env with `mamba env update -f environment.yml --prune`, then reinstall the SDK.
+- **`wrist_camera.py --list` labels a GSPS sensor by finger, not side.** The
+  serial's parity is the jaw it sits in; it used to be printed as the gripper
+  side.
 - **Source code is English-only.** Comments, docstrings, pybind11 docstrings
   and runtime text (log and exception messages, example output, argparse help)
   across `cpp/`, `python/` and the examples were translated from Chinese.

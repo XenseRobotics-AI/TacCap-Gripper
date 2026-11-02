@@ -28,7 +28,8 @@ firmware and cannot be bypassed from the host.
   from the firmware-burned serial number; nothing is configured per unit.
 - **Firmware OTA** for the gripper MCU and for the follower's motor, over USB.
 
-Out of scope: visuotactile (OG) capture is provided by the `xensesdk` wheel;
+Out of scope: visuotactile (OG) capture is provided by the `xensesdk` wheel
+(`tactile_sensor.py` and `rerun_viewer.py` show the two used together);
 teleoperation, policies and recording belong in the consuming application
 (e.g. the LeRobot integration).
 
@@ -80,7 +81,8 @@ cd TacCap-Gripper
 
 **Step 3 — Create and activate the environment.** The env is named `taccap`
 and installs the compiler, CMake, OpenCV, pybind11 and Python 3.12 from
-conda-forge:
+conda-forge, plus `xensesdk` (the visuotactile sensors) and `rerun-sdk` (the
+full-chain viewer) from PyPI:
 
 ```bash
 mamba env create -f environment.yml
@@ -88,7 +90,8 @@ mamba activate taccap
 ```
 
 To refresh an existing env after pulling a new release:
-`mamba env update -f environment.yml --prune`.
+`mamba env update -f environment.yml --prune`. `xensesdk` caps numpy at 2.2.4,
+so the env pins numpy to that version.
 
 **Step 4 — Install the SDK** (from the activated env):
 
@@ -220,6 +223,10 @@ python python/examples/impedance_control.py left --set-envelope
 # 4. First motion, interactively (j/k/o/c keys)
 python python/examples/gripper_console.py left
 
+# 4b. Full-chain check: the same keys, with gripper state, wrist camera and
+#     tactile sensors live in a Rerun viewer (keep the gel untouched at start)
+python python/examples/gripper_console.py left --rerun
+
 # 5. Grasp
 python python/examples/force_position_control.py left
 ```
@@ -314,10 +321,12 @@ The wrist camera (`XC…`) carries the same sequence number as its gripper, so
 | `follower_status.py` | read follower state | read-only |
 | `leader_normalized_position.py` | stream leader position 0..1 | read-only |
 | `wrist_camera.py` | view / list wrist cameras (`--undistort`, `--list`) | read-only |
+| `tactile_sensor.py` | view the visuotactile sensors through `xensesdk`: image, difference, depth, force | read-only |
+| `rerun_viewer.py` | gripper state + wrist camera + tactile in one Rerun viewer, one timeline | read-only |
 | `read_intrinsics.py` | dump calibration as JSON | read-only |
 | `impedance_control.py` | follow a position; `--show-envelope` / `--set-envelope` | moves motor / writes flash |
 | `force_position_control.py` | grasp with bounded force | moves motor |
-| `gripper_console.py` | interactive keyboard control | moves motor |
+| `gripper_console.py` | interactive keyboard control; `--rerun` = full-chain check with every stream in Rerun | moves motor |
 | `control_and_read.py` | read state while controlling | moves motor |
 | `control_ripple.py` | measure tracking quality | moves motor |
 | `calibrate.py` | encoder zero + travel span | writes flash |

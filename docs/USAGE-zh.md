@@ -570,7 +570,7 @@ python python/examples/wrist_camera.py right --no-mcu --no-display \
 ## 3. 触觉:视触觉(OG)传感器
 
 **这部分不在本 SDK 里。** `xense.taccap` 只覆盖夹爪协议和腕相机;OG 的采集、
-矫正、力/深度推理都在 `xensesdk` wheel 里(本机版本 2.1.1)。下面给的是把它
+矫正、力/深度推理都在 `xensesdk` wheel 里(`environment.yml` 固定为 2.2.2)。下面给的是把它
 跑起来的最短路径,接口以你装的那版 wheel 为准。
 
 ```python
@@ -612,12 +612,92 @@ finally:
 - 力/网格类输出形状是固定的(力分布 `(35, 20, 3)`、合力 `(6,)`),
   图像类的形状随 `rectify_size` 变。
 
+### 3.1 哪个传感器是哪个
+
+每台夹爪两个传感器,左右爪各一个。确定一个传感器要两个信息,来源不同:
+
+| | 含义 | 来源 |
+| --- | --- | --- |
+| **side** | 装在哪台夹爪上 | 接在**同一个 USB hub** 上的夹爪(由它的固件 SN 定左右) |
+| **finger** | 装在这台夹爪的哪个爪上 | GSPS 序列号**末位**:奇数 = 左爪,偶数 = 右爪 |
+
+所以 GSPS 的奇偶**不是**夹爪左右:`GSPS01A41Z0008` 是右爪传感器,而它装在一台
+*左*夹爪上。要知道 side,夹爪必须插着。`tactile_sensor.py --list` 会同时给出两者:
+
+```
+serial          gripper finger  gripper SN        device
+GSPS01A41Z0007  left    left    TCGU01A28Z0089s   /dev/v4l/by-id/usb-Xense_..._GSPS01A41Z0007-video-index0
+GSPS01A41Z0008  left    right   TCGU01A28Z0089s   /dev/v4l/by-id/usb-Xense_..._GSPS01A41Z0008-video-index0
+```
+
+LeRobot 集成用同一条规则把传感器配对到夹爪。
+
+### 3.2 返回的是什么
+
+在 GSPS01 + xensesdk 2.2.2 上实测:
+
+| 输出 | 形状、类型 | 说明 |
+| --- | --- | --- |
+| `Rectify`、`AugDifference` | `(700, 400, 3)` uint8 | **BGR**,竖向。除 OpenCV 外都要先转 RGB |
+| `Depth` | `(700, 400)` float32 | mm;静止时远小于 0.01 |
+| `Force` | `(35, 20, 3)` float | 每格对应矫正图上 20×20 像素 |
+| `ForceResultant` | `(6,)` float32 | Fx Fy Fz Mx My Mz |
+| `Marker2D` | `(35, 20, 2)` float64 | 标记点位置 (x, y),像素;静止时为 `((j+1)·400/21, (i+1)·700/36)` |
+| `TimeStamp` | float | **墙钟**(`time.time()`),比调用返回早约 3 ms |
+
+传感器以 MJPEG **120 fps** 出图,`selectSensorInfo()` 会阻塞到下一帧,所以循环调用
+的速率就是传感器帧率。要和本 SDK 的样本对齐(`host_time` 是单调时钟),这样换算:
+`time.monotonic() - (time.time() - timestamp)`。
+
+**查看器显示的就是 LeRobot 录下来的样子。** LeRobot 集成把图像转成 RGB 并**转置**为
+`(400, 700)`(沿对角线镜像,不是旋转);`tactile_sensor.py`、`rerun_viewer.py`、
+`gripper_console.py --rerun` 做同样处理,力场也做同样的转置,箭头落在各自的标记点上。
+打开传感器时同样设置 `process.diff_gain = 1.0`(出厂为 1.5)。相关函数在
+`python/examples/_tactile.py`。
+
+`AugDifference` 和力都是相对"无接触参考帧"算的,参考帧在打开传感器时采集。
+**打开时不要碰凝胶**;`sensor.calibrateSensor()` 可以重新采一次参考帧。
+
+### 3.3 一条命令看到它
+
+```bash
+python python/examples/tactile_sensor.py --list            # 传感器、所在夹爪、哪个爪
+python python/examples/tactile_sensor.py left              # 左夹爪的两个爪
+python python/examples/tactile_sensor.py left --finger right --outputs rectify,difference
+python python/examples/tactile_sensor.py left --no-display --duration 10   # 打印力与帧率
+```
+
+窗口里每个传感器一行:rectify | difference | depth | 力场;`c` 重新采参考帧,
+`s` 存 PNG。只要 `rectify` / `difference` 时不加载推理引擎。
+
 要看完整的产品级用法(异步读、配置覆盖、多传感器编排),参考
 `lerobot` 侧的 `lerobot/cameras/xense/camera_xense.py`。
 
 ---
 
 ## 4. 三路一起跑
+
+想在一个地方同时看三路,用 `rerun_viewer.py`:夹爪状态、腕相机和两个触觉传感器
+在同一条时间轴上进 [Rerun](https://rerun.io) 查看器。只读,不会使能电机:
+
+```bash
+python python/examples/rerun_viewer.py                      # 所有插着的夹爪
+python python/examples/rerun_viewer.py left --depth
+python python/examples/rerun_viewer.py left --save rig.rrd --duration 20
+```
+
+它也可以当作在自己代码里把三路串起来的参考:每路一个线程,统一用主机单调时钟。
+`rerun-sdk` 和 `xensesdk` 已包含在 `environment.yml` 里。
+
+要在看着这些数据的同时**驱动**夹爪,用控制台 —— 这是录数据前该跑的全链路检查:
+
+```bash
+python python/examples/gripper_console.py left --rerun
+python python/examples/gripper_console.py left --mode force-position --rerun --depth
+```
+
+j/k/o/c 照常开合;查看器里在实测开口度和力矩旁边多了目标值和命令力矩,控制器状态
+以文本日志显示。夹住一个物体,检查开口度停在目标之前、力矩上升、触觉图像和力场有响应。
 
 各自独立,但同时开有几个已知的坑:
 

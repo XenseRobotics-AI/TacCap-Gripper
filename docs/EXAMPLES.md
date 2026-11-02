@@ -1,6 +1,6 @@
 # 示例脚本
 
-`python/examples/` 下 13 个可运行脚本的参考手册:每个脚本做什么、对设备做什么,
+`python/examples/` 下 15 个可运行脚本的参考手册:每个脚本做什么、对设备做什么,
 以及力位混合控制器的调参说明。按顺序的上手路径见 README 的
 [Quick start](../README.md#quick-start)。
 
@@ -32,12 +32,16 @@ python python/examples/ota_update.py --get-status right
 的流水号与所在夹爪一致,所以 `left` 在任何脚本里都指同一侧设备。C++ 示例使用同样的
 选择规则。
 
-`python/examples/` 下有两个下划线开头的共享模块,不能单独运行:
+`python/examples/` 下有四个下划线开头的共享模块,不能单独运行:
 
 - **`_target.py`** —— 上述设备选择器,以及版本显示和终端颜色。
 - **`_calib_flow.py`** —— 引导式行程标定流程(闭合取零 → 张开取跨度 → 写 flash),
   由 `calibrate.py` / `fisheye_cal.py` / `leader_normalized_position.py` 使用。
   它会在 stdin 上等待输入,所以不放进 `xense.taccap` 库。
+- **`_tactile.py`** —— 视触觉传感器的发现(按 USB hub 配对到夹爪左右,序列号末位定
+  哪个爪)和 `xensesdk` 的打开 / 释放。视触觉不属于本 SDK,所以这层胶水只放在示例里。
+- **`_rerun.py`** —— `rerun_viewer.py` 与 `gripper_console.py --rerun` 共用的 Rerun 部分:
+  腕相机和触觉传感器的开关、实体布局、查看器布局、相关命令行参数。
 
 ## 脚本一览
 
@@ -49,7 +53,7 @@ python python/examples/ota_update.py --get-status right
 |---|---|---|
 | `impedance_control.py` | 动电机 | `ImpedanceController` 用法:`set_target(0..1)` + `snapshot()` 走一遍开合序列。也是**运动安全包络**的配置入口(`--show-envelope` / `--set-envelope`)。|
 | `force_position_control.py` | 动电机 + 夹持力 | `ForcePositionController` 用法。一条有界力矩控制律,饱和即接触;闭合端点有小的前馈预压。输出中 `cmd` 与实测力矩之差就是固件的热降额。|
-| `gripper_console.py` | 动电机 + 夹持力 | 键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个界面,内置包络配置。表头显示包络是否生效(`ENFORCED` / `*** INACTIVE ***`)。|
+| `gripper_console.py` | 动电机 + 夹持力 | 键盘控制台,`--mode impedance` / `--mode force-position` 两种控制器共用一个界面,内置包络配置。表头显示包络是否生效(`ENFORCED` / `*** INACTIVE ***`)。 **`--rerun` 是全链路检查**:按键开合的同时,把从爪状态(含目标值、命令力矩、控制器状态)、腕相机和两个触觉传感器放进同一个 Rerun 查看器;状态取自控制器的 `snapshot()`,不另外订阅状态流。相机和查看器在使能电机前打开;其余 Rerun 参数与 `rerun_viewer.py` 相同。|
 | `control_and_read.py` | 动电机 | **边控制边读**:控制器运行时从 `snapshot()` 读状态,不发任何命令。控制期间调用 `read_status()` 会让 ACK 和控制帧在串口上冲突。|
 | `control_ripple.py` | 动电机 | 测量控制质量:行进段速度纹波、峰峰值、均速/命令速度比、逆向帧。两个控制器都能测。|
 
@@ -73,6 +77,15 @@ python python/examples/ota_update.py --get-status right
 |---|---|---|
 | `wrist_camera.py` | 只读 | 腕部相机查看器,按 `left` / `right` 或 XC 序列号选择;`--list` 列出设备。只接受 XC 腕部相机(视触觉传感器归 `xensesdk`)。鱼眼去畸变默认关闭:`--undistort`、`--compare`(原图与矫正图并排)、`--balance`,运行时按 `u` / `[` `]` 切换。无界面模式 `--no-display`(配合 `--save-dir` 每秒存一张 PNG)。默认 MJPEG,整套采集时不要用 `--no-mjpg`。|
 | `leader_normalized_position.py` | 只读 | 以 `0..1` 流式显示主爪开口度。需要已标定行程(或用 `--encoder-max-rad` 直接指定)。|
+
+### 视触觉与全链路可视化
+
+依赖的 `xensesdk` 和 `rerun-sdk` 都在 `environment.yml` 里(numpy 因此固定为 2.2.4)。
+
+| 脚本 | 对设备做什么 | 说明 |
+|---|---|---|
+| `tactile_sensor.py` | 只读 | 通过 `xensesdk` 读视触觉传感器。`left` / `right` 选这台夹爪的两个爪(夹爪须插着,左右由同 hub 的夹爪决定),`--finger` 只看一个爪,也可直接给 GSPS 序列号;`--list` 列出每个传感器所在夹爪与爪位。`--outputs` 选 `rectify` / `difference` / `depth` / `marker` / `force` / `force_resultant`,只要前两个时不加载推理引擎。窗口内 `c` 重采无接触参考帧(先松开),`s` 存图;`--no-display` 打印合力与帧率。打开时不要碰凝胶。|
+| `rerun_viewer.py` | 只读 | 把一台或两台夹爪的全部数据流放进同一个 Rerun 查看器、同一条 `host_time` 时间轴:主爪编码器 / IMU / 按键,或从爪电机状态(开口度、速度、力矩、温度、状态位);XC 腕相机(`--undistort` 去畸变);两个视触觉传感器的图像 + 叠加力场箭头 + 合力曲线(`--depth` 加深度图,`--tactile-image difference` 看差分图)。不会使能电机。`--save x.rrd` 存文件,`--connect URL` 推到别的机器;有相机服务占着腕相机时用 `--no-wrist`。触觉传感器 120 fps 全部读取,但只按 `--tactile-hz`(默认 30)记录,否则几秒就是 GB 级。|
 
 ### 固件
 

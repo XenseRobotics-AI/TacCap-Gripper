@@ -21,7 +21,8 @@ SDK 只用 C++ 实现一次,Python 包是同一份代码的 pybind11 绑定,两�
 - **零配置发现** —— 左右与主从角色由固件烧录的序列号决定,无需逐台配置。
 - **OTA 升级** —— 夹爪 MCU 固件与从爪电机固件均可通过 USB 升级。
 
-不在本 SDK 范围内:视触觉(OG)采集由 `xensesdk` wheel 提供;遥操作、策略与数据录制属于
+不在本 SDK 范围内:视触觉(OG)采集由 `xensesdk` wheel 提供(两者配合的用法见
+`tactile_sensor.py` 和 `rerun_viewer.py`);遥操作、策略与数据录制属于
 上层应用(例如 LeRobot 集成)。
 
 ---
@@ -68,14 +69,16 @@ cd TacCap-Gripper
 ```
 
 **第 3 步 —— 创建并激活环境。** 环境名为 `taccap`,会从 conda-forge 安装编译器、CMake、
-OpenCV、pybind11 和 Python 3.12:
+OpenCV、pybind11 和 Python 3.12,并从 PyPI 安装 `xensesdk`(视触觉传感器)和
+`rerun-sdk`(全链路查看器):
 
 ```bash
 mamba env create -f environment.yml
 mamba activate taccap
 ```
 
-拉取新版本后更新已有环境:`mamba env update -f environment.yml --prune`。
+拉取新版本后更新已有环境:`mamba env update -f environment.yml --prune`。`xensesdk`
+要求 numpy ≤ 2.2.4,所以环境把 numpy 固定在这个版本。
 
 **第 4 步 —— 安装 SDK**(在已激活的环境中):
 
@@ -194,6 +197,10 @@ python python/examples/impedance_control.py left --set-envelope
 # 4. 首次运动,键盘交互(j/k/o/c)
 python python/examples/gripper_console.py left
 
+# 4b. 全链路检查:同样的按键,同时在 Rerun 里实时看夹爪状态、腕相机和触觉
+#     (启动时不要碰凝胶)
+python python/examples/gripper_console.py left --rerun
+
 # 5. 抓取
 python python/examples/force_position_control.py left
 ```
@@ -285,10 +292,12 @@ TCGU01 A24 Z 0001 m
 | `follower_status.py` | 读取从爪状态 | 只读 |
 | `leader_normalized_position.py` | 流式输出主爪开口度 0..1 | 只读 |
 | `wrist_camera.py` | 查看 / 列出腕部相机(`--undistort`、`--list`) | 只读 |
+| `tactile_sensor.py` | 通过 `xensesdk` 查看视触觉传感器:图像、差分、深度、力 | 只读 |
+| `rerun_viewer.py` | 夹爪状态 + 腕相机 + 触觉,同一时间轴进 Rerun 查看器 | 只读 |
 | `read_intrinsics.py` | 以 JSON 导出标定数据 | 只读 |
 | `impedance_control.py` | 位置跟随;`--show-envelope` / `--set-envelope` | 驱动电机 / 写 flash |
 | `force_position_control.py` | 有界力抓取 | 驱动电机 |
-| `gripper_console.py` | 键盘交互控制 | 驱动电机 |
+| `gripper_console.py` | 键盘交互控制;`--rerun` = 全链路检查,所有数据流进 Rerun | 驱动电机 |
 | `control_and_read.py` | 控制同时读状态 | 驱动电机 |
 | `control_ripple.py` | 测量跟踪质量 | 驱动电机 |
 | `calibrate.py` | 编码器零点 + 行程 | 写 flash |

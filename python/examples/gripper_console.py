@@ -34,10 +34,31 @@ firmware clamps to that rating whatever is written. --show-envelope prints the
 **stored** and the **actually effective** values separately — those two numbers
 will differ.
 
+Full-chain check (--rerun)
+    With --rerun the console also opens a Rerun viewer showing the follower state
+    next to the wrist camera and both visuotactile sensors, on one timeline. Drive
+    the jaw with the keys and check, in one place, that everything responds: the
+    opening follows the target, torque rises on contact, the tactile image and
+    force field react when the jaw closes on something, the wrist camera keeps
+    its frame rate. Before recording a rig, this is the run to do.
+
+    Gripper state is logged from the controller's own snapshot() — the controller
+    owns the status stream, so nothing here subscribes to it a second time. On top
+    of what rerun_viewer.py shows you get the target (what the keys asked for)
+    and the commanded torque (what the controller asked for), plotted against the
+    measured ones, and the controller state as a text log.
+
+    The cameras and the viewer are opened before the motor is enabled. Open the
+    tactile sensors with nothing touching the gel: their no-contact reference is
+    taken then. The wrist / tactile / output flags (--no-wrist, --depth, --save,
+    ...) are the same as rerun_viewer.py's; see --help.
+
 Usage
     python python/examples/gripper_console.py --show-envelope
     python python/examples/gripper_console.py --set-envelope
     python python/examples/gripper_console.py --mode force-position --grasp-torque 0.8
+    python python/examples/gripper_console.py right --mode force-position --rerun
+    python python/examples/gripper_console.py right --rerun --no-tactile   # no xensesdk
 
 Keys
     j / k   — target opening + / - (one --step; normalized 0..1, 0=closed 1=open)
@@ -62,6 +83,7 @@ import time
 import tty
 from typing import Optional
 
+import _rerun
 import _target
 from xense.taccap import (
     FollowerGripper,
@@ -69,6 +91,7 @@ from xense.taccap import (
     ForcePositionController,
     ImpedanceConfig,
     ImpedanceController,
+    Side,
     log,
 )
 
@@ -355,6 +378,85 @@ def _redraw(
     sys.stdout.flush()
 
 
+# ── Rerun (--rerun) ───────────────────────────────────────────────────────────
+
+
+class _RerunLink:
+    """The --rerun side of the console: cameras, viewer, and per-frame logging."""
+
+    def __init__(self, g: FollowerGripper, ep, args):
+        _rerun.rr.init("taccap_gripper_console")
+        self.side = {Side.Left: "left", Side.Right: "right"}.get(ep.side, "follower")
+        self.rig = _rerun.Rig(self.side, ep.role, ep.firmware_sn)
+        Sensor, tactile = _rerun.tactile_by_side(args, [ep])
+        try:
+            self.rig.open(g, args, Sensor, tactile.get(self.side, []))
+            _rerun.connect([self.rig], args)
+            _rerun.init_follower(self.side)
+            self.rig.start(args)
+        except BaseException:
+            self.rig.close()
+            raise
+        self._seq = None
+        self._logged_state = None
+        self._pending = None  # (state, first seen at, fault reason)
+
+    def log(self, backend, obs, target: float, norm_ok: bool) -> None:
+        """Log the snapshot the UI just took, once per new status frame.
+
+        The UI loop polls at --hz and the status stream runs at 100 Hz, so a
+        frame can be seen twice (skipped here, by seq) or, when the two beat,
+        missed — a gap in the plot, not in the control loop.
+        """
+        rr = _rerun.rr
+        if not obs.valid or obs.seq == self._seq:
+            return
+        self._seq = obs.seq
+        root = f"{self.side}/gripper"
+        t = time.monotonic() - obs.age_ms / 1e3  # when the frame arrived
+        _rerun.log_follower(
+            self.side,
+            t,
+            position=obs.position if norm_ok else None,
+            velocity=obs.velocity,
+            torque=obs.torque,
+            temperature=obs.motor_temp_c,
+            status=obs.status,
+        )
+        rr.log(f"{root}/motor_rad", rr.Scalars(obs.raw_pos))
+        snap = backend._snap
+        rr.log(f"{root}/target", rr.Scalars(target))
+        if snap is not None:
+            rr.log(f"{root}/commanded_torque", rr.Scalars(snap.commanded_torque_nm))
+            self._log_state(root, snap, t)
+
+    # A state shorter than this is not logged. The state is derived from every
+    # frame, not latched (only FAULT is), and holding at the closed end it was
+    # measured flipping CLOSING <-> HOLDING_POSITION every 10-40 ms — 50 entries
+    # a second, burying the transitions worth reading.
+    STATE_MIN_S = 0.1
+
+    def _log_state(self, root: str, snap, t: float) -> None:
+        state = snap.state.name
+        if self._pending is None or self._pending[0] != state:
+            self._pending = (state, t, snap.fault_reason)
+        state, since, reason = self._pending
+        if state == self._logged_state:
+            return
+        if state != "FAULT" and t - since < self.STATE_MIN_S:
+            return
+        self._logged_state = state
+        _rerun.stamp(since)  # when it began, not when it was confirmed
+        text = state + (f" ({reason})" if reason else "")
+        level = "ERROR" if state == "FAULT" else "INFO"
+        _rerun.rr.log(f"{root}/state", _rerun.rr.TextLog(text, level=level))
+
+    def close(self) -> None:
+        for line in self.rig.close():
+            print(line)
+        _rerun.rr.disconnect()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -459,7 +561,16 @@ def main() -> int:
         "exactly to the rating, and values that are too low are fixed too; the "
         "stricter existing value is kept only when the spec is unknown",
     )
+    ap.add_argument(
+        "--rerun",
+        action="store_true",
+        help="full-chain check: also show gripper state, wrist camera and tactile "
+        "sensors in a Rerun viewer while you drive the jaw",
+    )
+    _rerun.add_arguments(ap)
     args = ap.parse_args()
+    if args.rerun:
+        _rerun.require()
 
     log.set_level("warn")
     g, ep = _target.open_follower(args.target)
@@ -543,6 +654,11 @@ def main() -> int:
         f"=== Gripper Console [{backend.label}]  {ep.firmware_sn}  "
         f"fw {g.firmware_version}{gains} ==="
     )
+
+    # Cameras and viewer come up before the motor is enabled: opening the tactile
+    # sensors takes seconds, and --undistort reads the fisheye calibration over
+    # the MCU link, which must happen before the controller owns that link.
+    viz = _RerunLink(g, ep, args) if args.rerun else None
 
     last_key = "-"
     # The controller owns the periodic MIT stream.  A bare Motor.disable() is
@@ -630,15 +746,10 @@ def main() -> int:
                 elif ch in ("q", "\x1b", "\x03"):
                     break
 
-                _redraw(
-                    backend,
-                    head,
-                    envline,
-                    target,
-                    backend.observation(),
-                    norm_ok,
-                    last_key,
-                )
+                obs = backend.observation()
+                if viz is not None:
+                    viz.log(backend, obs, target, norm_ok)
+                _redraw(backend, head, envline, target, obs, norm_ok, last_key)
                 time.sleep(period)
     finally:
         try:
@@ -651,6 +762,8 @@ def main() -> int:
             print(f"\r\ndisable: {exc}")
         sys.stdout.write("\r\n[exit] controller stopped, motor disabled\r\n")
         sys.stdout.flush()
+        if viz is not None:
+            viz.close()
     return 0
 
 
