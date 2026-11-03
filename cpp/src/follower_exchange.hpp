@@ -25,6 +25,7 @@
 #pragma once
 
 #include <taccap/bus/transport.hpp>
+#include <taccap/detail/monotonic_cv.hpp>
 #include <taccap/follower_gripper.hpp>
 
 #include <chrono>
@@ -68,7 +69,7 @@ private:
     const std::chrono::milliseconds timeout_;
 
     mutable std::mutex       mu_;
-    std::condition_variable  cv_;
+    detail::MonotonicCondition cv_;   // monotonic even on old-sysroot toolchains
     std::optional<Target>    pending_;
     bool                     stop_ = false;
     ExchangeStats            stats_{};

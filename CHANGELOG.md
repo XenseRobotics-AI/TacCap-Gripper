@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A wall-clock step no longer stalls the exchange or the controllers.**
+  libstdc++ built against an older glibc sysroot (conda-forge, manylinux)
+  implements `condition_variable::wait_until(steady_clock)` and
+  `timed_mutex::try_lock_for` on `CLOCK_REALTIME`, so when NTP stepped the wall
+  clock back the waits lasted that much longer. A follower exchange stalled
+  past `status_timeout_ms` 0.2 s after "Clock change detected" and the
+  ForcePositionController faulted. The leader/follower exchange loops, the
+  half-duplex turn lock and both controllers' status watchdog now wait on a
+  `pthread_cond` bound to `CLOCK_MONOTONIC` (`taccap/detail/monotonic_cv.hpp`),
+  whatever toolchain builds the SDK.
+
 - **`LeaderGripper.start_exchange(1000, 100)` no longer throws.** With no
   `exchange_hz` the default exchange rate was the requested data rate, so a
   1000 Hz IMU request asked for 1000 exchanges/s and was rejected (limit 500).

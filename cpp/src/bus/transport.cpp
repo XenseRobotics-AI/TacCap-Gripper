@@ -154,16 +154,14 @@ void Transport::send_cmd_no_ack(protocol::Cmd cmd,
                  protocol::FrameType::CMD_NO_ACK, cmd, payload), cmd);
 }
 
-std::unique_lock<std::timed_mutex> Transport::half_duplex_turn_(std::chrono::milliseconds wait,
-                                                                 protocol::Cmd cmd) {
+Transport::Turn Transport::half_duplex_turn_(std::chrono::milliseconds wait, protocol::Cmd cmd) {
     if (!half_duplex_.load(std::memory_order_acquire)) return {};
-    std::unique_lock<std::timed_mutex> turn(half_duplex_mu_, std::defer_lock);
-    if (!turn.try_lock_for(wait)) {
+    if (!half_duplex_mu_.try_lock_for(wait)) {
         throw TimeoutError("send " + std::string(protocol::to_string(cmd)) +
                            ": half-duplex link busy for " + std::to_string(wait.count()) + " ms",
                            ETIMEDOUT);
     }
-    return turn;
+    return Turn(&half_duplex_mu_);
 }
 
 void Transport::inject_data(Frame f) {

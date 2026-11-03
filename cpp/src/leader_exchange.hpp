@@ -21,6 +21,7 @@
 #pragma once
 
 #include <taccap/bus/transport.hpp>
+#include <taccap/detail/monotonic_cv.hpp>
 #include <taccap/leader_gripper.hpp>
 
 #include <chrono>
@@ -63,7 +64,7 @@ private:
     const std::function<void()>     rearm_;
 
     mutable std::mutex       mu_;
-    std::condition_variable  cv_;
+    detail::MonotonicCondition cv_;   // monotonic even on old-sysroot toolchains
     bool                     stop_ = false;
     LeaderExchangeStats      stats_{};
     std::thread              worker_;

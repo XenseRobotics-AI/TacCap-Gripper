@@ -54,6 +54,7 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <taccap/detail/monotonic_cv.hpp>
 #include <memory>
 #include <string>
 #include <thread>
@@ -318,9 +319,19 @@ private:
     // Never held by the reader or dispatcher, so callbacks may still send.
     // Waiting for the turn counts against the request's own timeout: a long
     // command (IMU calibration, 15 s) must not stretch a 100 ms query.
-    std::unique_lock<std::timed_mutex> half_duplex_turn_(std::chrono::milliseconds wait,
+    struct Turn {                       // RAII, like std::unique_lock
+        detail::MonotonicTimedLock* lock = nullptr;
+        bool owns_lock() const noexcept { return lock != nullptr; }
+        void unlock() { if (lock) { lock->unlock(); lock = nullptr; } }
+        Turn() = default;
+        explicit Turn(detail::MonotonicTimedLock* l) : lock(l) {}
+        Turn(Turn&& o) noexcept : lock(o.lock) { o.lock = nullptr; }
+        Turn& operator=(Turn&&) = delete;
+        ~Turn() { unlock(); }
+    };
+    Turn half_duplex_turn_(std::chrono::milliseconds wait,
                                                          protocol::Cmd cmd);
-    std::timed_mutex  half_duplex_mu_;
+    detail::MonotonicTimedLock half_duplex_mu_;   // not std::timed_mutex: see monotonic_cv.hpp
     std::atomic<bool> half_duplex_{false};
 
     void reader_loop_();
