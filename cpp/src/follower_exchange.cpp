@@ -89,7 +89,11 @@ void FollowerExchange::run_() {
         std::optional<bus::AckResponse> ack;
         bool link_down = false;
         try {
-            ack = t_.send_cmd(protocol::Cmd::SlaveExchange, req, timeout_, bus::RetryMode::Once);
+            // SameSeq: when a reply is lost the retry is byte-identical, so the
+            // firmware's command layer replays its cached reply (same telemetry,
+            // the target not applied twice) instead of running a new exchange --
+            // otherwise the IMU samples that reply carried would be lost.
+            ack = t_.send_cmd(protocol::Cmd::SlaveExchange, req, timeout_, bus::RetryMode::SameSeq);
         } catch (const TimeoutError&) {
         } catch (const std::exception&) {
             link_down = !t_.is_running();

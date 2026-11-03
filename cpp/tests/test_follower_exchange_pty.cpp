@@ -99,10 +99,13 @@ TEST(FollowerExchangePty, NeverWritesWhileAReplyIsPendingEvenWithConcurrentQueri
 
     std::atomic<bool> stop{false};
     std::atomic<unsigned> heartbeats{0}, heartbeat_timeouts{0};
+    // 1 kHz of user queries, as in the leader test: an unthrottled loop starves
+    // the exchange on the (unfair) half-duplex turn lock, a documented limit.
     std::thread user([&] {
         while (!stop.load()) {
             try { g->transport().send_cmd(tp::Cmd::Heartbeat, {}, std::chrono::milliseconds(200)); ++heartbeats; }
             catch (...) { ++heartbeat_timeouts; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
     std::thread submitter([&] {
@@ -135,7 +138,9 @@ TEST(FollowerExchangePty, TimedOutTargetIsResentUnlessSuperseded) {
     g->start_exchange(20);
     ASSERT_TRUE(wait_for([&] { return fw.telemetry_exchanges() >= 1; }, kSecond));
 
-    fw.drop_exchange_replies(1);
+    // Two lost requests exhaust the same-seq retry (open_follower: max_retries=1),
+    // so the exchange times out and the loop resends the target itself.
+    fw.drop_exchange_replies(2);
     const unsigned targets = fw.exchange_targets();
     g->motor().submit_impedance(0.5f, 1.0f, 0.0f, 0.0f, 0.0f);
     ASSERT_TRUE(wait_for([&] { return fw.exchange_targets() >= targets + 2; }, kSecond))
@@ -145,6 +150,35 @@ TEST(FollowerExchangePty, TimedOutTargetIsResentUnlessSuperseded) {
     EXPECT_GE(s.timeouts, 1u);
     ASSERT_TRUE(fw.last_submit().has_value());
     EXPECT_FLOAT_EQ(fw.last_submit()->target_pos, 0.5f);
+    g->stop_streaming();
+}
+
+TEST(FollowerExchangePty, LostReplyIsReplayedBySameSeqRetryNotLost) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    std::mutex m; std::vector<uint16_t> seqs;
+    g->imu().on_data([&](const tx::ImuSample& s) { std::lock_guard<std::mutex> lk(m); seqs.push_back(s.seq); });
+    g->start_exchange(100, 100, 50);
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(m); return seqs.size() >= 10; }, kSecond));
+
+    const auto acks_before = g->transport().stats().ack_timeouts;
+    fw.lose_exchange_replies(1);   // telemetry built (IMU consumed) but lost on the wire
+    ASSERT_TRUE(wait_for([&] { return fw.exchange_replays() >= 1; }, kSecond)) << "no same-seq retry";
+    std::size_t at;
+    { std::lock_guard<std::mutex> lk(m); at = seqs.size(); }
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(m); return seqs.size() >= at + 20; }, kSecond));
+    EXPECT_GT(g->transport().stats().ack_timeouts, acks_before);
+    EXPECT_EQ(g->exchange_stats().timeouts, 0u) << "the retry recovered the reply";
+    std::lock_guard<std::mutex> lk(m);
+    unsigned missing = 0;
+    for (std::size_t i = 1; i < seqs.size(); ++i) {
+        const uint16_t d = static_cast<uint16_t>(seqs[i] - seqs[i - 1]);
+        if (d != 1) missing += d == 0 ? 1u : d - 1u;
+    }
+    EXPECT_EQ(missing, 0u) << "IMU samples of the lost reply were lost";
     g->stop_streaming();
 }
 

@@ -123,8 +123,8 @@ enum class RetryMode : uint8_t {
     // this transport between attempts — true for the single-threaded OTA flow.
     SameSeq,
     // Exactly one attempt regardless of Config::max_retries. For the follower
-    // exchange loop, which owns its own resend policy and must never write a
-    // second frame while the first one's reply may still be on the wire.
+    // caller that owns its own resend policy. (The leader and follower
+    // exchange loops use SameSeq, so a lost reply is replayed, not lost.)
     Once,
 };
 

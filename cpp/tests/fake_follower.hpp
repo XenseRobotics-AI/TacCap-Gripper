@@ -116,6 +116,10 @@ public:
     // Swallow the next n exchange requests (the target is still applied),
     // so the host sees timeouts.
     void drop_exchange_replies(unsigned n) { drop_replies_.store(n); }
+    // Build (and cache) the next n exchange replies -- consuming their IMU
+    // samples -- but lose them on the wire: what a host stall looks like.
+    void lose_exchange_replies(unsigned n) { drop_after_build_.store(n); }
+    unsigned exchange_replays() const { return exchange_replays_.load(); }
     // Make the next exchange reply's target_result this ErrorCode byte.
     void reject_next_exchange_target(uint8_t err) { reject_next_.store(err); }
     // Non-exchange frames seen while polled (heartbeats, queries, etc.).
@@ -209,7 +213,19 @@ private:
         if (polled_.load() && f.cmd != tp::Cmd::SlaveExchange) ++other_while_polled_;
         switch (f.cmd) {
             case tp::Cmd::SlaveExchange: {
+                // Firmware command layer: a byte-identical repeat (same seq, cmd,
+                // payload) replays the cached reply instead of re-running it.
+                if (last_exchange_ && last_exchange_->seq == f.seq && last_exchange_->payload == f.payload) {
+                    ++exchange_replays_;
+                    if (last_exchange_reply_) pty_.send_response(f.seq, f.cmd, *last_exchange_reply_);
+                    return;
+                }
+                // drop_exchange_replies() models a request that never reached the
+                // firmware (nothing cached, a retry runs fresh); lose_exchange_replies()
+                // a reply lost on the wire (cached, a retry replays it).
+                last_exchange_reply_.reset();
                 handle_exchange_(f);
+                if (last_exchange_reply_) last_exchange_ = f; else last_exchange_.reset();
                 return;
             }
             case tp::Cmd::GetVersion: {
@@ -494,6 +510,8 @@ private:
             }
         }
         std::memcpy(out.data(), &r, sizeof(r));
+        last_exchange_reply_ = out;
+        if (drop_after_build_) { --drop_after_build_; return; }   // reply lost on the wire
         pty_.send_response(f.seq, f.cmd, out);
         auto later = std::move(deferred_);
         deferred_.clear();
@@ -503,6 +521,9 @@ private:
     std::atomic<bool> exchange_supported_{true}, polled_{false};
     std::atomic<unsigned> exchanges_{0}, telemetry_exchanges_{0}, exchange_targets_{0};
     std::atomic<unsigned> overlaps_{0}, drop_replies_{0}, other_while_polled_{0};
+    std::atomic<unsigned> drop_after_build_{0}, exchange_replays_{0};
+    std::optional<xense::taccap::bus::Frame> last_exchange_;
+    std::optional<std::vector<uint8_t>>      last_exchange_reply_;
     std::atomic<int> exchange_delay_ms_{0};
     std::atomic<uint8_t> reject_next_{0};
     std::vector<xense::taccap::bus::Frame> deferred_;

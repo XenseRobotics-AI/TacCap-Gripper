@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A lost follower exchange reply no longer loses IMU samples.** The follower
+  exchange sent each request once; when its reply was lost (host stalled past
+  the timeout) the next exchange took new samples and the ones in the lost reply
+  were gone (5-9 per hour on a loaded host). It now retries with the same seq,
+  like the leader, so the firmware replays its cached reply.
+
 - **A wall-clock step no longer stalls the exchange or the controllers.**
   libstdc++ built against an older glibc sysroot (conda-forge, manylinux)
   implements `condition_variable::wait_until(steady_clock)` and

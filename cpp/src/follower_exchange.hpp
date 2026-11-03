@@ -13,9 +13,11 @@
 // Cadence: one telemetry exchange per period. A target submitted between
 // ticks goes out at once in a target-only exchange (header-only reply), so a
 // controller that reacts to a status sample keeps today's ~1 ms latency
-// instead of waiting a whole period. A request that times out keeps its
-// target for the next exchange unless a newer one superseded it; targets are
-// absolute set-points, so applying one twice is harmless.
+// instead of waiting a whole period. A lost reply is retried with the same seq
+// (the firmware replays its cached reply, so no IMU sample is lost); a request
+// still unanswered after the retries keeps its target for the next exchange
+// unless a newer one superseded it; targets are absolute set-points, so
+// applying one twice is harmless.
 //
 // Replies are split back into the DATA frames a stream would have carried
 // (GetMotorStatus, GetImu/GetImuV2) and injected into the transport's normal
