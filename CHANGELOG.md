@@ -63,6 +63,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.4] - 2026-11-01
 
+_The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow
+fix below; the version number is unchanged._
+
+### Fixed
+
+- **The tactile overlay is marker flow, drawn by the SDK.** The arrows on the
+  tactile image used to be the inferred force field from a guessed grid, scaled
+  by `--force-scale`; under a press they showed only dots. `rerun_viewer.py`,
+  `gripper_console.py --rerun` and `tactile_sensor.py` now draw the image with
+  `Sensor.drawMarkerMove()`: an arrow from each marker's rest position to where
+  it is now, 1:1, on the sensor's thinned grid. `--force-scale` is gone, and
+  `tactile_sensor.py --outputs` takes `flow` instead of `force` / `marker`.
+
 ### Added
 
 - **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
@@ -73,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CRC32. A bare image name also resolves under `firmware/`.
 
 - **Visuotactile examples.** `tactile_sensor.py` reads the GSPS sensors through
-  `xensesdk` (rectify / difference / depth / force / resultant) and lists which
+  `xensesdk` (rectify / flow / difference / depth / resultant) and lists which
   gripper and which jaw each one is on: the side comes from the gripper on the
   same USB hub, the jaw from the GSPS serial's last digit. Images are shown the
   way the LeRobot integration records them: RGB, transposed to (400, 700),
