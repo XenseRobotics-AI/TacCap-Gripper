@@ -160,6 +160,41 @@ TEST(LeaderExchangePty, RejectsBadArgumentsBeforeTouchingTheDevice) {
     g->stop_streaming();
 }
 
+TEST(LeaderExchangePty, HighRateRequestDefaultsToCappedExchangeRate) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeLeader fw(pty);
+    auto g = open_leader(pty);
+    // A 1000 Hz request used to default exchange_hz to 1000 and throw. The cap
+    // itself is pinned in test_stream_rate.cpp (no wall-clock rate here: flaky
+    // on a loaded runner).
+    ASSERT_TRUE(g->start_exchange(1000, 100));
+    EXPECT_TRUE(wait_for([&] { return fw.exchanges() >= 10; }, kSecond));
+    g->stop_streaming();
+    EXPECT_THROW(g->start_exchange(1000, 100, 501), tx::IoError) << "explicit > 500 still rejected";
+}
+
+TEST(LeaderExchangePty, StreamingCanKeepTheLegacyImuFrame) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeLeader fw(pty);
+    auto g = open_leader(pty);
+    std::atomic<unsigned> imu{0};
+    g->imu().on_data([&](const tx::ImuSample&) { ++imu; });
+
+    const unsigned before = fw.time_session_requests();
+    g->start_streaming(100, 100, false);
+    EXPECT_EQ(fw.time_session_requests(), before) << "imu_v2_time=false must not negotiate a time session";
+    EXPECT_TRUE(fw.stream_source_mask() & tp::StreamSrc::Imu);
+    EXPECT_FALSE(fw.stream_source_mask() & tp::StreamSrc::ImuV2);
+    EXPECT_TRUE(wait_for([&] { return imu.load() >= 10; }, kSecond));
+    g->stop_streaming();
+
+    g->start_streaming(100, 100);      // default keeps today's behaviour: negotiate
+    EXPECT_GT(fw.time_session_requests(), before);
+    g->stop_streaming();
+}
+
 TEST(LeaderExchangePty, BacklogIsFetchedAtOnceWithoutLoss) {
     Pty pty;
     ASSERT_GE(pty.master(), 0);

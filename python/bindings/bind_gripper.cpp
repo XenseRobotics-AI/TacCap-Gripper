@@ -275,11 +275,11 @@ void bind_gripper(py::module_& m) {
            "Raises IoError when none is attached or when more than one is; pass an\n"
            "explicit mcu_device from find_leader() in that case. Cameras stay\n"
            "closed -- an external service owns the wrist V4L2 device.")
-        .def("start_streaming", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz) {
+        .def("start_streaming", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz, bool v2) {
             py::gil_scoped_release gil;
-            self.start_streaming(imu_hz, enc_hz);
-        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u,
-           "Start the MCU sensor stream.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
+            self.start_streaming(imu_hz, enc_hz, v2);
+        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u, py::arg("imu_v2_time") = true,
+           "Start the MCU sensor stream.\n\nimu_v2_time=True (default) streams IMU V2 with 64-bit capture time when the firmware supports it; False keeps the legacy 28-byte IMU frame, as SDK <= 0.4.4 did. A pushed stream loses a frame whenever a host write overlaps it and longer frames are hit more often, so with frequent queries False loses fewer IMU samples; start_exchange() avoids the overlap entirely.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
         .def("start_exchange", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz,
                                   unsigned exchange_hz, bool fallback) {
             py::gil_scoped_release gil;
@@ -291,7 +291,7 @@ void bind_gripper(py::module_& m) {
            "frames; the SDK fetches them once per 1/exchange_hz s and delivers them to the\n"
            "same subscribers. The host never writes while the leader is answering, which\n"
            "removes the overlap that loses uplink bytes. exchange_hz=0 means\n"
-           "max(imu_hz, encoder_hz, 1); pass 2x the data rate (e.g. 200) to avoid a sample\n"
+           "max(imu_hz, encoder_hz, 1) capped at 200 (explicit values up to 500); pass 2x the data rate (e.g. 200) to avoid a sample\n"
            "occasionally waiting one extra period. Samples from one reply share its arrival\n"
            "time as host_time; use mcu_timestamp_us for the sampling instant. If the host stalls\n"
            "for more than 1 s the leader returns to pushing on its own and the SDK re-enters\n"

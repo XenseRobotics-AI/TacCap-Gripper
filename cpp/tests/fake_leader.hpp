@@ -56,6 +56,8 @@ public:
     uint8_t stream_mode() const { return mode_.load(); }
     unsigned exchanges() const { return exchanges_.load(); }
     unsigned lease_expiries() const { return lease_expiries_.load(); }
+    uint16_t stream_source_mask() const { return source_mask_.load(); }
+    unsigned time_session_requests() const { return time_sessions_.load(); }
     unsigned polled_starts() const { return polled_starts_.load(); }
     unsigned replays() const { return replays_.load(); }
     unsigned overlaps() const { return overlaps_.load(); }
@@ -151,6 +153,7 @@ private:
                     if (polled_.load()) ++polled_starts_;
                 }
                 mode_.store(sc.mode);
+                source_mask_.store(sc.source_mask);
                 streaming_.store(true);
                 pty_.send_ack_ok(f.seq, f.cmd);
                 return;
@@ -194,6 +197,7 @@ private:
                 return;
             default:
                 // TimeSession and anything else: legacy firmware.
+                if (f.cmd == tp::Cmd::TimeSession) ++time_sessions_;
                 pty_.send_nack(f.seq, tp::ErrorCode::InvalidCmd);
                 return;
         }
@@ -243,7 +247,8 @@ private:
     std::atomic<unsigned>   exchanges_{0}, replays_{0}, overlaps_{0}, pushed_{0};
     std::atomic<int>        key_state_{-1};
     std::atomic<bool>       expire_{false};
-    std::atomic<unsigned>   lease_expiries_{0}, polled_starts_{0};
+    std::atomic<unsigned>   lease_expiries_{0}, polled_starts_{0}, time_sessions_{0};
+    std::atomic<uint16_t>   source_mask_{0};
     std::atomic<uint16_t>   imu_seq_{0};
     bool                    pending_reply_ = false;
     std::vector<tb::Frame>  deferred_;

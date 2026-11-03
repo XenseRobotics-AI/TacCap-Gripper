@@ -227,7 +227,17 @@ public:
     // anything above 1000 Hz collapses to 100 Hz. StartStream is never NACKed
     // for a bad rate, so the SDK logs a warning whenever it has to adjust one.
     // See cpp/src/stream_rate.hpp for the firmware model this mirrors.
-    void start_streaming(unsigned imu_hz = 100, unsigned encoder_hz = 100);
+    //
+    // imu_v2_time (default true): negotiate the 64-bit time session and stream
+    // GetImuV2 (44 B payload) when the firmware supports it; false always
+    // streams the legacy GetImu (28 B) without a time session, as SDK <= 0.4.4
+    // did. The pushed stream loses an uplink frame whenever a host write
+    // overlaps it; a longer frame is hit more often (measured on a leader at
+    // 100 Hz queries: IMU bad frames ~4.7x with V2). If the stream must stay
+    // pushed and queries are frequent, pass false; start_exchange() removes the
+    // overlap altogether and keeps V2.
+    void start_streaming(unsigned imu_hz = 100, unsigned encoder_hz = 100,
+                         bool imu_v2_time = true);
     void stop_streaming();
     bool is_streaming() const noexcept { return streaming_; }
 
@@ -244,7 +254,9 @@ public:
     // overlap that loses uplink bytes on the current hardware.
     //
     // is_streaming() is true and stop_streaming() ends the exchange.
-    // exchange_hz=0 means max(imu_hz, encoder_hz, 1), at most 500. A sample is
+    // exchange_hz=0 means max(imu_hz, encoder_hz, 1) capped at 200 (the leader
+    // samples at 100 Hz whatever is requested); an explicit exchange_hz may be up
+    // to 500. A sample is
     // fetched on the next exchange after it is taken, so it waits at most one
     // exchange period; at exchange_hz == data rate the two clocks drift, and a
     // sample occasionally waits one extra period (~10 ms at 100 Hz, measured

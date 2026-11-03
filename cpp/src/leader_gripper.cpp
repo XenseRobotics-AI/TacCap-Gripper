@@ -49,7 +49,8 @@ Camera::Config make_wrist_config(const LeaderGripper::Config& cfg) {
 // source's mask bit clear -- the rate field alone would fall through to the
 // firmware's 100 Hz default. See stream_rate.hpp.
 protocol::StreamConfig leader_stream_config(const char* caller, IMU& imu, unsigned imu_hz,
-                                            unsigned encoder_hz, protocol::StreamMode mode) {
+                                            unsigned encoder_hz, protocol::StreamMode mode,
+                                            bool imu_v2_time = true) {
     const uint16_t mask = detail::stream_source_mask(imu_hz, encoder_hz, 0);
     if (mask == 0) {
         throw IoError(std::string("LeaderGripper::") + caller + ": both rates are 0, so "
@@ -63,7 +64,10 @@ protocol::StreamConfig leader_stream_config(const char* caller, IMU& imu, unsign
     // Build StreamConfig (12 bytes — see protocol::StreamConfig).
     protocol::StreamConfig sc{};
     sc.source_mask  = mask;
-    if (imu_hz) sc.source_mask = (mask & ~protocol::StreamSrc::Imu) | imu.negotiate_time();
+    // imu_v2_time=false keeps the legacy 28 B GetImu frame and skips the time
+    // session entirely (what SDK <= 0.4.4 always did).
+    if (imu_hz && imu_v2_time)
+        sc.source_mask = (mask & ~protocol::StreamSrc::Imu) | imu.negotiate_time();
     sc.mode         = static_cast<uint8_t>(mode);
     sc.imu_rate     = static_cast<uint16_t>(imu_hz);
     sc.encoder_rate = static_cast<uint16_t>(encoder_hz);
@@ -187,7 +191,7 @@ std::unique_ptr<LeaderGripper> LeaderGripper::open() {
     return std::make_unique<LeaderGripper>(cfg);
 }
 
-void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz) {
+void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz, bool imu_v2_time) {
     if (streaming_) return;
 
     // Best-effort reset of the firmware streaming state. If a previous host
@@ -202,7 +206,7 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz) {
     } catch (...) { /* expected when fw is already idle */ }
 
     const auto sc = leader_stream_config("start_streaming", imu_, imu_hz, encoder_hz,
-                                         protocol::StreamMode::Separate);
+                                         protocol::StreamMode::Separate, imu_v2_time);
     auto wire = protocol::encode(sc);
     auto ack = t_.send_cmd(protocol::Cmd::StartStream, wire);
     if (ack.is_nack) {
@@ -220,7 +224,7 @@ bool LeaderGripper::start_exchange(unsigned imu_hz, unsigned encoder_hz,
                                    unsigned exchange_hz, bool fallback_to_streaming) {
     if (exchange_) return true;
     if (streaming_) throw IoError("LeaderGripper: stop streaming before start_exchange", EBUSY);
-    if (exchange_hz == 0) exchange_hz = std::max({imu_hz, encoder_hz, 1u});
+    if (exchange_hz == 0) exchange_hz = detail::leader_default_exchange_hz(imu_hz, encoder_hz);
     if (exchange_hz > 500)
         throw IoError("LeaderGripper::start_exchange: exchange_hz must be <= 500", EINVAL);
     if (detail::stream_source_mask(imu_hz, encoder_hz, 0) == 0)

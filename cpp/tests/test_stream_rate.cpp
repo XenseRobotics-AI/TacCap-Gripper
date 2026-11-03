@@ -93,3 +93,12 @@ TEST(StreamRate, NeverEnablesEskin) {
     const uint16_t all = det::stream_source_mask(100, 100, 100);
     EXPECT_EQ(all & (tp::StreamSrc::Eskin1 | tp::StreamSrc::Eskin2), 0u);
 }
+
+TEST(StreamRate, LeaderDefaultExchangeRateIsTheDataRateCappedAt200) {
+    using xense::taccap::detail::leader_default_exchange_hz;
+    EXPECT_EQ(leader_default_exchange_hz(100, 100), 100u);
+    EXPECT_EQ(leader_default_exchange_hz(0, 50), 50u);
+    EXPECT_EQ(leader_default_exchange_hz(200, 100), 200u);
+    EXPECT_EQ(leader_default_exchange_hz(1000, 100), 200u);
+    EXPECT_EQ(leader_default_exchange_hz(0, 0), 1u);
+}

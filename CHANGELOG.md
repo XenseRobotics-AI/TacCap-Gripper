@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`LeaderGripper.start_exchange(1000, 100)` no longer throws.** With no
+  `exchange_hz` the default exchange rate was the requested data rate, so a
+  1000 Hz IMU request asked for 1000 exchanges/s and was rejected (limit 500).
+  The default is now the data rate capped at 200 Hz (the leader samples IMU and
+  encoder at 100 Hz whatever is requested); an explicit `exchange_hz` may still
+  be up to 500.
+
 - **Python discovery no longer freezes other threads.** `scan_grippers()` and
   the `find_*()` helpers held the GIL for the whole scan (~280 ms with two idle
   grippers attached, up to the ACK timeout on a silent port), so a GUI scanning
@@ -19,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stall during a scan: 263-280 ms before, 0 ms after.
 
 ### Added
+
+- **`LeaderGripper.start_streaming(imu_hz, encoder_hz, imu_v2_time=True)`.**
+  `imu_v2_time=False` streams the legacy 28 B IMU frame without a time session,
+  as SDK <= 0.4.4 did. A pushed stream loses an uplink frame whenever a host
+  write overlaps it, and a longer frame is hit more often: on a leader at
+  100 Hz queries (IMU 1000 Hz requested, encoder 100 Hz, 120 s x3) IMU bad
+  frames were 868 with V2 and 1 with the legacy frame. Default unchanged;
+  `start_exchange()` removes the overlap and keeps V2.
 
 - **Leader half-duplex exchange: `LeaderGripper.start_exchange(imu_hz,
   encoder_hz, exchange_hz, fallback_to_streaming=True)`.** Requires leader

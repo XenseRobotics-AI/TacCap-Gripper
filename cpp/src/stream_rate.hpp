@@ -86,4 +86,12 @@ inline void warn_if_rate_adjusted(const char* who, const char* source,
     }
 }
 
+// LeaderGripper::start_exchange() default exchange rate: the data rate, capped at
+// 200 Hz. The leader samples IMU and encoder at 100 Hz whatever is requested, so
+// a 1000 Hz request must not turn into 1000 exchanges/s (it used to throw).
+inline unsigned leader_default_exchange_hz(unsigned imu_hz, unsigned encoder_hz) {
+    const unsigned hz = imu_hz > encoder_hz ? imu_hz : encoder_hz;
+    return hz < 1 ? 1 : (hz > 200 ? 200 : hz);
+}
+
 }  // namespace xense::taccap::detail
