@@ -364,7 +364,7 @@ motor's own firmware, checked against the required minimum. It is read-only:
 
 ```bash
 python python/examples/follower_status.py left
-# [fw] FirmwareVersion(1.2.16.0)
+# [fw] FirmwareVersion(1.2.17.0)
 # [motor] MotorModel(RS00, id=1, from flash, t_max=14.0Nm, v_max=33.0rad/s)
 # [motor fw] 0.0.3.32  (...)  OK
 ```

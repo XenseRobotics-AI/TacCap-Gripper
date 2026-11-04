@@ -126,11 +126,11 @@ inactive bank and uses the STM32H5 bank swap, so one build serves both banks.
 ```bash
 python python/examples/ota_update.py \
     third_party/firmware/tc-gu-01/build/master/tc-gu-01-master.bin \
-    left --target-version 1.2.6
+    left --target-version 1.2.7
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.6 and the follower 1.2.16, and neither is "behind" the other. Both
+leader is 1.2.7 and the follower 1.2.17, and neither is "behind" the other. Both
 carry the same control-UART receive fix, which lives in shared code.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24.
 
@@ -142,13 +142,13 @@ them apart. If a leader reports 1.2.6, check `g.diagnostics.uart_stats()`: the
 fixed image answers with 44 bytes, so `rx_errors` / `rx_rearms` exist and are
 meaningful; the old one answers 32 bytes and the SDK reads both as 0 -- which is
 indistinguishable from a healthy zero. When in doubt, reflash
-`tc-gu-01-master-1.2.6.bin` from `firmware/`; OTA compares no versions
+the current leader image from `firmware/`; OTA compares no versions
 (`--target-version` is informational), so reflashing the same number is fine.
 Compare versions only within one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.6.bin`). That is deliberate:
+`firmware/` carry the version (`tc-gu-01-master-1.2.7.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
 build into `firmware/`, rename it and update `firmware/manifest.json` in the

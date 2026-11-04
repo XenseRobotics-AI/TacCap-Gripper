@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled firmware is now leader 1.2.7 / follower 1.2.17 (protocol V2.9).**
+  Both add time-shared exchange (`0x5E` leader, `0x5D` follower) so host and
+  gripper never transmit at the same time; an uplink frame that overlaps a host
+  byte loses the bytes in flight. **Host-breaking:** IMU/encoder `timestamp` moves
+  from DWT/250 (wraps every 17.18 s) to TIM2 1 MHz (wraps every 71 min 35 s); this
+  SDK already unwraps the new timebase, older host software does not. Images are
+  built with arm-none-eabi-gcc 10.3.1 from tc-gu-01 `8c059e9`; size, CRC32 and
+  notes are in `firmware/manifest.json`. Leader verified on the collector backpack
+  (0 bad uplink frames under load vs 17/7208 on 1.2.6 push). As before, replug the
+  leader's USB / power-cycle the follower's 24 V after flashing.
+
 ### Fixed
 
 - **A lost follower exchange reply no longer loses IMU samples.** The follower
