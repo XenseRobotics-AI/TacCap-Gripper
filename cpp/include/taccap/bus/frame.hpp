@@ -16,6 +16,10 @@
 #include <taccap/protocol/commands.hpp>
 
 #include <cstdint>
+#include <chrono>
+#include <array>
+#include <atomic>
+#include <mutex>
 #include <cstddef>
 #include <deque>
 #include <vector>
@@ -58,6 +62,9 @@ struct Frame {
     protocol::FrameType  type;
     protocol::Cmd        cmd;
     std::vector<uint8_t> payload;
+    // Host monotonic time of the read completing this frame, not callback time
+    // or hardware sample time. Zero for standalone parser-created frames.
+    std::chrono::steady_clock::time_point receive_time{};
 };
 
 // Build a wire frame.
@@ -90,9 +97,10 @@ enum class ParseStatus { Success, NeedMoreData, Resync };
 // status == Resync; Success / NeedMoreData always carry ParseReason::None.
 //
 // This exists to separate "we are mid-stream on a byte boundary" from "we
-// found a well-formed frame whose CRC is wrong". The latter is the signature
-// of *lost bytes* — a host that stopped draining the tty long enough for the
-// kernel/USB buffers to overflow — and is the one counter worth alarming on.
+// found a well-formed frame whose CRC is wrong". Length/framing damage can be
+// rejected BEFORE CRC, so zero CRC errors never proves a loss-free link.
+// None of these reasons alone identifies the firmware, bridge, or host as
+// the source of damage; retain raw bytes for attribution.
 enum class ParseReason : uint8_t {
     None = 0,
     NoHead,      // first byte is not HEAD; scanned forward to the next one
@@ -130,29 +138,66 @@ public:
     // Bytes currently held in the resync buffer (not yet a complete frame).
     std::size_t buffered_bytes() const noexcept { return rx_.size(); }
 
-    // Monotonic damage counters. Everything the parser throws away lands in
-    // exactly one of these, so "the firmware sent fewer frames" and "we lost
-    // bytes on the host" stop being indistinguishable.
+    // Monotonic parser counters. Discarded bytes are counted as resync or
+    // buffer overflow; CRC and rejection reasons describe parser outcomes,
+    // not the physical location where data was damaged.
     //
     // Not synchronised: only the thread calling feed() may read these. The
     // Transport mirrors them into its own atomics from the reader thread.
     struct Stats {
-        uint64_t crc_errors     = 0;  // well-framed, CRC mismatch → byte loss
+        uint64_t crc_errors     = 0;  // well-framed CRC mismatch; cause unknown
         uint64_t resync_bytes   = 0;  // bytes discarded without yielding a frame
         uint64_t overflow_bytes = 0;  // bytes dropped by the max_buffered cap
+        uint64_t no_head = 0;
+        uint64_t oversize = 0;
+        uint64_t short_body = 0;
+        uint64_t bad_length = 0;
     };
     const Stats& stats() const noexcept { return stats_; }
+
+    // Opt-in bounded evidence, never a user callback or disk write on reader.
+    // Input events split large read chunks without omitting bytes. Reject
+    // events retain a prefix plus total available size; offsets join them to
+    // Input events. Time is host feed time, NOT MCU sample/exposure time.
+    struct TraceRecord {
+        enum class Kind { Input, Reject };
+        Kind kind = Kind::Input;
+        ParseReason reason = ParseReason::None;
+        std::chrono::steady_clock::time_point host_time{};
+        uint64_t offset = 0;
+        std::size_t available = 0;
+        std::size_t consumed = 0;
+        std::size_t size = 0;
+        std::array<uint8_t, 1024> bytes{};
+    };
+    struct TraceSnapshot {
+        std::vector<TraceRecord> records;
+        uint64_t overwritten_records = 0;
+    };
+    // Thread-safe. Enabling starts a fresh 256-record ring (~280 KiB).
+    // Export after stopping streaming when possible: snapshot holds a mutex.
+    void set_trace_enabled(bool enabled);
+    TraceSnapshot take_trace();
 
     // Clears the buffers. Damage counters are monotonic and survive.
     void reset();
 
 private:
     void drain_();
+    void trace_(TraceRecord::Kind kind, ParseReason reason, uint64_t offset,
+                const uint8_t* data, std::size_t available, std::size_t consumed);
+    void rejected_(ParseReason reason);
 
     std::vector<uint8_t> rx_;
     std::deque<Frame>    ready_;
     std::size_t          max_buffered_;
     Stats                stats_{};
+    uint64_t rx_offset_ = 0;
+    std::atomic<bool> trace_enabled_{false};
+    std::mutex trace_mu_;
+    std::vector<TraceRecord> trace_ring_;
+    std::size_t trace_next_ = 0, trace_count_ = 0;
+    uint64_t trace_overwritten_ = 0;
 };
 
 }  // namespace xense::taccap::bus

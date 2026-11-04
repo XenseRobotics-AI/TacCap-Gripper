@@ -43,10 +43,9 @@ void bind_motor(py::module_& m) {
     py::class_<protocol::UartStats>(m, "UartStats",
         "Free-running firmware UART counters since MCU boot (Cmd 0x54).\n\n"
         "Take a reading before and after a measurement window and subtract.\n"
-        "tx_bytes_ok / tx_calls_ok count only what the firmware's transmit call\n"
-        "accepted, i.e. what reached the MCU's transmit register -- compare them\n"
-        "against what the host decoded to tell 'the MCU never sent it' apart from\n"
-        "'it was lost after leaving the MCU'.\n\n"
+        "tx_bytes_ok / tx_calls_ok count successful HAL transmit calls, not\n"
+        "pin-level capture. Compare aligned windows; a difference alone cannot\n"
+        "assign the fault to MCU firmware, bridge, USB or TTY.\n\n"
         "log_dropped reads 0 on firmware 1.1.3, which had no such field; that is\n"
         "not distinguishable from a genuine zero.")
         .def_readonly("tx_bytes_ok",     &protocol::UartStats::tx_bytes_ok)
@@ -117,9 +116,32 @@ void bind_motor(py::module_& m) {
     m.attr("LOG_OUTPUT_NONE") = py::int_(protocol::LogOutput::None);
     m.attr("LOG_OUTPUT_UART") = py::int_(protocol::LogOutput::Uart);
 
+    py::class_<protocol::UartRxErrors>(m, "UartRxErrors")
+        .def_readonly("overrun", &protocol::UartRxErrors::overrun)
+        .def_readonly("framing", &protocol::UartRxErrors::framing)
+        .def_readonly("noise", &protocol::UartRxErrors::noise)
+        .def_readonly("parity", &protocol::UartRxErrors::parity)
+        .def_readonly("receiver_timeout", &protocol::UartRxErrors::receiver_timeout)
+        .def_readonly("last_error", &protocol::UartRxErrors::last_error)
+        .def_readonly("last_error_ms", &protocol::UartRxErrors::last_error_ms);
+    py::class_<bus::Transport::TargetWrites>(m, "MotorTargetWrites")
+        .def_readonly("count", &bus::Transport::TargetWrites::count)
+        .def_readonly("last_write_ns", &bus::Transport::TargetWrites::last_write_ns)
+        .def_readonly("last_gap_us", &bus::Transport::TargetWrites::last_gap_us)
+        .def_readonly("max_gap_us", &bus::Transport::TargetWrites::max_gap_us);
+    py::class_<MotorDeliverySnapshot>(m, "MotorDeliverySnapshot")
+        .def_readonly("before", &MotorDeliverySnapshot::before)
+        .def_readonly("after", &MotorDeliverySnapshot::after)
+        .def_readonly("firmware", &MotorDeliverySnapshot::firmware);
+
     py::class_<Diagnostics>(m, "Diagnostics",
         "Firmware UART counters and log control. Available on both gripper\n"
         "roles; needs firmware 1.1.3 (counters) / 1.1.4 (log control).")
+        .def("uart_rx_errors", [](Diagnostics& self, unsigned timeout_ms) {
+            py::gil_scoped_release release;
+            return self.uart_rx_errors(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 100,
+           "Explicit extended UART error query; unsupported firmware raises ProtocolError.")
         .def("uart_stats", [](Diagnostics& self, unsigned timeout_ms) {
                 py::gil_scoped_release g;
                 return self.uart_stats(std::chrono::milliseconds(timeout_ms));
@@ -824,6 +846,13 @@ void bind_motor(py::module_& m) {
            "get_private_param().\n\n"
            "Writing 0x700B also rewrites the persisted startup limit torque, so a\n"
            "one-off tweak silently becomes the new boot default.")
+        .def("target_writes", &Motor::target_writes, py::call_guard<py::gil_scoped_release>(),
+             "Local counters only; does not query or control the motor.")
+        .def("delivery_snapshot", [](Motor& self, unsigned timeout_ms) {
+            py::gil_scoped_release release;
+            return self.delivery_snapshot(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 100,
+           "One control-stats query bracketed by host target-write counters.")
         .def("control_stats", [](Motor& self, unsigned timeout_ms) {
             py::gil_scoped_release g;
             return self.control_stats(std::chrono::milliseconds(timeout_ms));

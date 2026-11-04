@@ -48,6 +48,29 @@
 
 namespace xense::taccap {
 
+namespace detail {
+class LeaderExchange;
+}  // namespace detail
+
+// Counters of LeaderGripper's half-duplex exchange since start_exchange().
+// records counts every record received; the per-kind counters split them.
+// records_dropped is what the firmware queue overflowed before it was
+// fetched. timeouts are exchanges without a reply even after same-seq retries.
+// continuation_exchanges went out immediately because the firmware reported a
+// backlog. not_polled counts replies saying the firmware is not in the
+// exchange: its 1 s lease expired while this host stalled, another process
+// restarted the stream, or the leader rebooted. Each such reply makes the SDK
+// re-send the polled StartStream (rearms; rearm_failures when that failed).
+struct LeaderExchangeStats {
+    uint64_t exchanges = 0, continuation_exchanges = 0;
+    uint64_t timeouts = 0, nacks = 0, malformed = 0, not_polled = 0;
+    uint64_t rearms = 0, rearm_failures = 0;
+    uint64_t records = 0, records_dropped = 0;
+    uint64_t imu_samples = 0, encoder_samples = 0, key_events = 0;
+    uint64_t sensor_errors = 0, other_records = 0;
+    uint64_t last_rtt_us = 0, max_rtt_us = 0;
+};
+
 class LeaderGripper {
 public:
     struct Config {
@@ -204,9 +227,60 @@ public:
     // anything above 1000 Hz collapses to 100 Hz. StartStream is never NACKed
     // for a bad rate, so the SDK logs a warning whenever it has to adjust one.
     // See cpp/src/stream_rate.hpp for the firmware model this mirrors.
-    void start_streaming(unsigned imu_hz = 100, unsigned encoder_hz = 100);
+    //
+    // imu_v2_time (default true): negotiate the 64-bit time session and stream
+    // GetImuV2 (44 B payload) when the firmware supports it; false always
+    // streams the legacy GetImu (28 B) without a time session, as SDK <= 0.4.4
+    // did. The pushed stream loses an uplink frame whenever a host write
+    // overlaps it; a longer frame is hit more often (measured on a leader at
+    // 100 Hz queries: IMU bad frames ~4.7x with V2). If the stream must stay
+    // pushed and queries are frequent, pass false; start_exchange() removes the
+    // overlap altogether and keeps V2.
+    void start_streaming(unsigned imu_hz = 100, unsigned encoder_hz = 100,
+                         bool imu_v2_time = true);
     void stop_streaming();
     bool is_streaming() const noexcept { return streaming_; }
+
+    // Half-duplex alternative to start_streaming() (firmware with 0x5E).
+    //
+    // The leader is put in StreamMode::Polled: it samples as configured but
+    // pushes nothing -- IMU, encoder, key events and sensor errors are held
+    // in the firmware. A host thread fetches them once per 1/exchange_hz s
+    // (immediately again while a backlog remains) and dispatches them as the
+    // DATA frames streaming would have delivered, so imu().on_data,
+    // encoder().on_data, key().on_event and sensor-error subscribers need no
+    // change. All requests on this transport take turns, so the host never
+    // writes while the leader may be answering; this removes the full-duplex
+    // overlap that loses uplink bytes on the current hardware.
+    //
+    // is_streaming() is true and stop_streaming() ends the exchange.
+    // exchange_hz=0 means max(imu_hz, encoder_hz, 1) capped at 200 (the leader
+    // samples at 100 Hz whatever is requested); an explicit exchange_hz may be up
+    // to 500. A sample is
+    // fetched on the next exchange after it is taken, so it waits at most one
+    // exchange period; at exchange_hz == data rate the two clocks drift, and a
+    // sample occasionally waits one extra period (~10 ms at 100 Hz, measured
+    // ~330 times per hour). Pass exchange_hz = 2x the data rate (e.g. 200) to
+    // remove that, at the cost of twice the (small) request traffic.
+    //
+    // Timestamps: every sample delivered from one exchange reply carries that
+    // reply's arrival time as host_time, i.e. up to one exchange period after
+    // the sample was taken. Use mcu_timestamp_us for the sampling instant.
+    //
+    // The firmware leaves the exchange by itself if no exchange arrives for
+    // 1 s (host crashed or stalled): it flushes what it held as ordinary DATA
+    // frames and goes back to pushing, so a dead host never leaves the leader
+    // silent. If this process was only stalled, the next reply says so and the
+    // SDK re-enters the exchange; nothing is lost in between.
+    //
+    // Firmware without 0x5E answers InvalidCmd. With fallback_to_streaming
+    // (the default) the SDK then calls start_streaming(imu_hz, encoder_hz)
+    // and returns false; otherwise it throws ProtocolError. Returns true when
+    // the exchange is running.
+    bool start_exchange(unsigned imu_hz = 100, unsigned encoder_hz = 100,
+                        unsigned exchange_hz = 0, bool fallback_to_streaming = true);
+    bool is_exchanging() const noexcept { return exchange_ != nullptr; }
+    LeaderExchangeStats exchange_stats() const;
 
     const Config& config() const noexcept { return cfg_; }
 
@@ -244,6 +318,8 @@ private:
     OtaSession                      ota_;       // V1.3
     std::unique_ptr<Camera>         wrist_;
     bool                            streaming_ = false;
+    std::shared_ptr<detail::LeaderExchange> exchange_;
+    void stop_exchange_() noexcept;
     GripperPosition                 pos_map_;             // raw<->position, cached
     bool                            pos_map_loaded_ = false;
 };

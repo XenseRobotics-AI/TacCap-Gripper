@@ -36,6 +36,9 @@ const char* to_string(Cmd c) noexcept {
         case Cmd::Ws2812Effect:        return "Ws2812Effect";
 
         case Cmd::GetImu:              return "GetImu";
+        case Cmd::TimeSession:         return "TimeSession";
+        case Cmd::GetImuV2:            return "GetImuV2";
+        case Cmd::TxTrace:             return "TxTrace";
         case Cmd::GetEncoder:          return "GetEncoder";
         case Cmd::GetEskin1:           return "GetEskin1";
         case Cmd::GetEskin2:           return "GetEskin2";
@@ -83,6 +86,8 @@ const char* to_string(Cmd c) noexcept {
         case Cmd::SetMotorModel:       return "SetMotorModel";
         case Cmd::MotorCanExtXfer:     return "MotorCanExtXfer";
         case Cmd::SetMotorFwVersion:   return "SetMotorFwVersion";
+        case Cmd::SlaveExchange:       return "SlaveExchange";
+        case Cmd::LeaderExchange:      return "LeaderExchange";
         case Cmd::GetUartStats:        return "GetUartStats";
         case Cmd::SetLogConfig:        return "SetLogConfig";
 

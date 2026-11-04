@@ -5,8 +5,8 @@ part of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master-1.2.6.bin` | leader (SN ends **`m`**) | **1.2.6** | V2.6 | 118,300 B | `0x350393b5` |
-| `tc-gu-01-slave-1.2.16.bin` | follower (SN ends **`s`**) | **1.2.16** | V2.8 | 167,544 B | `0x4a8cd360` |
+| `tc-gu-01-master-1.2.7.bin` | leader (SN ends **`m`**) | **1.2.7** | V2.9 | 122,848 B | `0x19e881dd` |
+| `tc-gu-01-slave-1.2.17.bin` | follower (SN ends **`s`**) | **1.2.17** | V2.9 | 180,100 B | `0xf019df36` |
 
 The follower's RobStride motor runs its own firmware; its images are listed
 under `motors` in the manifest (see [Motor firmware](#motor-firmware)):
@@ -22,6 +22,11 @@ Only the current release is kept here; older images are in git history.
 Leader and follower firmware are **versioned independently**; different numbers
 on the two halves of a pair are normal. The SDK refuses to drive a follower
 below **1.2.5**.
+
+> **1.2.7 / 1.2.17 change the IMU/encoder `timestamp` timebase** (DWT/250, wrapping every
+> 17.18 s → TIM2 1 MHz, wrapping every 71 min 35 s). This SDK handles both; older host
+> software that unwraps with the 17.18 s period will produce wrong times. Upgrade host
+> software together with the firmware. Protocol: tc-gu-01 `docs/PROTOCOL.md` V2.9.
 
 ## Flashing
 
@@ -53,7 +58,7 @@ To verify an image file before flashing:
 
 ```bash
 python -c "from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.6.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.7.bin','rb').read())))"
 # -> 0x350393b5
 ```
 

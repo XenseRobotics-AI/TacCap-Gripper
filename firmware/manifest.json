@@ -1,28 +1,28 @@
 {
   "images": {
     "master": {
-      "file": "tc-gu-01-master-1.2.6.bin",
-      "version": "1.2.6",
-      "source_commit": "1336ebb",
-      "size_bytes": 118300,
-      "crc32": "0x350393b5",
+      "file": "tc-gu-01-master-1.2.7.bin",
+      "version": "1.2.7",
+      "source_commit": "8c059e9",
+      "size_bytes": 122848,
+      "crc32": "0x19e881dd",
       "sn_suffix": "m",
-      "protocol": "V2.6",
+      "protocol": "V2.9",
       "build": "local",
-      "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Leader line. Same fix as follower 1.2.11 in the shared receive path: the control UART (3 Mbaud, one interrupt per byte) stopped receiving for good after a single overrun, because the error callback never restarted reception -- the stream kept flowing while every command went unanswered. Reception is now restarted, and GET_UART_STATS reports rx_errors / rx_rearms. Verified on 0115m and 0116m (upgraded from 1.2.2): 15 min each of a 100 Hz encoder+IMU stream with a 100 Hz acknowledged command, ~87,000 commands, zero failures. AFTER FLASHING, unplug and replug the leader's USB cable."
+      "toolchain": "arm-none-eabi-gcc (15:10.3-2021.07-4) 10.3.1 20210621",
+      "note": "Leader time-shared exchange (STREAM_MODE_POLLED + LEADER_EXCHANGE 0x5E): the leader queues uplink records and only answers, so host and leader never transmit at the same time -- an uplink frame being sent while a host byte arrives loses the bytes in flight. Verified on the taccap-collector backpack (0029m/0030m): 0 bad uplink frames under full host load with ~20 Hz LED commands vs 17/7208 pushing on 1.2.6. HOST-BREAKING: IMU/encoder timestamp is now TIM2 1 MHz (low 32 bits, wraps every 71 min 35 s), no longer DWT/250 (17.18 s); upgrade host software together. Known: after a power-up the leader can stop answering ~0.5 s after the first stream start until the port is reopened (also on 1.2.6). AFTER FLASHING, unplug and replug the leader's USB cable."
     },
     "slave": {
-      "file": "tc-gu-01-slave-1.2.16.bin",
-      "version": "1.2.16",
-      "source_commit": "a7dc07f",
-      "size_bytes": 167544,
-      "crc32": "0x4a8cd360",
+      "file": "tc-gu-01-slave-1.2.17.bin",
+      "version": "1.2.17",
+      "source_commit": "8c059e9",
+      "size_bytes": 180100,
+      "crc32": "0xf019df36",
       "sn_suffix": "s",
-      "protocol": "V2.8 + motion envelope",
+      "protocol": "V2.9 + motion envelope",
       "build": "local",
-      "toolchain": "arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009",
-      "note": "Stops decoding the motor's echo frames as status. A RobStride motor takes an MIT motion frame whose byte 0 equals its own CAN ID for another command and answers on 0xFD with the frame's first four bytes and zeros in bytes 4-7; byte 0 is the target position's high byte, and the factory ID 127 (0x7F) is -0.098..0 rad -- a LEFT-hand RS00's closed end. 1.2.15 decoded each echo as status (temperature 0, torque -t_max, position clamped to the far end), the envelope clamp then dragged the target toward the open end and the jaw was thrown open: force-position never closed to 0.0 on 0089s. The real fix is the CAN ID (RS00 followers: left 17, right 18, written by the factory config tool); this image is the backstop. Carries 1.2.15 (RS00 open direction from the SN's side). Verified on 0089s (left) / 0094s (right). AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
+      "toolchain": "arm-none-eabi-gcc (15:10.3-2021.07-4) 10.3.1 20210621",
+      "note": "Follower time-shared exchange (SLAVE_EXCHANGE 0x5D, queue 32), optional 1-100 Hz IMU with accel/gyro calibration and magnetometer sessions, uplink collision detect-and-resend, cold-start homing order fix. HOST-BREAKING: IMU timestamp is now TIM2 1 MHz (wraps every 71 min 35 s). Carries 1.2.16. AFTER FLASHING, unplug the 24 V power cable for ~2 s and plug it back; the USB cable can stay in."
     }
   },
   "motors": {

@@ -120,30 +120,43 @@ jobs:
       # credential. Configure a read-only deploy key or a fine-grained PAT
       # scoped to that one repo as the FIRMWARE_REPO_TOKEN secret.
       #
-      # The secret is deliberately optional. It is absent on pull requests from
-      # forks (GitHub withholds secrets there by design), so the check degrades
-      # to a loud SKIP instead of failing work it cannot verify. Real coverage
-      # comes from pushes to main and from PRs opened inside the repo.
-      - name: Fetch firmware reference headers
+      # Fork PRs do not receive the private-repo credential. On trusted runs
+      # a missing credential is a configuration error, not a clean mirror.
+      - name: Check firmware access
         id: firmware
         env:
           TOKEN: ${{ secrets.FIRMWARE_REPO_TOKEN }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::notice::FIRMWARE_REPO_TOKEN unavailable - drift check will SKIP"
+            if [ "$FORK_PR" != true ]; then
+              echo "::error::FIRMWARE_REPO_TOKEN is required for protocol comparison"
+              exit 1
+            fi
+            echo "::notice::Private firmware headers unavailable to fork PR"
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Only the protocol headers are needed, so keep the clone shallow.
-          git clone --depth 1 --branch hw_v1.1.0 \
-            "https://x-access-token:${TOKEN}@github.com/XenseRobotics-AI/tc-gu-01.git" \
-            third_party/firmware/tc-gu-01
           echo "available=true" >> "$GITHUB_OUTPUT"
 
+      # #29 introduces the wire protocol together with firmware PR #23.
+      # All other runs, including pushes after merge, track the firmware base.
+      - name: Fetch firmware reference headers
+        if: steps.firmware.outputs.available == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: XenseRobotics-AI/tc-gu-01
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 29 && 'refs/pull/23/head' || 'hw_v1.1.0' }}
+          path: third_party/firmware/tc-gu-01
+          token: ${{ secrets.FIRMWARE_REPO_TOKEN }}
+          persist-credentials: false
+          sparse-checkout: |
+            App/protocol
+            App/drivers
+
       - name: Check protocol mirror
-        run: |
-          python3 scripts/check_protocol_drift.py \
-            ${{ steps.firmware.outputs.available == 'true' && '--require' || '' }}
+        if: steps.firmware.outputs.available == 'true'
+        run: python3 scripts/check_protocol_drift.py --require
 
       # Leaves nothing on disk that a later step could publish; the clone lives
       # in a gitignored path, but be explicit rather than rely on that.

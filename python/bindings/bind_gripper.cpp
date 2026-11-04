@@ -122,34 +122,77 @@ void bind_gripper(py::module_& m) {
                    " fw_sn=" + e.firmware_sn +
                    (e.in_use ? " IN USE" : "") + ")";
         });
+    // Discovery opens and probes every serial port (~100+ ms per free device,
+    // up to the ACK timeout on a silent one). Drop the GIL so a scan on a
+    // background thread does not freeze the caller's other Python threads
+    // (e.g. a GUI pushing 100 Hz targets). Results are converted after the
+    // GIL is re-acquired.
     m.def("scan_grippers",  &discovery::scan_all,
+          py::call_guard<py::gil_scoped_release>(),
           "Enumerate every gripper currently plugged in.\n\n"
           "Opens a transient link to each MCU and probes it for DEV_TYPE and the\n"
           "SN before closing it again, so a scan is not free and cannot run while\n"
           "another process holds the port. Returns an empty list rather than\n"
           "raising when nothing is attached.");
     m.def("find_one",       &discovery::find_one,
+          py::call_guard<py::gil_scoped_release>(),
           "The single attached gripper, whatever its side or role.\n\n"
           "Raises IoError when none is attached, and again when more than one is --\n"
           "pick with find_left()/find_right() or find_leader()/find_follower().");
     m.def("find_left",      &discovery::find_left,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Left.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
     m.def("find_right",     &discovery::find_right,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Right.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
     m.def("find_leader",    &discovery::find_leader,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose SN patch suffix is 'm' (Master).\n\n"
           "Raises IoError when none matches; a legacy or unburned SN reports role\n"
           "Unknown and never matches.");
     m.def("find_follower",  &discovery::find_follower,
+          py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose SN patch suffix is 's' (Slave).\n\n"
           "Raises IoError when none matches; a legacy or unburned SN reports role\n"
           "Unknown and never matches.");
 
     // ---- LeaderGripper --------------------------------------------------
+    py::class_<LeaderExchangeStats>(m, "LeaderExchangeStats",
+        "Counters of LeaderGripper's half-duplex exchange since start_exchange().")
+        .def_readonly("exchanges",              &LeaderExchangeStats::exchanges)
+        .def_readonly("continuation_exchanges", &LeaderExchangeStats::continuation_exchanges,
+                      "Exchanges sent at once because the firmware reported a backlog.")
+        .def_readonly("timeouts",               &LeaderExchangeStats::timeouts,
+                      "Exchanges without a reply even after same-seq retries.")
+        .def_readonly("nacks",                  &LeaderExchangeStats::nacks)
+        .def_readonly("malformed",              &LeaderExchangeStats::malformed)
+        .def_readonly("not_polled",             &LeaderExchangeStats::not_polled,
+                      "Replies saying the firmware left the exchange (1 s lease expired, stream restarted or reboot).")
+        .def_readonly("rearms",                 &LeaderExchangeStats::rearms,
+                      "Times the SDK re-sent the polled StartStream after a not_polled reply.")
+        .def_readonly("rearm_failures",         &LeaderExchangeStats::rearm_failures)
+        .def_readonly("records",                &LeaderExchangeStats::records)
+        .def_readonly("records_dropped",        &LeaderExchangeStats::records_dropped,
+                      "Records the firmware queue overflowed before they were fetched.")
+        .def_readonly("imu_samples",            &LeaderExchangeStats::imu_samples)
+        .def_readonly("encoder_samples",        &LeaderExchangeStats::encoder_samples)
+        .def_readonly("key_events",             &LeaderExchangeStats::key_events)
+        .def_readonly("sensor_errors",          &LeaderExchangeStats::sensor_errors)
+        .def_readonly("other_records",          &LeaderExchangeStats::other_records)
+        .def_readonly("last_rtt_us",            &LeaderExchangeStats::last_rtt_us)
+        .def_readonly("max_rtt_us",             &LeaderExchangeStats::max_rtt_us)
+        .def("__repr__", [](const LeaderExchangeStats& s) {
+            return "LeaderExchangeStats(exchanges=" + std::to_string(s.exchanges) +
+                   ", records=" + std::to_string(s.records) +
+                   ", dropped=" + std::to_string(s.records_dropped) +
+                   ", timeouts=" + std::to_string(s.timeouts) +
+                   ", max_rtt_us=" + std::to_string(s.max_rtt_us) + ")";
+        });
+
     py::class_<LeaderGripper>(m, "LeaderGripper",
         "One TacCap-Gripper leader (teleop master end).\n\n"
         "Owns the MCU control link plus IMU, encoder, button, LED and -- only when\n"
@@ -232,11 +275,33 @@ void bind_gripper(py::module_& m) {
            "Raises IoError when none is attached or when more than one is; pass an\n"
            "explicit mcu_device from find_leader() in that case. Cameras stay\n"
            "closed -- an external service owns the wrist V4L2 device.")
-        .def("start_streaming", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz) {
+        .def("start_streaming", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz, bool v2) {
             py::gil_scoped_release gil;
-            self.start_streaming(imu_hz, enc_hz);
-        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u,
-           "Start the MCU sensor stream.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
+            self.start_streaming(imu_hz, enc_hz, v2);
+        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u, py::arg("imu_v2_time") = true,
+           "Start the MCU sensor stream.\n\nimu_v2_time=True (default) streams IMU V2 with 64-bit capture time when the firmware supports it; False keeps the legacy 28-byte IMU frame, as SDK <= 0.4.4 did. A pushed stream loses a frame whenever a host write overlaps it and longer frames are hit more often, so with frequent queries False loses fewer IMU samples; start_exchange() avoids the overlap entirely.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
+        .def("start_exchange", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz,
+                                  unsigned exchange_hz, bool fallback) {
+            py::gil_scoped_release gil;
+            return self.start_exchange(imu_hz, enc_hz, exchange_hz, fallback);
+        }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u, py::arg("exchange_hz") = 0u,
+           py::arg("fallback_to_streaming") = true,
+           "Half-duplex alternative to start_streaming() (firmware with 0x5E).\n\n"
+           "The leader stops pushing frames and holds IMU, encoder, key and sensor-error\n"
+           "frames; the SDK fetches them once per 1/exchange_hz s and delivers them to the\n"
+           "same subscribers. The host never writes while the leader is answering, which\n"
+           "removes the overlap that loses uplink bytes. exchange_hz=0 means\n"
+           "max(imu_hz, encoder_hz, 1) capped at 200 (explicit values up to 500); pass 2x the data rate (e.g. 200) to avoid a sample\n"
+           "occasionally waiting one extra period. Samples from one reply share its arrival\n"
+           "time as host_time; use mcu_timestamp_us for the sampling instant. If the host stalls\n"
+           "for more than 1 s the leader returns to pushing on its own and the SDK re-enters\n"
+           "the exchange afterwards. Returns True when the exchange runs; on firmware\n"
+           "without 0x5E it falls back to start_streaming() and returns False, or raises\n"
+           "ProtocolError when fallback_to_streaming=False. stop_streaming() ends it.")
+        .def_property_readonly("is_exchanging", &LeaderGripper::is_exchanging,
+                               "True between a successful start_exchange() and stop_streaming().")
+        .def("exchange_stats", &LeaderGripper::exchange_stats,
+             "LeaderExchangeStats of the running exchange (zeros when not exchanging).")
         .def("stop_streaming", [](LeaderGripper& self) {
             py::gil_scoped_release gil;
             self.stop_streaming();
@@ -371,6 +436,36 @@ void bind_gripper(py::module_& m) {
                    "." + std::to_string(v.build) + ")";
         });
 
+    py::class_<ExchangeStats>(m, "ExchangeStats",
+        "Counters of FollowerGripper's half-duplex exchange since start_exchange().")
+        .def_readonly("exchanges",           &ExchangeStats::exchanges)
+        .def_readonly("telemetry_exchanges", &ExchangeStats::telemetry_exchanges)
+        .def_readonly("target_exchanges",    &ExchangeStats::target_exchanges)
+        .def_readonly("timeouts",            &ExchangeStats::timeouts,
+                      "Exchanges without a reply; a carried target is resent.")
+        .def_readonly("nacks",               &ExchangeStats::nacks)
+        .def_readonly("malformed",           &ExchangeStats::malformed)
+        .def_readonly("targets_submitted",   &ExchangeStats::targets_submitted)
+        .def_readonly("targets_superseded",  &ExchangeStats::targets_superseded,
+                      "Targets replaced by a newer one before they went out.")
+        .def_readonly("targets_resent",      &ExchangeStats::targets_resent)
+        .def_readonly("targets_rejected",    &ExchangeStats::targets_rejected)
+        .def_readonly("last_target_result",  &ExchangeStats::last_target_result,
+                      "Raw ErrorCode byte of the latest target reply; 0xFF before any.")
+        .def_readonly("motor_samples",       &ExchangeStats::motor_samples)
+        .def_readonly("imu_samples",         &ExchangeStats::imu_samples)
+        .def_readonly("imu_dropped",         &ExchangeStats::imu_dropped,
+                      "IMU samples the firmware queue overflowed before they were fetched.")
+        .def_readonly("last_rtt_us",         &ExchangeStats::last_rtt_us)
+        .def_readonly("max_rtt_us",          &ExchangeStats::max_rtt_us)
+        .def("__repr__", [](const ExchangeStats& s) {
+            return "ExchangeStats(exchanges=" + std::to_string(s.exchanges) +
+                   ", timeouts=" + std::to_string(s.timeouts) +
+                   ", targets=" + std::to_string(s.target_exchanges) +
+                   ", rejected=" + std::to_string(s.targets_rejected) +
+                   ", max_rtt_us=" + std::to_string(s.max_rtt_us) + ")";
+        });
+
     py::class_<FollowerGripper>(m, "FollowerGripper",
         "One TacCap-Gripper follower (robot-side executor).\n\n"
         "The leader's sensor surface plus a Motor driving the FDCAN-attached\n"
@@ -474,22 +569,34 @@ void bind_gripper(py::module_& m) {
            "explicit mcu_device from find_follower() in that case. It does not\n"
            "check that the hardware really is a follower -- see the class docstring.\n"
            "Cameras stay closed.")
-        .def("start_streaming", [](FollowerGripper& self, unsigned motor_hz) {
+        .def("start_streaming", [](FollowerGripper& self, unsigned motor_hz, unsigned imu_hz) {
             py::gil_scoped_release gil;
-            self.start_streaming(motor_hz);
-        }, py::arg("motor_hz") = 100u,
-           "Start the motor-status stream.\n\n"
-           "Motor status is the ONLY source a follower streams -- the firmware\n"
-           "compiles IMU, encoder and eskin streaming out on this role. This used\n"
-           "to take imu_hz and encoder_hz for parity with the leader; they set\n"
-           "their mask bits and produced nothing, and the old defaults\n"
-           "(imu=100, encoder=100, motor=0) meant a bare start_streaming() call\n"
-           "started a stream carrying NOTHING and reported success.\n\n"
-           "motor_hz=0 raises IoError(EINVAL) rather than starting an empty\n"
+            self.start_streaming(motor_hz, imu_hz);
+        }, py::arg("motor_hz") = 100u, py::arg("imu_hz") = 0u,
+           "Start motor status, optionally IMU (default off).\n\n"
+           "imu_hz=1..100 requires capable follower firmware; an IMU read probes\n"
+           "support before changing the stream. Old firmware raises ProtocolError.\n"
+           "Stop streaming before changing rates. Both rates zero raises IoError(EINVAL).\n"
            "stream. The firmware caps motor status at 100 Hz and divides a 1 kHz\n"
            "tick by an integer, so only divisors of 1000 arrive at the requested\n"
            "rate. It never NACKs a rate it had to adjust, so the SDK logs a\n"
            "warning when that happens.")
+        .def("start_exchange", [](FollowerGripper& self, unsigned motor_hz, unsigned imu_hz,
+                                  unsigned exchange_hz) {
+            py::gil_scoped_release gil;
+            self.start_exchange(motor_hz, imu_hz, exchange_hz);
+        }, py::arg("motor_hz") = 100u, py::arg("imu_hz") = 0u, py::arg("exchange_hz") = 0u,
+           "Half-duplex alternative to start_streaming() (firmware with 0x5D).\n\n"
+           "The follower stops pushing frames; the SDK polls it once per\n"
+           "1/exchange_hz s and delivers motor status / IMU to the usual\n"
+           "subscribers. motor.submit_*() targets ride on the exchange. Every\n"
+           "request on this link takes turns, so host and follower never transmit\n"
+           "at the same time. exchange_hz=0 means max(motor_hz, imu_hz). End it with\n"
+           "stop_streaming(). Old firmware raises ProtocolError.")
+        .def_property_readonly("is_exchanging", &FollowerGripper::is_exchanging,
+                               "True between start_exchange() and stop_streaming().")
+        .def("exchange_stats", &FollowerGripper::exchange_stats,
+             "ExchangeStats of the running exchange (zeros when not exchanging).")
         .def("stop_streaming", [](FollowerGripper& self) {
             py::gil_scoped_release gil;
             self.stop_streaming();
@@ -497,8 +604,8 @@ void bind_gripper(py::module_& m) {
            "Best-effort: a no-op when no stream was started, and it returns even\n"
            "when the MCU never ACKs the StopStream.")
         .def_property_readonly("imu",           [](FollowerGripper& g) -> IMU&            { return g.imu(); },           py::return_value_policy::reference_internal,
-                               "IMU component. Present on both roles, but a follower does not stream\n"
-                               "it -- see start_streaming().")
+                               "IMU component; follower support requires capable firmware and explicit\n"
+                               "imu_hz opt-in -- see start_streaming().")
         .def_property_readonly("encoder",       [](FollowerGripper& g) -> Encoder&        { return g.encoder(); },       py::return_value_policy::reference_internal,
                                "Encoder component. Present on both roles, but a follower does not\n"
                                "stream it -- see start_streaming().")

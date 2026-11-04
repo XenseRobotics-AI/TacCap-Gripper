@@ -8,6 +8,15 @@ namespace xense::taccap {
 
 Diagnostics::Diagnostics(bus::Transport& transport) : t_(transport) {}
 
+protocol::UartRxErrors Diagnostics::uart_rx_errors(std::chrono::milliseconds timeout) {
+    auto ack = t_.send_cmd(protocol::Cmd::GetUartStats, {1}, timeout);
+    const auto error = bus::ack_error_code(ack);
+    if (error != protocol::ErrorCode::Ok)
+        throw ProtocolError(std::string("Diagnostics::uart_rx_errors NACK: ") +
+                            protocol::to_string(error));
+    return protocol::decode_uart_rx_errors(ack.data.data(), ack.data.size());
+}
+
 protocol::UartStats Diagnostics::uart_stats(std::chrono::milliseconds timeout) {
     auto ack = t_.send_cmd(protocol::Cmd::GetUartStats, {}, timeout);
     if (ack.is_nack) {

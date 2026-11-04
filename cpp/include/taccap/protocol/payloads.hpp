@@ -755,13 +755,8 @@ static_assert(sizeof(GripperEnvelope) == 16,
 
 // ---- UART counters (fw 1.1.3 — Cmd::GetUartStats 0x54) --------------------
 //
-// Exists to answer "which side dropped the bytes". tx_bytes_ok counts only
-// what HAL_UART_Transmit accepted, i.e. what actually reached the MCU's
-// transmit register. When that disagrees with what the host received, the loss
-// happened downstream of the MCU — cable or USB-serial bridge — and no
-// firmware change can help. tx_fail_timeout is called out separately because a
-// polled transmit that times out mid-frame leaves a short frame on the wire,
-// which looks identical to bytes lost in transit.
+// Counts successful HAL calls, not pin-level observations. Aligned byte
+// differences do not alone distinguish MCU, bridge, USB and TTY faults.
 //
 // All counters are free-running since boot; take deltas across a measurement
 // window rather than reading absolutes.
@@ -782,6 +777,13 @@ struct UartStats {
                                 // Nonzero means the stall that, up to 1.2.10,
                                 // silenced the command channel for good.
 };
+
+// Optional 0x54 payload {1}: 44-byte legacy prefix + seven uint32 LE fields.
+struct UartRxErrors {
+    uint32_t overrun, framing, noise, parity, receiver_timeout;
+    uint32_t last_error, last_error_ms;
+};
+static_assert(sizeof(UartRxErrors) == 28);
 
 // ---- Log configuration (fw 1.1.4 — Cmd::SetLogConfig 0x55) ----------------
 //
@@ -983,6 +985,7 @@ struct Ws2812Effect {
 
 namespace StreamSrc {
     constexpr uint16_t Imu         = 0x0001;
+    constexpr uint16_t ImuV2       = 0x0020;
     constexpr uint16_t Encoder     = 0x0002;
     constexpr uint16_t Eskin1      = 0x0004;
     constexpr uint16_t Eskin2      = 0x0008;
@@ -992,6 +995,64 @@ namespace StreamSrc {
 enum class StreamMode : uint8_t {
     Separate = 0,
     Combined = 1,
+    // Acquisition runs as configured but nothing is pushed; the host pulls it
+    // with Cmd::SlaveExchange (follower) or Cmd::LeaderExchange (leader).
+    // Older firmware NACKs it.
+    Polled   = 2,
+};
+
+// ---- Leader half-duplex exchange (Cmd::LeaderExchange, 0x5E) --------------
+// Request: LeaderExchangeRequest, exact length, flags/reserved zero.
+// Reply: LeaderExchangeResponseHeader, then record_count records, oldest first:
+//   [cmd:1][len:1][payload:len]
+// Each record is the DATA frame the leader would have pushed outside the
+// exchange (same cmd, same payload): IMU, encoder, key, sensor error.
+namespace LeaderExchangeRespFlag { constexpr uint8_t Polled = 0x01; }
+constexpr uint8_t LEADER_EXCHANGE_VERSION = 1;
+
+struct LeaderExchangeRequest {
+    uint8_t version;       // LEADER_EXCHANGE_VERSION
+    uint8_t flags;         // 0
+    uint8_t reserved[2];
+};
+
+struct LeaderExchangeResponseHeader {
+    uint8_t  version;      // LEADER_EXCHANGE_VERSION
+    uint8_t  flags;        // LeaderExchangeRespFlag
+    uint8_t  record_count;
+    uint8_t  reserved;
+    uint16_t dropped;      // records the firmware queue overflowed since the previous take
+    uint16_t pending;      // records still queued after this reply
+};
+
+// ---- Follower half-duplex exchange (Cmd::SlaveExchange, 0x5D) -------------
+// Request: ExchangeRequestHeader + the target struct for target_kind, exact
+// length. Reply: ExchangeResponseHeader, then MotorStatus V2 (59 B) when
+// ExchangeRespFlag::Motor is set, then imu_count IMU packets whose format is
+// imu_cmd (GetImu 28 B or GetImuV2 44 B), oldest first.
+namespace ExchangeFlag    { constexpr uint8_t Telemetry = 0x01; }
+namespace ExchangeRespFlag { constexpr uint8_t Motor = 0x01; }
+enum class ExchangeTarget : uint8_t {
+    None = 0, Position = 1, Velocity = 2, Torque = 3, Impedance = 4,
+};
+constexpr uint8_t EXCHANGE_VERSION            = 1;
+constexpr uint8_t EXCHANGE_TARGET_RESULT_NONE = 0xFF;
+
+struct ExchangeRequestHeader {
+    uint8_t version;       // EXCHANGE_VERSION
+    uint8_t flags;         // ExchangeFlag
+    uint8_t target_kind;   // ExchangeTarget
+    uint8_t reserved;
+};
+
+struct ExchangeResponseHeader {
+    uint8_t version;       // EXCHANGE_VERSION
+    uint8_t flags;         // ExchangeRespFlag
+    uint8_t target_result; // ErrorCode of the carried target, 0xFF if none
+    uint8_t imu_cmd;       // 0, Cmd::GetImu or Cmd::GetImuV2
+    uint8_t imu_count;
+    uint8_t imu_dropped;   // firmware queue overflow since the previous take
+    uint8_t reserved[2];
 };
 
 enum class StreamInterface : uint8_t {
@@ -1159,6 +1220,10 @@ struct OtaStatus {
 static_assert(sizeof(FirmwareVersion)    == 4);
 static_assert(sizeof(SnInfo)             == 17);
 static_assert(sizeof(ImuData)            == 28);  // IMU_PACKET_SIZE
+static_assert(sizeof(ExchangeRequestHeader)  == 4);
+static_assert(sizeof(ExchangeResponseHeader) == 8);
+static_assert(sizeof(LeaderExchangeRequest)        == 4);
+static_assert(sizeof(LeaderExchangeResponseHeader) == 8);
 static_assert(sizeof(ImuConfig)          == 10);
 static_assert(sizeof(EncoderData)        == 16);  // ENCODER_PACKET_SIZE
 static_assert(sizeof(EncoderConfig)      == 5);   // firmware 0086da6 (was 14)

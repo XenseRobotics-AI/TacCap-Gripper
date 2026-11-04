@@ -49,6 +49,7 @@ EncoderSample Encoder::read_once(std::chrono::milliseconds timeout) {
                             protocol::to_string(ack.error_code));
     }
     auto s = decode(ack.data.data(), ack.data.size());
+    s.host_time = ack.receive_time;
     normalize(s);
     return s;
 }
@@ -135,6 +136,7 @@ Encoder::SubId Encoder::on_data(Callback cb) {
         [this, cb = std::move(cb)](const bus::Frame& f) {
             try {
                 auto s = decode(f.payload.data(), f.payload.size());
+                s.host_time = f.receive_time;
                 normalize(s);
                 cb(s);
             } catch (...) {}

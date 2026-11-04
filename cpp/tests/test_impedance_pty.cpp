@@ -85,6 +85,13 @@ TEST(ImpedanceControllerPty, StaleStreamFaultsWithZeroTorqueAndAnInvalidObservat
         << "frozen numbers still presented as a live reading";
     EXPECT_FALSE(snap.fault_reason.empty());
 
+    // Fault is published before submit(), and the PTY peer consumes the frame
+    // on another thread. Wait for the safety action itself, not only state().
+    ASSERT_TRUE(wait_for([&] {
+        const auto received = fw.last_submit();
+        return received && received->kp == 0.0f && received->kd == 0.0f &&
+               received->target_torque == 0.0f;
+    }, Ms(1000)));
     const auto s = fw.last_submit();
     ASSERT_TRUE(s.has_value());
     EXPECT_FLOAT_EQ(s->kp, 0.0f);

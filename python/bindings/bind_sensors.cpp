@@ -25,7 +25,15 @@ void bind_sensors(py::module_& m) {
            "comparable with time.monotonic(). The MCU timestamp counts from the\n"
            "MCU's own boot instead.")
         .def_readonly("mcu_timestamp_us", &ImuSample::mcu_timestamp_us,
-                      "MCU-side capture time, microseconds since the MCU booted.")
+                      "64-bit capture time in microseconds. Native V2 boot epoch, or legacy observed epoch.")
+        .def_readonly("boot_session_id", &ImuSample::boot_session_id,
+                      "Nonzero V2 boot identity; zero on legacy firmware. Changes after a reboot.")
+        .def_readonly("timestamp_is_64bit", &ImuSample::timestamp_is_64bit,
+                      "True for native V2 timestamps, false for unfolded legacy timestamps.")
+        .def_readonly("timestamp_valid", &ImuSample::timestamp_valid,
+                      "False for ambiguous legacy jumps or reordered V2 timestamps.")
+        .def_readonly("timestamp_discontinuity", &ImuSample::timestamp_discontinuity,
+                      "Reset time-dependent estimators when true; this is not a clock synchronization result.")
         .def_readonly("valid_flag",       &ImuSample::valid_flag,
                       "Bitmask of the groups this frame carries: 0x01 accel, 0x02 gyro,\n"
                       "0x04 mag, 0x08 temperature.")
@@ -124,7 +132,8 @@ void bind_sensors(py::module_& m) {
             return self.read_once(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 100,
            "Poll one sample and wait for the answer. Works without start_streaming().\n\n"
-           "Blocks up to timeout_ms with the GIL released. Raises ProtocolError when\n"
+           "Negotiates native 64-bit time, then reads the sample; timeout_ms applies\n"
+           "to each command (plus transport retries), with the GIL released. Raises ProtocolError when\n"
            "the firmware NACKs or answers with the wrong payload size, TimeoutError\n"
            "when it does not answer at all.")
         .def("on_data", [](IMU& self, py::function pycb) {
@@ -143,6 +152,13 @@ void bind_sensors(py::module_& m) {
         .def("off", &IMU::off, py::arg("subscription_id"),
              "Cancel a subscription taken out by on_data(). Takes effect even for\n"
              "frames already queued for dispatch.")
+        .def("calibrate_accel_gyro", [](IMU& self, unsigned timeout_ms) {
+            py::gil_scoped_release gil;
+            self.calibrate_accel_gyro(std::chrono::milliseconds(timeout_ms));
+        }, py::arg("timeout_ms") = 16000u,
+           "Calibrate, statically verify and save accel/gyro offsets (Cmd 0x25).\n"
+           "Keep sensor Z up and stationary; stop control and disable follower motor first.\n"
+           "Timeout does not cancel device work. Requires supporting firmware.")
         .def("set_mag_calibration", [](IMU& self,
                                        std::array<float, 3> hard,
                                        std::array<float, 9> soft,
@@ -161,13 +177,14 @@ void bind_sensors(py::module_& m) {
             "firmware stores after MotionCal. Blocks for the ACK with the GIL\n"
             "released; raises ProtocolError on NACK. Also ends a session begun with\n"
             "start_mag_calibration(): the firmware stops its stream and clears the\n"
-            "flag itself.")
+            "flag itself. Capable followers restore the previous stream instead.")
         .def("start_mag_calibration", [](IMU& self, unsigned timeout_ms) {
             py::gil_scoped_release gil;
             self.start_mag_calibration(std::chrono::milliseconds(timeout_ms));
         }, py::arg("timeout_ms") = 500u,
-            "Begin a magnetometer calibration session (Cmd 0x26, payload 1). Leader\n"
-            "firmware only; a follower raises ProtocolError(InvalidCmd).\n\n"
+            "Begin a magnetometer calibration session (Cmd 0x26, payload 1).\n"
+            "Requires supporting firmware; old followers NACK. On followers stop\n"
+            "control and disable the motor first. Session expires after 180 seconds.\n\n"
             "The firmware STARTS AN IMU STREAM BY ITSELF so raw samples reach\n"
             "on_data() while the gripper is rotated; the gripper's own\n"
             "start_streaming() state does not know about it. Finish with\n"
@@ -178,7 +195,8 @@ void bind_sensors(py::module_& m) {
         }, py::arg("timeout_ms") = 500u,
             "Abandon a magnetometer calibration session (Cmd 0x26, payload 2): stops\n"
             "the stream the firmware started and clears the flag. Not needed after\n"
-            "set_mag_calibration(), which does both.");
+            "set_mag_calibration(), which does both. Capable followers restore the\n"
+            "previous stream instead of stopping it.");
 
     // ---- KeySample + Key (V1.4) ----------------------------------------
     py::class_<KeySample>(m, "KeySample",

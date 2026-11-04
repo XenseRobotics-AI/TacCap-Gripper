@@ -96,6 +96,7 @@
 
 #pragma once
 
+#include <taccap/detail/monotonic_cv.hpp>
 #include <taccap/components/motor.hpp>
 #include <taccap/follower_gripper.hpp>
 #include <taccap/gripper_observation.hpp>
@@ -311,13 +312,15 @@ private:
     GripperPosition map_;
 
     mutable std::mutex mu_;
-    std::condition_variable cv_;
+    detail::MonotonicCondition cv_;   // status watchdog: must not stretch on a wall-clock step
     bool step_requested_ = false;
     bool stop_requested_ = false;
     bool have_sample_ = false;
     bool command_woke_ = false;
 
     MotorStatusSample latest_{};
+    const char* pending_status_fault_ = nullptr;
+    std::chrono::steady_clock::time_point feedback_epoch_{};
     std::chrono::steady_clock::time_point latest_time_{};
     GripperObservation observation_{};
     std::unique_ptr<detail::ImpedancePolicy> policy_;

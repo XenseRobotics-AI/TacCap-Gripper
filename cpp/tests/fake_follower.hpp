@@ -82,12 +82,49 @@ public:
         status_.status = bits;
     }
 
+    // Next polling ACK can carry a fault while subsequent DATA is healthy.
+    void set_next_polled_status_word(uint16_t bits) {
+        std::lock_guard<std::mutex> lk(mu_);
+        next_polled_status_word_ = bits;
+    }
+
     std::optional<tp::MotorImpedanceCtrl> last_submit() const {
         std::lock_guard<std::mutex> lk(mu_);
         return last_submit_;
     }
     unsigned submit_count() const { return submits_.load(); }
     unsigned disable_count() const { return disables_.load(); }
+    void set_imu_supported(bool on) { imu_supported_.store(on); }
+    void set_imu_v2_supported(bool on) { imu_v2_supported_.store(on); imu_supported_.store(on); }
+    unsigned imu_queries() const { return imu_queries_.load(); }
+    unsigned stream_stops() const { return stream_stops_.load(); }
+    tp::StreamConfig stream_config() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return stream_config_;
+    }
+    // ---- Half-duplex exchange (StreamMode::Polled + Cmd::SlaveExchange) ----
+    // Firmware older than the polled mode NACKs StartStream mode 2.
+    void set_exchange_supported(bool on) { exchange_supported_.store(on); }
+    bool polled() const { return polled_.load(); }
+    unsigned exchanges() const { return exchanges_.load(); }
+    unsigned telemetry_exchanges() const { return telemetry_exchanges_.load(); }
+    unsigned exchange_targets() const { return exchange_targets_.load(); }
+    // Hold each exchange reply this long, and count any host frame that
+    // arrives meanwhile: a half-duplex host never writes while waiting.
+    void set_exchange_reply_delay_ms(int ms) { exchange_delay_ms_.store(ms); }
+    unsigned overlaps() const { return overlaps_.load(); }
+    // Swallow the next n exchange requests (the target is still applied),
+    // so the host sees timeouts.
+    void drop_exchange_replies(unsigned n) { drop_replies_.store(n); }
+    // Build (and cache) the next n exchange replies -- consuming their IMU
+    // samples -- but lose them on the wire: what a host stall looks like.
+    void lose_exchange_replies(unsigned n) { drop_after_build_.store(n); }
+    unsigned exchange_replays() const { return exchange_replays_.load(); }
+    // Make the next exchange reply's target_result this ErrorCode byte.
+    void reject_next_exchange_target(uint8_t err) { reject_next_.store(err); }
+    // Non-exchange frames seen while polled (heartbeats, queries, etc.).
+    unsigned other_frames_while_polled() const { return other_while_polled_.load(); }
+
     // Make 0x5C store something other than what was sent.
     void set_corrupt_fw_ver_writes(bool on) { corrupt_fw_ver_writes_.store(on); }
 
@@ -158,14 +195,39 @@ private:
             if (streaming_.load() && !frozen_.load() && now >= next_status) {
                 next_status = now + std::chrono::milliseconds(10);
                 std::lock_guard<std::mutex> lk(mu_);
-                pty_.send_data(0, tp::Cmd::GetMotorStatus,
+                if (stream_config_.source_mask & tp::StreamSrc::MotorStatus)
+                    pty_.send_data(0, tp::Cmd::GetMotorStatus,
                                pod_bytes(&status_, sizeof(status_)));
+                if (stream_config_.source_mask & tp::StreamSrc::Imu) {
+                    tp::ImuData imu{};
+                    imu.accel_z = 1000;
+                    pty_.send_data(0, tp::Cmd::GetImu, pod_bytes(&imu, sizeof(imu)));
+                }
+                if (stream_config_.source_mask & tp::StreamSrc::ImuV2)
+                    pty_.send_data(0,tp::Cmd::GetImuV2,imu_v2_packet_());
             }
         }
     }
 
     void handle_(const xense::taccap::bus::Frame& f) {
+        if (polled_.load() && f.cmd != tp::Cmd::SlaveExchange) ++other_while_polled_;
         switch (f.cmd) {
+            case tp::Cmd::SlaveExchange: {
+                // Firmware command layer: a byte-identical repeat (same seq, cmd,
+                // payload) replays the cached reply instead of re-running it.
+                if (last_exchange_ && last_exchange_->seq == f.seq && last_exchange_->payload == f.payload) {
+                    ++exchange_replays_;
+                    if (last_exchange_reply_) pty_.send_response(f.seq, f.cmd, *last_exchange_reply_);
+                    return;
+                }
+                // drop_exchange_replies() models a request that never reached the
+                // firmware (nothing cached, a retry runs fresh); lose_exchange_replies()
+                // a reply lost on the wire (cached, a retry replays it).
+                last_exchange_reply_.reset();
+                handle_exchange_(f);
+                if (last_exchange_reply_) last_exchange_ = f; else last_exchange_.reset();
+                return;
+            }
             case tp::Cmd::GetVersion: {
                 const tp::FirmwareVersion v{fw_major_, fw_minor_, fw_patch_, 0};
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&v, sizeof(v)));
@@ -317,15 +379,60 @@ private:
             }
             case tp::Cmd::GetMotorStatus: {
                 std::lock_guard<std::mutex> lk(mu_);
+                auto reply = status_;
+                if (next_polled_status_word_) {
+                    reply.status = *next_polled_status_word_;
+                    next_polled_status_word_.reset();
+                }
                 pty_.send_response(f.seq, f.cmd,
-                                   pod_bytes(&status_, sizeof(status_)));
+                                   pod_bytes(&reply, sizeof(reply)));
                 return;
             }
-            case tp::Cmd::StartStream:
-                streaming_.store(true);
+            case tp::Cmd::TimeSession: {
+                if(!imu_v2_supported_.load()) {pty_.send_nack(f.seq,tp::ErrorCode::InvalidCmd);return;}
+                if(f.payload.size()!=8) {pty_.send_nack(f.seq,tp::ErrorCode::LengthMismatch);return;}
+                uint64_t proposed=0; std::memcpy(&proposed,f.payload.data(),8);
+                if(!imu_session_) imu_session_=proposed;
+                uint64_t reply[2]={imu_time_,imu_session_};
+                pty_.send_response(f.seq,f.cmd,pod_bytes(reply,sizeof(reply)));return;
+            }
+            case tp::Cmd::GetImuV2: {
+                if(!imu_v2_supported_.load()) {pty_.send_nack(f.seq,tp::ErrorCode::InvalidCmd);return;}
+                pty_.send_response(f.seq,f.cmd,imu_v2_packet_());return;
+            }
+            case tp::Cmd::GetImu: {
+                ++imu_queries_;
+                if (!imu_supported_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidCmd);
+                } else {
+                    tp::ImuData imu{};
+                    imu.accel_z = 1000;
+                    pty_.send_response(f.seq, f.cmd, pod_bytes(&imu, sizeof(imu)));
+                }
+                return;
+            }
+            case tp::Cmd::StartStream: {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (f.payload.size() != sizeof(stream_config_)) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::LengthMismatch);
+                    return;
+                }
+                tp::StreamConfig requested{};
+                std::memcpy(&requested, f.payload.data(), sizeof(requested));
+                const bool want_polled = requested.mode == static_cast<uint8_t>(tp::StreamMode::Polled);
+                if (want_polled && !exchange_supported_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
+                    return;
+                }
+                stream_config_ = requested;
+                polled_.store(want_polled);
+                streaming_.store(!want_polled);
                 pty_.send_ack_ok(f.seq, f.cmd);
                 return;
+            }
             case tp::Cmd::StopStream:
+                ++stream_stops_;
+                polled_.store(false);
                 streaming_.store(false);
                 pty_.send_ack_ok(f.seq, f.cmd);
                 return;
@@ -346,11 +453,100 @@ private:
         }
     }
 
+    void handle_exchange_(const xense::taccap::bus::Frame& f) {
+        tp::ExchangeRequestHeader h{};
+        if (f.payload.size() < sizeof(h)) { pty_.send_nack(f.seq, tp::ErrorCode::LengthMismatch); return; }
+        std::memcpy(&h, f.payload.data(), sizeof(h));
+        ++exchanges_;
+        const bool telemetry = h.flags & tp::ExchangeFlag::Telemetry;
+        if (telemetry) ++telemetry_exchanges_;
+        uint8_t result = tp::EXCHANGE_TARGET_RESULT_NONE;
+        if (h.target_kind != 0) {
+            ++exchange_targets_;
+            result = reject_next_.exchange(0);
+            if (h.target_kind == static_cast<uint8_t>(tp::ExchangeTarget::Impedance) &&
+                f.payload.size() == sizeof(h) + sizeof(tp::MotorImpedanceCtrl) && result == 0) {
+                std::lock_guard<std::mutex> lk(mu_);
+                tp::MotorImpedanceCtrl c{};
+                std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
+                last_submit_ = c;
+            }
+        }
+        if (const int delay = exchange_delay_ms_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+            if (auto extra = pty_.expect_frame(1)) {
+                ++overlaps_;
+                deferred_.push_back(*extra);
+            }
+        }
+        unsigned drop = drop_replies_.load();
+        while (drop && !drop_replies_.compare_exchange_weak(drop, drop - 1)) {}
+        if (drop) return;
+        tp::ExchangeResponseHeader r{};
+        r.version = tp::EXCHANGE_VERSION;
+        r.target_result = result;
+        std::vector<uint8_t> out(sizeof(r));
+        if (telemetry) {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (stream_config_.source_mask & tp::StreamSrc::MotorStatus) {
+                r.flags |= tp::ExchangeRespFlag::Motor;
+                auto s = pod_bytes(&status_, sizeof(status_));
+                s.resize(tp::MOTOR_STATUS_V2_SIZE, 0);
+                out.insert(out.end(), s.begin(), s.end());
+            }
+            if (stream_config_.source_mask & tp::StreamSrc::ImuV2) {
+                r.imu_cmd = static_cast<uint8_t>(tp::Cmd::GetImuV2);
+                r.imu_count = 1;
+                auto imu = imu_v2_packet_();
+                out.insert(out.end(), imu.begin(), imu.end());
+            } else if (stream_config_.source_mask & tp::StreamSrc::Imu) {
+                r.imu_cmd = static_cast<uint8_t>(tp::Cmd::GetImu);
+                r.imu_count = 1;
+                tp::ImuData imu{};
+                imu.accel_z = 1000;
+                imu.seq = imu_seq_++;
+                auto b = pod_bytes(&imu, sizeof(imu));
+                out.insert(out.end(), b.begin(), b.end());
+            }
+        }
+        std::memcpy(out.data(), &r, sizeof(r));
+        last_exchange_reply_ = out;
+        if (drop_after_build_) { --drop_after_build_; return; }   // reply lost on the wire
+        pty_.send_response(f.seq, f.cmd, out);
+        auto later = std::move(deferred_);
+        deferred_.clear();
+        for (auto& g : later) handle_(g);
+    }
+
+    std::atomic<bool> exchange_supported_{true}, polled_{false};
+    std::atomic<unsigned> exchanges_{0}, telemetry_exchanges_{0}, exchange_targets_{0};
+    std::atomic<unsigned> overlaps_{0}, drop_replies_{0}, other_while_polled_{0};
+    std::atomic<unsigned> drop_after_build_{0}, exchange_replays_{0};
+    std::optional<xense::taccap::bus::Frame> last_exchange_;
+    std::optional<std::vector<uint8_t>>      last_exchange_reply_;
+    std::atomic<int> exchange_delay_ms_{0};
+    std::atomic<uint8_t> reject_next_{0};
+    std::vector<xense::taccap::bus::Frame> deferred_;
+
     Pty& pty_;
     uint8_t fw_major_, fw_minor_, fw_patch_;
     std::thread thread_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> streaming_{false};
+    std::atomic<bool> imu_supported_{false};
+    std::atomic<bool> imu_v2_supported_{false};
+    uint64_t imu_session_{0}, imu_time_{UINT64_C(0x200000000)};
+    uint16_t imu_seq_{0};
+    std::vector<uint8_t> imu_v2_packet_() {
+        imu_time_+=10000;
+        tp::ImuData raw{};raw.accel_z=1000;raw.timestamp_us=uint32_t(imu_time_);raw.seq=imu_seq_++;
+        auto p=pod_bytes(&raw,sizeof(raw));
+        for(auto value:{imu_time_,imu_session_})
+            for(unsigned i=0;i<8;i++)p.push_back(uint8_t(value>>(i*8)));
+        return p;
+    }
+    std::atomic<unsigned> imu_queries_{0}, stream_stops_{0};
+    tp::StreamConfig stream_config_{};
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
     std::atomic<unsigned> disables_{0};
@@ -367,6 +563,7 @@ private:
     std::string sn_ = "TCGU01A28Z0001s";
     mutable std::mutex mu_;
     tp::MotorStatus status_{};
+    std::optional<uint16_t> next_polled_status_word_;
     std::optional<tp::MotorImpedanceCtrl> last_submit_;
 
     // Factory state: a valid travel calibration and a ZEROED envelope, which

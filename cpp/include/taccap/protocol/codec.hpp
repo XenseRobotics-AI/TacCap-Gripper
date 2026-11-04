@@ -128,6 +128,7 @@ GripperAutoCalConfig decode_gripper_auto_cal_config(const uint8_t* data, std::si
 MotorControlStats  decode_motor_control_stats(const uint8_t* data, std::size_t len);
 // fw 1.1.3 shipped a 32-byte packet; 1.1.4 appended log_dropped. Both decode
 // here, with the missing tail zero-filled, so one SDK build talks to either.
+UartRxErrors       decode_uart_rx_errors(const uint8_t* data, std::size_t len);
 UartStats          decode_uart_stats(const uint8_t* data, std::size_t len);
 LogConfig          decode_log_config(const uint8_t* data, std::size_t len);
 StreamConfig       decode_stream_config(const uint8_t* data, std::size_t len);

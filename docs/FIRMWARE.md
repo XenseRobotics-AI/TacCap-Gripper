@@ -7,6 +7,56 @@
 > `GetVersion` 查（`gripper.firmware_version`）——它返回的是编译进镜像的常量，
 > 是唯一能证明刷进去了什么的东西。
 
+## 本地候选：IMU 单调时间与协议兼容
+
+固件与 SDK 当前本地分支均为 `codex/gripper-imu-support`，由原从爪分支延续。
+主爪也启用 TIM2 单调时间和 V2，并只发送新缓存样本；请求 1000 Hz 不代表
+1000 Hz 独立采样。主爪原校准和从爪电机控制算法不在本轮修改范围。
+
+尚未正式发布。新固件支持 `TimeSession (0x16)` 和 `GetImuV2 (0x17)`；
+SDK 的 `read_once()` 和主/从爪显式 IMU streaming 自动协商：
+明确 InvalidCmd 才使用旧 28 字节包；超时/忙/畸形响应报错，不静默降级。
+从爪默认仍只开电机状态流，主爪现有 `start_streaming` 参数不变。
+V2 使用 source_mask=0x0020，保持电机与编码器 source 位和速率不变。
+
+新采样字段（C++ 与 Python）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mcu_timestamp_us` | C++ uint64_t / Python int；V2 完整捕获时间，旧包为首次观测起的展开时间 |
+| `boot_session_id` | V2 本次启动的非零会话号；旧包为 0，应与设备 SN 联合使用 |
+| `timestamp_is_64bit` | 是否来自原生 V2，而不是 SDK 展开 |
+| `timestamp_valid` | 本帧时间是否可用于当前观测段；异常旧包跳变或 V2 乱序为 false |
+| `timestamp_discontinuity` | 会话改变或不确定跳变，消费者应重置积分/滤波/时间拟合 |
+
+会话号由 SDK 提议随机 64 位 nonce，固件每次启动只接受第一个，保存在 RAM；
+重复协商不改变它，不写 Flash。设备重启后必须重新协商、重开流。
+会话号是概率唯一的诊断标识，不是认证凭据。V2 可跨任意多次 32 位回绕和断流恢复，
+但重启会重置时间，应按会话分段，不能把新启动拼成旧启动的连续轨迹。
+
+旧包只在短间隔、序列正常的连续观测下展开自然回绕。旧 DWT 固件的约 17 秒回退、
+重启样跳变和超过约 35.8 分钟的观测空档标记 discontinuity/invalid，不制造假时间。
+检测到上述旧包异常后，该时间线保持 invalid/discontinuity，不因下一帧重复或正常前进
+自动恢复。流可 `off(id)` 后重新 `on_data(...)` 建立新观测段；轮询需新建 IMU 实例。
+有效原生 V2 可恢复可信时间。重新建立观测段不保证恢复绝对开机时间，不能将两段直接积分；
+旧 DWT 固件仍会再次回退，根治需要升级固件。旧包无法排除所有重启歧义。
+`IMU::decode` 是无状态解码；`read_once` 与每个 `on_data` 订阅分别维护时间线。
+
+`on_data` 现在过滤连续字节完全相同的 IMU DATA 载荷，减少缓存重复引起的重复积分；
+原始传输订阅与 `read_once` 不过滤。多个订阅者各自保有去重及时间线状态。
+回调频率因此可能由约 1000 Hz 降至约 100 Hz；不要把回调次数当成串口接收帧数。
+使用者必须检查 `timestamp_valid`，无效样本不能用于积分；这不是坐标系或精度修正。
+
+**集成限制：**这是 C++ `ImuSample` 布局变更，所有链接消费者必须重编译，不能仅替换共享库。
+Python 扩展也须重建并核实实际加载路径。ROS 的时间字段须为 uint64，并增加会话/有效性字段，
+否则旧 uint32 消息仍会截断；本任务不修改独立 ROS 仓库或其依赖副本。
+ROS header 时间仍是另外的时钟域，以上修改不代表相机/IMU 同步通过验收。
+固件/SDK 本地构建成功也不等于已刷设备或安装到业务环境。
+
+软件检查：`ctest --test-dir <build> --output-on-failure`、`python -m pytest python/tests -q`。
+真机还需超过 75 分钟连续采集与冷重启验收；默认 motor-only、旧 SDK、新旧协议互通、
+IMU 同时上报时的控制时延和 OTA 都需验证。IMU 数值精度另行验收。
+
 ## Firmware / PC GUI reference repos
 
 The wire protocol this SDK speaks is defined by the firmware that runs
@@ -29,18 +79,18 @@ What's in them:
 - `tc-gu-01/App/protocol/protocol_cmd.h` + `protocol_data.h` — canonical
   command enum + POD payload layouts. The SDK's
   `cpp/include/taccap/protocol/{commands.hpp,payloads.hpp}` mirror these
-  1:1 with `static_assert(sizeof(...) == ...)` size checks. Currently
-  mirrored through command `0x5B` (protocol doc V2.6: V2.2 plus the
-  0x54 / 0x55 diagnostic pair, 0x56–0x58 motor spec / homing diagnostics /
-  motor version, 0x59 / 0x5A motor model, 0x5B CAN extended-frame relay);
-  `scripts/check_protocol_drift.py` is green against firmware `07ab9bb`.
+  with compile-time and cross-repository size checks. SDK PR #29 compares
+  against firmware PR #23 (`refs/pull/23/head`), which defines the time,
+  IMU V2 and exchange commands. `TxTrace` (0x18) is reserved for diagnostic
+  firmware builds; its enum value does not imply support in ordinary images.
+  Other CI runs use `hw_v1.1.0`. If the firmware PR changes independently,
+  rerun the SDK mirror job before merging; the log records the tested revision.
 - `tc-gu-01/App/protocol/PROTOCOL_SPEC.md` + `tc-gu-01/docs/PROTOCOL.md` —
   the human-readable spec, including the §10 offset table for the 72-byte
   extended motor status that `test_codec_v22.cpp` is transcribed from.
 - `tc-gu-01/App/tasks/task_data_stream.c` + `task_imu.c` +
-  `task_encoder.c` — explains why IMU/encoder unique-data rate caps at
-  ~60 Hz even when you request 100 (see the SDK's stream-dup note in
-  the Claude memory).
+  `task_encoder.c` — acquisition, cached samples and stream scheduling are
+  separate; requested rate is not evidence of independent sample rate.
 - `tc-gu-01-pc/core/protocol.py` + `core/serial_worker.py` — Python
   reference implementation of the same wire protocol; useful as a
   cross-check when debugging the C++ codec.
@@ -76,11 +126,11 @@ inactive bank and uses the STM32H5 bank swap, so one build serves both banks.
 ```bash
 python python/examples/ota_update.py \
     third_party/firmware/tc-gu-01/build/master/tc-gu-01-master.bin \
-    left --target-version 1.2.6
+    left --target-version 1.2.7
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.6 and the follower 1.2.16, and neither is "behind" the other. Both
+leader is 1.2.7 and the follower 1.2.17, and neither is "behind" the other. Both
 carry the same control-UART receive fix, which lives in shared code.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24.
 
@@ -92,13 +142,13 @@ them apart. If a leader reports 1.2.6, check `g.diagnostics.uart_stats()`: the
 fixed image answers with 44 bytes, so `rx_errors` / `rx_rearms` exist and are
 meaningful; the old one answers 32 bytes and the SDK reads both as 0 -- which is
 indistinguishable from a healthy zero. When in doubt, reflash
-`tc-gu-01-master-1.2.6.bin` from `firmware/`; OTA compares no versions
+the current leader image from `firmware/`; OTA compares no versions
 (`--target-version` is informational), so reflashing the same number is fine.
 Compare versions only within one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.6.bin`). That is deliberate:
+`firmware/` carry the version (`tc-gu-01-master-1.2.7.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
 build into `firmware/`, rename it and update `firmware/manifest.json` in the
@@ -113,20 +163,32 @@ are told to use. `test_ota_update_all.py` fails if they disagree.
 > 复位。在一台 EL05 从爪上实测:拔 24V 的瞬间(<0.3 秒)板载 USB 集线器连同串口芯片
 > 一起掉线、MCU 重启,从最快的一碰到断开 10 秒,15/15 次都如此;OTA 后只断一次 24V,
 > 60 秒状态流 6000 帧一帧不丢。**主爪**没有 24V:拔插它的 USB 即可。
-> 确认真的断过电:看 `gripper.device.heartbeat().uptime_ms` 是否从接近 0 重新计起。
-> `/dev/serial/by-id/` 的时间戳通常也会跟着变,但 uptime 才是 MCU 真的重启过的直接证据。
+> 记录现场断开并重接 24V 的操作，再检查 `gripper.device.heartbeat().uptime_ms` 是否重新计时。
+> uptime 重置只证明 MCU 重启，软复位也会重置它；不能单凭 uptime 或
+> `/dev/serial/by-id/` 的时间戳证明串口桥已经断电。
 >
-> bank-swap 重启是软复位：MCU 重新初始化，但片外的 USB 转串口桥从没断过电。设备
-> 回来之后停在一个降级状态，而这个状态和健康状态**从任何可观测的角度都分不出来**
-> —— 版本号正确、数据流在跑、`uart_stats()` 的收发计数全是干净的。唯一的症状是它
-> 在悄悄丢状态帧。
+> bank-swap 重启是软复位：MCU 重新初始化，片外 USB 转串口桥可能仍保持供电。
+> 历史实测曾出现升级后丢状态帧，而版本号、流启动状态和 `uart_stats()` 计数正常的情况。
+> 这些检查不足以证明数据完整；仍需检查帧间隔、序号和解析器统计。
 >
 > 实测，同一只夹爪、同一个固件、同一条线、60 秒一轮：仅 OTA 之后每轮丢 35~39 帧，
 > 断电重插之后连续三轮为 0。
 >
 > 在这上面栽过两次：先把它误判成"某只夹爪链路劣化、疑似硬件损坏"，又用两组都没
-> 断电的数据去比较固件版本，得出了并不存在的版本差异。**任何在断电之前取的数字
-> 都不可信。**
+> 断电的数据去比较固件版本，得出了并不存在的版本差异。断电状态应记录为测试条件。
+
+> 冷启动后仍需在相同负载下复验；断电不能代替故障定位。关闭 IMU、只接收上报、
+> 同时发送查询应分开对照。若 `read()` 原始字节中已出现短帧，只能确定损坏发生在
+> SDK 帧解析之前，仍需 USB/UART 或固件侧证据区分原因。不要把 `crc_errors=0`
+> 当成无丢帧：长度检查可以先于 CRC 拒绝短帧。
+>
+> 2026-10-26 的另一轮实测在确认断电后，仍在双向通信负载下复现接收短帧：USBmon 接收载荷与
+> 串口 `read()` 的 843445 字节逐字节一致，131 条协议坏记录已经出现在两者中。
+> 这排除了本次 SDK 解析或 TTY 接收额外删字节的解释，但 USBmon 位于 HCD/驱动
+> 边界，并不是 UART 引脚或 USB 线上的物理抓取，不能据此直接认定桥接芯片或固件责任。
+> 查询 `gripper.diagnostics.uart_stats()` 时需要调用方法；只访问方法对象不能获得计数。
+> MCU `tx_bytes_ok` 与主机接收字节对账应在停流、排空后取快照，并使用包含前一个统计 ACK、排除后一个统计 ACK 的
+> 原始接收字节区间；`tx_bytes_ok` 是 HAL 成功返回时累计的请求长度，也不能替代引脚观测。
 
 > Only builds you made yourself need that path. To flash the **released**
 > images, name them and let the script find them in [`firmware/`](../firmware/) —

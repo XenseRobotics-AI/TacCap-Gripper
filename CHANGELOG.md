@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bundled firmware is now leader 1.2.7 / follower 1.2.17 (protocol V2.9).**
+  Both add time-shared exchange (`0x5E` leader, `0x5D` follower) so host and
+  gripper never transmit at the same time; an uplink frame that overlaps a host
+  byte loses the bytes in flight. **Host-breaking:** IMU/encoder `timestamp` moves
+  from DWT/250 (wraps every 17.18 s) to TIM2 1 MHz (wraps every 71 min 35 s); this
+  SDK already unwraps the new timebase, older host software does not. Images are
+  built with arm-none-eabi-gcc 10.3.1 from tc-gu-01 `8c059e9`; size, CRC32 and
+  notes are in `firmware/manifest.json`. Leader verified on the collector backpack
+  (0 bad uplink frames under load vs 17/7208 on 1.2.6 push). As before, replug the
+  leader's USB / power-cycle the follower's 24 V after flashing.
+
+### Fixed
+
+- **A lost follower exchange reply no longer loses IMU samples.** The follower
+  exchange sent each request once; when its reply was lost (host stalled past
+  the timeout) the next exchange took new samples and the ones in the lost reply
+  were gone (5-9 per hour on a loaded host). It now retries with the same seq,
+  like the leader, so the firmware replays its cached reply.
+
+- **A wall-clock step no longer stalls the exchange or the controllers.**
+  libstdc++ built against an older glibc sysroot (conda-forge, manylinux)
+  implements `condition_variable::wait_until(steady_clock)` and
+  `timed_mutex::try_lock_for` on `CLOCK_REALTIME`, so when NTP stepped the wall
+  clock back the waits lasted that much longer. A follower exchange stalled
+  past `status_timeout_ms` 0.2 s after "Clock change detected" and the
+  ForcePositionController faulted. The leader/follower exchange loops, the
+  half-duplex turn lock and both controllers' status watchdog now wait on a
+  `pthread_cond` bound to `CLOCK_MONOTONIC` (`taccap/detail/monotonic_cv.hpp`),
+  whatever toolchain builds the SDK.
+
+- **`LeaderGripper.start_exchange(1000, 100)` no longer throws.** With no
+  `exchange_hz` the default exchange rate was the requested data rate, so a
+  1000 Hz IMU request asked for 1000 exchanges/s and was rejected (limit 500).
+  The default is now the data rate capped at 200 Hz (the leader samples IMU and
+  encoder at 100 Hz whatever is requested); an explicit `exchange_hz` may still
+  be up to 500.
+
+- **Python discovery no longer freezes other threads.** `scan_grippers()` and
+  the `find_*()` helpers held the GIL for the whole scan (~280 ms with two idle
+  grippers attached, up to the ACK timeout on a silent port), so a GUI scanning
+  on a background thread stalled its own 100 Hz target thread for the same
+  time. The PC config tool rescans every 3 s while one role's gripper is held
+  by another process, which made reciprocation stutter every 3 s whenever the
+  leader was in use elsewhere. The bindings now release the GIL; measured
+  stall during a scan: 263-280 ms before, 0 ms after.
+
+### Added
+
+- **`LeaderGripper.start_streaming(imu_hz, encoder_hz, imu_v2_time=True)`.**
+  `imu_v2_time=False` streams the legacy 28 B IMU frame without a time session,
+  as SDK <= 0.4.4 did. A pushed stream loses an uplink frame whenever a host
+  write overlaps it, and a longer frame is hit more often: on a leader at
+  100 Hz queries (IMU 1000 Hz requested, encoder 100 Hz, 120 s x3) IMU bad
+  frames were 868 with V2 and 1 with the legacy frame. Default unchanged;
+  `start_exchange()` removes the overlap and keeps V2.
+
+- **Leader half-duplex exchange: `LeaderGripper.start_exchange(imu_hz,
+  encoder_hz, exchange_hz, fallback_to_streaming=True)`.** Requires leader
+  firmware with `StreamMode::Polled` and `Cmd::LeaderExchange` (0x5E, tc-gu-01
+  `docs/LEADER_EXCHANGE.md`). The leader holds IMU, encoder, key and
+  sensor-error frames instead of pushing them; the SDK fetches them (again at
+  once while a backlog remains) and delivers them to the usual subscribers,
+  and every request on the link takes turns, so host and leader never
+  transmit at the same time. A lost reply is retried with the same seq, so the
+  firmware replays it and no records are lost. On firmware without 0x5E it
+  falls back to `start_streaming()` and returns `False` (or raises
+  `ProtocolError` with `fallback_to_streaming=False`); the device version is
+  not used to decide, since it stays 1.2.6. `exchange_stats()` returns
+  `LeaderExchangeStats`. `start_streaming()` and the wire protocol of older
+  commands are unchanged.
+
+- **Leader exchange survives the firmware lease.** Leader firmware leaves the
+  exchange by itself after 1 s without `Cmd::LeaderExchange` (host crashed or
+  stalled), flushes what it held as ordinary DATA frames and goes back to
+  pushing. A reply without `LeaderExchangeRespFlag::Polled` now makes the SDK
+  re-send the polled `StartStream` (at most every 200 ms), so a stalled host
+  returns to the exchange with nothing lost; `LeaderExchangeStats` gains
+  `rearms` and `rearm_failures`. `start_exchange` documents `exchange_hz`
+  (2x the data rate removes the occasional one-period wait) and that samples
+  from one reply share its arrival time as `host_time`.
+
+  Known limit: the half-duplex turn lock is not fair. A user thread issuing
+  requests back-to-back with no pause can delay exchanges (seen in a test at
+  ~10 kHz of heartbeats); health checks at realistic rates (<= 1 kHz) are
+  unaffected.
+
+- **Follower half-duplex exchange: `FollowerGripper.start_exchange(motor_hz,
+  imu_hz, exchange_hz)`.** Requires follower firmware with `StreamMode::Polled`
+  and `Cmd::SlaveExchange` (0x5D, tc-gu-01 `docs/HALF_DUPLEX_EXCHANGE.md`).
+  The follower stops pushing frames; the SDK polls it and delivers motor
+  status / IMU to the usual subscribers, `Motor.submit_*()` targets ride on the
+  exchange, and every request on the link takes turns, so host and follower
+  never transmit at the same time. Existing controllers run unchanged on top.
+  `exchange_stats()` reports timeouts, resent and rejected targets and round
+  trips. Older firmware raises `ProtocolError` and nothing is left running.
+  `bus::RetryMode::Once` sends exactly one attempt.
+
 ## [0.4.4] - 2026-11-01
 
 _The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow

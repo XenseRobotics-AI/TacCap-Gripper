@@ -76,6 +76,9 @@ enum class Cmd : uint8_t {
     GetEskin2       = 0x13,
     GetAllSensors   = 0x14,
     KeyStatus       = 0x15,    // V1.4 — device-side button, payload=key_status_payload_t
+    TimeSession     = 0x16,    // request nonce:u64; response time_us:u64, session:u64
+    GetImuV2        = 0x17,    // legacy 28B + capture_us:u64 + session:u64
+    TxTrace         = 0x18,    // RAM transmit trace; diagnostic firmware builds only
 
     // Stream control + calibration (0x20–0x2F)
     StartStream         = 0x20,
@@ -136,6 +139,13 @@ enum class Cmd : uint8_t {
     MotorCanExtXfer          = 0x5B,  // extended-frame passthrough (req 24B / resp 16B)
     SetMotorFwVersion        = 0x5C,  // store motor fw version in flash (req 4B / resp 8B),
                                       // fw >= 1.2.14
+    // Follower half-duplex exchange: request may carry one 0x40..0x43 target,
+    // reply carries motor status V2 + new IMU samples. Used with
+    // StreamMode::Polled; see FollowerGripper::start_exchange().
+    SlaveExchange            = 0x5D,
+    // Leader half-duplex exchange: reply carries the DATA frames the leader
+    // held in StreamMode::Polled. See LeaderGripper::start_exchange().
+    LeaderExchange           = 0x5E,
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

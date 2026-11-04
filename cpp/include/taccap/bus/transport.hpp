@@ -1,16 +1,18 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 //
 // Asynchronous transport for TC-GU-01:
-//   - owns a SerialBus + FrameParser + a reader thread + a dispatcher thread
+//   - owns a SerialBus, parser, reader, user dispatcher and control worker
 //   - matches CMD_NEED_ACK frames to incoming ACK frames by seq, with
 //     host-side timeout/retry honouring the firmware's 10ms / 3-attempt spec
 //   - dispatches DATA frames to per-Cmd subscriber callbacks
 //
-// Threading contract (two threads, deliberately):
+// Threading contract:
 //
 //   reader thread      read() -> parse -> { ACK: fulfil the promise inline
-//                                           DATA: push to dispatch_queue_ }
+//                                           DATA: push to bounded queues }
 //   dispatcher thread  pop -> fan out to matching subscriber callbacks
+//   control worker     motor DATA -> private SDK controller subscriptions
+//                      (no user/Python callbacks, no logging on this path)
 //
 // The split exists because subscriber callbacks are user code: a Python
 // callback must take the GIL, and CPython's default 5ms switch interval means
@@ -44,6 +46,7 @@
 #include <taccap/protocol/payloads.hpp>
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -51,11 +54,14 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <taccap/detail/monotonic_cv.hpp>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+namespace xense::taccap { class Motor; }
 namespace xense::taccap::bus {
 
 // Decoded ACK / NACK from the firmware. The wire format mirrors firmware
@@ -77,6 +83,7 @@ struct AckResponse {
     protocol::ErrorCode  error_code;  // Ok on success; payload[0] on NACK
     std::vector<uint8_t> data;        // wire payload as-is (response data on
                                       // success, [err_code] on NACK)
+    std::chrono::steady_clock::time_point receive_time{};
 };
 
 // Recover the firmware's error code from a response, including the echoed-cmd
@@ -115,6 +122,10 @@ enum class RetryMode : uint8_t {
     // The firmware caches exactly one request, so nothing else may be sent on
     // this transport between attempts — true for the single-threaded OTA flow.
     SameSeq,
+    // Exactly one attempt regardless of Config::max_retries. For the follower
+    // caller that owns its own resend policy. (The leader and follower
+    // exchange loops use SameSeq, so a lost reply is replayed, not lost.)
+    Once,
 };
 
 class Transport {
@@ -140,6 +151,10 @@ public:
         // queue_dropped) — lower this when latency matters more than
         // surviving hiccups. Clamped to >= 1.
         std::size_t               dispatch_queue_frames = 256;
+        // Private motor-control lane, independent of all user callbacks.
+        // Overflow latches the lane closed until transport recreation: a
+        // dropped fault cannot be replaced silently with a healthy sample.
+        std::size_t               control_queue_frames = 8;
     };
 
     struct Stats {
@@ -153,38 +168,51 @@ public:
         uint64_t callback_exceptions  = 0;
 
         // ---- Loss accounting ------------------------------------------
-        // Three distinct ways a frame can fail to reach a subscriber. Read
-        // together they say *where* a rate drop came from:
+        // These counters identify the stage that observed damage or dropped
+        // data, not the component that originally caused a rate drop:
         //
-        //   crc_errors / resync_bytes > 0  -> bytes were lost before the
-        //       parser. Two different causes, told apart by bytes_read:
-        //         - bytes_read also down: the host stopped draining the tty
-        //           long enough to overflow the kernel/USB buffers.
-        //           Cross-check callback_max_us.
-        //         - bytes_read at full volume, crc_errors flat, resync_bytes
-        //           climbing in ~one-frame steps: the MCU dropped bytes out of
-        //           the middle of a frame it was transmitting, which it does
-        //           when host->MCU traffic overlaps its own send. The short
-        //           payload fails the LEN check before CRC is ever reached,
-        //           which is why crc_errors stays at zero. Nothing on the host
-        //           is broken; stop overlapping the writes (submit on the
-        //           status-frame doorbell, as both controllers do).
-        //   queue_dropped > 0              -> bytes arrived fine, but the
-        //       subscriber could not keep up and old frames were evicted.
-        //   both zero, rate still low      -> the firmware really is sending
-        //       slower; nothing on the host side to fix.
-        uint64_t crc_errors           = 0;  // well-framed, bad CRC → byte loss
+        //   crc_errors / resync_bytes > 0 -> framing, length or CRC validation
+        //       rejected bytes. A short frame can fail LEN before CRC, leaving
+        //       crc_errors at zero. Neither bytes_read nor these counters can
+        //       distinguish firmware TX, UART/USB/driver loss, host buffering,
+        //       or a parser defect. Capturing malformed bytes in read() proves
+        //       they reached the host before SDK parsing; locating the cause
+        //       still needs independent link/firmware evidence. Nearby host
+        //       writes alone do not prove physical TX/RX interference.
+        //   queue_dropped > 0 -> parsed DATA was evicted from a full dispatch
+        //       queue, or discarded during shutdown. Check callback_max_us and
+        //       the run/cleanup boundaries before attributing this to load.
+        //   all zero, rate still low -> whole-frame loss, delayed callbacks,
+        //       component filtering or slower firmware production remain
+        //       possible. Compare raw frames, device time and delivered data.
+        uint64_t crc_errors           = 0;  // framing/length valid; CRC mismatch
         uint64_t resync_bytes         = 0;  // bytes discarded without a frame
         uint64_t parser_overflow_bytes = 0; // dropped by the parser_max_buf cap
+        uint64_t parser_no_head = 0;
+        uint64_t parser_oversize = 0;
+        uint64_t parser_short_body = 0;
+        uint64_t parser_bad_length = 0;
         uint64_t queue_dropped        = 0;  // DATA frames evicted, queue full
         uint64_t queue_high_water     = 0;  // deepest the queue has ever been
         uint64_t callback_max_us      = 0;  // slowest single fan-out, in us
+        uint64_t control_queue_dropped = 0;
+        uint64_t control_queue_high_water = 0;
+        uint64_t control_queue_overflows = 0; // latched; controller times out
     };
+
+    // Successful local writes of the four motor target commands. Counts wire
+    // attempts, not MCU acceptance; retries count again. No extra traffic.
+    struct TargetWrites {
+        uint64_t count = 0;
+        int64_t last_write_ns = 0; // steady_clock, host only
+        uint64_t last_gap_us = 0, max_gap_us = 0;
+    };
+    TargetWrites target_writes();
 
     // Opens the serial port, starts the reader thread.
     explicit Transport(const Config& cfg);
 
-    // Stops the reader, fails any pending ACKs with IoError, joins.
+// Stops all workers, fails any pending ACKs with IoError, joins.
     ~Transport();
 
     Transport(const Transport&)            = delete;
@@ -230,10 +258,44 @@ public:
 
     Stats stats() const noexcept;
 
+    // ---- Follower half-duplex exchange support (SDK-internal) --------------
+    // While enabled, every request holds one link-wide turn from its write
+    // until its ACK or timeout, and no-ACK writes take the same turn: at most
+    // one host frame is ever waiting for the MCU, so a request is never
+    // written while the MCU may still be answering the previous one. Only
+    // meaningful when the MCU itself pushes nothing (StreamMode::Polled).
+    void set_half_duplex(bool enabled) noexcept {
+        half_duplex_.store(enabled, std::memory_order_release);
+    }
+    bool half_duplex() const noexcept { return half_duplex_.load(std::memory_order_acquire); }
+    // Dispatch a DATA frame decoded from an exchange reply exactly as if it
+    // had been received: control lane for motor status, then subscribers.
+    void inject_data(Frame f);
+
+    void enable_receive_trace(bool enabled) { parser_.set_trace_enabled(enabled); }
+    FrameParser::TraceSnapshot take_receive_trace() { return parser_.take_trace(); }
+
     const Config& config() const noexcept { return cfg_; }
 
 private:
+    friend class ::xense::taccap::Motor;
+    // Only SDK-owned controller subscribers may use this lane. Never expose
+    // arbitrary user/Python callbacks here or on the serial reader.
+    SubscriptionId subscribe_control_(DataCallback cb);
+    void control_loop_();
+    void enqueue_control_(const Frame& f);
+    bool unsubscribe_control_(SubscriptionId id);
+    struct ControlSub {
+        SubscriptionId id;
+        DataCallback cb;
+        std::chrono::steady_clock::time_point since;
+        std::mutex mutex;
+        std::condition_variable idle;
+        bool active = true;
+        unsigned inflight = 0;
+    };
     struct PendingAck {
+        protocol::Cmd cmd{};
         std::promise<AckResponse> promise;
     };
     struct Sub {
@@ -251,7 +313,26 @@ private:
     // the kernel tty layer's, which a non-blocking fd or a non-tty transport
     // would quietly take away. Held across the (blocking) write, so a submit
     // can queue behind a large frame; that is the cost of one link.
-    void write_frame_(const std::vector<uint8_t>& wire);
+    void write_frame_(const std::vector<uint8_t>& wire, protocol::Cmd cmd);
+    uint8_t allocate_seq_locked_();
+    // Taken (only while half_duplex_) around one request's write and wait.
+    // Never held by the reader or dispatcher, so callbacks may still send.
+    // Waiting for the turn counts against the request's own timeout: a long
+    // command (IMU calibration, 15 s) must not stretch a 100 ms query.
+    struct Turn {                       // RAII, like std::unique_lock
+        detail::MonotonicTimedLock* lock = nullptr;
+        bool owns_lock() const noexcept { return lock != nullptr; }
+        void unlock() { if (lock) { lock->unlock(); lock = nullptr; } }
+        Turn() = default;
+        explicit Turn(detail::MonotonicTimedLock* l) : lock(l) {}
+        Turn(Turn&& o) noexcept : lock(o.lock) { o.lock = nullptr; }
+        Turn& operator=(Turn&&) = delete;
+        ~Turn() { unlock(); }
+    };
+    Turn half_duplex_turn_(std::chrono::milliseconds wait,
+                                                         protocol::Cmd cmd);
+    detail::MonotonicTimedLock half_duplex_mu_;   // not std::timed_mutex: see monotonic_cv.hpp
+    std::atomic<bool> half_duplex_{false};
 
     void reader_loop_();
     void dispatch_loop_();
@@ -282,9 +363,18 @@ private:
     std::atomic<bool>          running_{false};
     std::thread                reader_;
     std::thread                dispatcher_;
+    std::thread                control_worker_;
+    std::mutex                 control_queue_mu_;
+    std::condition_variable    control_queue_cv_;
+    std::deque<Frame>          control_queue_;
+    bool                      control_failed_ = false; // control_queue_mu_
+    std::mutex                control_sub_mu_;
+    std::vector<std::shared_ptr<ControlSub>> control_subs_;
+    std::atomic<unsigned>     control_sub_count_{0};
 
     // Serialises writers; see write_frame_().
     std::mutex                 write_mu_;
+    TargetWrites target_writes_; // write_mu_
 
     // reader -> dispatcher hand-off. Bounded; drop-oldest on overflow.
     std::mutex                 queue_mu_;
@@ -293,8 +383,9 @@ private:
 
     // ACK matching
     std::mutex                                 pending_mu_;
-    std::unordered_map<uint8_t, PendingAck>    pending_acks_;
-    std::atomic<uint8_t>                       next_seq_{0};
+    std::unordered_map<uint8_t, std::shared_ptr<PendingAck>> pending_acks_;
+    std::array<bool, 256> reserved_seqs_{};
+    uint8_t next_seq_{0}; // pending_mu_
 
     // Subscriptions
     std::mutex                                 sub_mu_;
@@ -315,9 +406,16 @@ private:
     std::atomic<uint64_t> stat_crc_errors_         {0};
     std::atomic<uint64_t> stat_resync_bytes_       {0};
     std::atomic<uint64_t> stat_parser_overflow_    {0};
+    std::atomic<uint64_t> stat_parser_no_head_     {0};
+    std::atomic<uint64_t> stat_parser_oversize_    {0};
+    std::atomic<uint64_t> stat_parser_short_body_  {0};
+    std::atomic<uint64_t> stat_parser_bad_length_  {0};
     std::atomic<uint64_t> stat_queue_dropped_      {0};
     std::atomic<uint64_t> stat_queue_high_water_   {0};
     std::atomic<uint64_t> stat_callback_max_us_    {0};
+    std::atomic<uint64_t> stat_control_queue_dropped_{0};
+    std::atomic<uint64_t> stat_control_queue_high_water_{0};
+    std::atomic<uint64_t> stat_control_queue_overflows_{0};
 };
 
 }  // namespace xense::taccap::bus

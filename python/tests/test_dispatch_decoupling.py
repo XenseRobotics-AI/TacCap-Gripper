@@ -63,6 +63,13 @@ LOSS_FIELDS = (
     "queue_dropped",
     "queue_high_water",
     "callback_max_us",
+    "control_queue_dropped",
+    "control_queue_high_water",
+    "control_queue_overflows",
+    "parser_no_head",
+    "parser_oversize",
+    "parser_short_body",
+    "parser_bad_length",
 )
 
 
@@ -93,6 +100,21 @@ def test_stop_with_a_python_subscriber_does_not_crash(fake_mcu):
     os.write(master, _encoder_frame(1))
     assert _wait_until(lambda: transport.stats.frames_received >= 1)
     transport.stop()  # must not segfault; fixture stops again
+
+
+def test_receive_trace_is_opt_in_and_contains_raw_bytes(fake_mcu):
+    transport, master = fake_mcu
+    assert transport.take_receive_trace()["records"] == []
+    transport.enable_receive_trace()
+    wire = _encoder_frame(19)
+    os.write(master, wire)
+    assert _wait_until(lambda: transport.stats.frames_received >= 1)
+    trace = transport.take_receive_trace()
+    assert trace["overwritten_records"] == 0
+    inputs = [r for r in trace["records"] if r["kind"] == "input"]
+    assert b"".join(r["bytes"] for r in inputs) == wire
+    assert all(r["host_time_ns"] > 0 and r["reason"] == 0 for r in inputs)
+    transport.enable_receive_trace(False)
 
 
 def test_slow_python_callback_does_not_stall_the_reader(fake_mcu):

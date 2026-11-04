@@ -19,6 +19,7 @@ add_executable(taccap_unit_tests
     test_ota_retry_pty.cpp
     test_python_compat.cpp
     test_stuff.cpp
+    test_transport_reliability.cpp
     test_transport.cpp
     test_transport_concurrent_write.cpp
     test_diagnostics_codec.cpp
@@ -36,6 +37,12 @@ add_executable(taccap_unit_tests
     test_crc32_boundaries.cpp
     test_log.cpp
     test_stream_rate.cpp
+    test_follower_imu_pty.cpp
+    test_imu_motor_concurrency.cpp
+    test_imu_time.cpp
+    test_follower_exchange_pty.cpp
+    test_leader_exchange_pty.cpp
+    test_monotonic_cv.cpp
 )
 
 # stream_rate.hpp is a private helper under src/ (not an installed header),
