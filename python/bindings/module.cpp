@@ -105,6 +105,7 @@ PYBIND11_MODULE(_taccap_native, m) {
         .value("GetImu",             tp::Cmd::GetImu)
         .value("TimeSession",        tp::Cmd::TimeSession)
         .value("GetImuV2",           tp::Cmd::GetImuV2)
+        .value("TxTrace",            tp::Cmd::TxTrace)
         .value("GetEncoder",         tp::Cmd::GetEncoder)
         .value("GetEskin1",          tp::Cmd::GetEskin1)
         .value("GetEskin2",          tp::Cmd::GetEskin2)

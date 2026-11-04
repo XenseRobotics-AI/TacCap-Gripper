@@ -1,4 +1,5 @@
 """Native V2 timestamp width and boot identity survive the Python boundary."""
+
 import os
 import pty
 import select
@@ -18,7 +19,7 @@ def test_native_64bit_time_and_boot_session_over_pty():
         parser = t.FrameParser()
         try:
             while not stopped.is_set():
-                if not select.select([master], [], [], .02)[0]:
+                if not select.select([master], [], [], 0.02)[0]:
                     continue
                 parser.feed(os.read(master, 4096))
                 while (frame := parser.pop()) is not None:
@@ -31,11 +32,33 @@ def test_native_64bit_time_and_boot_session_over_pty():
                         assert len(frame.payload) == 8
                         payload = struct.pack("<QQ", capture, 123)
                     elif frame.cmd == t.Cmd.GetImuV2:
-                        raw = struct.pack("<IH10hH", capture & 0xffffffff, 15,
-                                          0, 0, 1000, 0, 0, 0, 0, 0, 0, 2500, 7)
+                        raw = struct.pack(
+                            "<IH10hH",
+                            capture & 0xFFFFFFFF,
+                            15,
+                            0,
+                            0,
+                            1000,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            2500,
+                            7,
+                        )
                         payload = raw + struct.pack("<QQ", capture, 123)
-                    os.write(master, t.pack_frame(t.Address.MCU, frame.seq,
-                                                 t.FrameType.ACK, frame.cmd, payload))
+                    os.write(
+                        master,
+                        t.pack_frame(
+                            t.Address.MCU,
+                            frame.seq,
+                            t.FrameType.ACK,
+                            frame.cmd,
+                            payload,
+                        ),
+                    )
         except Exception as exc:
             errors.append(exc)
 
@@ -49,7 +72,7 @@ def test_native_64bit_time_and_boot_session_over_pty():
         assert sample.boot_session_id == 123
         assert sample.timestamp_is_64bit and sample.timestamp_valid
         assert not sample.timestamp_discontinuity
-        assert abs(sample.accel_mps2[2] - 9.80665) < .0001
+        assert abs(sample.accel_mps2[2] - 9.80665) < 0.0001
     finally:
         if gripper is not None:
             gripper.close()

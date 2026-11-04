@@ -79,11 +79,12 @@ What's in them:
 - `tc-gu-01/App/protocol/protocol_cmd.h` + `protocol_data.h` — canonical
   command enum + POD payload layouts. The SDK's
   `cpp/include/taccap/protocol/{commands.hpp,payloads.hpp}` mirror these
-  1:1 with `static_assert(sizeof(...) == ...)` size checks. Currently
-  mirrored through command `0x5B` (protocol doc V2.6: V2.2 plus the
-  0x54 / 0x55 diagnostic pair, 0x56–0x58 motor spec / homing diagnostics /
-  motor version, 0x59 / 0x5A motor model, 0x5B CAN extended-frame relay);
-  `scripts/check_protocol_drift.py` is green against firmware `07ab9bb`.
+  with compile-time and cross-repository size checks. SDK PR #29 compares
+  against firmware PR #23 (`refs/pull/23/head`), which defines the time,
+  IMU V2 and exchange commands. `TxTrace` (0x18) is reserved for diagnostic
+  firmware builds; its enum value does not imply support in ordinary images.
+  Other CI runs use `hw_v1.1.0`. If the firmware PR changes independently,
+  rerun the SDK mirror job before merging; the log records the tested revision.
 - `tc-gu-01/App/protocol/PROTOCOL_SPEC.md` + `tc-gu-01/docs/PROTOCOL.md` —
   the human-readable spec, including the §10 offset table for the 72-byte
   extended motor status that `test_codec_v22.cpp` is transcribed from.
