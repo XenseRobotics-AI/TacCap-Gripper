@@ -7,53 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [0.4.4] - 2026-11-01
 
-- **Bundled firmware is now leader 1.2.7 / follower 1.2.17 (protocol V2.9).**
-  Both add time-shared exchange (`0x5E` leader, `0x5D` follower) so host and
-  gripper never transmit at the same time; an uplink frame that overlaps a host
-  byte loses the bytes in flight. **Host-breaking:** IMU/encoder `timestamp` moves
-  from DWT/250 (wraps every 17.18 s) to TIM2 1 MHz (wraps every 71 min 35 s); this
-  SDK already unwraps the new timebase, older host software does not. Images are
-  built with arm-none-eabi-gcc 10.3.1 from tc-gu-01 `8c059e9`; size, CRC32 and
-  notes are in `firmware/manifest.json`. Leader verified on the collector backpack
-  (0 bad uplink frames under load vs 17/7208 on 1.2.6 push). As before, replug the
-  leader's USB / power-cycle the follower's 24 V after flashing.
-
-### Fixed
-
-- **A lost follower exchange reply no longer loses IMU samples.** The follower
-  exchange sent each request once; when its reply was lost (host stalled past
-  the timeout) the next exchange took new samples and the ones in the lost reply
-  were gone (5-9 per hour on a loaded host). It now retries with the same seq,
-  like the leader, so the firmware replays its cached reply.
-
-- **A wall-clock step no longer stalls the exchange or the controllers.**
-  libstdc++ built against an older glibc sysroot (conda-forge, manylinux)
-  implements `condition_variable::wait_until(steady_clock)` and
-  `timed_mutex::try_lock_for` on `CLOCK_REALTIME`, so when NTP stepped the wall
-  clock back the waits lasted that much longer. A follower exchange stalled
-  past `status_timeout_ms` 0.2 s after "Clock change detected" and the
-  ForcePositionController faulted. The leader/follower exchange loops, the
-  half-duplex turn lock and both controllers' status watchdog now wait on a
-  `pthread_cond` bound to `CLOCK_MONOTONIC` (`taccap/detail/monotonic_cv.hpp`),
-  whatever toolchain builds the SDK.
-
-- **`LeaderGripper.start_exchange(1000, 100)` no longer throws.** With no
-  `exchange_hz` the default exchange rate was the requested data rate, so a
-  1000 Hz IMU request asked for 1000 exchanges/s and was rejected (limit 500).
-  The default is now the data rate capped at 200 Hz (the leader samples IMU and
-  encoder at 100 Hz whatever is requested); an explicit `exchange_hz` may still
-  be up to 500.
-
-- **Python discovery no longer freezes other threads.** `scan_grippers()` and
-  the `find_*()` helpers held the GIL for the whole scan (~280 ms with two idle
-  grippers attached, up to the ACK timeout on a silent port), so a GUI scanning
-  on a background thread stalled its own 100 Hz target thread for the same
-  time. The PC config tool rescans every 3 s while one role's gripper is held
-  by another process, which made reciprocation stutter every 3 s whenever the
-  leader was in use elsewhere. The bindings now release the GIL; measured
-  stall during a scan: 263-280 ms before, 0 ms after.
+_The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow
+fix, and again on 2026-11-05 to include leader/follower time-shared exchange
+and the bundled firmware 1.2.7 / 1.2.17 (tc-gu-01 `v1.2.7`, protocol V2.9);
+the version number is unchanged._
 
 ### Added
 
@@ -106,23 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trips. Older firmware raises `ProtocolError` and nothing is left running.
   `bus::RetryMode::Once` sends exactly one attempt.
 
-## [0.4.4] - 2026-11-01
-
-_The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow
-fix below; the version number is unchanged._
-
-### Fixed
-
-- **The tactile overlay is marker flow, drawn by the SDK.** The arrows on the
-  tactile image used to be the inferred force field from a guessed grid, scaled
-  by `--force-scale`; under a press they showed only dots. `rerun_viewer.py`,
-  `gripper_console.py --rerun` and `tactile_sensor.py` now draw the image with
-  `Sensor.drawMarkerMove()`: an arrow from each marker's rest position to where
-  it is now, 1:1, on the sensor's thinned grid. `--force-scale` is gone, and
-  `tactile_sensor.py --outputs` takes `flow` instead of `force` / `marker`.
-
-### Added
-
 - **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
   a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
   takes the image as optional: without one it picks the shipped image for the
@@ -141,7 +83,19 @@ fix below; the version number is unchanged._
   `gripper_console.py --rerun` shows the same while the keys drive the jaw,
   adding the target, the commanded torque and the controller state.
 
+
 ### Changed
+
+- **Bundled firmware is now leader 1.2.7 / follower 1.2.17 (protocol V2.9).**
+  Both add time-shared exchange (`0x5E` leader, `0x5D` follower) so host and
+  gripper never transmit at the same time; an uplink frame that overlaps a host
+  byte loses the bytes in flight. **Host-breaking:** IMU/encoder `timestamp` moves
+  from DWT/250 (wraps every 17.18 s) to TIM2 1 MHz (wraps every 71 min 35 s); this
+  SDK already unwraps the new timebase, older host software does not. Images are
+  built with arm-none-eabi-gcc 10.3.1 from tc-gu-01 `8c059e9`; size, CRC32 and
+  notes are in `firmware/manifest.json`. Leader verified on the collector backpack
+  (0 bad uplink frames under load vs 17/7208 on 1.2.6 push). As before, replug the
+  leader's USB / power-cycle the follower's 24 V after flashing.
 
 - **`environment.yml` installs `xensesdk==2.2.2` and `rerun-sdk==0.41.0`, and
   pins numpy to 2.2.4** (xensesdk requires `numpy<=2.2.4`). Update an existing
@@ -155,6 +109,50 @@ fix below; the version number is unchanged._
   Scripts or log filters that match on the old Chinese text need updating, for
   example the follower's below-1.2.11 warning now reads `is below 1.2.11`.
   Example table headers use short English labels at the same column widths.
+
+
+### Fixed
+
+- **A lost follower exchange reply no longer loses IMU samples.** The follower
+  exchange sent each request once; when its reply was lost (host stalled past
+  the timeout) the next exchange took new samples and the ones in the lost reply
+  were gone (5-9 per hour on a loaded host). It now retries with the same seq,
+  like the leader, so the firmware replays its cached reply.
+
+- **A wall-clock step no longer stalls the exchange or the controllers.**
+  libstdc++ built against an older glibc sysroot (conda-forge, manylinux)
+  implements `condition_variable::wait_until(steady_clock)` and
+  `timed_mutex::try_lock_for` on `CLOCK_REALTIME`, so when NTP stepped the wall
+  clock back the waits lasted that much longer. A follower exchange stalled
+  past `status_timeout_ms` 0.2 s after "Clock change detected" and the
+  ForcePositionController faulted. The leader/follower exchange loops, the
+  half-duplex turn lock and both controllers' status watchdog now wait on a
+  `pthread_cond` bound to `CLOCK_MONOTONIC` (`taccap/detail/monotonic_cv.hpp`),
+  whatever toolchain builds the SDK.
+
+- **`LeaderGripper.start_exchange(1000, 100)` no longer throws.** With no
+  `exchange_hz` the default exchange rate was the requested data rate, so a
+  1000 Hz IMU request asked for 1000 exchanges/s and was rejected (limit 500).
+  The default is now the data rate capped at 200 Hz (the leader samples IMU and
+  encoder at 100 Hz whatever is requested); an explicit `exchange_hz` may still
+  be up to 500.
+
+- **Python discovery no longer freezes other threads.** `scan_grippers()` and
+  the `find_*()` helpers held the GIL for the whole scan (~280 ms with two idle
+  grippers attached, up to the ACK timeout on a silent port), so a GUI scanning
+  on a background thread stalled its own 100 Hz target thread for the same
+  time. The PC config tool rescans every 3 s while one role's gripper is held
+  by another process, which made reciprocation stutter every 3 s whenever the
+  leader was in use elsewhere. The bindings now release the GIL; measured
+  stall during a scan: 263-280 ms before, 0 ms after.
+
+- **The tactile overlay is marker flow, drawn by the SDK.** The arrows on the
+  tactile image used to be the inferred force field from a guessed grid, scaled
+  by `--force-scale`; under a press they showed only dots. `rerun_viewer.py`,
+  `gripper_console.py --rerun` and `tactile_sensor.py` now draw the image with
+  `Sensor.drawMarkerMove()`: an arrow from each marker's rest position to where
+  it is now, 1:1, on the sensor's thinned grid. `--force-scale` is gone, and
+  `tactile_sensor.py --outputs` takes `flow` instead of `force` / `marker`.
 
 ## [0.4.3] - 2026-10-10
 
