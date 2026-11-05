@@ -7,12 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.4] - 2026-11-01
+## [0.4.5] - 2026-11-05
 
-_The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow
-fix, and again on 2026-11-05 to include leader/follower time-shared exchange
-and the bundled firmware 1.2.7 / 1.2.17 (tc-gu-01 `v1.2.7`, protocol V2.9);
-the version number is unchanged._
+_Released as its own version: these changes were briefly under the `v0.4.4`
+tag on 2026-11-05. `v0.4.4` is back at `e595763` (bundled firmware leader
+1.2.6 / follower 1.2.16), the commit xense-taccap-lerobot 0.1.3 ships._
 
 ### Added
 
@@ -65,25 +64,6 @@ the version number is unchanged._
   trips. Older firmware raises `ProtocolError` and nothing is left running.
   `bus::RetryMode::Once` sends exactly one attempt.
 
-- **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
-  a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
-  takes the image as optional: without one it picks the shipped image for the
-  motor model recorded on the gripper (refusing when only the compile-time
-  default is known), and a shipped image is checked against the manifest's
-  CRC32. A bare image name also resolves under `firmware/`.
-
-- **Visuotactile examples.** `tactile_sensor.py` reads the GSPS sensors through
-  `xensesdk` (rectify / flow / difference / depth / resultant) and lists which
-  gripper and which jaw each one is on: the side comes from the gripper on the
-  same USB hub, the jaw from the GSPS serial's last digit. Images are shown the
-  way the LeRobot integration records them: RGB, transposed to (400, 700),
-  `process.diff_gain = 1.0`.
-- **Full-chain Rerun view.** `rerun_viewer.py` puts gripper state, the wrist
-  camera and both tactile sensors on one `host_time` timeline, read-only.
-  `gripper_console.py --rerun` shows the same while the keys drive the jaw,
-  adding the target, the commanded torque and the controller state.
-
-
 ### Changed
 
 - **Bundled firmware is now leader 1.2.7 / follower 1.2.17 (protocol V2.9).**
@@ -96,20 +76,6 @@ the version number is unchanged._
   notes are in `firmware/manifest.json`. Leader verified on the collector backpack
   (0 bad uplink frames under load vs 17/7208 on 1.2.6 push). As before, replug the
   leader's USB / power-cycle the follower's 24 V after flashing.
-
-- **`environment.yml` installs `xensesdk==2.2.2` and `rerun-sdk==0.41.0`, and
-  pins numpy to 2.2.4** (xensesdk requires `numpy<=2.2.4`). Update an existing
-  env with `mamba env update -f environment.yml --prune`, then reinstall the SDK.
-- **`wrist_camera.py --list` labels a GSPS sensor by finger, not side.** The
-  serial's parity is the jaw it sits in; it used to be printed as the gripper
-  side.
-- **Source code is English-only.** Comments, docstrings, pybind11 docstrings
-  and runtime text (log and exception messages, example output, argparse help)
-  across `cpp/`, `python/` and the examples were translated from Chinese.
-  Scripts or log filters that match on the old Chinese text need updating, for
-  example the follower's below-1.2.11 warning now reads `is below 1.2.11`.
-  Example table headers use short English labels at the same column widths.
-
 
 ### Fixed
 
@@ -146,6 +112,13 @@ the version number is unchanged._
   leader was in use elsewhere. The bindings now release the GIL; measured
   stall during a scan: 263-280 ms before, 0 ms after.
 
+## [0.4.4] - 2026-11-01
+
+_The `v0.4.4` tag was moved on 2026-11-02 to include the tactile marker-flow
+fix below; the version number is unchanged._
+
+### Fixed
+
 - **The tactile overlay is marker flow, drawn by the SDK.** The arrows on the
   tactile image used to be the inferred force field from a guessed grid, scaled
   by `--force-scale`; under a press they showed only dots. `rerun_viewer.py`,
@@ -153,6 +126,41 @@ the version number is unchanged._
   `Sensor.drawMarkerMove()`: an arrow from each marker's rest position to where
   it is now, 1:1, on the sensor's thinned grid. `--force-scale` is gone, and
   `tactile_sensor.py --outputs` takes `flow` instead of `force` / `marker`.
+
+### Added
+
+- **Motor firmware ships in `firmware/`.** `EL05_1.0.5.0.4.bin` is listed under
+  a new `motors` section of `firmware/manifest.json`. `motor_ota_update.py`
+  takes the image as optional: without one it picks the shipped image for the
+  motor model recorded on the gripper (refusing when only the compile-time
+  default is known), and a shipped image is checked against the manifest's
+  CRC32. A bare image name also resolves under `firmware/`.
+
+- **Visuotactile examples.** `tactile_sensor.py` reads the GSPS sensors through
+  `xensesdk` (rectify / flow / difference / depth / resultant) and lists which
+  gripper and which jaw each one is on: the side comes from the gripper on the
+  same USB hub, the jaw from the GSPS serial's last digit. Images are shown the
+  way the LeRobot integration records them: RGB, transposed to (400, 700),
+  `process.diff_gain = 1.0`.
+- **Full-chain Rerun view.** `rerun_viewer.py` puts gripper state, the wrist
+  camera and both tactile sensors on one `host_time` timeline, read-only.
+  `gripper_console.py --rerun` shows the same while the keys drive the jaw,
+  adding the target, the commanded torque and the controller state.
+
+### Changed
+
+- **`environment.yml` installs `xensesdk==2.2.2` and `rerun-sdk==0.41.0`, and
+  pins numpy to 2.2.4** (xensesdk requires `numpy<=2.2.4`). Update an existing
+  env with `mamba env update -f environment.yml --prune`, then reinstall the SDK.
+- **`wrist_camera.py --list` labels a GSPS sensor by finger, not side.** The
+  serial's parity is the jaw it sits in; it used to be printed as the gripper
+  side.
+- **Source code is English-only.** Comments, docstrings, pybind11 docstrings
+  and runtime text (log and exception messages, example output, argparse help)
+  across `cpp/`, `python/` and the examples were translated from Chinese.
+  Scripts or log filters that match on the old Chinese text need updating, for
+  example the follower's below-1.2.11 warning now reads `is below 1.2.11`.
+  Example table headers use short English labels at the same column widths.
 
 ## [0.4.3] - 2026-10-10
 
