@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A follower's collision resend is delivered once.** Follower firmware 1.2.17
+  resends a pushed frame verbatim (same seq, cmd and payload) when a host write
+  overlapped it. On hardware where the overlap no longer corrupts the original
+  (the control-UART pull-down removed) both copies arrive, and the transport
+  delivered both: in pushed streaming with `ForcePositionController` (follower
+  01s, 600 s, targets + 97 Hz queries) motor status read 106.7 Hz and the MCU
+  counted 106.7 Hz target updates -- every duplicate status stepped the
+  controller and sent one more target. A wire DATA frame identical to the
+  previous wire DATA frame is now dropped and counted in
+  `TransportStats.duplicate_data_dropped`. Firmware gives every frame it
+  originates the next value of one 8-bit counter and sends the resend under its
+  TX lock right after the original, so a legitimate frame never matches.
+  Exchange mode is unaffected: its records arrive through `inject_data()`, share
+  the reply's seq, and are never compared. Leader firmware and follower firmware
+  before 1.2.17 do not resend, so nothing is dropped there. The test fakes now
+  number DATA frames like the firmware instead of sending seq 0 every time.
+
 ## [0.4.5] - 2026-11-05
 
 _Released as its own version: these changes were briefly under the `v0.4.4`

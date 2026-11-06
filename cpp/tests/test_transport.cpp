@@ -14,6 +14,8 @@
 #include "pty_helper.hpp"
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -629,4 +631,118 @@ TEST(Transport, CountsCrcErrorsFromCorruptedStream) {
     EXPECT_GE(s.resync_bytes, 1u);
     EXPECT_EQ(s.queue_dropped, 0u)
         << "loss was upstream of the queue; the counters must not blur that";
+}
+
+// ---- Firmware collision resend (follower >= 1.2.17) ------------------------
+// A pushed frame is resent verbatim right after the original when a host write
+// overlapped it. On a link where the overlap no longer corrupts bytes both
+// copies arrive; the transport must deliver one.
+namespace {
+struct DataLog {
+    std::mutex m;
+    std::condition_variable cv;
+    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> got;   // (seq, payload)
+    void add(const tb::Frame& f) {
+        std::lock_guard<std::mutex> lk(m);
+        got.emplace_back(f.seq, f.payload);
+        cv.notify_all();
+    }
+    bool wait_for(std::size_t n, int ms = 1000) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return got.size() >= n; });
+    }
+    std::size_t size() { std::lock_guard<std::mutex> lk(m); return got.size(); }
+};
+}  // namespace
+
+TEST(Transport, DropsVerbatimResendOfPreviousDataFrame) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    tb::Transport host(base_config(pty.slave_path()));
+    DataLog log;
+    auto s1 = host.subscribe(tp::Cmd::GetMotorStatus, [&](const tb::Frame& f) { log.add(f); });
+    auto s2 = host.subscribe(tp::Cmd::GetImu, [&](const tb::Frame& f) { log.add(f); });
+    (void)s1; (void)s2;
+
+    const std::vector<uint8_t> a{1, 2, 3, 4}, b{5, 6, 7, 8};
+    pty.send_data(10, tp::Cmd::GetMotorStatus, a);
+    pty.send_data(10, tp::Cmd::GetMotorStatus, a);   // resend: dropped
+    pty.send_data(10, tp::Cmd::GetMotorStatus, a);   // second resend: dropped
+    pty.send_data(11, tp::Cmd::GetMotorStatus, a);   // same payload, next seq: delivered
+    pty.send_data(12, tp::Cmd::GetImu, b);
+    pty.send_data(12, tp::Cmd::GetImu, b);           // resend: dropped
+    pty.send_data(13, tp::Cmd::GetImu, b);
+    ASSERT_TRUE(log.wait_for(4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(log.size(), 4u);
+    EXPECT_EQ(log.got[0].first, 10); EXPECT_EQ(log.got[1].first, 11);
+    EXPECT_EQ(log.got[2].first, 12); EXPECT_EQ(log.got[3].first, 13);
+    EXPECT_EQ(host.stats().duplicate_data_dropped, 3u);
+    EXPECT_EQ(host.stats().frames_received, 7u);    // received, then filtered
+}
+
+TEST(Transport, KeepsDataFramesThatDifferInSeqCmdOrPayload) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    tb::Transport host(base_config(pty.slave_path()));
+    DataLog log;
+    auto s1 = host.subscribe(tp::Cmd::GetMotorStatus, [&](const tb::Frame& f) { log.add(f); });
+    auto s2 = host.subscribe(tp::Cmd::GetImu, [&](const tb::Frame& f) { log.add(f); });
+    (void)s1; (void)s2;
+
+    pty.send_data(20, tp::Cmd::GetMotorStatus, {1, 2});
+    pty.send_data(20, tp::Cmd::GetMotorStatus, {1, 3});   // same seq, other payload
+    pty.send_data(20, tp::Cmd::GetImu, {1, 3});           // same seq + payload, other cmd
+    pty.send_data(21, tp::Cmd::GetImu, {1, 3});           // other seq
+    // Only the immediately previous frame counts: A B A is not a resend.
+    pty.send_data(30, tp::Cmd::GetMotorStatus, {9});
+    pty.send_data(31, tp::Cmd::GetMotorStatus, {8});
+    pty.send_data(30, tp::Cmd::GetMotorStatus, {9});
+    ASSERT_TRUE(log.wait_for(7));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(log.size(), 7u);
+    EXPECT_EQ(host.stats().duplicate_data_dropped, 0u);
+}
+
+TEST(Transport, AckBetweenDataFramesDoesNotHideAResend) {
+    // ACKs carry the host's seq and are never DATA: they neither reset nor
+    // match the previous-DATA record.
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    tb::Transport host(base_config(pty.slave_path()));
+    DataLog log;
+    auto s = host.subscribe(tp::Cmd::GetMotorStatus, [&](const tb::Frame& f) { log.add(f); });
+    (void)s;
+    pty.send_data(40, tp::Cmd::GetMotorStatus, {7, 7});
+    pty.send_ack_ok(40, tp::Cmd::GetVersion);              // stray ACK, same seq
+    pty.send_data(40, tp::Cmd::GetMotorStatus, {7, 7});    // still the resend
+    pty.send_data(41, tp::Cmd::GetMotorStatus, {7, 7});
+    ASSERT_TRUE(log.wait_for(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(log.size(), 2u);
+    EXPECT_EQ(host.stats().duplicate_data_dropped, 1u);
+}
+
+TEST(Transport, InjectedExchangeRecordsAreNeverDeduplicated) {
+    // Exchange replies are split into records that all carry the reply's seq;
+    // identical consecutive records (an unchanged cached motor status) must
+    // all be delivered, and must not interact with the wire-DATA record.
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    tb::Transport host(base_config(pty.slave_path()));
+    DataLog log;
+    auto s = host.subscribe(tp::Cmd::GetMotorStatus, [&](const tb::Frame& f) { log.add(f); });
+    (void)s;
+    pty.send_data(50, tp::Cmd::GetMotorStatus, {4, 4});
+    ASSERT_TRUE(log.wait_for(1));
+    for (int i = 0; i < 3; ++i) {
+        tb::Frame f{};
+        f.addr = tp::Address::MCU; f.seq = 50; f.cmd = tp::Cmd::GetMotorStatus; f.payload = {4, 4};
+        host.inject_data(std::move(f));
+    }
+    ASSERT_TRUE(log.wait_for(4));
+    pty.send_data(50, tp::Cmd::GetMotorStatus, {4, 4});    // wire resend of the wire frame
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    EXPECT_EQ(log.size(), 4u);
+    EXPECT_EQ(host.stats().duplicate_data_dropped, 1u);
 }
