@@ -186,6 +186,13 @@ public:
     }
 
 private:
+    // Real firmware gives every frame it originates the next value of one 8-bit
+    // counter (protocol_get_next_seq); the transport relies on that to drop a
+    // verbatim collision resend, so the fake must not repeat seqs.
+    std::atomic<uint8_t> data_seq_{0xFF};
+    uint8_t next_data_seq_() { return static_cast<uint8_t>(++data_seq_); }
+
+
     void run_() {
         auto next_status = std::chrono::steady_clock::now();
         while (!stop_.load()) {
@@ -196,15 +203,15 @@ private:
                 next_status = now + std::chrono::milliseconds(10);
                 std::lock_guard<std::mutex> lk(mu_);
                 if (stream_config_.source_mask & tp::StreamSrc::MotorStatus)
-                    pty_.send_data(0, tp::Cmd::GetMotorStatus,
+                    pty_.send_data(next_data_seq_(), tp::Cmd::GetMotorStatus,
                                pod_bytes(&status_, sizeof(status_)));
                 if (stream_config_.source_mask & tp::StreamSrc::Imu) {
                     tp::ImuData imu{};
                     imu.accel_z = 1000;
-                    pty_.send_data(0, tp::Cmd::GetImu, pod_bytes(&imu, sizeof(imu)));
+                    pty_.send_data(next_data_seq_(), tp::Cmd::GetImu, pod_bytes(&imu, sizeof(imu)));
                 }
                 if (stream_config_.source_mask & tp::StreamSrc::ImuV2)
-                    pty_.send_data(0,tp::Cmd::GetImuV2,imu_v2_packet_());
+                    pty_.send_data(next_data_seq_(), tp::Cmd::GetImuV2,imu_v2_packet_());
             }
         }
     }

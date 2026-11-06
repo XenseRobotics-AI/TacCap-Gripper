@@ -166,6 +166,13 @@ public:
         uint64_t retries              = 0;
         uint64_t unexpected_frames    = 0;
         uint64_t callback_exceptions  = 0;
+        // Wire DATA frames identical to the previous wire DATA frame (same seq,
+        // cmd and payload) that were not delivered: follower firmware >= 1.2.17
+        // resends a pushed frame verbatim when a host write overlapped it, and
+        // on a link where the overlap no longer corrupts bytes both copies
+        // arrive. A rising count is expected in pushed (full-duplex) streaming;
+        // it is not loss. Exchange-mode records (inject_data) are never checked.
+        uint64_t duplicate_data_dropped = 0;
 
         // ---- Loss accounting ------------------------------------------
         // These counters identify the stage that observed damage or dropped
@@ -401,6 +408,11 @@ private:
     std::atomic<uint64_t> stat_retries_            {0};
     std::atomic<uint64_t> stat_unexpected_frames_  {0};
     std::atomic<uint64_t> stat_callback_exceptions_{0};
+    std::atomic<uint64_t> stat_duplicate_data_dropped_{0};
+    // Reader thread only: the previous DATA frame read off the wire, for
+    // dropping a firmware collision resend (see Stats::duplicate_data_dropped).
+    bool                  have_last_wire_data_ = false;
+    Frame                 last_wire_data_{};
     // Mirrored from FrameParser::stats() by the reader thread (the parser
     // itself is single-threaded and keeps plain counters).
     std::atomic<uint64_t> stat_crc_errors_         {0};

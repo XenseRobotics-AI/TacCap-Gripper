@@ -305,6 +305,7 @@ Transport::Stats Transport::stats() const noexcept {
     s.retries             = stat_retries_.load(std::memory_order_relaxed);
     s.unexpected_frames   = stat_unexpected_frames_.load(std::memory_order_relaxed);
     s.callback_exceptions = stat_callback_exceptions_.load(std::memory_order_relaxed);
+    s.duplicate_data_dropped = stat_duplicate_data_dropped_.load(std::memory_order_relaxed);
     s.crc_errors            = stat_crc_errors_.load(std::memory_order_relaxed);
     s.resync_bytes          = stat_resync_bytes_.load(std::memory_order_relaxed);
     s.parser_overflow_bytes = stat_parser_overflow_.load(std::memory_order_relaxed);
@@ -393,6 +394,27 @@ void Transport::dispatch_(Frame&& f) {
             handle_ack_(f);
             break;
         case protocol::FrameType::DATA:
+            // Follower firmware >= 1.2.17 resends a pushed frame verbatim when a
+            // host write overlapped it (TX_COLLISION_RETRY.md). The resend goes
+            // out under the firmware's TX lock right after the original, and
+            // every frame the MCU originates takes the next value of one 8-bit
+            // counter, so a legitimate next DATA frame never repeats the previous
+            // one's seq. When the overlap did not corrupt the original (repaired
+            // hardware), both copies arrive: deliver one. Otherwise a duplicated
+            // motor status steps a controller twice and a button event counts
+            // twice. Only frames read off the wire pass here; exchange records
+            // arrive through inject_data() and share their reply's seq.
+            if (have_last_wire_data_ && f.seq == last_wire_data_.seq &&
+                f.cmd == last_wire_data_.cmd && f.addr == last_wire_data_.addr &&
+                f.payload == last_wire_data_.payload) {
+                stat_duplicate_data_dropped_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
+            last_wire_data_.addr = f.addr;
+            last_wire_data_.seq = f.seq;
+            last_wire_data_.cmd = f.cmd;
+            last_wire_data_.payload = f.payload;
+            have_last_wire_data_ = true;
             if (f.cmd == protocol::Cmd::GetMotorStatus) enqueue_control_(f);
             enqueue_data_(std::move(f));
             break;
