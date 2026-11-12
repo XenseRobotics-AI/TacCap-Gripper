@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
+
+Requires leader firmware 1.2.8 / follower 1.2.18 (candidates; previous
+releases leader 1.2.7 / follower 1.2.17) for IMU above 100 Hz. Wire
+protocol V2.9 is unchanged: same commands, 28/44 B IMU payloads, units,
+0x5D at most 3 IMUs per reply and 0x5E records. Experimental until hardware
+acceptance.
+
+#### Changed
+
+- **IMU rate range 1..1125 Hz** on `LeaderGripper` and `FollowerGripper`
+  (`start_streaming` / `start_exchange`); 0 still disables. Requests <= 100 Hz
+  behave exactly as in 0.4.5. Firmware that rejects a high rate NACKs and the
+  SDK raises; it never silently lowers the rate (leader `start_exchange` does
+  not retry a high-rate NACK as a pushed stream).
+- **Follower exchange rate.** High-rate default is
+  `min(500, max(motor_hz, ceil(imu_hz*4/9)))` (500/s at 1125 Hz); an explicit
+  `exchange_hz` must satisfy `3*exchange_hz >= imu_hz` and stay <= 500.
+  Replies carrying more than 3 IMUs are rejected as malformed. Motor status
+  and controller rates stay capped at 100 Hz.
+- Leader default exchange rate stays capped at 200/s; each 0x5E reply carries
+  about ten 44 B IMUs. High-rate IMU no longer triggers the 1 kHz-divider
+  warning.
+
+#### Added
+
+- **Warning for pushed IMU above 100 Hz.** Most shipped grippers keep the
+  CH342 pull-down resistor on the control UART, so host commands overlapping
+  pushed frames corrupt them; only boards with it removed tolerate overlap.
+  The revision is not visible on the wire, so `start_streaming()` logs a
+  warning pointing to `start_exchange()`, which works on both.
+
+#### Notes
+
+- Magnetometer keeps latest-value semantics, updated at most 100 Hz; equal
+  magnetic values do not prove a duplicate sample.
+- Gyro wire unit stays int16 x 0.01 dps and saturates beyond +/-327.67 dps.
+- Bundled firmware images stay the released leader 1.2.7 / follower 1.2.17;
+  candidate 1.2.8 / 1.2.18 images are not bundled before hardware acceptance.
+- Firmware widens the IMU DLPF above 100 Hz (gyro 196.6 Hz / accel 246 Hz);
+  expect roughly 2x white noise versus the 51/50 Hz low-rate filter.
+
 ## [0.4.6] - 2026-11-12
 
 ### Fixed

@@ -512,15 +512,15 @@ public:
     // 100 Hz default — we clear the bit instead. All-zero throws
     // IoError(EINVAL) rather than starting a stream that carries nothing.
     //
-    // The firmware divides a 1 kHz tick by an integer, so only divisors of
-    // 1000 are exact: 300 Hz arrives as 333 Hz, 150 Hz as 167 Hz, and
-    // anything above 1000 Hz collapses to 100 Hz. StartStream is never NACKed
-    // for a bad rate, so the SDK logs a warning whenever it has to adjust one.
-    // See cpp/src/stream_rate.hpp for the firmware model this mirrors.
+    // Motor status and <=100 Hz IMU retain the legacy integer tick divider.
+    // The SDK warns about its rate adjustments; motor status stays <=100 Hz.
     void start_streaming(unsigned motor_hz = 100);
     // Opt-in IMU on capable follower firmware, separate 28-byte packets.
-    // imu_hz=0 preserves legacy behavior; 1..100 enables IMU after a GetImu
-    // capability probe. Old firmware NACKs without changing its stream.
+    // imu_hz=0 preserves legacy behavior; 1..1125 enables IMU after the
+    // existing IMU read/time negotiation. >100 requires high-rate firmware;
+    // a high-rate START_STREAM NACK is propagated without rate fallback.
+    // >100 Hz is experimental until hardware acceptance. Measure capture-time
+    // intervals; magnetic values retain the latest-value semantics (<=100 Hz).
     // motor_hz=0 permits IMU-only; both zero is invalid. Stop before changing
     // an existing stream (as with the original one-argument interface).
     void start_streaming(unsigned motor_hz, unsigned imu_hz);
@@ -539,8 +539,11 @@ public:
     //
     // Subscribers (motor().on_status, imu().on_data) and the controllers see
     // the same frames as with start_streaming(); is_streaming() is true and
-    // stop_streaming() ends the exchange. exchange_hz=0 means max(motor_hz,
-    // imu_hz, 1). Firmware without the polled mode NACKs: ProtocolError, and
+    // stop_streaming() ends the exchange. At <=100 Hz IMU, exchange_hz=0 means
+    // max(motor_hz, imu_hz, 1). Above 100 it is min(500, max(motor_hz,
+    // ceil(imu_hz*4/9))). Explicit rates must satisfy 3*exchange_hz >= imu_hz
+    // at high rates, because 0x5D still carries at most three IMU packets.
+    // Firmware without the polled mode NACKs: ProtocolError, and
     // nothing is left running.
     void start_exchange(unsigned motor_hz = 100, unsigned imu_hz = 0,
                         unsigned exchange_hz = 0);

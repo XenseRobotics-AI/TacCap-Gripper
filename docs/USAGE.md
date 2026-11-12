@@ -131,9 +131,9 @@ g.start_streaming(imu_hz=100, encoder_hz=100)   # leader: either stream can be t
 g.stop_streaming()
 ```
 
-A follower has only one stream: **motor status**. IMU and encoder are compiled out of
-the firmware for that role, so the signature differs, and `motor_hz=0` throws
-`IoError(EINVAL)` outright rather than opening an empty stream:
+A follower defaults to **motor status** only. Capable firmware also accepts opt-in
+IMU with `imu_hz=1..1125`; `motor_hz=0` allows IMU-only, while both rates zero throw
+`IoError(EINVAL)`:
 
 ```python
 f = t.FollowerGripper.open()
@@ -141,9 +141,19 @@ f.motor.on_status(lambda s: print(s.actual_pos, s.actual_torque))
 f.start_streaming(motor_hz=100)     # the firmware divides 1 kHz; only divisors of 1000 land exactly
 ```
 
-> The rate is not a free parameter: the firmware divides 1 kHz, and a rate that is not
-> a divisor gets silently adjusted. The SDK warns when it detects this, but does not
-> NACK.
+Motor status stays capped at 100 Hz. Motor status and <=100 Hz IMU retain the legacy
+integer divider. IMU above 100 Hz requires high-rate firmware and is experimental
+until hardware acceptance; high-rate NACKs propagate without rate fallback.
+`f.start_exchange(motor_hz=100, imu_hz=1125)` defaults to 500 exchanges/s; high-rate
+explicit rates must satisfy `3*exchange_hz >= imu_hz` (maximum 500 exchanges/s).
+Magnetic values retain latest-value semantics, with updates at most 100 Hz; measure
+MCU capture times and sequence numbers to assess actual new accel/gyro sample rates.
+
+> **Hardware revision**: most shipped grippers keep the CH342 pull-down resistor on
+> the control UART, so a host command overlapping a pushed frame corrupts it. Above
+> 100 Hz use `start_exchange()` (leader and follower). Only boards with the resistor
+> removed suit high-rate `start_streaming()`; the SDK cannot tell them apart and logs
+> a warning for pushed IMU above 100 Hz.
 
 ### 1.3 Normalized opening (0 = closed, 1 = open)
 

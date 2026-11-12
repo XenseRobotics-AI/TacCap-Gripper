@@ -6,7 +6,9 @@
 
 ## 1. 能确认什么，仍须测量什么
 
-当前设计默认只上报电机状态；显式设置 `imu_hz=1..100` 才请求 IMU。SDK 先读 IMU 探测能力，再协商时间格式和修改流；旧固件拒绝时不会先改写流。实现见 [follower_gripper.cpp](../cpp/src/follower_gripper.cpp)、[imu.cpp](../cpp/src/components/imu.cpp)。
+当前设计默认只上报电机状态；显式设置 `imu_hz=1..1125` 才请求 IMU，>100 需要配套高频固件，在真机验收前为 experimental。SDK 沿用先读 IMU、再协商时间格式和修改流的顺序；不支持 IMU 读取的旧固件在改流前报错，高频 START_STREAM NACK 直接上报，不降低请求频率。实现见 [follower_gripper.cpp](../cpp/src/follower_gripper.cpp)、[imu.cpp](../cpp/src/components/imu.cpp)。
+
+本文既有 0/10/50/100 Hz 矩阵是低频回归；高频需另加 500/1000/1125 Hz、主动流/交换流、主从同时接入和至少 90 分钟长测。从爪高频默认 `exchange_hz=min(500,max(motor_hz,ceil(imu_hz*4/9)))`；显式率不足 `ceil(imu_hz/3)` 拒绝。分别记录唯一新样本率、MCU 时间间隔、丢样、控制延迟和 RAM/栈水位，未做真机项标 `NOT RUN`。磁数据为最近值，不能按高频回调认定磁更新率；原陀螺仪 int16×0.01 dps 表示范围不变。
 
 配套固件 `App/tasks/task_imu.c`、`task_slave_motor_control.c`、`task_data_stream.c`、`slave_imu.c` 中，电机控制、数据流、从爪 IMU 的线程优先级分别为 8、11、12；电机控制周期为 2 ms，电机状态最高 100 Hz；同时到期时先发电机状态。IMU 采样失败不将旧包伪装成新样本，也不主动停止电机控制。这些设计降低了干扰，但共享 CPU、UART 和主机处理仍可能产生时延。
 

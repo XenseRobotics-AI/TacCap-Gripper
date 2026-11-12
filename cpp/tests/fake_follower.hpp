@@ -96,6 +96,9 @@ public:
     unsigned disable_count() const { return disables_.load(); }
     void set_imu_supported(bool on) { imu_supported_.store(on); }
     void set_imu_v2_supported(bool on) { imu_v2_supported_.store(on); imu_supported_.store(on); }
+    void set_max_imu_rate(unsigned hz) { max_imu_rate_.store(hz); }
+    void set_exchange_imu_count(unsigned count) { exchange_imu_count_.store(count); }
+    unsigned stream_start_attempts() const { return stream_start_attempts_.load(); }
     unsigned imu_queries() const { return imu_queries_.load(); }
     unsigned stream_stops() const { return stream_stops_.load(); }
     tp::StreamConfig stream_config() const {
@@ -426,6 +429,11 @@ private:
                 }
                 tp::StreamConfig requested{};
                 std::memcpy(&requested, f.payload.data(), sizeof(requested));
+                ++stream_start_attempts_;
+                if (requested.imu_rate > max_imu_rate_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
+                    return;
+                }
                 const bool want_polled = requested.mode == static_cast<uint8_t>(tp::StreamMode::Polled);
                 if (want_polled && !exchange_supported_.load()) {
                     pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
@@ -503,17 +511,22 @@ private:
             }
             if (stream_config_.source_mask & tp::StreamSrc::ImuV2) {
                 r.imu_cmd = static_cast<uint8_t>(tp::Cmd::GetImuV2);
-                r.imu_count = 1;
-                auto imu = imu_v2_packet_();
-                out.insert(out.end(), imu.begin(), imu.end());
+                r.imu_count = static_cast<uint8_t>(exchange_imu_count_.load());
+                for (unsigned i = 0; i < r.imu_count; ++i) {
+                    auto imu = imu_v2_packet_();
+                    out.insert(out.end(), imu.begin(), imu.end());
+                }
             } else if (stream_config_.source_mask & tp::StreamSrc::Imu) {
                 r.imu_cmd = static_cast<uint8_t>(tp::Cmd::GetImu);
-                r.imu_count = 1;
-                tp::ImuData imu{};
-                imu.accel_z = 1000;
-                imu.seq = imu_seq_++;
-                auto b = pod_bytes(&imu, sizeof(imu));
-                out.insert(out.end(), b.begin(), b.end());
+                r.imu_count = static_cast<uint8_t>(exchange_imu_count_.load());
+                for (unsigned i = 0; i < r.imu_count; ++i) {
+                    tp::ImuData imu{};
+                    imu.accel_z = 1000;
+                    imu.seq = imu_seq_++;
+                    imu.timestamp_us = 888u * imu.seq;
+                    auto b = pod_bytes(&imu, sizeof(imu));
+                    out.insert(out.end(), b.begin(), b.end());
+                }
             }
         }
         std::memcpy(out.data(), &r, sizeof(r));
@@ -542,6 +555,7 @@ private:
     std::atomic<bool> streaming_{false};
     std::atomic<bool> imu_supported_{false};
     std::atomic<bool> imu_v2_supported_{false};
+    std::atomic<unsigned> max_imu_rate_{1125}, exchange_imu_count_{1}, stream_start_attempts_{0};
     uint64_t imu_session_{0}, imu_time_{UINT64_C(0x200000000)};
     uint16_t imu_seq_{0};
     std::vector<uint8_t> imu_v2_packet_() {

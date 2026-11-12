@@ -58,7 +58,9 @@ protocol::StreamConfig leader_stream_config(const char* caller, IMU& imu, unsign
                       "least one source, or just don't start the stream",
                       EINVAL);
     }
-    detail::warn_if_rate_adjusted("LeaderGripper", "IMU", imu_hz, 0);
+    if (imu_hz > detail::kImuMaxRateHz)
+        throw IoError("Leader IMU rate must be 0..1125 Hz", EINVAL);
+    if (imu_hz <= 100) detail::warn_if_rate_adjusted("LeaderGripper", "IMU", imu_hz, 0);
     detail::warn_if_rate_adjusted("LeaderGripper", "encoder", encoder_hz, 0);
 
     // Build StreamConfig (12 bytes — see protocol::StreamConfig).
@@ -192,6 +194,8 @@ std::unique_ptr<LeaderGripper> LeaderGripper::open() {
 }
 
 void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz, bool imu_v2_time) {
+    if (imu_hz > detail::kImuMaxRateHz)
+        throw IoError("Leader IMU rate must be 0..1125 Hz", EINVAL);
     if (streaming_) return;
 
     // Best-effort reset of the firmware streaming state. If a previous host
@@ -205,6 +209,7 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz, bool i
                     std::chrono::milliseconds(500));
     } catch (...) { /* expected when fw is already idle */ }
 
+    detail::warn_if_pushed_high_rate("LeaderGripper", imu_hz);
     const auto sc = leader_stream_config("start_streaming", imu_, imu_hz, encoder_hz,
                                          protocol::StreamMode::Separate, imu_v2_time);
     auto wire = protocol::encode(sc);
@@ -222,6 +227,8 @@ void LeaderGripper::start_streaming(unsigned imu_hz, unsigned encoder_hz, bool i
 
 bool LeaderGripper::start_exchange(unsigned imu_hz, unsigned encoder_hz,
                                    unsigned exchange_hz, bool fallback_to_streaming) {
+    if (imu_hz > detail::kImuMaxRateHz)
+        throw IoError("Leader IMU rate must be 0..1125 Hz", EINVAL);
     if (exchange_) return true;
     if (streaming_) throw IoError("LeaderGripper: stop streaming before start_exchange", EBUSY);
     if (exchange_hz == 0) exchange_hz = detail::leader_default_exchange_hz(imu_hz, encoder_hz);
@@ -260,6 +267,9 @@ bool LeaderGripper::start_exchange(unsigned imu_hz, unsigned encoder_hz,
     try {
         t_.send_cmd(protocol::Cmd::StartStream, protocol::encode(sc));
     } catch (const NackError& e) {
+        // A high-rate rejection is not evidence that only polled mode is
+        // missing. Preserve its NACK instead of retrying a different mode.
+        if (imu_hz > 100) throw;
         return unsupported(std::string("firmware rejected the polled stream mode: ") + e.what());
     }
 

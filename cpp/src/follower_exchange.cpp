@@ -133,7 +133,7 @@ void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_t
     bool ok = !ack.is_nack && d.size() >= sizeof(h);
     if (ok) {
         std::memcpy(&h, d.data(), sizeof(h));
-        ok = h.version == protocol::EXCHANGE_VERSION;
+        ok = h.version == protocol::EXCHANGE_VERSION && h.imu_count <= 3;
     }
     std::size_t pos = sizeof(h);
     const std::size_t motor = (ok && (h.flags & protocol::ExchangeRespFlag::Motor))

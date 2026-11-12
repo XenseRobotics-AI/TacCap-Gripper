@@ -221,7 +221,7 @@ TEST(FollowerExchangePty, ArgumentsAndStateAreValidated) {
     auto g = open_follower(pty);
     EXPECT_THROW(g->start_exchange(0, 0), tx::IoError);
     EXPECT_THROW(g->start_exchange(101), tx::IoError);
-    EXPECT_THROW(g->start_exchange(100, 101), tx::IoError);
+    EXPECT_THROW(g->start_exchange(100, 1126), tx::IoError);
     EXPECT_THROW(g->start_exchange(100, 0, 501), tx::IoError);
     g->start_streaming(100);
     EXPECT_THROW(g->start_exchange(100), tx::IoError);

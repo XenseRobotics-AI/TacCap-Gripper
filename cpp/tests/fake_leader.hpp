@@ -36,6 +36,9 @@ public:
 
     // Firmware without 0x5E: InvalidCmd for the exchange, InvalidParam for mode 2.
     void set_exchange_supported(bool on) { exchange_supported_.store(on); }
+    void set_max_imu_rate(unsigned hz) { max_imu_rate_.store(hz); }
+    unsigned stream_start_attempts() const { return stream_start_attempts_.load(); }
+    unsigned imu_rate() const { return imu_rate_.load(); }
     // Produce samples every this many ms while streaming (default 10).
     void set_sample_period_ms(int ms) { sample_ms_.store(ms); }
     // Hold each exchange reply this long and count host frames that arrive meanwhile.
@@ -149,6 +152,11 @@ private:
             }
             case tp::Cmd::StartStream: {
                 const auto sc = tp::decode_stream_config(f.payload.data(), f.payload.size());
+                ++stream_start_attempts_;
+                if (sc.imu_rate > max_imu_rate_.load()) {
+                    pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
+                    return;
+                }
                 if (sc.mode == static_cast<uint8_t>(tp::StreamMode::Polled) && !exchange_supported_.load()) {
                     pty_.send_nack(f.seq, tp::ErrorCode::InvalidParam);
                     return;
@@ -160,6 +168,7 @@ private:
                     if (polled_.load()) ++polled_starts_;
                 }
                 mode_.store(sc.mode);
+                imu_rate_.store(sc.imu_rate);
                 source_mask_.store(sc.source_mask);
                 streaming_.store(true);
                 pty_.send_ack_ok(f.seq, f.cmd);
@@ -245,6 +254,7 @@ private:
     std::thread             thread_;
     std::atomic<bool>       stop_{false};
     std::atomic<bool>       exchange_supported_{true};
+    std::atomic<unsigned>   max_imu_rate_{1125}, stream_start_attempts_{0}, imu_rate_{0};
     std::atomic<int>        sample_ms_{10};
     std::atomic<int>        delay_ms_{0};
     std::atomic<unsigned>   drop_{0};

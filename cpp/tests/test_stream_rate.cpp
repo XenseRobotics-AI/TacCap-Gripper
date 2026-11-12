@@ -100,5 +100,17 @@ TEST(StreamRate, LeaderDefaultExchangeRateIsTheDataRateCappedAt200) {
     EXPECT_EQ(leader_default_exchange_hz(0, 50), 50u);
     EXPECT_EQ(leader_default_exchange_hz(200, 100), 200u);
     EXPECT_EQ(leader_default_exchange_hz(1000, 100), 200u);
+    EXPECT_EQ(leader_default_exchange_hz(1125, 100), 200u);
     EXPECT_EQ(leader_default_exchange_hz(0, 0), 1u);
+}
+
+TEST(StreamRate, FollowerDefaultExchangePreservesLowRatesAndReservesHighRateCapacity) {
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 0), 100u);
+    EXPECT_EQ(det::follower_default_exchange_hz(20, 50), 50u);
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 100), 100u);
+    EXPECT_EQ(det::follower_default_exchange_hz(0, 101), 45u);
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 101), 100u);
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 500), 223u);
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 1000), 445u);
+    EXPECT_EQ(det::follower_default_exchange_hz(100, 1125), 500u);
 }
