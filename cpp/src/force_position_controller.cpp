@@ -34,6 +34,10 @@ constexpr float kMaxDampingGain = 5.0f;
 // follow. Free travel sits near friction/kp -- 0.005 rad against a 0.055 rad
 // limit at the defaults -- so the separation is an order of magnitude.
 constexpr float kHoldingLeadRatio = 0.5f;
+// A top-up unwinds only once the jaw has parked more than this fraction of
+// arrival_eps_rad past the target, so a jaw that stops on the target is not
+// hunted by its own integral (0.4.6). It grows only outside the arrival band.
+constexpr float kTopupDeadbandRatio = 0.3f;
 constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
 // The lead test of "holding" also needs the jaw to have made less than
 // kStallProgressRad of progress over kStallWindow (0.3.10). A jaw creeping
@@ -679,12 +683,56 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     const bool parked = ramp_gap <= kEpsilon ||
                         (ref_settled && std::abs(ramp_raw_ - chase_raw) <= kEpsilon);
     const float short_by = dir * (target_raw - sample.actual_pos);
-    // "Parked" within the arrival band, as for the latched push below: a
-    // streamed target jitters by a few mrad per frame, and a ramp one frame
-    // behind it must not restart the escalation from the spring every frame.
-    const bool short_of_target =
-        (parked || (topup_nm_ > 0.0f && ramp_gap <= tune_.arrival_eps_rad)) &&
-        short_by > tune_.arrival_eps_rad;
+    // THE TOP-UP IS AN INTEGRAL TERM ADDED TO THE HOLD, and it never jumps
+    // (0.4.6). Up to 0.4.5 it REPLACED the spring and was cut to zero the first
+    // frame the jaw was inside the arrival band, which is a step in the force:
+    //  - a compliant object that needs less than the budget to reach the band
+    //    pushed the jaw back out, and 150 ms later the push was rebuilt from the
+    //    spring: a ~1 Hz sawtooth between ~0.2 and ~2.9 N·m (0009s on a soft
+    //    block, and every contact hold re-targeted onto the compressed object;
+    //    tc-gu-01-pc 2026-11-12);
+    //  - breakaway friction above the spring parked an empty jaw on the band
+    //    edge for good: 0009s full open stopped 10.13 mrad short on every leg.
+    // Freezing the push in the band and dropping it at the target only moved
+    // the step: a soft object compressed onto the target sprang back the same
+    // way (56 of 504 compliant cases in the closed-loop sweep still cycled).
+    //
+    // So the push now changes only at topup_rate_nmps: it grows while the jaw
+    // stands still outside the band short of the target, holds while it stands
+    // in the band, unwinds while it stands past the target (beyond a deadband)
+    // and falls back while the jaw moves. An elastic object settles where it
+    // balances the push; friction is out-grown and the jaw creeps in; a stop
+    // past the target gives the push back. It still starts only outside the
+    // arrival band, so a free jaw that coasts into the band is left to the
+    // spring, as before.
+    // An object holds the whole budget, and only then is it latched.
+    const float eps = tune_.arrival_eps_rad;
+    const float deadband = eps * kTopupDeadbandRatio;
+    // The push acts one way. Once the target is on the other side of the jaw
+    // -- the jaw crossed it, or a streamed target turned round -- the push is
+    // spent: carried over it would shove the jaw back (a +-0.8 N·m chatter
+    // about the target), and while it lasted it pinned the ramp on the caller's
+    // raw target, roughening a streamed reversal under frame jitter.
+    //
+    // Only a crossing BEYOND the arrival band ends it, as for the latch: a jaw
+    // that coasts a fraction of a millimetre past the target on a soft object
+    // must not lose the whole push in one frame (it sprang back 15-20 mrad,
+    // the sawtooth again). A small overshoot unwinds the push gradually below.
+    if (topup_nm_ <= 0.0f) {
+        topup_nm_ = 0.0f;
+        topup_dir_ = dir;                 // a fresh push takes the current side
+    }
+    // Short of the target in the direction the push acts (negative = past it).
+    const float push_short = topup_dir_ * (target_raw - sample.actual_pos);
+    if (topup_nm_ > 0.0f && push_short < -eps) {
+        topup_nm_ = 0.0f;
+        topup_dir_ = dir;
+    }
+    // "Parked" within the arrival band while a push is on: a streamed target
+    // jitters by a few mrad per frame, and a ramp one frame behind it must not
+    // restart the escalation from the spring every frame.
+    const bool engaged =
+        parked || (topup_nm_ > 0.0f && ramp_gap <= eps);
     // AT REST: slow, and either the target has stopped moving or the jaw has
     // (0.4.2).
     //
@@ -706,44 +754,61 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
     const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
     // What the parked hold already pushes with, in the push direction: the
-    // spring plus the closed-endpoint preload when it applies. The escalation
-    // starts from here, not from the spring alone -- since the stall window
-    // delays it by 150 ms, a closing jaw has been held at spring + preload all
-    // that time, and restarting from the bare spring dropped the push by the
-    // 0.25 N·m preload before building it back up (0.4.2).
-    const float base = dir * spring + std::max(0.0f, dir * preload_signed);
+    // spring plus the closed-endpoint preload when it applies. The top-up is
+    // added to it, so the total starts from here (0.4.2) and never exceeds the
+    // budget (anti-windup below).
+    const float hold_push = topup_dir_ * spring +
+                            std::max(0.0f, topup_dir_ * preload_signed);
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
-        if (short_of_target && at_rest) {
-            if (topup_nm_ <= 0.0f) {
-                topup_anchor_raw_ = target_raw;   // escalation begins here
-            }
-            topup_nm_ = std::min(budget,
-                                 std::max(topup_nm_, base) + step_nm);
-            if (topup_nm_ >= budget - kEpsilon) {
-                grasp_latched_ = true;
-                grasp_dir_ = dir;
-            }
-        } else if (short_of_target) {
-            // Broke away: let the push fall back to the spring gently, so the
-            // jaw creeps in rather than being released into a coast.
-            topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
-        } else {
+        bool growing = false;
+        if (!engaged) {
             topup_nm_ = 0.0f;
+        } else if (at_rest) {
+            if (push_short > eps) {
+                if (topup_nm_ <= 0.0f) {
+                    topup_anchor_raw_ = target_raw;   // escalation begins here
+                }
+                topup_nm_ += step_nm;
+                growing = true;
+            } else if (topup_nm_ > 0.0f && push_short < -deadband) {
+                // Parked past the target: give the push back gradually.
+                topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
+            }
+        } else if (topup_nm_ > 0.0f) {
+            // Moving: let the TOTAL push fall back gently, and hand the frame
+            // back to the ramp as soon as the hold alone asks for more. A jaw
+            // that broke away creeps in rather than coasting through; one that
+            // falls behind a target that started moving again (a streamed
+            // reversal) is tracking, and must not stay pinned on the caller's
+            // raw target -- that roughened the setpoint by 15% under host frame
+            // jitter. This is 0.4.5's "topup > base" hand-over, kept.
+            topup_nm_ = std::max(0.0f, topup_push_total_ - step_nm - hold_push);
+        }
+        // Anti-windup: hold + top-up never exceeds the budget. Reaching it while
+        // still growing is a grasp: latch it.
+        const float room = std::max(0.0f, budget - hold_push);
+        if (topup_nm_ >= room - kEpsilon && topup_nm_ > 0.0f) {
+            topup_nm_ = room;
+            if (growing) {
+                grasp_latched_ = true;
+                grasp_dir_ = topup_dir_;
+            }
         }
     }
-    if (grasp_latched_ && short_by < -tune_.arrival_eps_rad) {
+    topup_push_total_ = hold_push + topup_nm_;
+    if (grasp_latched_ && short_by < -eps) {
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
     }
-    if (!grasp_latched_ && short_of_target && topup_nm_ > base) {
-        // Escalating: pinned on the target like the latched push below, but the
+    if (!grasp_latched_ && engaged && topup_nm_ > 0.0f) {
+        // Topping up: pinned on the target like the latched push below, but the
         // damping term stays in, so a jaw that breaks away is still braked.
         ramp_raw_ = target_raw;
-        const float tau_ff = dir * topup_nm_ - spring;
+        const float tau_ff = preload_signed + topup_dir_ * topup_nm_;
         commanded_torque_nm_ = std::min(
             cfg_.motion_torque_limit_nm,
-            std::abs(dir * topup_nm_ - kd * sample.actual_vel));
+            std::abs(spring - kd * sample.actual_vel + tau_ff));
         return {ramp_raw_, tune_.position_kp, kd, tau_ff, 0.0f};
     }
     // Once latched, "parked" tolerates a ramp still catching up with a target

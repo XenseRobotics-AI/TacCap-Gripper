@@ -1357,3 +1357,143 @@ TEST(ForcePositionPolicy, ACreepingCompliantGraspStillEscalatesUnderASteadyTarge
     EXPECT_TRUE(held) << "never escalated to a grip";
     EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-2f);
 }
+
+// ---------------------------------------------------------------------------
+// An un-latched top-up reaching the arrival band (tc-gu-01-pc, 2026-11-12)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct BandTrace {
+    float max_drop_nm = 0.0f;   // largest single-frame fall of the commanded torque
+    float pos_min = INFINITY, pos_max = -INFINITY;
+    int holding_frames = 0;
+    float final_pos = 0.0f;
+    float final_cmd_nm = 0.0f;
+};
+
+// Closed loop like run_loop, but the caller may retarget mid-run (at_s, target)
+// and only the last tail_s seconds are scored.
+// target and plant positions are raw rad; set_target takes them normalized.
+BandTrace run_band_loop(ForcePositionPolicy& p, FrictionPlant& plant, float travel,
+                        float target, float budget, float seconds, float tail_s,
+                        float retarget_at_s = NAN, bool retarget_to_measured = false) {
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(plant.pos), t);
+    p.set_target(sample(plant.pos), target / travel, budget, t);
+    BandTrace tr;
+    protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+    const int frames = static_cast<int>(seconds * 100.0f);
+    const int tail = frames - static_cast<int>(tail_s * 100.0f);
+    float prev_cmd = NAN;
+    for (int f = 0; f < frames; ++f) {
+        if (retarget_to_measured && f == static_cast<int>(retarget_at_s * 100.0f)) {
+            // What tc-gu-01-pc's contact hold does: fix the target on the
+            // measured jaw, same budget, same controller.
+            p.set_target(sample(plant.pos, plant.vel),
+                         plant.pos / travel, budget, t);
+        }
+        const auto cmd = p.step(sample(plant.pos, plant.vel), t);
+        for (int k = 0; k < 10; ++k) plant.advance(applied, 0.001f);
+        applied = cmd;
+        t += std::chrono::milliseconds(10);
+        const float now_nm = p.commanded_torque_nm();
+        if (f >= tail) {
+            if (std::isfinite(prev_cmd)) tr.max_drop_nm = std::max(tr.max_drop_nm, prev_cmd - now_nm);
+            tr.pos_min = std::min(tr.pos_min, plant.pos);
+            tr.pos_max = std::max(tr.pos_max, plant.pos);
+            if (p.holding()) ++tr.holding_frames;
+        }
+        prev_cmd = now_nm;
+    }
+    tr.final_pos = plant.pos;
+    tr.final_cmd_nm = p.commanded_torque_nm();
+    return tr;
+}
+
+ForcePositionConfig rs00_cfg(float speed) {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 3.6f;
+    cfg.hold_torque_limit_nm = 5.0f;
+    cfg.motion_torque_limit_nm = 14.0f;
+    cfg.close_speed_radps = speed;
+    return cfg;
+}
+
+}  // namespace
+
+// A compliant object that lets the jaw into the arrival band for less than the
+// budget. The escalation used to be cut to zero on the first in-band frame, the
+// object pushed the jaw back out, and 150 ms later the escalation started over:
+// a ~1 Hz sawtooth between the spring and ~2.9 Nm (0009s holding a soft block,
+// tc-gu-01-pc 2026-11-12). The push must settle instead.
+TEST(ForcePositionPolicy, ACompliantObjectReachingTheBandBelowTheBudgetHoldsSteady) {
+    const auto cfg = rs00_cfg(0.41f);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.30f;
+    plant.wall_raw = 0.10f;     // soft block: 40 Nm/rad, in band at 0.06 for 1.6 Nm
+    plant.wall_k = 40.0f;
+    const auto tr = run_band_loop(p, plant, 1.2f, 0.05f, cfg.grasp_torque_nm, 8.0f, 3.0f);
+    EXPECT_LT(tr.max_drop_nm, 0.3f) << "the push collapsed in one frame";
+    EXPECT_LT(tr.pos_max - tr.pos_min, 0.003f) << "the jaw kept cycling";
+}
+
+// Breakaway friction above the spring at the band edge: the escalation frees the
+// jaw, it creeps in, and the push used to vanish the moment it crossed 10 mrad,
+// parking it there for good. 0009s full open: 10.13 mrad short on every leg,
+// right on the arrival threshold (tc-gu-01-pc, 2026-11-12).
+TEST(ForcePositionPolicy, AFrictionParkedJawFinishesTheApproachInsteadOfStoppingAtTheBandEdge) {
+    for (const float start : {0.6f, 0.2f}) {
+        SCOPED_TRACE(start);
+        const float travel = 1.1715f;
+        const auto cfg = rs00_cfg(0.41f);
+        ForcePositionPolicy p(GripperPosition::from_travel(travel), cfg);
+        FrictionPlant plant;
+        plant.static_nm = 0.60f;
+        plant.kinetic_nm = 0.45f;
+        plant.pos = start;
+        const float target = start > 0.5f ? travel : 0.6f;
+        const auto tr = run_band_loop(p, plant, travel, target, cfg.grasp_torque_nm, 6.0f, 1.0f);
+        const ForcePositionTuning tune;
+        EXPECT_LT(std::abs(tr.final_pos - target), tune.arrival_eps_rad * 0.5f)
+            << "final " << tr.final_pos;
+        EXPECT_EQ(tr.holding_frames, 0) << "empty jaw reported as a grasp";
+        EXPECT_LT(tr.final_cmd_nm, 0.8f) << "an empty jaw kept pushing hard";
+    }
+}
+
+// A grip latched at the budget, then held where it was measured -- the same
+// controller, the same budget (tc-gu-01-pc's contact hold). The new target is
+// a change, so the latch drops; it must not leave a cycle behind.
+TEST(ForcePositionPolicy, HoldingACompliantGripAtItsMeasuredPositionDoesNotSawtooth) {
+    const auto cfg = rs00_cfg(0.41f);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.30f;
+    plant.wall_raw = 0.12f;     // latches at the budget around 0.06
+    plant.wall_k = 60.0f;
+    const auto tr = run_band_loop(p, plant, 1.2f, 0.0f, cfg.grasp_torque_nm, 10.0f, 4.0f,
+                                  2.0f, true);
+    EXPECT_LT(tr.max_drop_nm, 0.3f) << "the hold kept collapsing";
+    EXPECT_LT(tr.pos_max - tr.pos_min, 0.003f) << "the jaw kept cycling";
+}
+
+// A very soft object with the target deep inside it: the push carries the jaw
+// onto the target and it coasts a fraction of a millimetre past. Ending the
+// push on any crossing dropped ~1.2 N·m in one frame and the object sprang the
+// jaw 15-20 mrad back out, over and over. Only a crossing beyond the arrival
+// band may end it; a small overshoot unwinds it at the top-up rate.
+TEST(ForcePositionPolicy, ASoftObjectOvershootingTheTargetSlightlyKeepsItsPush) {
+    const auto cfg = rs00_cfg(0.41f);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    FrictionPlant plant;
+    plant.static_nm = 0.15f;
+    plant.kinetic_nm = 0.11f;
+    plant.pos = 0.50f;
+    plant.wall_raw = 0.20f;
+    plant.wall_k = 10.0f;
+    const auto tr = run_band_loop(p, plant, 1.2f, 0.10f, cfg.grasp_torque_nm, 12.0f, 3.0f);
+    EXPECT_LT(tr.max_drop_nm, 0.3f) << "the push collapsed in one frame";
+    EXPECT_LT(tr.pos_max - tr.pos_min, 0.003f) << "the jaw kept cycling";
+}
