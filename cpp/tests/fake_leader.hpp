@@ -66,6 +66,13 @@ public:
     uint16_t imu_seq_produced() const { return imu_seq_.load(); }
 
 private:
+    // Real firmware gives every frame it originates the next value of one 8-bit
+    // counter (protocol_get_next_seq); the transport relies on that to drop a
+    // verbatim collision resend, so the fake must not repeat seqs.
+    std::atomic<uint8_t> data_seq_{0xFF};
+    uint8_t next_data_seq_() { return static_cast<uint8_t>(++data_seq_); }
+
+
     struct Record { uint8_t cmd; std::vector<uint8_t> payload; };
 
     void emit_(tp::Cmd cmd, const void* p, std::size_t n) {
@@ -80,7 +87,7 @@ private:
                 if (dropped_ != 0xFFFF) ++dropped_;
             }
         } else {
-            pty_.send_data(0, cmd, bytes);
+            pty_.send_data(next_data_seq_(), cmd, bytes);
             ++pushed_;
         }
     }
@@ -217,7 +224,7 @@ private:
                 std::lock_guard<std::mutex> lk(mu_);
                 polled_.store(false);
                 mode_.store(static_cast<uint8_t>(tp::StreamMode::Separate));
-                for (auto& rec : queue_) { pty_.send_data(0, static_cast<tp::Cmd>(rec.cmd), rec.payload); ++pushed_; }
+                for (auto& rec : queue_) { pty_.send_data(next_data_seq_(), static_cast<tp::Cmd>(rec.cmd), rec.payload); ++pushed_; }
                 queue_.clear(); queue_bytes_ = 0;
                 ++lease_expiries_;
             }

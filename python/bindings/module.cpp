@@ -321,6 +321,7 @@ PYBIND11_MODULE(_taccap_native, m) {
         .def_readonly("ack_timeouts",        &tb::Transport::Stats::ack_timeouts)
         .def_readonly("retries",             &tb::Transport::Stats::retries)
         .def_readonly("unexpected_frames",   &tb::Transport::Stats::unexpected_frames)
+        .def_readonly("duplicate_data_dropped", &tb::Transport::Stats::duplicate_data_dropped)
         .def_readonly("callback_exceptions", &tb::Transport::Stats::callback_exceptions)
         // ---- Loss accounting ------------------------------------------
         // Counters identify the rejecting/dropping stage, not the original
