@@ -253,6 +253,18 @@ struct ForcePositionTuning {
     // 3 Nm/s is 0.03 Nm per 100 Hz frame: breakaway overshoots by that much,
     // and the EL05 pad-compression grip (0.5 -> 1.1 Nm) builds in ~0.2 s.
     float topup_rate_nmps     = 3.0f;
+    // BRAKING INTO THE TARGET (0.4.6). The ramp used to run at close_speed
+    // right up to the target and stop dead, so the jaw met the end stop / the
+    // finger pads at ~70% of the commanded speed: 0096s at 4 rad/s arrived at
+    // 2.7-2.9 rad/s and the impact read 2.5 N·m (2026-11-12). The ramp speed is
+    // now capped at sqrt(2*a*distance-to-target), so the setpoint lands on the
+    // target at rest. The host steps the setpoint at 100 Hz and the command
+    // lands a frame late, so the brake must start well ahead: against the
+    // measured 0096s plant (~0.002 kg·m², ~0.1 N·m friction) 100 rad/s² still
+    // hit the stops at ~2.5 rad/s, 20 rad/s² at <=0.9 rad/s for any commanded
+    // speed, for +0.06 s on a full 1.19 rad stroke at 4 rad/s. Below ~0.6 rad/s
+    // the brake only acts on the last ~10 mrad.
+    float brake_decel_radps2  = 20.0f;
 };
 
 

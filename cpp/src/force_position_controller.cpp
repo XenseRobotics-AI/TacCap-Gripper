@@ -146,6 +146,9 @@ void validate_tuning(const detail::ForcePositionTuning& t,
         throw std::invalid_argument(
             "ForcePositionTuning.arrival_eps_rad must be >= 0");
     }
+    if (!finite(t.brake_decel_radps2) || t.brake_decel_radps2 <= 0.0f) {
+        throw std::invalid_argument("ForcePositionTuning.brake_decel_radps2 must be > 0");
+    }
     if (!finite(t.topup_rate_nmps) || t.topup_rate_nmps <= 0.0f) {
         throw std::invalid_argument(
             "ForcePositionTuning.topup_rate_nmps must be > 0");
@@ -612,7 +615,10 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // velocity afterwards would edit one side of the equation the budget
     // interval below was solved for, and the bound would quietly stop holding.
     {
-        const float step = std::abs(desired_vel) * dt;
+        // Braking: never faster than lets the setpoint stop ON the target.
+        const float to_go = std::abs(target_raw - ramp_prev);
+        const float brake_speed = std::sqrt(2.0f * tune_.brake_decel_radps2 * to_go);
+        const float step = std::min(std::abs(desired_vel), brake_speed) * dt;
         ramp_raw_ = std::clamp(ramp_raw_, ramp_prev - step, ramp_prev + step);
     }
 

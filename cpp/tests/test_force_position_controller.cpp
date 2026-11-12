@@ -1633,3 +1633,78 @@ TEST(ForcePositionPolicy, ReTargetingBehindAGripReleasesIt) {
     EXPECT_LT(tr.last_nm, 1.5f) << "still pushing after a release target";
     EXPECT_GT(tr.max_rebound, 0.03f) << "the jaw did not open toward the new target";
 }
+
+// ---------------------------------------------------------------------------
+// Braking into the target (0096s, 2026-11-12)
+// ---------------------------------------------------------------------------
+
+// The ramp never moves faster than lets it stop on the target.
+TEST(ForcePositionPolicy, TheRampBrakesIntoTheTarget) {
+    ForcePositionConfig cfg = rs00_cfg(4.0f);
+    const ForcePositionTuning tune;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 1.2f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(pos), t);
+    float prev = pos, vel = 0.0f;
+    for (int i = 0; i < 200; ++i) {
+        t += std::chrono::milliseconds(10);
+        const auto c = p.step(sample(pos, vel), t);
+        const float ramp = c.target_pos;
+        EXPECT_GE(ramp, -1e-6f) << "the setpoint passed the target";
+        // speed over this frame bounded by the brake profile from where it began
+        EXPECT_LE((prev - ramp) / 0.010f,
+                  std::sqrt(2.0f * tune.brake_decel_radps2 * prev) + 1e-3f) << "frame " << i;
+        vel = (ramp - prev) / 0.010f;             // a jaw that tracks perfectly
+        prev = ramp;
+        pos = ramp;
+        if (ramp <= 1e-6f) break;
+    }
+    EXPECT_LE(prev, 1e-6f) << "never reached the target";
+}
+
+// Far from the target nothing changes: the commanded speed still applies.
+TEST(ForcePositionPolicy, BrakingDoesNotSlowTheCruise) {
+    ForcePositionConfig cfg = rs00_cfg(4.0f);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(1.2f), t);
+    p.set_target(sample(1.2f), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(1.2f), t);
+    t += std::chrono::milliseconds(10);
+    const auto c = p.step(sample(1.2f, -4.0f), t);
+    EXPECT_NEAR(c.vel, -4.0f, 1e-3f);
+}
+
+// Against the measured RS00 plant with both end stops, a 4 rad/s stroke meets
+// the stop slowly. Without braking it hit at ~3.9 rad/s.
+TEST(ForcePositionPolicy, AFastStrokeMeetsTheEndStopSlowly) {
+    for (const bool opening : {false, true}) {
+        SCOPED_TRACE(opening ? "opening" : "closing");
+        const float travel = 1.1895f;
+        ForcePositionConfig cfg = rs00_cfg(4.0f);
+        ForcePositionPolicy p(GripperPosition::from_travel(travel), cfg);
+        FrictionPlant plant;
+        plant.inertia = 0.002f; plant.static_nm = 0.12f; plant.kinetic_nm = 0.09f; plant.viscous = 0.005f;
+        plant.pos = opening ? 0.01f : travel - 0.01f;
+        const float stop = opening ? travel + 0.002f : 0.005f;
+        auto t = std::chrono::steady_clock::now();
+        p.reset(sample(plant.pos), t);
+        p.set_target(sample(plant.pos), opening ? 1.0f : 0.0f, cfg.grasp_torque_nm, t);
+        protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+        float hit = -1.0f;
+        for (int f = 0; f < 150 && hit < 0.0f; ++f) {
+            const auto cmd = p.step(sample(plant.pos, plant.vel), t);
+            for (int k = 0; k < 100 && hit < 0.0f; ++k) {
+                plant.advance(applied, 1e-4f);
+                if (opening ? plant.pos >= stop : plant.pos <= stop) hit = std::abs(plant.vel);
+            }
+            applied = cmd;
+            t += std::chrono::milliseconds(10);
+        }
+        ASSERT_GE(hit, 0.0f) << "never reached the stop";
+        EXPECT_LT(hit, 1.2f) << "met the stop at " << hit << " rad/s";
+    }
+}
