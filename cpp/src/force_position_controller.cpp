@@ -36,7 +36,7 @@ constexpr float kMaxDampingGain = 5.0f;
 constexpr float kHoldingLeadRatio = 0.5f;
 // A top-up unwinds only once the jaw has parked more than this fraction of
 // arrival_eps_rad past the target, so a jaw that stops on the target is not
-// hunted by its own integral (0.4.6). It grows only outside the arrival band.
+// hunted by its own integral (2026-11-12). It grows only outside the arrival band.
 constexpr float kTopupDeadbandRatio = 0.3f;
 constexpr float kHoldingVelRatio  = 0.25f;   // firmware TASK_CANMOTOR_STALL_VEL_RATIO
 // The lead test of "holding" also needs the jaw to have made less than
@@ -424,7 +424,7 @@ void ForcePositionPolicy::set_target(
     // mid-motion (0094s, 50 Hz cosine, reported by tc-gu-01-pc 2026-09-29).
     // Jitter in place does not add up, so the latch still survives it.
     //
-    // A real new target ends the grasp but NOT THE FORCE (0.4.6). Cutting the
+    // A real new target ends the grasp but NOT THE FORCE (2026-11-12). Cutting the
     // push here was a step of the whole budget in one frame: a contact hold
     // that re-targets onto the measured jaw dropped 3.6 -> 0.8 N·m and the
     // object sprang the jaw ~40 mrad back out (0096s, 2026-11-12). The push
@@ -724,7 +724,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
                         (ref_settled && std::abs(ramp_raw_ - chase_raw) <= kEpsilon);
     const float short_by = dir * (target_raw - sample.actual_pos);
     // THE TOP-UP IS AN INTEGRAL TERM ADDED TO THE HOLD, and it never jumps
-    // (0.4.6). Up to 0.4.5 it REPLACED the spring and was cut to zero the first
+    // (2026-11-12). Up to 0.4.5 it REPLACED the spring and was cut to zero the first
     // frame the jaw was inside the arrival band, which is a step in the force:
     //  - a compliant object that needs less than the budget to reach the band
     //    pushed the jaw back out, and 150 ms later the push was rebuilt from the
@@ -828,7 +828,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
                 topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
             }
         } else if (topup_nm_ > 0.0f && !stalled_) {
-            // MOVING BY POSITION, not by one velocity reading (0.4.6): the
+            // MOVING BY POSITION, not by one velocity reading (2026-11-12): the
             // RS00 reads +-0.1 rad/s on a jaw at rest, and every such frame
             // shaved the push -- 3.0 -> 2.74 N·m over 8 s on a jaw that never
             // moved (0096s, 2026-11-12). A noisy frame only pauses the growth.

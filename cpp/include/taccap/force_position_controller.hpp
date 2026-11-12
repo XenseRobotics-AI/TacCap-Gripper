@@ -253,7 +253,7 @@ struct ForcePositionTuning {
     // 3 Nm/s is 0.03 Nm per 100 Hz frame: breakaway overshoots by that much,
     // and the EL05 pad-compression grip (0.5 -> 1.1 Nm) builds in ~0.2 s.
     float topup_rate_nmps     = 3.0f;
-    // BRAKING INTO THE TARGET (0.4.6). The ramp used to run at close_speed
+    // BRAKING INTO THE TARGET (2026-11-12). The ramp used to run at close_speed
     // right up to the target and stop dead, so the jaw met the end stop / the
     // finger pads at ~70% of the commanded speed: 0096s at 4 rad/s arrived at
     // 2.7-2.9 rad/s and the impact read 2.5 N·m (2026-11-12). The ramp speed is
@@ -347,7 +347,7 @@ private:
     // Ramp parked on the target with a grasp latched: travel_track_ has topped
     // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
-    bool  topup_full_ = false;       // un-latched top-up at the budget, jaw stalled (0.4.6)
+    bool  topup_full_ = false;       // un-latched top-up at the budget, jaw stalled (2026-11-12)
     // Set when the jaw stays at rest short of a parked ramp under the full
     // budget; held until the target changes or the jaw passes the target (the
     // object is gone). While
@@ -361,9 +361,9 @@ private:
     bool  grasp_latched_ = false;
     float grasp_dir_ = 0.0f;         // raw direction of the latched push
     float topup_nm_ = 0.0f;
-    float topup_dir_ = 0.0f;         // raw direction the escalation pushes (0.4.6)
-    float topup_push_total_ = 0.0f;  // hold + top-up, last frame (0.4.6)
-    // A push handed from set_target() to the next step() (0.4.6).
+    float topup_dir_ = 0.0f;         // raw direction the escalation pushes (2026-11-12)
+    float topup_push_total_ = 0.0f;  // hold + top-up, last frame (2026-11-12)
+    // A push handed from set_target() to the next step() (2026-11-12).
     bool  carry_pending_ = false;
     bool  carried_grip_ = false;     // the handed-over push is a grip (reported as holding)
     bool  carry_was_grip_ = false;   // the push being handed over came from a grip

@@ -316,7 +316,7 @@ TEST(ForcePositionPolicy, AJitteringStreamedTargetStillEscalatesToTheBudget) {
     EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
 }
 
-// A target walked open in small steps against a blocked jaw (0.4.6). Up to
+// A target walked open in small steps against a blocked jaw (2026-11-12). Up to
 // 0.4.5 the latch was cut after 10 mrad of CUMULATIVE target travel -- while
 // the target was still deeper than the jaw -- a step from the budget to the
 // spring. The grip now follows the geometry: kept while the target is at or
@@ -363,7 +363,7 @@ TEST(ForcePositionPolicy, SmallStepsOpeningPastTheBlockedJawReleaseTheGrip) {
 }
 
 // A new target is a new approach: the latch does not follow the jaw to it.
-// 0.4.6: a new target ON the blocked jaw keeps the grip it is under (the push
+// 2026-11-12: a new target ON the blocked jaw keeps the grip it is under (the push
 // is handed to the top-up, see set_target) and is reported as holding, not as
 // an arrival. A target the jaw can reach -- here behind it -- releases it.
 TEST(ForcePositionPolicy, ANewTargetOnTheBlockedJawKeepsTheGripAndSaysSo) {
