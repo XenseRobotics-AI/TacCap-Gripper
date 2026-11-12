@@ -350,6 +350,10 @@ private:
     float topup_nm_ = 0.0f;
     float topup_dir_ = 0.0f;         // raw direction the escalation pushes (0.4.6)
     float topup_push_total_ = 0.0f;  // hold + top-up, last frame (0.4.6)
+    // A push handed from set_target() to the next step() (0.4.6).
+    bool  carry_pending_ = false;
+    float carry_total_nm_ = 0.0f;
+    float carry_dir_ = 0.0f;
     // Target (raw) when the current escalation began. Escalation and latch are
     // both dropped once the target has moved more than arrival_eps from here IN
     // TOTAL (0.3.10). A per-frame comparison never fired for a slowly streamed

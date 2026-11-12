@@ -244,6 +244,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    carry_pending_ = false;
     stall_valid_ = false;
     stalled_ = false;
     target_steady_valid_ = false;
@@ -260,6 +261,7 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    carry_pending_ = false;   // an explicit release lets go
     // A discrete command, not a stream sample: the reference steps.
     ref_step_(map_.to_rad(1.0f), now);
 }
@@ -401,7 +403,6 @@ void ForcePositionPolicy::set_target(
         float target_position,
         float grasp_torque_nm,
         std::chrono::steady_clock::time_point now) {
-    (void)sample;
     validate_target(cfg_, target_position, grasp_torque_nm);
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
     if (std::abs(target_position - target_position_) > 1e-4f) {
@@ -417,11 +418,31 @@ void ForcePositionPolicy::set_target(
     // per-frame test, and its tracking lag escalated to the budget and latched
     // mid-motion (0094s, 50 Hz cosine, reported by tc-gu-01-pc 2026-09-29).
     // Jitter in place does not add up, so the latch still survives it.
-    if ((grasp_latched_ || topup_nm_ > 0.0f) &&
-        std::abs(map_.to_rad(target_position) - topup_anchor_raw_) >
-            tune_.arrival_eps_rad) {
-        grasp_latched_ = false;
-        topup_nm_ = 0.0f;
+    //
+    // A real new target ends the grasp but NOT THE FORCE (0.4.6). Cutting the
+    // push here was a step of the whole budget in one frame: a contact hold
+    // that re-targets onto the measured jaw dropped 3.6 -> 0.8 N·m and the
+    // object sprang the jaw ~40 mrad back out (0096s, 2026-11-12). The push
+    // the jaw is under is handed to the top-up integral instead, which then
+    // keeps it, unwinds it or ends it by the jaw's own geometry and motion
+    // (see travel_track_). Only a target behind the jaw -- a release -- drops
+    // it outright, exactly as passing the target does.
+    if ((grasp_latched_ || topup_nm_ > 0.0f || carry_pending_)) {
+        const float new_raw = map_.to_rad(target_position);
+        if (std::abs(new_raw - topup_anchor_raw_) > tune_.arrival_eps_rad) {
+            const float push_dir = grasp_latched_ ? grasp_dir_ : topup_dir_;
+            const float total = carry_pending_ ? carry_total_nm_
+                              : grasp_latched_ ? grasp_torque_nm_
+                                               : topup_push_total_;
+            const bool behind = push_dir * (new_raw - sample.actual_pos) <
+                                -tune_.arrival_eps_rad;
+            carry_pending_ = !behind && total > 0.0f && push_dir != 0.0f;
+            carry_total_nm_ = total;
+            carry_dir_ = push_dir;
+            topup_anchor_raw_ = new_raw;
+            grasp_latched_ = false;
+            topup_nm_ = 0.0f;
+        }
     }
     target_position_ = target_position;
     grasp_torque_nm_ = grasp_torque_nm;
@@ -438,6 +459,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    carry_pending_ = false;
     ref_step_(sample.actual_pos, last_step_);
 }
 
@@ -454,6 +476,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     ramp_valid_ = false;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
+    carry_pending_ = false;
     stall_valid_ = false;
     stalled_ = false;
     target_steady_valid_ = false;
@@ -564,6 +587,11 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // lag x target speed onto the reference -- a backward kick in the middle of
     // a move. So the ramp holds where it is (never past the target) and the
     // reference catches up to it.
+    // A push handed over by set_target(): the setpoint sits on the new target,
+    // as for any top-up, so the jaw is not dragged by a ramp walking up to it.
+    if (carry_pending_) {
+        ramp_raw_ = target_raw;
+    }
     const float ramp_prev = ramp_raw_;
     ramp_raw_ += desired_vel * dt;
     if (desired_vel > 0.0f) {
@@ -718,7 +746,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // that coasts a fraction of a millimetre past the target on a soft object
     // must not lose the whole push in one frame (it sprang back 15-20 mrad,
     // the sawtooth again). A small overshoot unwinds the push gradually below.
-    if (topup_nm_ <= 0.0f) {
+    if (carry_pending_) {
+        topup_dir_ = carry_dir_;          // the handed-over push keeps its side
+    } else if (topup_nm_ <= 0.0f) {
         topup_nm_ = 0.0f;
         topup_dir_ = dir;                 // a fresh push takes the current side
     }
@@ -759,6 +789,14 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // budget (anti-windup below).
     const float hold_push = topup_dir_ * spring +
                             std::max(0.0f, topup_dir_ * preload_signed);
+    if (carry_pending_) {
+        // Same total as the frame before the new target; the integral takes
+        // it from here. Past the new target by more than the band, it is a
+        // release after all.
+        carry_pending_ = false;
+        topup_nm_ = push_short < -eps ? 0.0f
+                  : std::max(0.0f, std::min(carry_total_nm_, budget) - hold_push);
+    }
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
         bool growing = false;
@@ -775,7 +813,12 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
                 // Parked past the target: give the push back gradually.
                 topup_nm_ = std::max(0.0f, topup_nm_ - step_nm);
             }
-        } else if (topup_nm_ > 0.0f) {
+        } else if (topup_nm_ > 0.0f && !stalled_) {
+            // MOVING BY POSITION, not by one velocity reading (0.4.6): the
+            // RS00 reads +-0.1 rad/s on a jaw at rest, and every such frame
+            // shaved the push -- 3.0 -> 2.74 N·m over 8 s on a jaw that never
+            // moved (0096s, 2026-11-12). A noisy frame only pauses the growth.
+            //
             // Moving: let the TOTAL push fall back gently, and hand the frame
             // back to the ramp as soon as the hold alone asks for more. A jaw
             // that broke away creeps in rather than coasting through; one that

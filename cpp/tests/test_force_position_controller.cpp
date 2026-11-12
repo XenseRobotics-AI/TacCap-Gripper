@@ -1497,3 +1497,90 @@ TEST(ForcePositionPolicy, ASoftObjectOvershootingTheTargetSlightlyKeepsItsPush) 
     EXPECT_LT(tr.max_drop_nm, 0.3f) << "the push collapsed in one frame";
     EXPECT_LT(tr.pos_max - tr.pos_min, 0.003f) << "the jaw kept cycling";
 }
+
+// ---------------------------------------------------------------------------
+// Re-targeting a grip and a noisy velocity at rest (0096s, 2026-11-12)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A latched grip on a soft block, then the target is set on the measured jaw
+// (tc-gu-01-pc's contact hold). vel_noise as run_loop. Returns the trace of the
+// commanded torque and position after the re-target.
+struct RetargetTrace {
+    float max_drop_nm = 0.0f, max_rebound = 0.0f, first_nm = NAN, last_nm = NAN;
+    float pos_at_retarget = NAN;
+};
+
+RetargetTrace grip_then_hold_measured(float vel_noise, float hold_s,
+                                      float new_target_offset = 0.0f) {
+    const auto cfg = rs00_cfg(0.41f);
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.30f;
+    plant.wall_raw = 0.12f;
+    plant.wall_k = 60.0f;
+    uint32_t lcg = 777u;
+    auto noisy = [&](float v) {
+        if (vel_noise <= 0.0f) return v;
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;
+        constexpr float kQuantum = 0.016117f;
+        return std::round((v + (2.0f * u - 1.0f) * vel_noise) / kQuantum) * kQuantum;
+    };
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(plant.pos), t);
+    p.set_target(sample(plant.pos), 0.0f, cfg.grasp_torque_nm, t);
+    protocol_cmd_t applied{plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+    RetargetTrace tr;
+    float prev = NAN;
+    const int grip = 300, frames = grip + static_cast<int>(hold_s * 100.0f);
+    for (int f = 0; f < frames; ++f) {
+        if (f == grip) {
+            EXPECT_TRUE(p.holding()) << "never gripped before the re-target";
+            tr.pos_at_retarget = plant.pos;
+            p.set_target(sample(plant.pos, plant.vel),
+                         (plant.pos + new_target_offset) / 1.2f, cfg.grasp_torque_nm, t);
+        }
+        const auto cmd = p.step(sample(plant.pos, noisy(plant.vel)), t);
+        for (int k = 0; k < 10; ++k) plant.advance(applied, 0.001f);
+        applied = cmd;
+        t += std::chrono::milliseconds(10);
+        const float nm = p.commanded_torque_nm();
+        if (f >= grip) {
+            if (std::isfinite(prev)) tr.max_drop_nm = std::max(tr.max_drop_nm, prev - nm);
+            tr.max_rebound = std::max(tr.max_rebound, plant.pos - tr.pos_at_retarget);
+            if (f == grip + 50) tr.first_nm = nm;
+            tr.last_nm = nm;
+        }
+        prev = nm;
+    }
+    return tr;
+}
+
+}  // namespace
+
+// The hold re-targets onto the jaw: the grip must carry over without a step.
+// 0.4.5 dropped 3.6 -> 0.8 N·m in one frame and the block sprang ~40 mrad out.
+TEST(ForcePositionPolicy, ReTargetingAGripOntoTheMeasuredJawKeepsTheForce) {
+    const auto tr = grip_then_hold_measured(0.0f, 4.0f);
+    EXPECT_LT(tr.max_drop_nm, 0.3f) << "the grip was dropped on the new target";
+    EXPECT_LT(tr.max_rebound, 0.005f) << "the object pushed the jaw back out";
+    EXPECT_GT(tr.last_nm, 3.0f);
+}
+
+// With the RS00's quantized velocity a jaw at rest reads moving on some frames;
+// those must not shave the push (3.0 -> 2.74 N·m over 8 s on 0096s).
+TEST(ForcePositionPolicy, VelocityNoiseAtRestDoesNotBleedTheHeldPush) {
+    const auto tr = grip_then_hold_measured(0.09f, 10.0f);
+    EXPECT_LT(tr.max_rebound, 0.005f);
+    EXPECT_NEAR(tr.last_nm, tr.first_nm, 0.1f) << "first " << tr.first_nm;
+}
+
+// A new target BEHIND the jaw is a release, as before: the push ends and the
+// jaw opens to it.
+TEST(ForcePositionPolicy, ReTargetingBehindAGripReleasesIt) {
+    const auto tr = grip_then_hold_measured(0.0f, 2.0f, 0.05f);
+    EXPECT_LT(tr.last_nm, 1.5f) << "still pushing after a release target";
+    EXPECT_GT(tr.max_rebound, 0.03f) << "the jaw did not open toward the new target";
+}
