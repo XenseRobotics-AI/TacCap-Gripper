@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-12
+
 ### Fixed
 
 - **A follower's collision resend is delivered once.** Follower firmware 1.2.17
