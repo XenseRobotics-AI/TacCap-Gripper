@@ -245,6 +245,7 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     carry_pending_ = false;
+    carried_grip_ = false;
     stall_valid_ = false;
     stalled_ = false;
     target_steady_valid_ = false;
@@ -261,7 +262,8 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     grasp_torque_nm_ = cfg_.grasp_torque_nm;
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
-    carry_pending_ = false;   // an explicit release lets go
+    carry_pending_ = false;
+    carried_grip_ = false;   // an explicit release lets go
     // A discrete command, not a stream sample: the reference steps.
     ref_step_(map_.to_rad(1.0f), now);
 }
@@ -436,6 +438,8 @@ void ForcePositionPolicy::set_target(
                                                : topup_push_total_;
             const bool behind = push_dir * (new_raw - sample.actual_pos) <
                                 -tune_.arrival_eps_rad;
+            carry_was_grip_ = grasp_latched_ || carried_grip_ ||
+                              (carry_pending_ && carry_was_grip_);
             carry_pending_ = !behind && total > 0.0f && push_dir != 0.0f;
             carry_total_nm_ = total;
             carry_dir_ = push_dir;
@@ -460,6 +464,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     carry_pending_ = false;
+    carried_grip_ = false;
     ref_step_(sample.actual_pos, last_step_);
 }
 
@@ -477,6 +482,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     grasp_latched_ = false;
     topup_nm_ = 0.0f;
     carry_pending_ = false;
+    carried_grip_ = false;
     stall_valid_ = false;
     stalled_ = false;
     target_steady_valid_ = false;
@@ -794,8 +800,10 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         // it from here. Past the new target by more than the band, it is a
         // release after all.
         carry_pending_ = false;
+    carried_grip_ = false;
         topup_nm_ = push_short < -eps ? 0.0f
                   : std::max(0.0f, std::min(carry_total_nm_, budget) - hold_push);
+        carried_grip_ = topup_nm_ > 0.0f && carry_was_grip_;
     }
     if (!grasp_latched_) {
         const float step_nm = tune_.topup_rate_nmps * dt;
@@ -840,6 +848,13 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         }
     }
     topup_push_total_ = hold_push + topup_nm_;
+    // A grip handed over by set_target() still pushing against a jaw that
+    // does not move is a grasp (its spring part eases smoothly as a target is
+    // walked back toward the jaw; that is not a release). It sits ON its new target,
+    // and was reported as an arrival while it pushed the full budget (0096s,
+    // 2026-11-12). An ordinary escalation is reported once it latches.
+    if (grasp_latched_ || topup_nm_ <= 0.0f) carried_grip_ = false;
+    topup_full_ = carried_grip_ && engaged && stalled_;
     if (grasp_latched_ && short_by < -eps) {
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
@@ -950,6 +965,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // same way ImpedanceController has a single law and reports states.
     protocol::MotorImpedanceCtrl cmd;
     blocked_short_ = false;
+    topup_full_ = false;
     {
         // A latched push keeps its direction even once the jaw is fractionally
         // past the target; flipping it there would push the object back out.
@@ -972,8 +988,10 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     // blocked_short_ is the same observation where the lead cannot fill: the
     // ramp is parked on the target and the budget is being applied anyway.
     // The lead test is gated on the stall window (see above).
+    // A full un-latched top-up is a grasp, not an arrival, even on the target.
+    if (topup_full_) arrived_ = false;
     holding_ = !arrived_ && ramp_valid_ &&
-               (blocked_short_ ||
+               (blocked_short_ || topup_full_ ||
                 (max_lead > kEpsilon && lead >= max_lead * kHoldingLeadRatio &&
                  stalled_ &&
                  std::abs(sample.actual_vel) <=

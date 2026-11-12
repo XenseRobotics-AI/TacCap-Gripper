@@ -335,6 +335,7 @@ private:
     // Ramp parked on the target with a grasp latched: travel_track_ has topped
     // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
+    bool  topup_full_ = false;       // un-latched top-up at the budget, jaw stalled (0.4.6)
     // Set when the jaw stays at rest short of a parked ramp under the full
     // budget; held until the target changes or the jaw passes the target (the
     // object is gone). While
@@ -352,6 +353,8 @@ private:
     float topup_push_total_ = 0.0f;  // hold + top-up, last frame (0.4.6)
     // A push handed from set_target() to the next step() (0.4.6).
     bool  carry_pending_ = false;
+    bool  carried_grip_ = false;     // the handed-over push is a grip (reported as holding)
+    bool  carry_was_grip_ = false;   // the push being handed over came from a grip
     float carry_total_nm_ = 0.0f;
     float carry_dir_ = 0.0f;
     // Target (raw) when the current escalation began. Escalation and latch are

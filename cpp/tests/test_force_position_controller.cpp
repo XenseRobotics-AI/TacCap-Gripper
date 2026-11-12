@@ -316,9 +316,13 @@ TEST(ForcePositionPolicy, AJitteringStreamedTargetStillEscalatesToTheBudget) {
     EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
 }
 
-// The latch clears on CUMULATIVE target travel since it was taken: a slowly
-// streamed target that walks away in small steps releases it.
-TEST(ForcePositionPolicy, SmallStepsAddingUpPastTheBandReleaseTheLatch) {
+// A target walked open in small steps against a blocked jaw (0.4.6). Up to
+// 0.4.5 the latch was cut after 10 mrad of CUMULATIVE target travel -- while
+// the target was still deeper than the jaw -- a step from the budget to the
+// spring. The grip now follows the geometry: kept while the target is at or
+// beyond the blocked jaw, let go once it is behind the jaw by more than the
+// arrival band, the same rule as a jaw passing its target. No step before that.
+TEST(ForcePositionPolicy, SmallStepsOpeningPastTheBlockedJawReleaseTheGrip) {
     ForcePositionConfig cfg;
     const ForcePositionTuning tune;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
@@ -329,23 +333,40 @@ TEST(ForcePositionPolicy, SmallStepsAddingUpPastTheBandReleaseTheLatch) {
     p.step(sample(blocked), t);
     for (int i = 0; i < 40; ++i) { t += std::chrono::milliseconds(10); p.step(sample(blocked), t); }
     ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
-    // Walk the target open in 3 mrad steps (each below arrival_eps).
-    float tgt = 0.0f;
-    bool released = false;
-    for (int i = 0; i < 10 && !released; ++i) {
+    float tgt = 0.0f, released_at = NAN, prev_nm = cfg.grasp_torque_nm;
+    for (int i = 0; i < 16 && std::isnan(released_at); ++i) {
         tgt += 0.003f;
         ASSERT_LT(0.003f, tune.arrival_eps_rad);
-        t += std::chrono::milliseconds(20);
         p.set_target(sample(blocked), tgt, cfg.grasp_torque_nm, t);
-        p.step(sample(blocked), t);
-        released = !p.holding();
+        for (int k = 0; k < 2; ++k) {
+            t += std::chrono::milliseconds(10);
+            p.step(sample(blocked), t);
+        }
+        if (!p.holding()) {
+            released_at = tgt;
+        } else {
+            // Only the spring part eases, kp per rad the target walks back.
+            EXPECT_GT(p.commanded_torque_nm(),
+                      cfg.grasp_torque_nm - tune.position_kp * (tgt + 0.003f) - 0.05f)
+                << "grip weakened at target " << tgt;
+            // Per 3 mrad / 20 ms step: the spring part plus the rate-limited
+            // unwind once the target is behind the jaw -- never a step.
+            EXPECT_GT(p.commanded_torque_nm(),
+                      prev_nm - (tune.position_kp * 0.003f + tune.topup_rate_nmps * 0.020f + 0.02f))
+                << "step at target " << tgt;
+        }
+        prev_nm = p.commanded_torque_nm();
     }
-    EXPECT_TRUE(released) << "latch survived " << tgt << " rad of cumulative target travel";
-    EXPECT_LE(tgt, tune.arrival_eps_rad + 0.004f) << "released only after " << tgt;
+    ASSERT_FALSE(std::isnan(released_at)) << "never released";
+    EXPECT_GT(released_at, blocked + tune.arrival_eps_rad) << "released while still deeper";
+    EXPECT_LE(released_at, blocked + tune.arrival_eps_rad + 0.004f);
 }
 
 // A new target is a new approach: the latch does not follow the jaw to it.
-TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
+// 0.4.6: a new target ON the blocked jaw keeps the grip it is under (the push
+// is handed to the top-up, see set_target) and is reported as holding, not as
+// an arrival. A target the jaw can reach -- here behind it -- releases it.
+TEST(ForcePositionPolicy, ANewTargetOnTheBlockedJawKeepsTheGripAndSaysSo) {
     ForcePositionConfig cfg;
     ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
     auto t = std::chrono::steady_clock::now();
@@ -358,9 +379,34 @@ TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
     }
     ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
     p.set_target(sample(0.02f), 0.02f, cfg.grasp_torque_nm, t);
-    t += std::chrono::milliseconds(10);
+    for (int i = 0; i < 30; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(0.02f), t);
+        EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 0.05f) << "frame " << i;
+    }
+    EXPECT_FALSE(p.arrived());
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
+
+TEST(ForcePositionPolicy, ANewTargetClearsTheGraspLatch) {
+    ForcePositionConfig cfg;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    p.reset(sample(0.02f), t);
+    p.set_target(sample(0.02f), 0.0f, cfg.grasp_torque_nm, t);
     p.step(sample(0.02f), t);
+    for (int i = 0; i < 45; ++i) {
+        t += std::chrono::milliseconds(10);
+        p.step(sample(0.02f), t);
+    }
+    ASSERT_EQ(p.state(), ForcePositionState::HoldingForce);
+    // The jaw is then at a reachable new target behind it: released, arrived.
+    p.set_target(sample(0.02f), 0.05f, cfg.grasp_torque_nm, t);
+    t += std::chrono::milliseconds(10);
+    p.step(sample(0.05f), t);
     EXPECT_TRUE(p.arrived());
+    EXPECT_FALSE(p.holding());
     EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
 }
 
@@ -1510,6 +1556,7 @@ namespace {
 struct RetargetTrace {
     float max_drop_nm = 0.0f, max_rebound = 0.0f, first_nm = NAN, last_nm = NAN;
     float pos_at_retarget = NAN;
+    bool holding_at_end = false;
 };
 
 RetargetTrace grip_then_hold_measured(float vel_noise, float hold_s,
@@ -1555,6 +1602,7 @@ RetargetTrace grip_then_hold_measured(float vel_noise, float hold_s,
         }
         prev = nm;
     }
+    tr.holding_at_end = p.holding() && p.state() == ForcePositionState::HoldingForce;
     return tr;
 }
 
@@ -1567,6 +1615,7 @@ TEST(ForcePositionPolicy, ReTargetingAGripOntoTheMeasuredJawKeepsTheForce) {
     EXPECT_LT(tr.max_drop_nm, 0.3f) << "the grip was dropped on the new target";
     EXPECT_LT(tr.max_rebound, 0.005f) << "the object pushed the jaw back out";
     EXPECT_GT(tr.last_nm, 3.0f);
+    EXPECT_TRUE(tr.holding_at_end) << "a full grip reported as an arrival";
 }
 
 // With the RS00's quantized velocity a jaw at rest reads moving on some frames;
