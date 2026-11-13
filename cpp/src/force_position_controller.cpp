@@ -1084,8 +1084,15 @@ void ForcePositionController::stop_motor_stream_() {
     stream_ours_ = false;
 }
 
-void ForcePositionController::start() {
-    if (running()) return;
+void ForcePositionController::start() { start_(false); }
+
+void ForcePositionController::start_after_timeout() { start_(true); }
+
+void ForcePositionController::start_(bool recover) {
+    if (running()) {
+        if (recover) throw std::logic_error("stop the active controller before recovery");
+        return;
+    }
     validate_config_();
     map_ = g_.position_map();
     float stall_limit_nm = 0.0f;     // filled from the spec below, if readable
@@ -1298,6 +1305,8 @@ void ForcePositionController::start() {
                         e.what());
     }
 
+    if (recover && !(cfg_.mcu_trajectory && g_.supports_mcu_trajectory()))
+        throw std::logic_error("start_after_timeout requires the MCU trajectory exchange");
     const MotorStatusSample initial = g_.motor().read_status();
     const auto now = std::chrono::steady_clock::now();
     {
@@ -1357,9 +1366,29 @@ void ForcePositionController::start() {
         }
     }
 
-    stopped_ = false;
-    running_.store(true, std::memory_order_release);
-    thread_ = std::thread([this] { run_(); });
+    bool recovered = false;
+    try {
+        if (mcu_) g_.motor().prepare_watchdog_start_(recover);
+        recovered = recover;
+        stopped_ = false;
+        running_.store(true, std::memory_order_release);
+        thread_ = std::thread([this] { run_(); });
+    } catch (...) {
+        running_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_requested_ = true;
+            observation_.valid = false;
+        }
+        g_.motor().off(sub_);
+        sub_active_ = false;
+        stop_motor_stream_();
+        stopped_ = true;
+        // prepare_watchdog_start_ cleans up rejected enables itself. If the
+        // thread could not be created after recovery, relinquish the motor.
+        if (recovered) g_.motor().disable();
+        throw;
+    }
     cv_.notify_one();
     logger()->info(
         "ForcePositionController started: backend={} speed={:.3f}rad/s grasp={:.3f}Nm "
@@ -1373,12 +1402,12 @@ void ForcePositionController::stop() {
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_requested_ = true;
+        running_.store(false, std::memory_order_release);
     }
     cv_.notify_all();
     if (thread_.joinable() && thread_.get_id() != std::this_thread::get_id()) {
         thread_.join();
     }
-    running_.store(false, std::memory_order_release);
 
     MotorStatusSample last{};
     bool have = false;
@@ -1387,33 +1416,15 @@ void ForcePositionController::stop() {
         last = latest_;
         have = have_sample_;
     }
-    if (have) {
-        try { g_.motor().submit_impedance(last.actual_pos, 0.0f, 0.0f, 0.0f); }
-        catch (...) {}
-    }
-    // LEAVE THE MOTOR DISABLED, not merely commanded to zero.
-    //
-    // A zero-stiffness frame de-energizes nothing: the motor stays enabled and
-    // the firmware's host watchdog starts counting. At 300 ms with no target
-    // update it fires T1, which holds zero speed via the firmware's VELOCITY
-    // path -- and that switches the motor's run mode out from under whatever
-    // comes next. Measured: every controller shutdown produced stop_reason=6
-    // (HOST_TIMEOUT) within 500 ms, and a later session then commanded a motor
-    // whose run mode no longer matched what the MCU believed, so its frames
-    // were silently ignored while target_seq/applied_seq advanced normally and
-    // last_error stayed 0. The jaw simply did not move, and nothing in the
-    // stack said why.
-    //
-    // Disabling is also the honest end state: once this controller is stopped
-    // nothing is regulating the jaw, so holding it energized only invites the
-    // watchdog to make that decision for us.
-    // A closed gripper has no port to disable through -- and closing it
-    // already stopped the stream the motor was being driven by.
     if (g_.is_closed()) {
         logger()->debug("ForcePositionController: gripper already closed; "
                         "skipping motor disable on stop");
     } else {
-        try { g_.motor().disable(); }
+        try {
+            std::optional<protocol::MotorImpedanceCtrl> zero;
+            if (have) zero = protocol::MotorImpedanceCtrl{last.actual_pos, 0, 0, 0, 0};
+            g_.motor().stop_control_(zero);
+        }
         catch (const std::exception& e) {
             logger()->warn("ForcePositionController: motor disable on stop failed: {}", e.what());
         }

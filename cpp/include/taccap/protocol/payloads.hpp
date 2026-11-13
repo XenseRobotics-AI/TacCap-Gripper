@@ -476,6 +476,10 @@ namespace MotorMonitorFlag {
 // MotorStatusExt::monitor_reserved — provenance of the fault data, so a host can
 // distinguish "no fault" from "never managed to read one".
 namespace MotorMonitorDiag {
+    constexpr uint8_t McuEnabled   = 0x10;
+    constexpr uint8_t DriveModeMask = 0x60;  // Reset=0, Cali=1, Motor=2
+    constexpr uint8_t DriveMotor   = 0x40;
+    constexpr uint8_t DriveModeValid = 0x80;
     constexpr uint8_t RxSeen       = 0x01;  // a valid cmd-5 reply has been seen
     constexpr uint8_t TimeoutSeen  = 0x02;  // a fault read has timed out at least once
     constexpr uint8_t CanFrameSeen = 0x04;  // a frame resembling a cmd-5 reply was seen

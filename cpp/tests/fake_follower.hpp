@@ -93,6 +93,16 @@ public:
         return last_submit_;
     }
     unsigned submit_count() const { return submits_.load(); }
+    void set_watchdog(bool enabled) {
+        std::lock_guard<std::mutex> lk(mu_);
+        monitor_.stop_reason = static_cast<uint8_t>(tp::MotorStopReason::HostTimeout);
+        monitor_.control_mode = static_cast<uint8_t>(tp::MotorMode::Velocity);
+        monitor_.status = enabled ? tp::MotorStatusBit::Enabled : 0;
+        monitor_.monitor_reserved = tp::MotorMonitorDiag::DriveModeValid |
+            (enabled ? tp::MotorMonitorDiag::McuEnabled | tp::MotorMonitorDiag::DriveMotor : 0);
+    }
+    unsigned targets_at_disable() const { return targets_at_disable_.load(); }
+    unsigned enable_count() const { return enables_.load(); }
     unsigned disable_count() const { return disables_.load(); }
     void set_imu_supported(bool on) { imu_supported_.store(on); }
     void set_imu_v2_supported(bool on) { imu_v2_supported_.store(on); imu_supported_.store(on); }
@@ -341,10 +351,33 @@ private:
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&c, sizeof(c)));
                 return;
             }
-            case tp::Cmd::MotorDisable:
+            case tp::Cmd::GetMotorStatusExt: {
+                std::lock_guard<std::mutex> lk(mu_);
+                monitor_.monitor_version = tp::MOTOR_MONITOR_VERSION;
+                monitor_.monitor_flags = tp::MotorMonitorFlag::StatusValid;
+                pty_.send_response(f.seq, f.cmd, pod_bytes(&monitor_, sizeof(monitor_)));
+                return;
+            }
+            case tp::Cmd::MotorEnable: {
+                ++enables_;
+                std::lock_guard<std::mutex> lk(mu_);
+                monitor_.status |= tp::MotorStatusBit::Enabled;
+                monitor_.monitor_reserved = tp::MotorMonitorDiag::McuEnabled |
+                    tp::MotorMonitorDiag::DriveMotor | tp::MotorMonitorDiag::DriveModeValid;
+                ++monitor_.status_timestamp_ms;
+                pty_.send_response(f.seq, f.cmd, {});
+                return;
+            }
+            case tp::Cmd::MotorDisable: {
+                std::lock_guard<std::mutex> lk(mu_);
+                monitor_.monitor_reserved = tp::MotorMonitorDiag::DriveModeValid;
+                monitor_.status &= ~tp::MotorStatusBit::Enabled;
+                ++monitor_.status_timestamp_ms;
+                targets_at_disable_.store(exchange_targets_.load());
                 ++disables_;
                 pty_.send_response(f.seq, f.cmd, {});
                 return;
+            }
             case tp::Cmd::MotorSetStartupLimitTorque:
             case tp::Cmd::MotorGetCanId:
                 pty_.send_response(f.seq, f.cmd, {can_id_.load()});
@@ -606,7 +639,8 @@ private:
     tp::StreamConfig stream_config_{};
     std::atomic<bool> frozen_{false};
     std::atomic<unsigned> submits_{0};
-    std::atomic<unsigned> disables_{0};
+    tp::MotorStatusExt monitor_{};
+    std::atomic<unsigned> disables_{0}, enables_{0}, targets_at_disable_{0};
     std::atomic<bool> corrupt_fw_ver_writes_{false};
     uint8_t fw_ver_[4] = {0, 0, 0, 0};
     bool fw_ver_valid_ = false;

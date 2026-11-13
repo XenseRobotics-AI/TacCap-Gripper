@@ -364,8 +364,15 @@ void ImpedanceController::stop_motor_stream_() {
     stream_ours_ = false;
 }
 
-void ImpedanceController::start() {
-    if (running()) return;
+void ImpedanceController::start() { start_(false); }
+
+void ImpedanceController::start_after_timeout() { start_(true); }
+
+void ImpedanceController::start_(bool recover) {
+    if (running()) {
+        if (recover) throw std::logic_error("stop the active controller before recovery");
+        return;
+    }
     validate_config_();
     map_ = g_.position_map();
 
@@ -485,6 +492,8 @@ void ImpedanceController::start() {
         logger()->debug("ImpedanceController: envelope unavailable ({})", e.what());
     }
 
+    if (recover && !(cfg_.mcu_stream && g_.supports_mcu_trajectory()))
+        throw std::logic_error("start_after_timeout requires the MCU trajectory exchange");
     const MotorStatusSample initial = g_.motor().read_status();
     const auto now = std::chrono::steady_clock::now();
     {
@@ -542,9 +551,29 @@ void ImpedanceController::start() {
         }
     }
 
-    stopped_ = false;
-    running_.store(true, std::memory_order_release);
-    thread_ = std::thread([this] { run_(); });
+    bool recovered = false;
+    try {
+        if (mcu_) g_.motor().prepare_watchdog_start_(recover);
+        recovered = recover;
+        stopped_ = false;
+        running_.store(true, std::memory_order_release);
+        thread_ = std::thread([this] { run_(); });
+    } catch (...) {
+        running_.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_requested_ = true;
+            observation_.valid = false;
+        }
+        g_.motor().off(sub_);
+        sub_active_ = false;
+        stop_motor_stream_();
+        stopped_ = true;
+        // prepare_watchdog_start_ cleans up rejected enables itself. If the
+        // thread could not be created after recovery, relinquish the motor.
+        if (recovered) g_.motor().disable();
+        throw;
+    }
     cv_.notify_one();
     logger()->info(
         "ImpedanceController started: backend={} kp={:.2f} kd={:.2f} clamp={:.3f}Nm "
@@ -558,12 +587,12 @@ void ImpedanceController::stop() {
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_requested_ = true;
+        running_.store(false, std::memory_order_release);
     }
     cv_.notify_all();
     if (thread_.joinable() && thread_.get_id() != std::this_thread::get_id()) {
         thread_.join();
     }
-    running_.store(false, std::memory_order_release);
 
     MotorStatusSample last{};
     bool have = false;
@@ -573,20 +602,15 @@ void ImpedanceController::stop() {
         have = have_sample_;
         observation_.valid = false;   // nothing maintains it once we are stopped
     }
-    if (have) {
-        try { g_.motor().submit_impedance(last.actual_pos, 0.0f, 0.0f, 0.0f); }
-        catch (...) {}
-    }
-    // Leave the motor DISABLED, not merely commanded to zero -- a zero-stiffness
-    // frame de-energizes nothing, and the firmware's host watchdog then fires
-    // T1 within 300 ms and switches the run mode out from under the next
-    // session. Full rationale and the measurement in
-    // ForcePositionController::stop().
     if (g_.is_closed()) {
         logger()->debug("ImpedanceController: gripper already closed; "
                         "skipping motor disable on stop");
     } else {
-        try { g_.motor().disable(); }
+        try {
+            std::optional<protocol::MotorImpedanceCtrl> zero;
+            if (have) zero = protocol::MotorImpedanceCtrl{last.actual_pos, 0, 0, 0, 0};
+            g_.motor().stop_control_(zero);
+        }
         catch (const std::exception& e) {
             logger()->warn("ImpedanceController: motor disable on stop failed: {}", e.what());
         }

@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace xense::taccap {
@@ -130,6 +131,7 @@ struct MotorStatusSample {
 };
 
 namespace detail {
+class FollowerExchange;
 // A status frame the follower decoded from a reply that is not a status frame.
 //
 // ROOT CAUSE (2026-10-10, diagnostic firmware on 0089s). A RobStride motor
@@ -537,17 +539,18 @@ private:
     // encoded target to it instead of writing a no-ACK frame. Empty = direct.
     // mcu_trajectory: send with the V2.10 bit (the router only exists while
     // exchanging; controllers check supports_mcu_trajectory() first).
-    using TargetRouter = std::function<void(protocol::Cmd, std::vector<uint8_t>, bool mcu_trajectory)>;
-    void set_target_router_(TargetRouter router);
+    void set_exchange_(std::shared_ptr<detail::FollowerExchange> exchange);
+    void stop_control_(std::optional<protocol::MotorImpedanceCtrl> zero);
+    void prepare_watchdog_start_(bool recover);
     void submit_(protocol::Cmd cmd, std::vector<uint8_t> payload);
     // Controllers in ControlBackend::Mcu. False (nothing sent) when no exchange
     // router is installed -- a bare 0x40/0x43 would NOT carry the bit.
     bool submit_mcu_trajectory_(const protocol::MotorPosCtrl& c);
     bool submit_mcu_trajectory_(const protocol::MotorImpedanceCtrl& c);
-    bool submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu);
+    bool submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload);
     bus::Transport& t_;
     std::mutex router_mu_;
-    std::shared_ptr<const TargetRouter> router_;
+    std::shared_ptr<detail::FollowerExchange> exchange_;
 };
 
 }  // namespace xense::taccap

@@ -3,6 +3,7 @@
 #include "follower_exchange.hpp"
 
 #include <taccap/error.hpp>
+#include <taccap/protocol/codec.hpp>
 
 #include <cstring>
 
@@ -81,6 +82,20 @@ void FollowerExchange::submit(protocol::Cmd cmd, std::vector<uint8_t> payload, b
     cv_.notify_all();
 }
 
+void FollowerExchange::finish_targets(std::optional<protocol::MotorImpedanceCtrl> zero) {
+    std::unique_lock<std::mutex> lk(mu_);
+    finishing_ = true;
+    pending_.reset();
+    keepalive_.reset();
+    if (zero && !stop_)
+        pending_ = Target{protocol::ExchangeTarget::Impedance, protocol::encode(*zero), false};
+    cv_.notify_all();
+    // send_cmd itself has bounded attempts. During shutdown its timeout never
+    // requeues a target. The final disable still runs if the zero ACK was lost.
+    targets_done_.wait(lk, [this] { return !pending_ && !target_in_flight_; });
+    finishing_ = false;
+}
+
 ExchangeStats FollowerExchange::stats() const {
     std::lock_guard<std::mutex> lk(mu_);
     return stats_;
@@ -93,7 +108,7 @@ void FollowerExchange::run_() {
         // Wake for a target only when the tick is not close; otherwise sleep to
         // the tick and carry it there.
         cv_.wait_until(lk, next_tick, [&] {
-            return stop_ || (pending_.has_value() && next_tick - clock::now() > kMergeWindow);
+            return stop_ || (pending_.has_value() && (finishing_ || next_tick - clock::now() > kMergeWindow));
         });
         if (stop_) break;
         const auto woke = clock::now();
@@ -109,6 +124,7 @@ void FollowerExchange::run_() {
             keepalive_sent_ = woke;
             keepalive = true;
         }
+        target_in_flight_ = target.has_value();
         lk.unlock();
 
         protocol::ExchangeRequestHeader head{};
@@ -149,11 +165,13 @@ void FollowerExchange::run_() {
         } else {
             ++stats_.timeouts;
             // Not acknowledged: resend unless a newer target replaced it.
-            if (target && !pending_ && !keepalive) {
+            if (target && !finishing_ && !pending_ && !keepalive) {
                 pending_ = std::move(target);
                 ++stats_.targets_resent;
             }
         }
+        target_in_flight_ = false;
+        if (finishing_) targets_done_.notify_all();
         if (link_down) break;
         if (telemetry) {
             next_tick += period_;
@@ -161,6 +179,10 @@ void FollowerExchange::run_() {
             if (next_tick <= now) next_tick = now + period_;   // never burst to catch up
         }
     }
+    stop_ = true;
+    pending_.reset();
+    keepalive_.reset();
+    targets_done_.notify_all();
 }
 
 void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_target, bool carried_mcu) {

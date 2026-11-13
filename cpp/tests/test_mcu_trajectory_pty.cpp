@@ -253,3 +253,53 @@ TEST(McuTrajectoryPty, ImpedanceStreamCarriesGainsAndTheClampedTarget) {
     c.stop();
     g->stop_streaming();
 }
+
+namespace {
+template <class Controller, class Config>
+void check_watchdog_lifecycle(Config cfg, bool hold) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_mcu_trajectory_supported(true);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    g->start_exchange(100, 100);
+    Controller c(*g, cfg);
+    fw.set_watchdog(hold);
+    { Controller ordinary(*g, cfg); EXPECT_THROW(ordinary.start(), tx::ProtocolError); }
+    EXPECT_EQ(fw.disable_count(), 0u);
+    EXPECT_EQ(fw.enable_count(), 0u);
+    EXPECT_EQ(fw.exchange_targets(), 0u);
+    c.start_after_timeout();
+    ASSERT_EQ(fw.enable_count(), hold ? 1u : 2u);
+    c.set_target(0.3f);
+    ASSERT_TRUE(wait_for([&] { return fw.mcu_targets() > 0; }, kSecond));
+    // A delayed response / transport retry may still be owned by the worker
+    // while stop is called. Neither it nor its keepalive may follow disable.
+    fw.lose_exchange_replies(1);
+    c.set_target(0.7f);
+    c.stop();
+    const auto cutoff = fw.targets_at_disable();
+    const auto stats = g->exchange_stats();
+    EXPECT_TRUE(wait_for([&] { return g->exchange_stats().imu_samples > stats.imu_samples + 12; }, kSecond));
+    EXPECT_GT(g->exchange_stats().motor_samples, stats.motor_samples);
+    EXPECT_EQ(fw.exchange_targets(), cutoff);
+    EXPECT_EQ(g->exchange_stats().mcu_keepalives, stats.mcu_keepalives);
+    ASSERT_TRUE(fw.last_plain_impedance().has_value());
+    EXPECT_FLOAT_EQ(fw.last_plain_impedance()->kp, 0.0f);
+}
+}
+
+TEST(McuTrajectoryPty, ForcePositionWatchdogRecoveryAndOrderedStop) {
+    tx::ForcePositionConfig cfg;
+    cfg.mcu_trajectory = true;
+    for (bool hold : {true, false})
+        check_watchdog_lifecycle<tx::ForcePositionController>(cfg, hold);
+}
+
+TEST(McuTrajectoryPty, ImpedanceWatchdogRecoveryAndOrderedStop) {
+    tx::ImpedanceConfig cfg;
+    cfg.mcu_stream = true;
+    for (bool hold : {true, false})
+        check_watchdog_lifecycle<tx::ImpedanceController>(cfg, hold);
+}

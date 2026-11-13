@@ -1,6 +1,7 @@
 // Copyright (c) 2026 XenseRobotics Co., Ltd. — Apache-2.0
 
 #include <taccap/components/motor.hpp>
+#include "../follower_exchange.hpp"
 #include <taccap/log.hpp>
 #include <taccap/error.hpp>
 #include <taccap/protocol/codec.hpp>
@@ -66,7 +67,70 @@ MotorStatusSample Motor::decode(const std::uint8_t* payload, std::size_t len) {
 }
 
 void Motor::enable()       { send_or_throw(t_, protocol::Cmd::MotorEnable,     {}, "enable"); }
-void Motor::disable()      { send_or_throw(t_, protocol::Cmd::MotorDisable,    {}, "disable"); }
+void Motor::disable()      { stop_control_(std::nullopt); }
+void Motor::prepare_watchdog_start_(bool recover) {
+    using namespace protocol;
+    const auto before = read_status_ext();
+    const bool timeout = before.stop_reason == static_cast<uint8_t>(MotorStopReason::HostTimeout)
+        && before.control_mode == static_cast<uint8_t>(MotorMode::Velocity);
+    if (!timeout) {
+        if (recover) throw ProtocolError("controller recovery: no active host watchdog hold or disable");
+        return;
+    }
+    if (!recover)
+        throw ProtocolError("controller start: follower host watchdog active; use start_after_timeout()");
+    if (before.monitor_version != MOTOR_MONITOR_VERSION ||
+        !(before.monitor_flags & MotorMonitorFlag::StatusValid) ||
+        (before.status & MotorStatusBit::Fault) || before.fault_code || before.latched_fault_code)
+        throw ProtocolError("controller recovery: invalid or faulted motor feedback");
+
+    // T1 is still applying velocity hold. Stop that scheduler before switching
+    // modes. T2 is already disabled. A final disable also cancels the previous
+    // exchange target and synchronizes an in-flight request in either case.
+    auto confirm = [this](uint32_t previous_ms, bool enabled) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+        const auto expected = enabled ? MotorMonitorDiag::DriveMotor : 0;
+        do {
+            const auto s = read_status_ext();
+            if (s.fault_code || s.latched_fault_code || (s.status & MotorStatusBit::Fault))
+                throw ProtocolError("controller recovery: motor fault during mode transition");
+            const auto diag = s.monitor_reserved;
+            if (s.status_timestamp_ms != previous_ms &&
+                (s.monitor_flags & MotorMonitorFlag::StatusValid) &&
+                !(s.monitor_flags & MotorMonitorFlag::CommStale) &&
+                bool(diag & MotorMonitorDiag::McuEnabled) == enabled &&
+                (diag & MotorMonitorDiag::DriveModeValid) &&
+                (diag & MotorMonitorDiag::DriveModeMask) == expected)
+                return s.status_timestamp_ms;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw TimeoutError(enabled ? "controller recovery: fresh Motor feedback missing"
+                                   : "controller recovery: fresh Reset feedback missing", ETIMEDOUT);
+    };
+    disable();
+    auto reset_ms = confirm(before.status_timestamp_ms, false);
+    // RobStride accepts run-mode changes while stopped. Its firmware's own
+    // speed-to-motion transition gives the drive 5 ms after disable.
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    try {
+        enable();
+        const auto motor_ms = confirm(reset_ms, true);
+        if (!(before.monitor_reserved & MotorMonitorDiag::McuEnabled)) {
+            // After a full watchdog disable, RS00 can acknowledge Motor while
+            // ignoring motion frames on the first speed-to-motion transition.
+            // Re-arm from a confirmed Motor -> Reset edge before any user target.
+            disable();
+            reset_ms = confirm(motor_ms, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            enable();
+            confirm(reset_ms, true);
+        }
+    } catch (...) {
+        disable();
+        throw;
+    }
+}
+
 void Motor::clear_fault()  { send_or_throw(t_, protocol::Cmd::MotorClearFault, {}, "clear_fault"); }
 
 void Motor::set_position(float pos, float max_vel, float max_torque) {
@@ -107,33 +171,42 @@ void Motor::submit(const protocol::MotorTorqueCtrl& c) {
     submit_(protocol::Cmd::MotorTorqueCtrl, protocol::encode(c));
 }
 
-void Motor::set_target_router_(TargetRouter router) {
-    std::shared_ptr<const TargetRouter> next;
-    if (router) next = std::make_shared<const TargetRouter>(std::move(router));
+void Motor::set_exchange_(std::shared_ptr<detail::FollowerExchange> exchange) {
     std::lock_guard<std::mutex> lk(router_mu_);
-    router_ = std::move(next);
+    // Keep direct submit/disable behind the old worker until its last request finishes.
+    if (exchange_) exchange_->stop();
+    exchange_ = std::move(exchange);
+}
+
+void Motor::stop_control_(std::optional<protocol::MotorImpedanceCtrl> zero) {
+    std::lock_guard<std::mutex> lk(router_mu_);
+    if (exchange_) {
+        exchange_->finish_targets(zero);
+    } else if (zero) {
+        try { t_.send_cmd_no_ack(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(*zero)); }
+        catch (const std::exception& e) { logger()->warn("stop zero frame: {}", e.what()); }
+    }
+    send_or_throw(t_, protocol::Cmd::MotorDisable, {}, "disable");
 }
 
 void Motor::submit_(protocol::Cmd cmd, std::vector<uint8_t> payload) {
-    if (!submit_routed_(cmd, payload, false)) t_.send_cmd_no_ack(cmd, payload);
+    std::lock_guard<std::mutex> lk(router_mu_);
+    if (exchange_) exchange_->submit(cmd, std::move(payload));
+    else t_.send_cmd_no_ack(cmd, payload);
 }
 
-bool Motor::submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu) {
-    std::shared_ptr<const TargetRouter> router;
-    {
-        std::lock_guard<std::mutex> lk(router_mu_);
-        router = router_;
-    }
-    if (!router) return false;
-    (*router)(cmd, std::move(payload), mcu);
+bool Motor::submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload) {
+    std::lock_guard<std::mutex> lk(router_mu_);
+    if (!exchange_) return false;
+    exchange_->submit(cmd, std::move(payload), true);
     return true;
 }
 
 bool Motor::submit_mcu_trajectory_(const protocol::MotorPosCtrl& c) {
-    return submit_routed_(protocol::Cmd::MotorPosCtrl, protocol::encode(c), true);
+    return submit_routed_(protocol::Cmd::MotorPosCtrl, protocol::encode(c));
 }
 bool Motor::submit_mcu_trajectory_(const protocol::MotorImpedanceCtrl& c) {
-    return submit_routed_(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c), true);
+    return submit_routed_(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c));
 }
 
 void Motor::submit_impedance(float pos, float kp, float kd, float ff_torque,

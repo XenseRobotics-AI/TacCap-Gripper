@@ -219,6 +219,9 @@ void bind_control(py::module_& m) {
         }, "Start the status stream and the submit thread.\n\n"
            "The target is seeded at the jaw's current position, so starting against an\n"
            "already-enabled motor cannot step it.")
+        .def("start_after_timeout", [](ImpedanceController& c) {
+            py::gil_scoped_release g; c.start_after_timeout();
+        }, "Explicitly resume a timed-out MCU controller, seeding a hold at the current jaw position.")
         .def("stop", [](ImpedanceController& c) {
             py::gil_scoped_release g; c.stop();
         }, "Stop the thread, command zero torque, and DISABLE the motor.\n\n"
@@ -412,6 +415,9 @@ void bind_control(py::module_& m) {
            "which is a check worth making before the motor can move. Raises ValueError\n"
            "for a grasp above the continuous stall rating (or limits above the rated\n"
            "torque / torque range); warns for one above the envelope's effective cont.")
+        .def("start_after_timeout", [](ForcePositionController& c) {
+            py::gil_scoped_release g; c.start_after_timeout();
+        }, "Explicitly resume a timed-out MCU controller, seeding a hold at the current jaw position.")
         .def("stop", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.stop();
         }, "Stop the thread, command zero torque, and DISABLE the motor.\n\n"

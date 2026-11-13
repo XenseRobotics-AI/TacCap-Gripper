@@ -462,6 +462,8 @@ finally:
     f.motor.disable()
 ```
 
+When the MCU trajectory backend is active, both controllers cancel queued targets and keepalives on `stop()`. They wait for any in-flight target and the final zero-torque frame before disabling the motor. A caller-owned exchange continues to deliver IMU and motor samples. Following a host watchdog hold (300 ms) or disable (30 s), call `start_after_timeout()` on a new or stopped controller when the application is ready to resume motion, then issue a new target. Recovery enables the motor and checks drive feedback. Applications that need to verify travel should check the encoder response to the first target.
+
 Examples:
 
 ```bash

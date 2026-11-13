@@ -305,6 +305,9 @@ public:
     // owns motor enable/disable. start() seeds the target with the current
     // position, so starting an already-enabled motor does not produce a jump.
     void start();
+    // Explicitly resume a timed-out MCU trajectory at the current position.
+    // Re-establishes motor mode/enable before the first target is submitted.
+    void start_after_timeout();
     void stop();
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
@@ -318,6 +321,7 @@ public:
     ControlBackend backend() const noexcept { return mcu_ ? ControlBackend::Mcu : ControlBackend::Host; }
 
 private:
+    void start_(bool recover);
     void validate_config_() const;
     void start_motor_stream_();
     void stop_motor_stream_();

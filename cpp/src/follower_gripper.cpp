@@ -430,10 +430,7 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
     const auto timeout = std::chrono::milliseconds(std::max<long long>(
         5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
     exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout);
-    std::weak_ptr<detail::FollowerExchange> weak = exchange_;
-    motor_.set_target_router_([weak](protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu) {
-        if (auto ex = weak.lock()) ex->submit(cmd, std::move(payload), mcu);
-    });
+    motor_.set_exchange_(exchange_);
     streaming_sources_ = logical_sources;
     streaming_ = true;
 }
@@ -444,8 +441,7 @@ ExchangeStats FollowerGripper::exchange_stats() const {
 
 void FollowerGripper::stop_exchange_() noexcept {
     if (!exchange_) return;
-    motor_.set_target_router_({});
-    exchange_->stop();
+    motor_.set_exchange_({});
     exchange_.reset();
     mcu_trajectory_ = false;
     t_.set_half_duplex(false);

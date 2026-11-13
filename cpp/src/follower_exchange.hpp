@@ -59,6 +59,10 @@ public:
     // any target without the bit ends that.
     void submit(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu_trajectory = false);
 
+    // The motor serializes new submits with disable. Retire pending targets,
+    // retries and keepalives before it sends the final disable on the same bus.
+    void finish_targets(std::optional<protocol::MotorImpedanceCtrl> zero);
+
     // Idempotent; joins the worker.
     void stop() noexcept;
 
@@ -83,6 +87,9 @@ private:
     std::optional<Target>    pending_;
     std::optional<Target>    keepalive_;          // last MCU-trajectory target
     std::chrono::steady_clock::time_point keepalive_sent_{};
+    std::condition_variable  targets_done_;
+    bool                     finishing_ = false;
+    bool                     target_in_flight_ = false;
     bool                     stop_ = false;
     ExchangeStats            stats_{};
     std::thread              worker_;
