@@ -76,6 +76,12 @@ void bind_control(py::module_& m) {
     m.attr("MOTOR_MAX_APPROACH_SPEED_RADPS") = MOTOR_MAX_APPROACH_SPEED_RADPS;
     m.attr("MOTOR_ABSOLUTE_TORQUE_CEILING_NM") = MOTOR_ABSOLUTE_TORQUE_CEILING_NM;
 
+    py::enum_<ControlBackend>(m, "ControlBackend",
+        "Where a controller's motion is generated: Host (SDK, per status frame) or\n"
+        "Mcu (follower 1.2.19+ control thread, over the exchange).")
+        .value("Host", ControlBackend::Host)
+        .value("Mcu",  ControlBackend::Mcu);
+
     py::enum_<ImpedanceState>(m, "ImpedanceState",
         "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING.\n\n"
         "There is no STALLED -- the stall guard was removed. A blocked jaw makes the "
@@ -125,7 +131,12 @@ void bind_control(py::module_& m) {
                        "zero torque.")
         .def_readwrite("motor_stream_hz",   &ImpedanceConfig::motor_stream_hz,
                        "Motor-status rate the controller requests, 1..100 Hz. One command\n"
-                       "is submitted per status frame, so this is also the control rate.");
+                       "is submitted per status frame, so this is also the control rate.")
+        .def_readwrite("mcu_stream",        &ImpedanceConfig::mcu_stream,
+                       "Default False. True: when the follower is exchanging and its firmware\n"
+                       "supports it (1.2.19+), each target goes out at once and the follower\n"
+                       "interpolates the stream and feeds its velocity forward. Gains, clamp,\n"
+                       "ceiling and faults unchanged. Otherwise start() warns. See backend.");
 
     impedance_config.def_static("for_spec", &ImpedanceConfig::for_spec, py::arg("spec"),
         "Defaults for the motor the device actually has installed (pass the result of\n"
@@ -166,6 +177,7 @@ void bind_control(py::module_& m) {
                       "How many times the backstop has engaged since start().")
         .def_readonly("device_limit_nm",     &ImpedanceSnapshot::device_limit_nm,
                       "The motor's own persisted torque limit (0x700B) read at start().")
+        .def_readonly("backend",             &ImpedanceSnapshot::backend)
         .def_readonly("fault_reason",        &ImpedanceSnapshot::fault_reason,
                       "Why the controller faulted; empty when it has not. The first cause is\n"
                       "kept, not the most recent.")
@@ -238,6 +250,8 @@ void bind_control(py::module_& m) {
         .def("snapshot", [](const ImpedanceController& c) {
             py::gil_scoped_release g; return c.snapshot();
         }, "One consistent view of state, observation and command, taken under one lock.")
+        .def_property_readonly("backend", &ImpedanceController::backend,
+                               "ControlBackend.Host, or .Mcu when mcu_stream was honoured.")
         .def_property_readonly("config", &ImpedanceController::config,
                                "The validated config in force. Gain changes made through\n"
                                "set_gains() are reflected here.")
@@ -305,6 +319,11 @@ void bind_control(py::module_& m) {
         .def_readwrite("accel_radps2",         &ForcePositionConfig::accel_radps2,
                        "Limit on setpoint acceleration from rest, rad/s^2. 0 = unlimited\n"
                        "(previous behaviour).")
+        .def_readwrite("mcu_trajectory",       &ForcePositionConfig::mcu_trajectory,
+                       "Default False. True: when the follower is exchanging and its firmware\n"
+                       "supports it (1.2.19+), targets go to the follower and its 500 Hz control\n"
+                       "thread generates the move (acceleration-limited, no overshoot, budget-\n"
+                       "bounded). Otherwise start() warns and uses the host law. See backend.")
         .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm,
                        "Feed-forward applied only while holding the CLOSED endpoint, N*m, to seat\n"
                        "the jaw against its mechanical stop and take up backlash. Measured: 0.15\n"
@@ -342,6 +361,7 @@ void bind_control(py::module_& m) {
         .def_readonly("motion_torque_limit_nm", &ForcePositionSnapshot::motion_torque_limit_nm)
         .def_readonly("device_limit_nm",       &ForcePositionSnapshot::device_limit_nm,
                       "The motor's own persisted torque limit (0x700B) read at start().")
+        .def_readonly("backend",               &ForcePositionSnapshot::backend)
         // Observed quantities, not control state -- derived each frame from command and error
         .def_readonly("holding",               &ForcePositionSnapshot::holding,
                       "Derived each frame from the command and the error, not a state: the jaw\n"
@@ -425,6 +445,8 @@ void bind_control(py::module_& m) {
                                "True between start() and stop().")
         .def_property_readonly("state", &ForcePositionController::state,
                                "Current ForcePositionState. Prefer snapshot() for more than one field.")
+        .def_property_readonly("backend", &ForcePositionController::backend,
+                               "ControlBackend.Host, or .Mcu when mcu_trajectory was honoured.")
         .def_property_readonly("config", [](const ForcePositionController& c) {
             return c.config();
         }, "The validated config in force.")

@@ -1030,8 +1030,14 @@ struct LeaderExchangeResponseHeader {
 // length. Reply: ExchangeResponseHeader, then MotorStatus V2 (59 B) when
 // ExchangeRespFlag::Motor is set, then imu_count IMU packets whose format is
 // imu_cmd (GetImu 28 B or GetImuV2 44 B), oldest first.
-namespace ExchangeFlag    { constexpr uint8_t Telemetry = 0x01; }
-namespace ExchangeRespFlag { constexpr uint8_t Motor = 0x01; }
+// McuTrajectory (V2.10, follower 1.2.19+): the carried Position/Impedance
+// target is executed by the firmware's own trajectory (jitter-buffer
+// interpolation, rate/accel-limited tracking, torque budget). Older firmware
+// IGNORES the bit and runs the target as a plain 0x40/0x43, so probe first:
+// a request with only this bit and no target is answered with
+// ExchangeRespFlag::McuTrajectory by firmware that understands it.
+namespace ExchangeFlag    { constexpr uint8_t Telemetry = 0x01; constexpr uint8_t McuTrajectory = 0x02; }
+namespace ExchangeRespFlag { constexpr uint8_t Motor = 0x01; constexpr uint8_t McuTrajectory = 0x02; }
 enum class ExchangeTarget : uint8_t {
     None = 0, Position = 1, Velocity = 2, Torque = 3, Impedance = 4,
 };

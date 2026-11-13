@@ -42,6 +42,7 @@ add_executable(taccap_unit_tests
     test_imu_motor_concurrency.cpp
     test_imu_time.cpp
     test_follower_exchange_pty.cpp
+    test_mcu_trajectory_pty.cpp
     test_leader_exchange_pty.cpp
     test_monotonic_cv.cpp
 )

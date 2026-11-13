@@ -108,6 +108,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -172,6 +173,17 @@ struct ImpedanceConfig {
     float peak_torque_nm = MOTOR_PEAK_TORQUE_NM;
     unsigned status_timeout_ms = 350;      // stale stream -> zero command + Fault
     unsigned motor_stream_hz   = 100;
+    // MCU STREAM (follower 1.2.19+, protocol V2.10). Default off = unchanged.
+    // When on AND the follower is exchanging AND answered the V2.10 probe,
+    // each set_target()/set_gains() goes to the follower at once, and its
+    // 500 Hz control thread interpolates the targets on their arrival time and
+    // feeds the interpolated velocity forward (the host law sends v = 0, so a
+    // streamed target is chased by the spring alone, a frame late). Gains,
+    // feed-forward, the max_position_torque_nm error clamp (re-applied against
+    // each status sample and resent while it binds), the torque ceiling and
+    // all faults behave as before; TorqueCapped and Fault go out as host
+    // frames. Otherwise start() warns and runs the host law.
+    bool mcu_stream = false;
 
     // Defaults tuned for the actuator the device actually has.
     //
@@ -210,6 +222,7 @@ struct ImpedanceSnapshot {
     bool               torque_capped  = false;
     uint64_t           torque_caps    = 0;
     float              device_limit_nm = 0.0f;     // persisted 0x700B boot value
+    ControlBackend     backend        = ControlBackend::Host;
     std::string        fault_reason;
 };
 
@@ -248,6 +261,9 @@ public:
     bool torque_capped() const noexcept { return torque_capped_; }
     uint64_t torque_caps() const noexcept { return torque_caps_; }
     const std::string& fault_reason() const noexcept { return fault_reason_; }
+    float kp() const noexcept { return kp_; }
+    float kd() const noexcept { return kd_; }
+    float feedforward() const noexcept { return ff_; }
 
 private:
     void guard_torque_(const MotorStatusSample& s,
@@ -299,6 +315,7 @@ public:
     ImpedanceState state() const;
     ImpedanceSnapshot snapshot() const;
     const ImpedanceConfig& config() const noexcept { return cfg_; }
+    ControlBackend backend() const noexcept { return mcu_ ? ControlBackend::Mcu : ControlBackend::Host; }
 
 private:
     void validate_config_() const;
@@ -333,6 +350,13 @@ private:
     bool stream_ours_ = false;
     // See ForcePositionController::stopped_.
     bool stopped_ = false;
+    // ControlBackend::Mcu, and what the follower is executing from us.
+    bool mcu_ = false;
+    bool mcu_engaged_ = false;
+    protocol::MotorImpedanceCtrl mcu_last_{};
+    // Caller holds mu_.
+    std::optional<protocol::MotorImpedanceCtrl> mcu_target_() const;
+    void send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t);
 };
 
 const char* to_string(ImpedanceState state) noexcept;

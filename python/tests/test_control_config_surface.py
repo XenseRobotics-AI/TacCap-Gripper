@@ -38,6 +38,11 @@ FORCE_POSITION_FIELDS = {
     # is the seating torque with headroom, not a force anyone should raise
     # hoping for a tighter close. See the header for the sweep.
     "close_preload_nm": 0.25,
+    # Motion profile (2026-11-13); 0 keeps the previous behaviour.
+    "brake_decel_radps2": 0.0,
+    "accel_radps2": 0.0,
+    # V2.10: off unless asked for; the host law stays the default.
+    "mcu_trajectory": False,
 }
 
 # Removed in the 16 -> 6 trim. The first eight are firmware-constant mirrors or
@@ -165,6 +170,7 @@ IMPEDANCE_FIELDS = {
     "peak_torque_nm": 6.0,
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
+    "mcu_stream": False,
 }
 
 IMPEDANCE_INTERNAL = [
@@ -251,3 +257,18 @@ def test_rated_torque_default_matches_the_force_position_hold_ceiling():
     assert t.ImpedanceConfig().rated_torque_nm == pytest.approx(
         t.FORCE_POSITION_MAX_HOLD_TORQUE_NM
     )
+
+
+# ---- V2.10 MCU trajectory surface ----------------------------------------
+
+def test_mcu_trajectory_surface_is_exported():
+    assert set(t.ControlBackend.__members__) == {"Host", "Mcu"}
+    assert t.ForcePositionConfig().mcu_trajectory is False
+    assert t.ImpedanceConfig().mcu_stream is False
+    for cls in (t.ForcePositionController, t.ImpedanceController):
+        assert hasattr(cls, "backend"), cls
+    for snap in (t.ForcePositionSnapshot, t.ImpedanceSnapshot):
+        assert hasattr(snap, "backend"), snap
+    assert hasattr(t.FollowerGripper, "supports_mcu_trajectory")
+    for field in ("mcu_targets", "mcu_keepalives", "mcu_unacknowledged"):
+        assert hasattr(t._taccap_native.ExchangeStats, field), field

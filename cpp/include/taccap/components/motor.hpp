@@ -535,9 +535,16 @@ private:
     SubId subscribe_status_(Callback cb, bool control);
     // While FollowerGripper runs the half-duplex exchange, submit() hands the
     // encoded target to it instead of writing a no-ACK frame. Empty = direct.
-    using TargetRouter = std::function<void(protocol::Cmd, std::vector<uint8_t>)>;
+    // mcu_trajectory: send with the V2.10 bit (the router only exists while
+    // exchanging; controllers check supports_mcu_trajectory() first).
+    using TargetRouter = std::function<void(protocol::Cmd, std::vector<uint8_t>, bool mcu_trajectory)>;
     void set_target_router_(TargetRouter router);
     void submit_(protocol::Cmd cmd, std::vector<uint8_t> payload);
+    // Controllers in ControlBackend::Mcu. False (nothing sent) when no exchange
+    // router is installed -- a bare 0x40/0x43 would NOT carry the bit.
+    bool submit_mcu_trajectory_(const protocol::MotorPosCtrl& c);
+    bool submit_mcu_trajectory_(const protocol::MotorImpedanceCtrl& c);
+    bool submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu);
     bus::Transport& t_;
     std::mutex router_mu_;
     std::shared_ptr<const TargetRouter> router_;

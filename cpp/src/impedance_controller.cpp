@@ -529,14 +529,27 @@ void ImpedanceController::start() {
         throw;
     }
 
+    mcu_ = false;
+    mcu_engaged_ = false;
+    if (cfg_.mcu_stream) {
+        if (g_.supports_mcu_trajectory()) {
+            mcu_ = true;
+        } else {
+            logger()->warn("ImpedanceController: mcu_stream requested but {}; "
+                           "running the host control law",
+                           g_.is_exchanging() ? "the follower firmware does not support it (needs 1.2.19+)"
+                                              : "the follower is not exchanging (start_exchange)");
+        }
+    }
+
     stopped_ = false;
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run_(); });
     cv_.notify_one();
     logger()->info(
-        "ImpedanceController started: kp={:.2f} kd={:.2f} clamp={:.3f}Nm "
+        "ImpedanceController started: backend={} kp={:.2f} kd={:.2f} clamp={:.3f}Nm "
         "ceiling={:.3f}Nm stream={}Hz device_limit={:.3f}Nm",
-        cfg_.kp, cfg_.kd, cfg_.max_position_torque_nm, cfg_.rated_torque_nm,
+        to_string(backend()), cfg_.kp, cfg_.kd, cfg_.max_position_torque_nm, cfg_.rated_torque_nm,
         cfg_.motor_stream_hz, device_limit_nm_);
 }
 
@@ -637,6 +650,39 @@ void ImpedanceController::set_target(float position) {
     policy_->set_target(position);
     command_woke_ = true;
     cv_.notify_one();
+    // Mcu: on the wire now; the follower stamps arrivals and interpolates.
+    send_mcu_(mcu_target_());
+}
+
+// The frame the host law would send, minus v = 0 (the follower supplies the
+// velocity). Same error clamp as ImpedancePolicy::step(), against the latest
+// sample.
+std::optional<protocol::MotorImpedanceCtrl> ImpedanceController::mcu_target_() const {
+    if (!mcu_ || !policy_ || policy_->state() != ImpedanceState::Tracking) return std::nullopt;
+    if (latest_time_ + std::chrono::milliseconds(cfg_.status_timeout_ms) <= std::chrono::steady_clock::now())
+        return std::nullopt;
+    const float kp = policy_->kp();
+    float raw = map_.to_rad(policy_->target_position());
+    if (cfg_.max_position_torque_nm > 0.0f && kp > 0.0f) {
+        const float limit = cfg_.max_position_torque_nm / kp;
+        raw = std::clamp(raw, latest_.actual_pos - limit, latest_.actual_pos + limit);
+    }
+    return protocol::MotorImpedanceCtrl{raw, kp, policy_->kd(), policy_->feedforward(), 0.0f};
+}
+
+// Called with mu_ held.
+void ImpedanceController::send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t) {
+    if (!t) return;
+    try {
+        if (g_.motor().submit_mcu_trajectory_(*t)) {
+            mcu_engaged_ = true;
+            mcu_last_ = *t;
+        } else if (policy_) {
+            policy_->fail("MCU stream: follower exchange stopped");
+        }
+    } catch (const std::exception& e) {
+        if (policy_) policy_->fail(std::string("submit failed: ") + e.what());
+    }
 }
 
 void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque) {
@@ -654,6 +700,7 @@ void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque
     policy_->set_gains(kp, kd, feedforward_torque);
     command_woke_ = true;
     cv_.notify_one();
+    send_mcu_(mcu_target_());
 }
 
 void ImpedanceController::reset() {
@@ -695,6 +742,7 @@ ImpedanceSnapshot ImpedanceController::snapshot() const {
         out.torque_caps = policy_->torque_caps();
         out.fault_reason = policy_->fault_reason();
     }
+    out.backend = backend();
     return out;
 }
 
@@ -743,6 +791,18 @@ void ImpedanceController::run_() {
 
             command = policy_->step(latest_, now);
             send = true;
+            if (mcu_) {
+                if (policy_->state() == ImpedanceState::Tracking) {
+                    // The follower runs it. Resend only what changed here: the
+                    // first frame after a host frame, or the error clamp moving
+                    // with the jaw (or letting go of it).
+                    send = false;
+                    const auto t = mcu_target_();
+                    if (t && (!mcu_engaged_ || t->target_pos != mcu_last_.target_pos)) send_mcu_(t);
+                } else {
+                    mcu_engaged_ = false;   // TorqueCapped / Fault / Idle: host frame
+                }
+            }
         }
 
         if (!send) continue;

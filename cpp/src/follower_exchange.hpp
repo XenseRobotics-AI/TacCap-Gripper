@@ -52,7 +52,12 @@ public:
 
     // Latest target wins. Only the four Motor*Ctrl commands are accepted;
     // anything else throws IoError(EINVAL). After stop() it is ignored.
-    void submit(protocol::Cmd cmd, std::vector<uint8_t> payload);
+    // mcu_trajectory (V2.10): carry the target with ExchangeFlag::McuTrajectory.
+    // Only Position/Impedance may carry it (EINVAL otherwise). The last such
+    // target is resent every kMcuKeepAlive while no newer target arrives, so
+    // the follower's 300 ms host watchdog sees a live host during a long hold;
+    // any target without the bit ends that.
+    void submit(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu_trajectory = false);
 
     // Idempotent; joins the worker.
     void stop() noexcept;
@@ -63,10 +68,11 @@ private:
     struct Target {
         protocol::ExchangeTarget kind;
         std::vector<uint8_t>     payload;
+        bool                     mcu = false;
     };
 
     void run_();
-    void handle_reply_(const bus::AckResponse& ack, bool carried_target);
+    void handle_reply_(const bus::AckResponse& ack, bool carried_target, bool carried_mcu);
 
     bus::Transport&                 t_;
     const std::chrono::microseconds period_;
@@ -75,6 +81,8 @@ private:
     mutable std::mutex       mu_;
     detail::MonotonicCondition cv_;   // monotonic even on old-sysroot toolchains
     std::optional<Target>    pending_;
+    std::optional<Target>    keepalive_;          // last MCU-trajectory target
+    std::chrono::steady_clock::time_point keepalive_sent_{};
     bool                     stop_ = false;
     ExchangeStats            stats_{};
     std::thread              worker_;

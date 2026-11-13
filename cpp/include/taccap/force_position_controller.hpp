@@ -70,6 +70,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -195,6 +196,26 @@ struct ForcePositionConfig {
     // frame (measured 3.1 of 3.6 N*m commanded against 0.6 N*m of real load).
     float brake_decel_radps2   = 0.0f;
     float accel_radps2         = 0.0f;
+
+    // MCU TRAJECTORY (follower 1.2.19+, protocol V2.10). Default off = the host
+    // control law above, unchanged. When on AND the follower is exchanging
+    // (FollowerGripper::start_exchange) AND it answered the V2.10 probe, the
+    // caller's targets go to the follower as (target, close_speed_radps,
+    // grasp_torque_nm) the moment they are set, and the follower's 500 Hz
+    // control thread generates the motion: a time-optimal move at the motor's
+    // identified acceleration limit braking onto the target without overshoot,
+    // streams interpolated on arrival time, the PD + feed-forward sum bounded
+    // to grasp_torque_nm (contact = holding at that budget), and the closed
+    // endpoint seated with the firmware's 0.25 N*m preload. Otherwise start()
+    // logs a warning and runs the host law. backend() says which one runs.
+    //
+    // Ignored in Mcu: brake_decel_radps2, accel_radps2, close_preload_nm (the
+    // firmware owns the profile). Still in force: start()'s rating checks,
+    // status watchdog -> Fault -> zero command (which also leaves the MCU
+    // trajectory), stop(). snapshot().holding/arrived/state are still derived
+    // on the host from the status stream; commanded_torque_nm is the host
+    // law's prediction, not what the follower sent.
+    bool  mcu_trajectory       = false;
 };
 
 struct ForcePositionSnapshot {
@@ -211,6 +232,7 @@ struct ForcePositionSnapshot {
     // OBSERVATIONS, derived per frame -- not states the controller switches on.
     bool                holding             = false; // budget saturated, not at target
     bool                arrived             = false; // within arrival_eps_rad
+    ControlBackend      backend             = ControlBackend::Host;
     std::string         fault_reason;
 };
 
@@ -452,6 +474,8 @@ public:
     ForcePositionState state() const;
     ForcePositionSnapshot snapshot() const;
     const ForcePositionConfig& config() const noexcept { return cfg_; }
+    // Host, or Mcu when cfg.mcu_trajectory was honoured by start().
+    ControlBackend backend() const noexcept { return mcu_ ? ControlBackend::Mcu : ControlBackend::Host; }
 
 private:
     void validate_config_() const;
@@ -513,6 +537,13 @@ private:
     // stop() has already run since the last start(): a second stop() (the
     // destructor after an explicit one) has nothing left to undo.
     bool stopped_ = false;
+    // ControlBackend::Mcu (decided by start()), and whether the follower is
+    // currently executing an MCU target from us (false after any host frame).
+    bool mcu_ = false;
+    bool mcu_engaged_ = false;
+    // Caller holds mu_. The MCU target for a command, if one should go out now.
+    std::optional<protocol::MotorPosCtrl> mcu_target_(float position, float grasp_torque_nm) const;
+    void send_mcu_(const std::optional<protocol::MotorPosCtrl>& t);
 };
 
 const char* to_string(ForcePositionState state) noexcept;

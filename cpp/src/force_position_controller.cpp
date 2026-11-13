@@ -1344,14 +1344,27 @@ void ForcePositionController::start() {
         throw;
     }
 
+    mcu_ = false;
+    mcu_engaged_ = false;
+    if (cfg_.mcu_trajectory) {
+        if (g_.supports_mcu_trajectory()) {
+            mcu_ = true;
+        } else {
+            logger()->warn("ForcePositionController: mcu_trajectory requested but {}; "
+                           "running the host control law",
+                           g_.is_exchanging() ? "the follower firmware does not support it (needs 1.2.19+)"
+                                              : "the follower is not exchanging (start_exchange)");
+        }
+    }
+
     stopped_ = false;
     running_.store(true, std::memory_order_release);
     thread_ = std::thread([this] { run_(); });
     cv_.notify_one();
     logger()->info(
-        "ForcePositionController started: speed={:.3f}rad/s grasp={:.3f}Nm "
+        "ForcePositionController started: backend={} speed={:.3f}rad/s grasp={:.3f}Nm "
         "hold_limit={:.3f}Nm motion_limit={:.3f}Nm device_limit={:.3f}Nm",
-        cfg_.close_speed_radps, cfg_.grasp_torque_nm, cfg_.hold_torque_limit_nm,
+        to_string(backend()), cfg_.close_speed_radps, cfg_.grasp_torque_nm, cfg_.hold_torque_limit_nm,
         cfg_.motion_torque_limit_nm, device_limit_nm_);
 }
 
@@ -1507,6 +1520,10 @@ void ForcePositionController::set_target(float position, float grasp_torque_nm) 
               std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
+    // Mcu: on the wire NOW, on the caller's thread -- the follower stamps the
+    // arrival and interpolates a stream on those stamps, so batching on the
+    // status doorbell would hand it the very jitter it exists to remove.
+    send_mcu_(mcu_target_(position, grasp_torque_nm));
 }
 
 void ForcePositionController::release() {
@@ -1518,6 +1535,7 @@ void ForcePositionController::release() {
               std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
+    send_mcu_(mcu_target_(1.0f, cfg_.grasp_torque_nm));
 }
 
 void ForcePositionController::hold_position() {
@@ -1529,6 +1547,29 @@ void ForcePositionController::hold_position() {
               std::chrono::steady_clock::now()});
     command_woke_ = true;
     cv_.notify_one();
+    send_mcu_(mcu_target_(map_.to_position(latest_.actual_pos), cfg_.grasp_torque_nm));
+}
+
+std::optional<protocol::MotorPosCtrl> ForcePositionController::mcu_target_(
+        float position, float grasp_torque_nm) const {
+    if (!mcu_ || !policy_) return std::nullopt;
+    const auto st = policy_->state();
+    if (st == ForcePositionState::Fault || st == ForcePositionState::Idle) return std::nullopt;
+    if (latest_time_ + std::chrono::milliseconds(cfg_.status_timeout_ms) <= std::chrono::steady_clock::now())
+        return std::nullopt;   // stale: run_() is about to fault and send zero
+    return protocol::MotorPosCtrl{map_.to_rad(std::clamp(position, 0.0f, 1.0f)),
+                                  cfg_.close_speed_radps, grasp_torque_nm};
+}
+
+// Called with mu_ held (it only hands bytes to the exchange thread).
+void ForcePositionController::send_mcu_(const std::optional<protocol::MotorPosCtrl>& t) {
+    if (!t) return;
+    try {
+        if (g_.motor().submit_mcu_trajectory_(*t)) mcu_engaged_ = true;
+        else if (policy_) policy_->fail("MCU trajectory: follower exchange stopped");
+    } catch (const std::exception& e) {
+        if (policy_) policy_->fail(std::string("submit failed: ") + e.what());
+    }
 }
 
 void ForcePositionController::reset() {
@@ -1573,6 +1614,7 @@ ForcePositionSnapshot ForcePositionController::snapshot() const {
         out.arrived = policy_->arrived();
         out.fault_reason = policy_->fault_reason();
     }
+    out.backend = backend();
     return out;
 }
 
@@ -1669,6 +1711,24 @@ void ForcePositionController::run_() {
 
             command = policy_->step(latest_, now);
             send = true;
+            if (mcu_) {
+                // The follower generates the motion; step() above still runs
+                // for the derived state and observations. Host frames go out
+                // only in Fault/Idle (zero torque), and they end the MCU
+                // trajectory on the follower, so it is re-engaged afterwards
+                // (start, reset()) with a hold of the current target.
+                const auto st = policy_->state();
+                if (st != ForcePositionState::Fault && st != ForcePositionState::Idle) {
+                    send = false;
+                    if (!mcu_engaged_) {
+                        const float budget = policy_->grasp_torque_nm() > 0.0f ? policy_->grasp_torque_nm()
+                                                                           : cfg_.grasp_torque_nm;
+                        send_mcu_(mcu_target_(policy_->target_position(), budget));
+                    }
+                } else {
+                    mcu_engaged_ = false;
+                }
+            }
         }
 
         if (!send) continue;

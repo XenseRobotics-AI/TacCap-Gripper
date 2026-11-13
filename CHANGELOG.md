@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### MCU trajectory (candidate, not yet versioned; on top of the high-rate IMU candidate)
+
+Requires follower firmware 1.2.19 (candidate) for the new backend; leader
+unchanged. Protocol V2.10 adds one bit to 0x5D (`flags` bit1, request and
+reply); without it every exchange is byte-identical to V2.9. Both switches
+default **off**: nothing changes unless a caller asks for it.
+
+#### Added
+
+- **`ForcePositionConfig.mcu_trajectory`.** With the follower exchanging
+  (`start_exchange`) and answering the V2.10 probe, targets go to the follower
+  as `(target, close_speed_radps, grasp_torque_nm)` when they are set, and its
+  500 Hz control thread generates the move: acceleration limited at the
+  identified motor limit, braking onto the target without overshoot, streams
+  interpolated on arrival time, the PD + feed-forward sum bounded to the grasp
+  budget, closed endpoint seated with a 0.25 N*m preload. `brake_decel_radps2`,
+  `accel_radps2` and `close_preload_nm` do not apply there.
+- **`ImpedanceConfig.mcu_stream`.** Same transport for the impedance law: the
+  caller's gains, feed-forward and error clamp are kept; the follower
+  interpolates the target stream and feeds its velocity forward. Torque
+  ceiling and faults still go out as host frames.
+- `ControlBackend` (`Host` / `Mcu`), `backend()` on both controllers and in
+  their snapshots; `FollowerGripper.supports_mcu_trajectory` (probed in
+  `start_exchange`); `ExchangeStats.mcu_targets / mcu_keepalives /
+  mcu_unacknowledged`.
+- A held MCU target is resent every 80 ms (firmware host watchdog is 300 ms,
+  its stream restart gap 100 ms); a live stream is never padded.
+- Unsupported firmware, or no exchange: `start()` logs a warning and runs the
+  host law (`backend == Host`).
+
+#### Fixed
+
+- `python/tests/test_control_config_surface.py` now lists
+  `brake_decel_radps2` / `accel_radps2` (added in the previous commit without
+  updating the surface test).
+
 ### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
 
 Requires leader firmware 1.2.8 / follower 1.2.18 (candidates; previous

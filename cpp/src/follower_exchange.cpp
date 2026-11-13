@@ -21,6 +21,13 @@ using clock = std::chrono::steady_clock;
 // out at once, so low-rate latency is unchanged.
 constexpr auto kMergeWindow = std::chrono::microseconds(3000);
 
+// MCU-trajectory keep-alive. Below the firmware's 100 ms buffer-restart gap and
+// its 300 ms host watchdog, and long against any stream worth interpolating:
+// resending the last target in the middle of a stream would put a flat step
+// into the firmware's reference, so it is only resent once the caller has been
+// quiet this long (the target is being held, not streamed).
+constexpr auto kMcuKeepAlive = std::chrono::milliseconds(80);
+
 std::optional<protocol::ExchangeTarget> target_kind(protocol::Cmd cmd) {
     switch (cmd) {
         case protocol::Cmd::MotorPosCtrl:       return protocol::ExchangeTarget::Position;
@@ -57,14 +64,18 @@ void FollowerExchange::stop() noexcept {
     if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) worker_.join();
 }
 
-void FollowerExchange::submit(protocol::Cmd cmd, std::vector<uint8_t> payload) {
+void FollowerExchange::submit(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu_trajectory) {
     const auto kind = target_kind(cmd);
     if (!kind) throw IoError("FollowerExchange: not a motor target command", EINVAL);
+    if (mcu_trajectory && *kind != protocol::ExchangeTarget::Position &&
+        *kind != protocol::ExchangeTarget::Impedance)
+        throw IoError("FollowerExchange: MCU trajectory takes position or impedance targets only", EINVAL);
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (stop_) return;
         if (pending_) ++stats_.targets_superseded;
-        pending_ = Target{*kind, std::move(payload)};
+        pending_ = Target{*kind, std::move(payload), mcu_trajectory};
+        if (!mcu_trajectory) keepalive_.reset();
         ++stats_.targets_submitted;
     }
     cv_.notify_all();
@@ -85,14 +96,25 @@ void FollowerExchange::run_() {
             return stop_ || (pending_.has_value() && next_tick - clock::now() > kMergeWindow);
         });
         if (stop_) break;
-        const bool telemetry = clock::now() >= next_tick;
+        const auto woke = clock::now();
+        const bool telemetry = woke >= next_tick;
         std::optional<Target> target = std::move(pending_);
         pending_.reset();
+        bool keepalive = false;
+        if (target && target->mcu) {
+            keepalive_ = *target;
+            keepalive_sent_ = woke;
+        } else if (!target && telemetry && keepalive_ && woke - keepalive_sent_ >= kMcuKeepAlive) {
+            target = *keepalive_;
+            keepalive_sent_ = woke;
+            keepalive = true;
+        }
         lk.unlock();
 
         protocol::ExchangeRequestHeader head{};
         head.version     = protocol::EXCHANGE_VERSION;
         head.flags       = telemetry ? protocol::ExchangeFlag::Telemetry : 0;
+        if (target && target->mcu) head.flags |= protocol::ExchangeFlag::McuTrajectory;
         head.target_kind = static_cast<uint8_t>(target ? target->kind : protocol::ExchangeTarget::None);
         std::vector<uint8_t> req(sizeof(head));
         std::memcpy(req.data(), &head, sizeof(head));
@@ -114,19 +136,20 @@ void FollowerExchange::run_() {
         const auto rtt_us = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - started).count());
 
-        if (ack) handle_reply_(*ack, target.has_value());
+        if (ack) handle_reply_(*ack, target.has_value(), target && target->mcu);
 
         lk.lock();
         ++stats_.exchanges;
         if (telemetry) ++stats_.telemetry_exchanges;
         if (target) ++stats_.target_exchanges;
+        if (target && target->mcu) ++(keepalive ? stats_.mcu_keepalives : stats_.mcu_targets);
         if (ack) {
             stats_.last_rtt_us = rtt_us;
             if (rtt_us > stats_.max_rtt_us) stats_.max_rtt_us = rtt_us;
         } else {
             ++stats_.timeouts;
             // Not acknowledged: resend unless a newer target replaced it.
-            if (target && !pending_) {
+            if (target && !pending_ && !keepalive) {
                 pending_ = std::move(target);
                 ++stats_.targets_resent;
             }
@@ -140,7 +163,7 @@ void FollowerExchange::run_() {
     }
 }
 
-void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_target) {
+void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_target, bool carried_mcu) {
     const auto& d = ack.data;
     protocol::ExchangeResponseHeader h{};
     bool ok = !ack.is_nack && d.size() >= sizeof(h);
@@ -180,6 +203,7 @@ void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_t
     if (motor) ++stats_.motor_samples;
     stats_.imu_samples += h.imu_count;
     stats_.imu_dropped += h.imu_dropped;
+    if (carried_mcu && !(h.flags & protocol::ExchangeRespFlag::McuTrajectory)) ++stats_.mcu_unacknowledged;
     if (carried_target) {
         stats_.last_target_result = h.target_result;
         if (h.target_result != 0) ++stats_.targets_rejected;

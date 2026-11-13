@@ -409,6 +409,21 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
                             "without polled mode / 0x5D?): ") + protocol::to_string(ack.error_code));
     }
 
+    // V2.10 probe: bit1 alone, no target, no telemetry. 1.2.18 and older
+    // ignore the bit and answer a bare header without it; any failure here
+    // just means "not supported" -- the exchange itself is unaffected.
+    mcu_trajectory_ = false;
+    try {
+        const std::vector<uint8_t> probe{protocol::EXCHANGE_VERSION,
+                                         protocol::ExchangeFlag::McuTrajectory, 0, 0};
+        auto pa = t_.send_cmd(protocol::Cmd::SlaveExchange, probe, std::chrono::milliseconds(200));
+        mcu_trajectory_ = !pa.is_nack && pa.data.size() >= sizeof(protocol::ExchangeResponseHeader) &&
+                          pa.data[0] == protocol::EXCHANGE_VERSION &&
+                          (pa.data[1] & protocol::ExchangeRespFlag::McuTrajectory) != 0;
+    } catch (const std::exception& e) {
+        logger()->debug("FollowerGripper: MCU trajectory probe failed ({})", e.what());
+    }
+
     t_.set_half_duplex(true);
     // A stuck reply must not hold the link longer than a couple of periods.
     const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
@@ -416,8 +431,8 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
         5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
     exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout);
     std::weak_ptr<detail::FollowerExchange> weak = exchange_;
-    motor_.set_target_router_([weak](protocol::Cmd cmd, std::vector<uint8_t> payload) {
-        if (auto ex = weak.lock()) ex->submit(cmd, std::move(payload));
+    motor_.set_target_router_([weak](protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu) {
+        if (auto ex = weak.lock()) ex->submit(cmd, std::move(payload), mcu);
     });
     streaming_sources_ = logical_sources;
     streaming_ = true;
@@ -432,6 +447,7 @@ void FollowerGripper::stop_exchange_() noexcept {
     motor_.set_target_router_({});
     exchange_->stop();
     exchange_.reset();
+    mcu_trajectory_ = false;
     t_.set_half_duplex(false);
 }
 
@@ -900,6 +916,10 @@ void FollowerGripper::set_position(float position, float kp, float kd,
     ensure_position_map_();
     motor_.submit_impedance(pos_map_.to_rad(position), kp, kd,
                             feedforward_torque_nm);
+}
+
+const char* to_string(ControlBackend b) noexcept {
+    return b == ControlBackend::Mcu ? "mcu" : "host";
 }
 
 }  // namespace xense::taccap

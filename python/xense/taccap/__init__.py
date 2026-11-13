@@ -127,6 +127,7 @@ is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
 FirmwareVersion = _taccap_native.FirmwareVersion
 Calibration = _taccap_native.Calibration  # V2.0/V2.1 flash-persisted cal records
 GripperObservation = _taccap_native.GripperObservation  # controller latest obs
+ControlBackend = _taccap_native.ControlBackend  # Host / Mcu (follower 1.2.19+ trajectory)
 ImpedanceState = _taccap_native.ImpedanceState  # supervised impedance FSM
 ImpedanceConfig = _taccap_native.ImpedanceConfig
 ImpedanceSnapshot = _taccap_native.ImpedanceSnapshot
@@ -296,6 +297,7 @@ __all__ = [
     "FirmwareVersion",
     "Calibration",
     "GripperObservation",
+    "ControlBackend",
     "ImpedanceState",
     "ImpedanceConfig",
     "ImpedanceSnapshot",

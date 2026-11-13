@@ -125,6 +125,19 @@ public:
     unsigned exchange_replays() const { return exchange_replays_.load(); }
     // Make the next exchange reply's target_result this ErrorCode byte.
     void reject_next_exchange_target(uint8_t err) { reject_next_.store(err); }
+    // V2.10 MCU trajectory (follower 1.2.19+). Off = firmware that ignores bit1.
+    void set_mcu_trajectory_supported(bool on) { mcu_supported_.store(on); }
+    unsigned mcu_targets() const { return mcu_targets_.load(); }          // targets carrying bit1
+    unsigned plain_exchange_targets() const { return plain_targets_.load(); }
+    std::optional<tp::MotorPosCtrl> last_mcu_position() const {
+        std::lock_guard<std::mutex> lk(mu_); return last_mcu_pos_;
+    }
+    std::optional<tp::MotorImpedanceCtrl> last_mcu_impedance() const {
+        std::lock_guard<std::mutex> lk(mu_); return last_mcu_imp_;
+    }
+    std::optional<tp::MotorImpedanceCtrl> last_plain_impedance() const {
+        std::lock_guard<std::mutex> lk(mu_); return last_plain_imp_;
+    }
     // Non-exchange frames seen while polled (heartbeats, queries, etc.).
     unsigned other_frames_while_polled() const { return other_while_polled_.load(); }
 
@@ -476,15 +489,32 @@ private:
         const bool telemetry = h.flags & tp::ExchangeFlag::Telemetry;
         if (telemetry) ++telemetry_exchanges_;
         uint8_t result = tp::EXCHANGE_TARGET_RESULT_NONE;
+        const bool mcu = mcu_supported_.load() && (h.flags & tp::ExchangeFlag::McuTrajectory);
         if (h.target_kind != 0) {
             ++exchange_targets_;
             result = reject_next_.exchange(0);
-            if (h.target_kind == static_cast<uint8_t>(tp::ExchangeTarget::Impedance) &&
-                f.payload.size() == sizeof(h) + sizeof(tp::MotorImpedanceCtrl) && result == 0) {
+            const bool imp = h.target_kind == static_cast<uint8_t>(tp::ExchangeTarget::Impedance) &&
+                             f.payload.size() == sizeof(h) + sizeof(tp::MotorImpedanceCtrl);
+            const bool pos = h.target_kind == static_cast<uint8_t>(tp::ExchangeTarget::Position) &&
+                             f.payload.size() == sizeof(h) + sizeof(tp::MotorPosCtrl);
+            if (mcu) {
+                ++mcu_targets_;
+                if (!imp && !pos && result == 0) result = static_cast<uint8_t>(tp::ErrorCode::InvalidParam);
+            } else {
+                ++plain_targets_;
+            }
+            if (result == 0) {
                 std::lock_guard<std::mutex> lk(mu_);
-                tp::MotorImpedanceCtrl c{};
-                std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
-                last_submit_ = c;
+                if (imp) {
+                    tp::MotorImpedanceCtrl c{};
+                    std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
+                    last_submit_ = c;
+                    (mcu ? last_mcu_imp_ : last_plain_imp_) = c;
+                } else if (pos && mcu) {
+                    tp::MotorPosCtrl c{};
+                    std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
+                    last_mcu_pos_ = c;
+                }
             }
         }
         if (const int delay = exchange_delay_ms_.load()) {
@@ -500,10 +530,12 @@ private:
         tp::ExchangeResponseHeader r{};
         r.version = tp::EXCHANGE_VERSION;
         r.target_result = result;
+        if (mcu) r.flags |= tp::ExchangeRespFlag::McuTrajectory;
         std::vector<uint8_t> out(sizeof(r));
         if (telemetry) {
             std::lock_guard<std::mutex> lk(mu_);
-            if (stream_config_.source_mask & tp::StreamSrc::MotorStatus) {
+            // freeze_stream() also starves the exchange of motor status.
+            if ((stream_config_.source_mask & tp::StreamSrc::MotorStatus) && !frozen_.load()) {
                 r.flags |= tp::ExchangeRespFlag::Motor;
                 auto s = pod_bytes(&status_, sizeof(status_));
                 s.resize(tp::MOTOR_STATUS_V2_SIZE, 0);
@@ -546,6 +578,10 @@ private:
     std::optional<std::vector<uint8_t>>      last_exchange_reply_;
     std::atomic<int> exchange_delay_ms_{0};
     std::atomic<uint8_t> reject_next_{0};
+    std::atomic<bool> mcu_supported_{false};
+    std::atomic<unsigned> mcu_targets_{0}, plain_targets_{0};
+    std::optional<tp::MotorPosCtrl> last_mcu_pos_;
+    std::optional<tp::MotorImpedanceCtrl> last_mcu_imp_, last_plain_imp_;
     std::vector<xense::taccap::bus::Frame> deferred_;
 
     Pty& pty_;

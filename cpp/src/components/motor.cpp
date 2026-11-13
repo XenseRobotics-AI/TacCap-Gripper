@@ -115,13 +115,25 @@ void Motor::set_target_router_(TargetRouter router) {
 }
 
 void Motor::submit_(protocol::Cmd cmd, std::vector<uint8_t> payload) {
+    if (!submit_routed_(cmd, payload, false)) t_.send_cmd_no_ack(cmd, payload);
+}
+
+bool Motor::submit_routed_(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu) {
     std::shared_ptr<const TargetRouter> router;
     {
         std::lock_guard<std::mutex> lk(router_mu_);
         router = router_;
     }
-    if (router) (*router)(cmd, std::move(payload));
-    else t_.send_cmd_no_ack(cmd, payload);
+    if (!router) return false;
+    (*router)(cmd, std::move(payload), mcu);
+    return true;
+}
+
+bool Motor::submit_mcu_trajectory_(const protocol::MotorPosCtrl& c) {
+    return submit_routed_(protocol::Cmd::MotorPosCtrl, protocol::encode(c), true);
+}
+bool Motor::submit_mcu_trajectory_(const protocol::MotorImpedanceCtrl& c) {
+    return submit_routed_(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c), true);
 }
 
 void Motor::submit_impedance(float pos, float kp, float kd, float ff_torque,

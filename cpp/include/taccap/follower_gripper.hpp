@@ -231,7 +231,18 @@ struct ExchangeStats {
     uint8_t  last_target_result = 0xFF;
     uint64_t motor_samples = 0, imu_samples = 0, imu_dropped = 0;
     uint64_t last_rtt_us = 0, max_rtt_us = 0;
+    // V2.10 MCU trajectory: targets sent with the bit, keep-alive resends of
+    // the last such target, and replies to such a target without the echo.
+    uint64_t mcu_targets = 0, mcu_keepalives = 0, mcu_unacknowledged = 0;
 };
+
+// Where a controller's motion is generated. Host: the SDK computes an MIT frame
+// per status sample (all firmware). Mcu: the SDK sends the caller's targets and
+// the follower's 500 Hz control thread interpolates and tracks them (follower
+// 1.2.19+, exchange mode). See ForcePositionConfig::mcu_trajectory and
+// ImpedanceConfig::mcu_stream.
+enum class ControlBackend : uint8_t { Host = 0, Mcu = 1 };
+const char* to_string(ControlBackend b) noexcept;
 
 class FollowerGripper {
 public:
@@ -548,6 +559,9 @@ public:
     void start_exchange(unsigned motor_hz = 100, unsigned imu_hz = 0,
                         unsigned exchange_hz = 0);
     bool is_exchanging() const noexcept { return exchange_ != nullptr; }
+    // Probed by start_exchange(): the follower answered the V2.10 MCU-trajectory
+    // probe (firmware 1.2.19+). False when not exchanging.
+    bool supports_mcu_trajectory() const noexcept { return exchange_ != nullptr && mcu_trajectory_; }
     ExchangeStats exchange_stats() const;
 
     const Config& config() const noexcept { return cfg_; }
@@ -589,6 +603,7 @@ private:
     bool                            streaming_ = false;
     uint16_t                        streaming_sources_ = 0;
     std::shared_ptr<detail::FollowerExchange> exchange_;
+    bool mcu_trajectory_ = false;
     void stop_exchange_() noexcept;
     GripperPosition                 pos_map_;             // raw<->position, cached
     bool                            pos_map_loaded_ = false;
