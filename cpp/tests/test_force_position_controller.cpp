@@ -1708,3 +1708,67 @@ TEST(ForcePositionPolicy, AFastStrokeMeetsTheEndStopSlowly) {
         EXPECT_LT(hit, 1.2f) << "met the stop at " << hit << " rad/s";
     }
 }
+
+// 2026-11-13: with targets landing every 2 ms (exchange at 500 Hz) the braking
+// assumption behind the fixed 20 rad/s^2 (100 Hz stream, one frame late) no
+// longer holds, so the decel is a config knob. 0 keeps the tuning default.
+TEST(ForcePositionPolicy, ConfiguredBrakeDecelShapesTheApproach) {
+    for (float decel : {60.0f, 150.0f}) {
+        ForcePositionConfig cfg = rs00_cfg(6.0f);
+        cfg.brake_decel_radps2 = decel;
+        ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+        auto t = std::chrono::steady_clock::now();
+        float pos = 1.2f;
+        p.reset(sample(pos), t);
+        p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+        p.step(sample(pos), t);
+        float prev = pos, vel = 0.0f, peak = 0.0f;
+        int frames = 0;
+        for (int i = 0; i < 1000; ++i) {
+            t += std::chrono::milliseconds(2);
+            const auto c = p.step(sample(pos, vel), t);
+            const float ramp = c.target_pos;
+            const float v = (prev - ramp) / 0.002f;
+            EXPECT_GE(ramp, -1e-6f);
+            EXPECT_LE(v, std::sqrt(2.0f * decel * prev) + 1e-2f) << "decel " << decel << " frame " << i;
+            peak = std::max(peak, v);
+            vel = -v; prev = ramp; pos = ramp; ++frames;
+            if (ramp <= 1e-6f) break;
+        }
+        EXPECT_LE(prev, 1e-6f);
+        // A harder brake reaches cruise and arrives sooner than the default.
+        EXPECT_GT(peak, 5.0f) << "decel " << decel;
+        EXPECT_LT(frames * 0.002f, 1.2f / 6.0f + 6.0f / (2.0f * decel) + 0.05f) << "decel " << decel;
+    }
+}
+
+// accel_radps2 limits how fast the setpoint speed may grow from rest, so the
+// clamped PD does not step to the whole budget on the first moving frame.
+TEST(ForcePositionPolicy, ConfiguredAccelRampsTheSetpointSpeedUp) {
+    ForcePositionConfig cfg = rs00_cfg(4.0f);
+    cfg.accel_radps2 = 40.0f;
+    ForcePositionPolicy p(GripperPosition::from_travel(1.2f), cfg);
+    auto t = std::chrono::steady_clock::now();
+    float pos = 1.2f;
+    p.reset(sample(pos), t);
+    p.set_target(sample(pos), 0.0f, cfg.grasp_torque_nm, t);
+    p.step(sample(pos), t);
+    float prev = pos, vel = 0.0f;
+    for (int i = 1; i <= 60; ++i) {
+        t += std::chrono::milliseconds(2);
+        const auto c = p.step(sample(pos, vel), t);
+        const float v = (prev - c.target_pos) / 0.002f;
+        EXPECT_LE(v, 40.0f * 0.002f * i + 1e-2f) << "frame " << i;
+        vel = -v; prev = c.target_pos; pos = c.target_pos;
+    }
+    EXPECT_GT((1.2f - prev), 0.0f);
+}
+
+TEST(ForcePositionPolicy, RejectsNegativeBrakeOrAccel) {
+    ForcePositionConfig cfg;
+    cfg.brake_decel_radps2 = -1.0f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg), std::invalid_argument);
+    cfg.brake_decel_radps2 = 0.0f;
+    cfg.accel_radps2 = -1.0f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg), std::invalid_argument);
+}

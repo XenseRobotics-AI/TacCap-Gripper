@@ -182,6 +182,19 @@ struct ForcePositionConfig {
     // Self-compensating, which a fixed position inset is not: however far the
     // stop drifts with wear, the force presses until the jaw is seated again.
     float close_preload_nm     = 0.25f;
+
+    // MOTION PROFILE (2026-11-13). 0 keeps the previous behaviour.
+    //
+    // brake_decel_radps2: how hard the setpoint brakes into the target. The
+    // default (ForcePositionTuning, 20 rad/s^2) was sized for a 100 Hz stream
+    // whose command lands a frame late. Over the follower exchange at the
+    // high-rate period targets land every 2 ms, and on 9s (RS00) the 20 rad/s^2
+    // brake was most of a 0.83 rad stroke at 4 rad/s (290 ms total).
+    // accel_radps2: limit on how fast the setpoint speed may grow, so a move
+    // from rest does not step the clamped PD to the whole budget on its first
+    // frame (measured 3.1 of 3.6 N*m commanded against 0.6 N*m of real load).
+    float brake_decel_radps2   = 0.0f;
+    float accel_radps2         = 0.0f;
 };
 
 struct ForcePositionSnapshot {
@@ -396,6 +409,7 @@ private:
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
     bool  ramp_valid_ = false;
+    float ramp_speed_ = 0.0f;        // |setpoint speed| last frame, for accel_radps2
     // What the ramp chases (0.4.2): the caller's recent targets with their
     // timestamps, oldest first, played back lag_s_ behind the present (see
     // update_lag_ / ref_at_). One entry is a step.

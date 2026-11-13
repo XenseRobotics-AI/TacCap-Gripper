@@ -298,6 +298,13 @@ void bind_control(py::module_& m) {
         .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz,
                        "Motor-status rate the controller requests, 1..100 Hz. One command is\n"
                        "submitted per status frame.")
+        .def_readwrite("brake_decel_radps2",   &ForcePositionConfig::brake_decel_radps2,
+                       "Setpoint braking into the target, rad/s^2. 0 = default 20 (sized for a\n"
+                       "100 Hz stream). Over the high-rate follower exchange targets land every\n"
+                       "2 ms and a harder brake shortens the stroke.")
+        .def_readwrite("accel_radps2",         &ForcePositionConfig::accel_radps2,
+                       "Limit on setpoint acceleration from rest, rad/s^2. 0 = unlimited\n"
+                       "(previous behaviour).")
         .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm,
                        "Feed-forward applied only while holding the CLOSED endpoint, N*m, to seat\n"
                        "the jaw against its mechanical stop and take up backlash. Measured: 0.15\n"

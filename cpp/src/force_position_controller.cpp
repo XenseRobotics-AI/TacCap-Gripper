@@ -78,6 +78,12 @@ float detail_spec_or(float v, float fallback) {
 
 void validate_config(const ForcePositionConfig& cfg) {
     auto finite = [](float v) { return std::isfinite(v); };
+    if (!finite(cfg.brake_decel_radps2) || cfg.brake_decel_radps2 < 0.0f) {
+        throw std::invalid_argument("ForcePositionConfig.brake_decel_radps2 must be >= 0 (0 = default)");
+    }
+    if (!finite(cfg.accel_radps2) || cfg.accel_radps2 < 0.0f) {
+        throw std::invalid_argument("ForcePositionConfig.accel_radps2 must be >= 0 (0 = unlimited)");
+    }
     if (!finite(cfg.close_speed_radps) || cfg.close_speed_radps <= 0.0f) {
         throw std::invalid_argument("ForcePositionConfig.close_speed_radps must be > 0");
     }
@@ -566,6 +572,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         // speed we asked for is the goal, not something to brake.
         ramp_raw_ = sample.actual_pos;
         ramp_valid_ = true;
+        ramp_speed_ = 0.0f;
         last_step_ = now;
         commanded_torque_nm_ = 0.0f;
         return {ramp_raw_, tune_.position_kp, 0.0f, 0.0f, 0.0f};
@@ -617,9 +624,14 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     {
         // Braking: never faster than lets the setpoint stop ON the target.
         const float to_go = std::abs(target_raw - ramp_prev);
-        const float brake_speed = std::sqrt(2.0f * tune_.brake_decel_radps2 * to_go);
-        const float step = std::min(std::abs(desired_vel), brake_speed) * dt;
+        const float decel = cfg_.brake_decel_radps2 > 0.0f ? cfg_.brake_decel_radps2
+                                                           : tune_.brake_decel_radps2;
+        const float brake_speed = std::sqrt(2.0f * decel * to_go);
+        float speed = std::min(std::abs(desired_vel), brake_speed);
+        if (cfg_.accel_radps2 > 0.0f) speed = std::min(speed, ramp_speed_ + cfg_.accel_radps2 * dt);
+        const float step = speed * dt;
         ramp_raw_ = std::clamp(ramp_raw_, ramp_prev - step, ramp_prev + step);
+        ramp_speed_ = std::abs(ramp_raw_ - ramp_prev) / dt;
     }
 
     // BOUND THE RAMP BY THE BUDGET ITSELF, not by a position-error window.
