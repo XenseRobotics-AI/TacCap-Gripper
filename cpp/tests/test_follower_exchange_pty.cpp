@@ -280,3 +280,33 @@ TEST(FollowerExchangePty, WaitingForTheLinkCountsAgainstTheRequestTimeout) {
     EXPECT_NO_THROW(g->transport().send_cmd(tp::Cmd::Heartbeat, {}, std::chrono::milliseconds(200)));
     g->transport().set_half_duplex(false);
 }
+
+// High-rate exchange (IMU 1125 Hz -> 500 exchanges/s, 2 ms period): a
+// controller that answers every status sample with a target must ride on the
+// next telemetry exchange instead of adding a target-only one. Measured on a
+// real follower (9s, 2026-11-13) the old behaviour ran 1000 exchanges/s --
+// 500 telemetry + 500 target-only -- doubling half-duplex line occupancy.
+TEST(FollowerExchangePty, TargetsRideOnTheNextTelemetryExchangeAtHighRate) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    std::atomic<unsigned> n{0};
+    g->motor().on_status([&](const tx::MotorStatusSample& s) {
+        g->motor().submit_impedance(s.actual_pos + 0.001f * float(++n % 10), 1.0f, 0.1f, 0.0f, 0.0f);
+    });
+    g->start_exchange(100, 1125);      // default 500 exchanges/s
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().telemetry_exchanges >= 50; }, kSecond));
+    const auto s0 = g->exchange_stats();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const auto s1 = g->exchange_stats();
+    g->stop_streaming();
+    const auto telem = s1.telemetry_exchanges - s0.telemetry_exchanges;
+    const auto all = s1.exchanges - s0.exchanges;
+    const auto with_target = s1.target_exchanges - s0.target_exchanges;
+    ASSERT_GT(telem, 50u);
+    EXPECT_LE(all, telem + telem / 10) << "targets went out as extra target-only exchanges";
+    EXPECT_GE(with_target, telem * 8 / 10) << "targets were not carried on telemetry exchanges";
+    EXPECT_EQ(s1.targets_rejected, 0u);
+}

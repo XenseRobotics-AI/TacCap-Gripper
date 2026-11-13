@@ -10,10 +10,12 @@
 // a reply may be on the wire. The line therefore carries one direction at a
 // time by construction, not by luck.
 //
-// Cadence: one telemetry exchange per period. A target submitted between
-// ticks goes out at once in a target-only exchange (header-only reply), so a
-// controller that reacts to a status sample keeps today's ~1 ms latency
-// instead of waiting a whole period. A lost reply is retried with the same seq
+// Cadence: one telemetry exchange per period. A target submitted when the next
+// tick is more than 3 ms away goes out at once in a target-only exchange
+// (header-only reply), so a 100 Hz controller keeps ~1 ms latency instead of
+// waiting a whole period; one submitted within 3 ms of the tick rides on that
+// telemetry exchange, so a controller stepping on every high-rate status
+// sample does not double the exchange count. A lost reply is retried with the same seq
 // (the firmware replays its cached reply, so no IMU sample is lost); a request
 // still unanswered after the retries keeps its target for the next exchange
 // unless a newer one superseded it; targets are absolute set-points, so

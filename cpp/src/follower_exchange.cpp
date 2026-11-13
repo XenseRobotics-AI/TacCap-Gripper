@@ -12,6 +12,15 @@ namespace {
 
 using clock = std::chrono::steady_clock;
 
+// A target submitted when the next telemetry exchange is at most this far away
+// waits for it and rides on it, instead of costing a target-only exchange.
+// At the high-rate period (2 ms) that is every target: a controller answering
+// each status sample used to double the line to 1000 exchanges/s (9s,
+// 2026-11-13), for at most ~2 ms of latency saved. At the 100 Hz period a target
+// submitted right after a status reply is ~10 ms from the tick and still goes
+// out at once, so low-rate latency is unchanged.
+constexpr auto kMergeWindow = std::chrono::microseconds(3000);
+
 std::optional<protocol::ExchangeTarget> target_kind(protocol::Cmd cmd) {
     switch (cmd) {
         case protocol::Cmd::MotorPosCtrl:       return protocol::ExchangeTarget::Position;
@@ -70,7 +79,11 @@ void FollowerExchange::run_() {
     auto next_tick = clock::now();
     std::unique_lock<std::mutex> lk(mu_);
     while (!stop_) {
-        cv_.wait_until(lk, next_tick, [&] { return stop_ || pending_.has_value(); });
+        // Wake for a target only when the tick is not close; otherwise sleep to
+        // the tick and carry it there.
+        cv_.wait_until(lk, next_tick, [&] {
+            return stop_ || (pending_.has_value() && next_tick - clock::now() > kMergeWindow);
+        });
         if (stop_) break;
         const bool telemetry = clock::now() >= next_tick;
         std::optional<Target> target = std::move(pending_);

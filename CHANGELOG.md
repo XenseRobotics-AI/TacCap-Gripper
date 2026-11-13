@@ -31,6 +31,15 @@ acceptance.
   about ten 44 B IMUs. High-rate IMU no longer triggers the 1 kHz-divider
   warning.
 
+#### Changed (exchange)
+
+- **Follower targets ride on the next telemetry exchange when it is within
+  3 ms.** A controller stepping on every status sample at the high-rate period
+  (2 ms) used to add a target-only exchange per target: 1000 exchanges/s
+  instead of 500 on a real follower (9s, 2026-11-13), with RTT spikes to 17 ms
+  and occasional ACK timeouts. A target further than 3 ms from the tick still
+  goes out at once, so 100 Hz latency is unchanged.
+
 #### Added
 
 - **Warning for pushed IMU above 100 Hz.** Most shipped grippers keep the
