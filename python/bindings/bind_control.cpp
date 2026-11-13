@@ -214,6 +214,23 @@ void bind_control(py::module_& m) {
             "Bind a controller to a gripper. The config is validated here, so a bad\n"
             "combination raises ValueError before anything moves. The gripper is kept\n"
             "alive for as long as the controller is.")
+        .def("enable_target_trace", &ImpedanceController::enable_target_trace, py::arg("enable"),
+             "Enable or disable bounded capture of actual MCU target submissions. Enabling clears the trace.")
+        .def("drain_target_trace", [](ImpedanceController& c) {
+            py::list rows;
+            for (const auto& r : c.drain_target_trace()) {
+                py::dict d;
+                d["seq"] = r.seq;
+                d["host_ns"] = r.host_ns;
+                d["requested_rad"] = r.requested_rad;
+                d["limited_rad"] = r.limited_rad;
+                d["feedback_rad"] = r.feedback_rad;
+                d["feedback_ms"] = r.feedback_ms;
+                d["feedback_refresh"] = r.feedback_refresh;
+                rows.append(d);
+            }
+            return rows;
+        }, "Return and clear captured SDK decisions with host monotonic timestamps, before transport coalescing.")
         .def("start", [](ImpedanceController& c) {
             py::gil_scoped_release g; c.start();
         }, "Start the status stream and the submit thread.\n\n"

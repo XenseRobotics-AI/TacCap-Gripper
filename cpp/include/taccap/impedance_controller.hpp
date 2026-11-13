@@ -111,6 +111,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace xense::taccap {
 
@@ -210,6 +211,16 @@ struct ImpedanceConfig {
     // A zero field in the spec means the firmware's table does not carry that
     // number for this model; the compiled fallback is used for that field alone.
     static ImpedanceConfig for_spec(const protocol::MotorSpec& spec);
+};
+
+// SDK decisions accepted by the local exchange queue. Retries, keepalives,
+// and superseding enqueued targets are observable separately at the MCU.
+struct ImpedanceTargetSample {
+    uint64_t seq;
+    int64_t host_ns;
+    float requested_rad, limited_rad, feedback_rad;
+    uint32_t feedback_ms;
+    bool feedback_refresh;
 };
 
 struct ImpedanceSnapshot {
@@ -317,6 +328,10 @@ public:
 
     ImpedanceState state() const;
     ImpedanceSnapshot snapshot() const;
+    // Start a bounded diagnostic capture. Sequential sequence numbers expose
+    // overflow. Draining preserves the capture and its numbering.
+    void enable_target_trace(bool enable);
+    std::vector<ImpedanceTargetSample> drain_target_trace();
     const ImpedanceConfig& config() const noexcept { return cfg_; }
     ControlBackend backend() const noexcept { return mcu_ ? ControlBackend::Mcu : ControlBackend::Host; }
 
@@ -360,7 +375,10 @@ private:
     protocol::MotorImpedanceCtrl mcu_last_{};
     // Caller holds mu_.
     std::optional<protocol::MotorImpedanceCtrl> mcu_target_() const;
-    void send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t);
+    void send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t, bool feedback_refresh = false);
+    bool trace_targets_ = false;
+    uint64_t trace_seq_ = 0;
+    std::vector<ImpedanceTargetSample> target_trace_;
 };
 
 const char* to_string(ImpedanceState state) noexcept;

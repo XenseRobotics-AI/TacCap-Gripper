@@ -219,6 +219,7 @@ TEST(McuTrajectoryPty, ImpedanceStreamCarriesGainsAndTheClampedTarget) {
     tx::ImpedanceConfig cfg;
     cfg.mcu_stream = true;
     tx::ImpedanceController c(*g, cfg);
+    c.enable_target_trace(true);
     c.start();
     EXPECT_EQ(c.backend(), tx::ControlBackend::Mcu);
     ASSERT_TRUE(wait_for([&] { return fw.mcu_targets() >= 1; }, kSecond));
@@ -250,6 +251,16 @@ TEST(McuTrajectoryPty, ImpedanceStreamCarriesGainsAndTheClampedTarget) {
         return x && std::abs(std::abs(x->target_pos - 0.55f) - limit) < 1e-4f;
     }, kSecond)) << "clamped target not refreshed with the jaw";
     EXPECT_EQ(fw.plain_exchange_targets(), 0u) << "host frames while Tracking in Mcu";
+    const auto rows = c.drain_target_trace();
+    ASSERT_FALSE(rows.empty());
+    EXPECT_TRUE(std::any_of(rows.begin(), rows.end(), [&](const auto& r) {
+        return r.feedback_refresh && r.requested_rad == g->pos_to_rad(0.0f) &&
+               std::abs(std::abs(r.limited_rad-r.feedback_rad)-limit) < 1e-4f;
+    }));
+    for (size_t i=1; i<rows.size(); ++i) {
+        EXPECT_EQ(rows[i].seq, rows[i-1].seq + 1);
+        EXPECT_GE(rows[i].host_ns, rows[i-1].host_ns);
+    }
     c.stop();
     g->stop_streaming();
 }

@@ -694,13 +694,39 @@ std::optional<protocol::MotorImpedanceCtrl> ImpedanceController::mcu_target_() c
     return protocol::MotorImpedanceCtrl{raw, kp, policy_->kd(), policy_->feedforward(), 0.0f};
 }
 
+void ImpedanceController::enable_target_trace(bool enable) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (enable) {
+        target_trace_.clear();
+        target_trace_.reserve(4096);
+        trace_seq_ = 0;
+    }
+    trace_targets_ = enable;
+}
+
+std::vector<ImpedanceTargetSample> ImpedanceController::drain_target_trace() {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto rows = target_trace_;
+    target_trace_.clear();
+    return rows;
+}
+
 // Called with mu_ held.
-void ImpedanceController::send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t) {
+void ImpedanceController::send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t, bool feedback_refresh) {
     if (!t) return;
     try {
         if (g_.motor().submit_mcu_trajectory_(*t)) {
             mcu_engaged_ = true;
             mcu_last_ = *t;
+            if (trace_targets_) {
+                ++trace_seq_;
+                if (target_trace_.size() < target_trace_.capacity()) {
+                    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    target_trace_.push_back({trace_seq_, ns, map_.to_rad(policy_->target_position()),
+                        t->target_pos, latest_.actual_pos, latest_.raw.status_timestamp_ms, feedback_refresh});
+                }
+            }
         } else if (policy_) {
             policy_->fail("MCU stream: follower exchange stopped");
         }
@@ -822,7 +848,7 @@ void ImpedanceController::run_() {
                     // with the jaw (or letting go of it).
                     send = false;
                     const auto t = mcu_target_();
-                    if (t && (!mcu_engaged_ || t->target_pos != mcu_last_.target_pos)) send_mcu_(t);
+                    if (t && (!mcu_engaged_ || t->target_pos != mcu_last_.target_pos)) send_mcu_(t, true);
                 } else {
                     mcu_engaged_ = false;   // TorqueCapped / Fault / Idle: host frame
                 }
