@@ -424,25 +424,47 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
         logger()->debug("FollowerGripper: MCU trajectory probe failed ({})", e.what());
     }
 
+    bool protected_supported = false;
+    try {
+        const std::vector<uint8_t> probe{protocol::EXCHANGE_VERSION,
+                                         protocol::ExchangeFlag::ProtectedImpedance, 0, 0};
+        const auto pa = t_.send_cmd(protocol::Cmd::SlaveExchange, probe, std::chrono::milliseconds(200));
+        protocol::ExchangeResponseHeader header{};
+        if (!pa.is_nack && pa.data.size() == sizeof(header)) {
+            std::memcpy(&header, pa.data.data(), sizeof(header));
+            protected_supported = header.version == protocol::EXCHANGE_VERSION &&
+                header.flags == protocol::ExchangeRespFlag::ProtectedImpedance &&
+                header.target_result == protocol::EXCHANGE_TARGET_RESULT_NONE && header.imu_count == 0;
+        }
+    } catch (const std::exception& e) {
+        logger()->debug("FollowerGripper: protected impedance probe failed ({})", e.what());
+    }
+
     t_.set_half_duplex(true);
     // A stuck reply must not hold the link longer than a couple of periods.
     const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
     const auto timeout = std::chrono::milliseconds(std::max<long long>(
         5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
-    exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout);
-    motor_.set_exchange_(exchange_);
+    auto exchange = std::make_shared<detail::FollowerExchange>(t_, period, timeout, protected_supported);
+    motor_.set_exchange_(exchange);
+    std::atomic_store(&exchange_, std::move(exchange));
     streaming_sources_ = logical_sources;
     streaming_ = true;
 }
 
+bool FollowerGripper::supports_protected_impedance() const noexcept {
+    const auto exchange = std::atomic_load(&exchange_);
+    return exchange && exchange->supports_protected_impedance();
+}
+
 ExchangeStats FollowerGripper::exchange_stats() const {
-    return exchange_ ? exchange_->stats() : ExchangeStats{};
+    const auto exchange = std::atomic_load(&exchange_);
+    return exchange ? exchange->stats() : ExchangeStats{};
 }
 
 void FollowerGripper::stop_exchange_() noexcept {
-    if (!exchange_) return;
+    if (!std::atomic_exchange(&exchange_, std::shared_ptr<detail::FollowerExchange>{})) return;
     motor_.set_exchange_({});
-    exchange_.reset();
     mcu_trajectory_ = false;
     t_.set_half_duplex(false);
 }
@@ -915,6 +937,7 @@ void FollowerGripper::set_position(float position, float kp, float kd,
 }
 
 const char* to_string(ControlBackend b) noexcept {
+    if (b == ControlBackend::ProtectedPv) return "protected_pv";
     return b == ControlBackend::Mcu ? "mcu" : "host";
 }
 

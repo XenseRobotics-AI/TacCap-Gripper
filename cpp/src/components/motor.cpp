@@ -6,6 +6,7 @@
 #include <taccap/error.hpp>
 #include <taccap/protocol/codec.hpp>
 
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -207,6 +208,17 @@ bool Motor::submit_mcu_trajectory_(const protocol::MotorPosCtrl& c) {
 }
 bool Motor::submit_mcu_trajectory_(const protocol::MotorImpedanceCtrl& c) {
     return submit_routed_(protocol::Cmd::MotorImpedanceCtrl, protocol::encode(c));
+}
+
+bool Motor::submit_protected_impedance(float pos, float kp, float kd, float ff_torque,
+                                      float ff_vel, float torque_budget_nm, uint32_t valid_until_ms) {
+    if (!std::isfinite(pos) || !std::isfinite(kp) || kp < 0 ||
+        !std::isfinite(kd) || kd < 0 || !std::isfinite(ff_torque) || !std::isfinite(ff_vel) ||
+        !std::isfinite(torque_budget_nm) || torque_budget_nm < 0.005f || torque_budget_nm > 3.6f)
+        return false;
+    std::lock_guard<std::mutex> lk(router_mu_);
+    return exchange_ && exchange_->submit_protected({{pos, kp, kd, ff_torque, ff_vel},
+                                                      torque_budget_nm, valid_until_ms});
 }
 
 void Motor::submit_impedance(float pos, float kp, float kd, float ff_torque,

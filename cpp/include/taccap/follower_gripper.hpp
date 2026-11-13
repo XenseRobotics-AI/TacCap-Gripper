@@ -31,6 +31,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include <taccap/bus/transport.hpp>
 #include <taccap/components/calibration.hpp>
 #include <taccap/components/diagnostics.hpp>
@@ -234,6 +236,8 @@ struct ExchangeStats {
     // V2.10 MCU trajectory: targets sent with the bit, keep-alive resends of
     // the last such target, and replies to such a target without the echo.
     uint64_t mcu_targets = 0, mcu_keepalives = 0, mcu_unacknowledged = 0;
+    // Source-only P+V requests, grouped by the final outcome of each exchange.
+    uint64_t protected_accepted = 0, protected_rejected = 0, protected_unacknowledged = 0;
 };
 
 // Where a controller's motion is generated. Host: the SDK computes an MIT frame
@@ -241,7 +245,7 @@ struct ExchangeStats {
 // the follower's 500 Hz control thread interpolates and tracks them (follower
 // 1.2.19+, exchange mode). See ForcePositionConfig::mcu_trajectory and
 // ImpedanceConfig::mcu_stream.
-enum class ControlBackend : uint8_t { Host = 0, Mcu = 1 };
+enum class ControlBackend : uint8_t { Host = 0, Mcu = 1, ProtectedPv = 2 };
 const char* to_string(ControlBackend b) noexcept;
 
 class FollowerGripper {
@@ -558,10 +562,12 @@ public:
     // nothing is left running.
     void start_exchange(unsigned motor_hz = 100, unsigned imu_hz = 0,
                         unsigned exchange_hz = 0);
-    bool is_exchanging() const noexcept { return exchange_ != nullptr; }
+    bool is_exchanging() const noexcept { return std::atomic_load(&exchange_) != nullptr; }
     // Probed by start_exchange(): the follower answered the V2.10 MCU-trajectory
     // probe (firmware 1.2.19+). False when not exchanging.
-    bool supports_mcu_trajectory() const noexcept { return exchange_ != nullptr && mcu_trajectory_; }
+    bool supports_mcu_trajectory() const noexcept { return is_exchanging() && mcu_trajectory_; }
+    // A NONE probe with no target confirmed the protected impedance capability.
+    bool supports_protected_impedance() const noexcept;
     ExchangeStats exchange_stats() const;
 
     const Config& config() const noexcept { return cfg_; }
@@ -603,7 +609,7 @@ private:
     bool                            streaming_ = false;
     uint16_t                        streaming_sources_ = 0;
     std::shared_ptr<detail::FollowerExchange> exchange_;
-    bool mcu_trajectory_ = false;
+    std::atomic<bool> mcu_trajectory_{false};
     void stop_exchange_() noexcept;
     GripperPosition                 pos_map_;             // raw<->position, cached
     bool                            pos_map_loaded_ = false;

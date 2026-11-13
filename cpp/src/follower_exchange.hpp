@@ -17,9 +17,9 @@
 // telemetry exchange, so a controller stepping on every high-rate status
 // sample does not double the exchange count. A lost reply is retried with the same seq
 // (the firmware replays its cached reply, so no IMU sample is lost); a request
-// still unanswered after the retries keeps its target for the next exchange
-// unless a newer one superseded it; targets are absolute set-points, so
-// applying one twice is harmless.
+// still unanswered after the retries normally keeps its target for the next
+// exchange. Protected P+V commands use only the original absolute deadline
+// and leave the queue after their transport attempts, including on timeout.
 //
 // Replies are split back into the DATA frames a stream would have carried
 // (GetMotorStatus, GetImu/GetImuV2) and injected into the transport's normal
@@ -44,7 +44,7 @@ namespace xense::taccap::detail {
 class FollowerExchange {
 public:
     FollowerExchange(bus::Transport& transport, std::chrono::microseconds period,
-                     std::chrono::milliseconds timeout);
+                     std::chrono::milliseconds timeout, bool protected_supported = false);
     ~FollowerExchange();
 
     FollowerExchange(const FollowerExchange&)            = delete;
@@ -59,6 +59,9 @@ public:
     // any target without the bit ends that.
     void submit(protocol::Cmd cmd, std::vector<uint8_t> payload, bool mcu_trajectory = false);
 
+    bool submit_protected(const protocol::ProtectedImpedanceCtrl& target);
+    bool supports_protected_impedance() const noexcept { return protected_supported_; }
+
     // The motor serializes new submits with disable. Retire pending targets,
     // retries and keepalives before it sends the final disable on the same bus.
     void finish_targets(std::optional<protocol::MotorImpedanceCtrl> zero);
@@ -72,15 +75,18 @@ private:
     struct Target {
         protocol::ExchangeTarget kind;
         std::vector<uint8_t>     payload;
-        bool                     mcu = false;
+        uint8_t                  flags = 0;
     };
 
     void run_();
-    void handle_reply_(const bus::AckResponse& ack, bool carried_target, bool carried_mcu);
+    void handle_reply_(const bus::AckResponse& ack, bool carried_target, uint8_t target_flags);
+    bool queue_target_(Target target);
 
     bus::Transport&                 t_;
     const std::chrono::microseconds period_;
     const std::chrono::milliseconds timeout_;
+
+    const bool                      protected_supported_;
 
     mutable std::mutex       mu_;
     detail::MonotonicCondition cv_;   // monotonic even on old-sysroot toolchains

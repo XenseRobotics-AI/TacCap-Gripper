@@ -171,6 +171,7 @@ IMPEDANCE_FIELDS = {
     "status_timeout_ms": 350,
     "motor_stream_hz": 100,
     "mcu_stream": False,
+    "protected_pv": False,
 }
 
 IMPEDANCE_INTERNAL = [
@@ -191,7 +192,7 @@ IMPEDANCE_INTERNAL = [
 ]
 
 
-def test_impedance_config_has_exactly_the_eight_fields():
+def test_impedance_config_has_the_documented_fields():
     assert _public_fields(t.ImpedanceConfig()) == set(IMPEDANCE_FIELDS)
 
 
@@ -262,7 +263,7 @@ def test_rated_torque_default_matches_the_force_position_hold_ceiling():
 # ---- V2.10 MCU trajectory surface ----------------------------------------
 
 def test_mcu_trajectory_surface_is_exported():
-    assert set(t.ControlBackend.__members__) == {"Host", "Mcu"}
+    assert set(t.ControlBackend.__members__) == {"Host", "Mcu", "ProtectedPv"}
     assert t.ForcePositionConfig().mcu_trajectory is False
     assert t.ImpedanceConfig().mcu_stream is False
     for cls in (t.ForcePositionController, t.ImpedanceController):
@@ -270,5 +271,8 @@ def test_mcu_trajectory_surface_is_exported():
     for snap in (t.ForcePositionSnapshot, t.ImpedanceSnapshot):
         assert hasattr(snap, "backend"), snap
     assert hasattr(t.FollowerGripper, "supports_mcu_trajectory")
-    for field in ("mcu_targets", "mcu_keepalives", "mcu_unacknowledged"):
+    assert hasattr(t.FollowerGripper, "supports_protected_impedance")
+    assert "velocity_rad_s" in t.ImpedanceController.set_target.__doc__
+    for field in ("mcu_targets", "mcu_keepalives", "mcu_unacknowledged",
+                  "protected_accepted", "protected_rejected", "protected_unacknowledged"):
         assert hasattr(t._taccap_native.ExchangeStats, field), field

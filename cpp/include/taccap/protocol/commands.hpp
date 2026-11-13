@@ -78,6 +78,7 @@ enum class Cmd : uint8_t {
     KeyStatus       = 0x15,    // V1.4 — device-side button, payload=key_status_payload_t
     TimeSession     = 0x16,    // request nonce:u64; response time_us:u64, session:u64
     GetImuV2        = 0x17,    // legacy 28B + capture_us:u64 + session:u64
+    BrakeTrace      = 0x19,    // RAM motor trace; diagnostic firmware builds only
     TxTrace         = 0x18,    // RAM transmit trace; diagnostic firmware builds only
 
     // Stream control + calibration (0x20–0x2F)
@@ -146,6 +147,7 @@ enum class Cmd : uint8_t {
     // Leader half-duplex exchange: reply carries the DATA frames the leader
     // held in StreamMode::Polled. See LeaderGripper::start_exchange().
     LeaderExchange           = 0x5E,
+    GetProtectedPvStatus     = 0x5F,
     // Diagnostics, firmware 1.1.3+ / 1.1.4+. Present on leader and follower
     // alike: the counters live in the firmware's UART layer, not in a
     // gripper-role-specific subsystem.

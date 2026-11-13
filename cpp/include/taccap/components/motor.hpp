@@ -282,6 +282,10 @@ public:
     void submit(const protocol::MotorVelCtrl& c);
     void submit(const protocol::MotorTorqueCtrl& c);
 
+    // Queue one protected source point. False for invalid inputs or unavailable
+    // negotiation; consult exchange_stats() to distinguish firmware ACK from enqueue.
+    bool submit_protected_impedance(float target_pos_rad, float kp, float kd, float ff_torque,
+                                    float ff_vel, float torque_budget_nm, uint32_t valid_until_ms);
     // Float-arg convenience forms mirroring set_*; used by the Python bindings.
     void submit_impedance(float target_pos_rad,
                           float kp_nm_per_rad,

@@ -80,7 +80,8 @@ void bind_control(py::module_& m) {
         "Where a controller's motion is generated: Host (SDK, per status frame) or\n"
         "Mcu (follower 1.2.19+ control thread, over the exchange).")
         .value("Host", ControlBackend::Host)
-        .value("Mcu",  ControlBackend::Mcu);
+        .value("Mcu",  ControlBackend::Mcu)
+        .value("ProtectedPv", ControlBackend::ProtectedPv);
 
     py::enum_<ImpedanceState>(m, "ImpedanceState",
         "Ordered by precedence: FAULT beats TORQUE_CAPPED beats TRACKING.\n\n"
@@ -136,7 +137,10 @@ void bind_control(py::module_& m) {
                        "Default False. True: when the follower is exchanging and its firmware\n"
                        "supports it (1.2.19+), each target goes out at once and the follower\n"
                        "interpolates the stream and feeds its velocity forward. Gains, clamp,\n"
-                       "ceiling and faults unchanged. Otherwise start() warns. See backend.");
+                       "ceiling and faults unchanged. Otherwise start() warns. See backend.")
+        .def_readwrite("protected_pv", &ImpedanceConfig::protected_pv,
+                       "Require host position and signed motor-axis velocity with the firmware MIT torque guard. "
+                       "Requires an active capable exchange, mcu_stream=False, and max_position_torque_nm in [0.005,3.6].");
 
     impedance_config.def_static("for_spec", &ImpedanceConfig::for_spec, py::arg("spec"),
         "Defaults for the motor the device actually has installed (pass the result of\n"
@@ -227,6 +231,8 @@ void bind_control(py::module_& m) {
                 d["feedback_rad"] = r.feedback_rad;
                 d["feedback_ms"] = r.feedback_ms;
                 d["feedback_refresh"] = r.feedback_refresh;
+                d["velocity_rad_s"] = r.velocity_rad_s;
+                d["valid_until_ms"] = r.valid_until_ms;
                 rows.append(d);
             }
             return rows;
@@ -254,6 +260,13 @@ void bind_control(py::module_& m) {
            "Set the normalized target, 0 = closed, 1 = open.\n\n"
            "Non-blocking: it moves a setpoint the submit thread reads. Safe to stream\n"
            "every frame. Only valid while running.")
+        .def("set_target", [](ImpedanceController& c, float p, float v) {
+            py::gil_scoped_release g; c.set_target(p, v);
+        }, py::arg("position"), py::arg("velocity_rad_s"),
+           "Submit one freshly sampled normalized position (0 closed, 1 open) and signed motor-shaft "
+           "velocity (rad/s) from the same instant. Requires protected_pv. A zero velocity is valid. "
+           "Use the calibrated motor sign on reversed grippers. The MCU deadline is fixed to the "
+           "latest fresh motor status timestamp + 30 ms. Submit new zero-velocity points to hold an endpoint.")
         .def("set_gains", [](ImpedanceController& c, float kp, float kd, float ff) {
             py::gil_scoped_release g; c.set_gains(kp, kd, ff);
         }, py::arg("kp"), py::arg("kd"), py::arg("feedforward_torque") = 0.0f,
@@ -271,7 +284,7 @@ void bind_control(py::module_& m) {
             py::gil_scoped_release g; return c.snapshot();
         }, "One consistent view of state, observation and command, taken under one lock.")
         .def_property_readonly("backend", &ImpedanceController::backend,
-                               "ControlBackend.Host, or .Mcu when mcu_stream was honoured.")
+                               "ControlBackend.Host, .Mcu or .ProtectedPv for the active control route.")
         .def_property_readonly("config", &ImpedanceController::config,
                                "The validated config in force. Gain changes made through\n"
                                "set_gains() are reflected here.")

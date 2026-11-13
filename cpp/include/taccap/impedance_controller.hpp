@@ -185,6 +185,10 @@ struct ImpedanceConfig {
     // all faults behave as before; TorqueCapped and Fault go out as host
     // frames. Otherwise start() warns and runs the host law.
     bool mcu_stream = false;
+    // Explicit host position/shaft-velocity samples with the follower's
+    // quantized MIT torque guard. Requires a capable, active exchange.
+    // max_position_torque_nm also bounds the total request on this route.
+    bool protected_pv = false;
 
     // Defaults tuned for the actuator the device actually has.
     //
@@ -221,6 +225,8 @@ struct ImpedanceTargetSample {
     float requested_rad, limited_rad, feedback_rad;
     uint32_t feedback_ms;
     bool feedback_refresh;
+    float velocity_rad_s = 0.0f;
+    uint32_t valid_until_ms = 0;
 };
 
 struct ImpedanceSnapshot {
@@ -263,7 +269,8 @@ public:
     void fail(std::string reason);
 
     protocol::MotorImpedanceCtrl step(const MotorStatusSample& sample,
-                                      std::chrono::steady_clock::time_point now);
+                                      std::chrono::steady_clock::time_point now,
+                                      float reference_velocity_rad_s = 0.0f);
 
     ImpedanceState state() const noexcept { return state_; }
     float target_position() const noexcept { return target_; }
@@ -323,6 +330,9 @@ public:
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     void set_target(float position);                      // normalized [0,1]
+    // A new paired source sample, valid from this call. Shaft speed is signed
+    // in motor coordinates, even when the opening direction is reversed.
+    void set_target(float position, float velocity_rad_s);
     void set_gains(float kp, float kd, float feedforward_torque = 0.0f);
     void reset();   // leave Fault after the caller has cleared the motor fault
 
@@ -333,7 +343,10 @@ public:
     void enable_target_trace(bool enable);
     std::vector<ImpedanceTargetSample> drain_target_trace();
     const ImpedanceConfig& config() const noexcept { return cfg_; }
-    ControlBackend backend() const noexcept { return mcu_ ? ControlBackend::Mcu : ControlBackend::Host; }
+    ControlBackend backend() const noexcept {
+        if (cfg_.protected_pv && running()) return ControlBackend::ProtectedPv;
+        return mcu_ ? ControlBackend::Mcu : ControlBackend::Host;
+    }
 
 private:
     void start_(bool recover);
@@ -373,9 +386,17 @@ private:
     bool mcu_ = false;
     bool mcu_engaged_ = false;
     protocol::MotorImpedanceCtrl mcu_last_{};
+    float source_velocity_rad_s_ = 0.0f;
+    uint32_t source_valid_until_ms_ = 0;
+    std::chrono::steady_clock::time_point source_expires_{}, device_clock_seen_{};
+    std::chrono::steady_clock::time_point last_source_call_{};
+    uint32_t device_status_ms_ = 0;
+    uint64_t protected_failures_ = 0;
     // Caller holds mu_.
     std::optional<protocol::MotorImpedanceCtrl> mcu_target_() const;
     void send_mcu_(const std::optional<protocol::MotorImpedanceCtrl>& t, bool feedback_refresh = false);
+    void send_protected_();
+    void trace_submission_(const protocol::MotorImpedanceCtrl& t, bool feedback_refresh);
     bool trace_targets_ = false;
     uint64_t trace_seq_ = 0;
     std::vector<ImpedanceTargetSample> target_trace_;

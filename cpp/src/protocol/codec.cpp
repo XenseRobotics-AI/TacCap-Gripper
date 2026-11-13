@@ -31,6 +31,7 @@ T pod_from_bytes(const uint8_t* data, std::size_t len, const char* type_name) {
 std::vector<uint8_t> encode(const MotorPosCtrl& v)        { return encode_pod(v); }
 std::vector<uint8_t> encode(const MotorVelCtrl& v)        { return encode_pod(v); }
 std::vector<uint8_t> encode(const MotorTorqueCtrl& v)     { return encode_pod(v); }
+std::vector<uint8_t> encode(const ProtectedImpedanceCtrl& v) { return encode_pod(v); }
 std::vector<uint8_t> encode(const MotorImpedanceCtrl& v)  { return encode_pod(v); }
 std::vector<uint8_t> encode(const GripperConfig& v)       { return encode_pod(v); }
 std::vector<uint8_t> encode(const GripperAutoCalConfig& v){ return encode_pod(v); }

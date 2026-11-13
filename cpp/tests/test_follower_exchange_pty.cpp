@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <thread>
 
 namespace tx = xense::taccap;
@@ -87,6 +88,105 @@ TEST(FollowerExchangePty, SubmitRidesOnAnExchangeAndGoesOutPromptly) {
     g->motor().submit_impedance(0.1f, 0.0f, 0.0f, 0.0f, 0.0f);
     EXPECT_TRUE(wait_for([&] { return fw.submit_count() == 1; }, kSecond))
         << "after stop the target must go out as the ordinary no-ACK frame";
+}
+
+TEST(FollowerExchangePty, ProtectedRequiresItsOwnNegotiationAndNeverFallsBack) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_mcu_trajectory_supported(true);
+    auto g = open_follower(pty);
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.5f, 1, 1, 0, 4, 1, 1030));
+    g->start_exchange(100);
+    EXPECT_TRUE(g->supports_mcu_trajectory());
+    EXPECT_FALSE(g->supports_protected_impedance());
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.5f, 1, 1, 0, 4, 1, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().motor_samples >= 2; }, kSecond));
+    g->stop_streaming();
+    EXPECT_EQ(fw.exchange_targets(), 0u);
+    EXPECT_EQ(fw.submit_count(), 0u);
+}
+
+TEST(FollowerExchangePty, ProtectedCarriesSourceDeadlineAndKeepsOnlyTelemetryRunning) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_protected_impedance_supported(true);
+    fw.set_exchange_status_timestamp_ms(1000);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    std::atomic<unsigned> status{0}, imu{0};
+    g->motor().on_status([&](const tx::MotorStatusSample&) { ++status; });
+    g->imu().on_data([&](const tx::ImuSample&) { ++imu; });
+    g->start_exchange(100, 100);
+    EXPECT_TRUE(g->supports_protected_impedance());
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.7f, 1, 0, 0, 1, 3.61f, 1030));
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.7f, 1, 0, 0, 1, 0, 1030));
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.7f, -1, 0, 0, 1, 1, 1030));
+    EXPECT_FALSE(g->motor().submit_protected_impedance(
+        0.7f, 1, 0, 0, std::numeric_limits<float>::quiet_NaN(), 1, 1030));
+    EXPECT_EQ(fw.exchange_targets(), 0u);
+    ASSERT_TRUE(g->motor().submit_protected_impedance(0.75f, 3, 0.1f, -0.2f, -4, 1.75f, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_accepted == 1; }, kSecond));
+    const auto seen = fw.last_protected_impedance();
+    ASSERT_TRUE(seen.has_value());
+    EXPECT_FLOAT_EQ(seen->impedance.target_pos, 0.75f);
+    EXPECT_FLOAT_EQ(seen->impedance.kp, 3);
+    EXPECT_FLOAT_EQ(seen->impedance.kd, 0.1f);
+    EXPECT_FLOAT_EQ(seen->impedance.target_torque, -0.2f);
+    EXPECT_FLOAT_EQ(seen->impedance.vel, -4);
+    EXPECT_FLOAT_EQ(seen->torque_budget_nm, 1.75f);
+    EXPECT_EQ(seen->valid_until_ms, 1030u);
+
+    // Several telemetry ticks beyond both the deadline and the old 80 ms keepalive.
+    ASSERT_TRUE(wait_for([&] { return status >= 15 && imu >= 15; }, kSecond));
+    EXPECT_EQ(fw.exchange_targets(), 1u);
+    EXPECT_EQ(fw.plain_exchange_targets(), 0u);
+    EXPECT_EQ(fw.mcu_targets(), 0u);
+    EXPECT_EQ(g->exchange_stats().targets_resent, 0u);
+
+    fw.reject_next_exchange_target(static_cast<uint8_t>(tp::ErrorCode::SysBusy));
+    ASSERT_TRUE(g->motor().submit_protected_impedance(0.7f, 1, 0.1f, 0, 1, 1.75f, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_rejected == 1; }, kSecond));
+    fw.set_protected_impedance_supported(false);
+    ASSERT_TRUE(g->motor().submit_protected_impedance(0.7f, 1, 0.1f, 0, 1, 1.75f, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_unacknowledged == 1; }, kSecond));
+    EXPECT_EQ(g->exchange_stats().protected_accepted, 1u);
+    g->stop_streaming();
+    EXPECT_FALSE(g->supports_protected_impedance());
+    EXPECT_FALSE(g->motor().submit_protected_impedance(0.6f, 1, 1, 0, 1, 1, 1030));
+    EXPECT_EQ(fw.submit_count(), 0u);
+}
+
+TEST(FollowerExchangePty, ProtectedSameSeqRecoversOneLostReplyAndDoesNotRequeueOnFinalTimeout) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_protected_impedance_supported(true);
+    fw.set_exchange_status_timestamp_ms(1000);
+    auto g = open_follower(pty);
+    g->start_exchange(20);
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().motor_samples >= 1; }, kSecond));
+    fw.lose_exchange_replies(1);
+    ASSERT_TRUE(g->motor().submit_protected_impedance(0.6f, 2, 0.2f, 0, 2, 1, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_accepted == 1; }, kSecond));
+    EXPECT_EQ(fw.exchange_replays(), 1u);
+    EXPECT_EQ(fw.exchange_targets(), 1u);
+    ASSERT_TRUE(fw.last_protected_impedance());
+    EXPECT_EQ(fw.last_protected_impedance()->valid_until_ms, 1030u);
+
+    const auto samples = g->exchange_stats().motor_samples;
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().motor_samples > samples; }, kSecond));
+    fw.drop_exchange_replies(2);
+    ASSERT_TRUE(g->motor().submit_protected_impedance(0.7f, 2, 0.2f, 0, 2, 1, 1030));
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_unacknowledged == 1; }, kSecond));
+    const auto after_timeout = g->exchange_stats().motor_samples;
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().motor_samples > after_timeout + 2; }, kSecond));
+    EXPECT_EQ(g->exchange_stats().protected_accepted, 1u);
+    EXPECT_EQ(g->exchange_stats().targets_resent, 0u);
+    EXPECT_EQ(fw.exchange_targets(), 3u);
+    EXPECT_EQ(fw.last_protected_impedance()->valid_until_ms, 1030u);
+    g->stop_streaming();
 }
 
 TEST(FollowerExchangePty, NeverWritesWhileAReplyIsPendingEvenWithConcurrentQueries) {

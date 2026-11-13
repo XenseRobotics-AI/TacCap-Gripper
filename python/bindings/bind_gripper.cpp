@@ -461,6 +461,10 @@ void bind_gripper(py::module_& m) {
                       "IMU samples the firmware queue overflowed before they were fetched.")
         .def_readonly("last_rtt_us",         &ExchangeStats::last_rtt_us)
         .def_readonly("max_rtt_us",          &ExchangeStats::max_rtt_us)
+        .def_readonly("protected_accepted", &ExchangeStats::protected_accepted,
+                      "Protected targets with a valid echoed flag and successful target result.")
+        .def_readonly("protected_rejected", &ExchangeStats::protected_rejected)
+        .def_readonly("protected_unacknowledged", &ExchangeStats::protected_unacknowledged)
         .def_readonly("mcu_targets",         &ExchangeStats::mcu_targets,
                       "Targets sent with the V2.10 MCU-trajectory bit.")
         .def_readonly("mcu_keepalives",      &ExchangeStats::mcu_keepalives,
@@ -608,6 +612,7 @@ void bind_gripper(py::module_& m) {
            "stop_streaming(). Old firmware raises ProtocolError.")
         .def_property_readonly("is_exchanging", &FollowerGripper::is_exchanging,
                                "True between start_exchange() and stop_streaming().")
+        .def_property_readonly("supports_protected_impedance", &FollowerGripper::supports_protected_impedance)
         .def_property_readonly("supports_mcu_trajectory", &FollowerGripper::supports_mcu_trajectory,
                                "Follower answered the V2.10 MCU-trajectory probe at start_exchange()\n"
                                "(firmware 1.2.19+). False when not exchanging.")

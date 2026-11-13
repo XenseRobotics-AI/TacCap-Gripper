@@ -43,6 +43,28 @@ GripperPosition map() { return GripperPosition::from_travel(1.2f); }
 
 // ---- Tracking + error clamp ---------------------------------------------
 
+TEST(ImpedancePolicy, ProtectedPvValidatesTheBudgetAndKeepsThePairedPositionAndVelocity) {
+    ImpedanceConfig cfg;
+    cfg.protected_pv = true;
+    cfg.rated_torque_nm = 5.0f;
+    cfg.max_position_torque_nm = 3.61f;
+    EXPECT_THROW((ImpedancePolicy(map(), cfg)), std::invalid_argument);
+    cfg.max_position_torque_nm = 0.004f;
+    EXPECT_THROW((ImpedancePolicy(map(), cfg)), std::invalid_argument);
+    cfg.max_position_torque_nm = 3.6f;
+    cfg.mcu_stream = true;
+    EXPECT_THROW((ImpedancePolicy(map(), cfg)), std::invalid_argument);
+    cfg.mcu_stream = false;
+    ImpedancePolicy p(map(), cfg);
+    p.reset(sample(0.50f, 1.0f));
+    p.set_target(0.80f);  // outside the old host error clamp of +/-0.18 rad
+    const auto c = p.step(sample(0.50f, 1.0f), std::chrono::steady_clock::now(), -2.0f);
+    EXPECT_FLOAT_EQ(c.target_pos, map().to_rad(0.80f));
+    EXPECT_FLOAT_EQ(c.vel, -2.0f);
+    const float expected = cfg.kp * (c.target_pos - 0.50f) + cfg.kd * (-2.0f - 1.0f);
+    EXPECT_FLOAT_EQ(p.commanded_torque_nm(), std::min(cfg.peak_torque_nm, std::abs(expected)));
+}
+
 TEST(ImpedancePolicy, StartTracksFromWhereTheJawIs) {
     ImpedancePolicy p(map(), ImpedanceConfig{});
     p.reset(sample(0.6f));

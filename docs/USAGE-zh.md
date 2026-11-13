@@ -211,6 +211,24 @@ finally:
 `start()` 之后**不要**再自己 `start_streaming()` 或注册 `motor.on_status()` ——
 控制器独占状态流与控制路径,观测一律从 `snapshot()` 取。
 
+#### 主机提供同一时刻的位置与速度
+
+上游有同步轨迹时，RS00 MIT 从爪可在交换模式下使用受保护的高层入口。先用
+`ImpedanceConfig.for_spec(f.motor.get_spec())` 取本机预算，再设置
+`cfg.protected_pv = True`。调用 `f.start_exchange(motor_hz=100, imu_hz=1125)`，
+构造 `c = t.ImpedanceController(f, cfg)`，执行 `c.start()`。设备回显所需能力后才可启动。
+调用 `f.motor.enable()` 并确认使能后，每个新源样本调用一次
+`c.set_target(position, velocity_rad_s)`。位置取 0–1 的开度，速度取同一时刻的
+**有符号电机轴速度**（rad/s）。反向标定的 9s 在张开时取负值。
+力位控制的 `max_vel` 给出规划速度上限，两种参数含义不同。
+
+受保护路径使用 `cfg.max_position_torque_nm` 作为位置项和量化 MIT 总请求的预算。
+非零速度最迟在该源样本的反馈时间戳后 30 ms 撤销，当前目标位置继续有效。
+遥测持续期间，重复的反馈或传输重试不会为旧速度续期。重复读取同一个上游样本时
+不要再次调用 `set_target`，每次调用都表示一个新的源采样。结束时调用 `c.stop()`，
+最后由交换的所有者调用 `f.stop_streaming()`。单参数 `set_target(position)` 保留；
+选用此受保护路径时单参数表示位置加零速度。有新鲜速度的来源才应选用成对入口。
+
 #### 八个字段分别控制什么
 
 | 字段 | 默认 | 控制什么 |

@@ -202,6 +202,33 @@ struct MotorImpedanceCtrl {
                           // estimates from the position delta. MIT protocol only.
 };
 
+struct ProtectedPvStatus {
+    uint8_t version, flags, reserved[2];
+    uint32_t accepted_seq, applied_seq, accepted_ms, valid_until_ms, tx_ms, feedback_ms;
+    uint32_t expired_steps, rejected_steps;
+    float budget_nm, requested_v, applied_v, actual_p, actual_v, reconstructed_nm;
+    uint8_t mit_bytes[8];
+};
+
+// 0x5F, request byte 1: only the first count records follow the header on the wire.
+struct ProtectedPvFeedback {
+    uint32_t sample_seq, feedback_ms;
+    float actual_p, actual_v, actual_torque;
+};
+struct ProtectedPvFeedbackPage {
+    uint8_t version, count;
+    uint16_t reserved;
+    ProtectedPvFeedback samples[12];
+};
+
+// Exchange-only variant of the impedance payload. The absolute MCU deadline
+// is part of the source event and remains unchanged on transport retries.
+struct ProtectedImpedanceCtrl {
+    MotorImpedanceCtrl impedance;
+    float torque_budget_nm;
+    uint32_t valid_until_ms;
+};
+
 // motor_status_t — V1.9 shrank this 40 -> 31 bytes by dropping the current
 // fields (actual_current / target_current / current_source). The first 18 bytes
 // (actual_pos..status) are byte-identical to the older layout, so position /
@@ -1040,8 +1067,14 @@ struct LeaderExchangeResponseHeader {
 // IGNORES the bit and runs the target as a plain 0x40/0x43, so probe first:
 // a request with only this bit and no target is answered with
 // ExchangeRespFlag::McuTrajectory by firmware that understands it.
-namespace ExchangeFlag    { constexpr uint8_t Telemetry = 0x01; constexpr uint8_t McuTrajectory = 0x02; }
-namespace ExchangeRespFlag { constexpr uint8_t Motor = 0x01; constexpr uint8_t McuTrajectory = 0x02; }
+// ProtectedImpedance requires its own target-free probe and cannot be combined
+// with McuTrajectory. A protected impedance target carries ProtectedImpedanceCtrl.
+namespace ExchangeFlag {
+    constexpr uint8_t Telemetry = 0x01, McuTrajectory = 0x02, ProtectedImpedance = 0x04;
+}
+namespace ExchangeRespFlag {
+    constexpr uint8_t Motor = 0x01, McuTrajectory = 0x02, ProtectedImpedance = 0x04;
+}
 enum class ExchangeTarget : uint8_t {
     None = 0, Position = 1, Velocity = 2, Torque = 3, Impedance = 4,
 };
@@ -1230,6 +1263,13 @@ struct OtaStatus {
 static_assert(sizeof(FirmwareVersion)    == 4);
 static_assert(sizeof(SnInfo)             == 17);
 static_assert(sizeof(ImuData)            == 28);  // IMU_PACKET_SIZE
+static_assert(sizeof(ProtectedImpedanceCtrl) == 28);
+static_assert(offsetof(ProtectedImpedanceCtrl, valid_until_ms) == 24);
+static_assert(sizeof(ProtectedPvFeedback) == 20);
+static_assert(sizeof(ProtectedPvFeedbackPage) == 244);
+static_assert(offsetof(ProtectedPvFeedbackPage, samples) == 4);
+static_assert(sizeof(ProtectedPvStatus) == 68);
+static_assert(offsetof(ProtectedPvStatus, mit_bytes) == 60);
 static_assert(sizeof(ExchangeRequestHeader)  == 4);
 static_assert(sizeof(ExchangeResponseHeader) == 8);
 static_assert(sizeof(LeaderExchangeRequest)        == 4);

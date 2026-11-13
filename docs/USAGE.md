@@ -240,6 +240,28 @@ After `start()`, do **not** call `start_streaming()` yourself or register a
 `motor.on_status()` callback — the controller owns the status stream and the control
 path exclusively, and every observation comes from `snapshot()`.
 
+#### Streaming a synchronized position and velocity
+
+On a compatible RS00 MIT follower, create the configuration with
+`ImpedanceConfig.for_spec(f.motor.get_spec())` and set `cfg.protected_pv = True`.
+Call `f.start_exchange(motor_hz=100, imu_hz=1125)`, construct
+`c = t.ImpedanceController(f, cfg)`, and call `c.start()`. Startup requires an
+explicit capability acknowledgement. Call `f.motor.enable()` and confirm that
+the motor is enabled. For each fresh source sample, call
+`c.set_target(position, velocity_rad_s)`. Position is normalized opening
+(0–1). Velocity is the signed motor-shaft velocity from the same instant in
+rad/s. The reverse-calibrated 9s opens with negative shaft velocity. In
+force-position control, the speed parameter gives the planner a speed limit.
+
+The protected controller uses `cfg.max_position_torque_nm` as the budget for the
+position term and the quantized combined MIT request. The device clears nonzero
+reference velocity at the sample's fixed deadline, at most 30 ms after its
+feedback timestamp, and retains the target position. Telemetry and transport retries
+preserve the original deadline. Call the setter only on fresh upstream samples.
+Call `c.stop()` at the end, then let the exchange owner call `f.stop_streaming()`.
+The existing one-argument setter remains available. In the protected route it
+submits a position with zero reference velocity.
+
 #### What each of the eight fields controls
 
 | Field | Default | What it controls |

@@ -70,6 +70,10 @@ STRUCT_MAP = {
     "motor_vel_ctrl_t": "MotorVelCtrl",
     "motor_torque_ctrl_t": "MotorTorqueCtrl",
     "motor_impedance_ctrl_t": "MotorImpedanceCtrl",
+    "motor_protected_pv_ctrl_t": "ProtectedImpedanceCtrl",
+    "protected_pv_status_t": "ProtectedPvStatus",
+    "protected_pv_feedback_t": "ProtectedPvFeedback",
+    "protected_pv_feedback_page_t": "ProtectedPvFeedbackPage",
     # NOTE the crossover: 0x50 and the DATA stream carry the *legacy* struct.
     "motor_status_legacy_t": "MotorStatus",
     "motor_status_t": "MotorStatusExt",

@@ -137,6 +137,15 @@ public:
     void reject_next_exchange_target(uint8_t err) { reject_next_.store(err); }
     // V2.10 MCU trajectory (follower 1.2.19+). Off = firmware that ignores bit1.
     void set_mcu_trajectory_supported(bool on) { mcu_supported_.store(on); }
+    void set_protected_impedance_supported(bool on) { protected_supported_.store(on); }
+    void set_exchange_status_timestamp_ms(uint32_t timestamp) {
+        std::lock_guard<std::mutex> lk(mu_);
+        fixed_status_ms_ = timestamp;
+    }
+    std::optional<tp::ProtectedImpedanceCtrl> last_protected_impedance() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return last_protected_;
+    }
     unsigned mcu_targets() const { return mcu_targets_.load(); }          // targets carrying bit1
     unsigned plain_exchange_targets() const { return plain_targets_.load(); }
     std::optional<tp::MotorPosCtrl> last_mcu_position() const {
@@ -218,6 +227,24 @@ private:
     std::atomic<uint8_t> data_seq_{0xFF};
     uint8_t next_data_seq_() { return static_cast<uint8_t>(++data_seq_); }
 
+
+    uint32_t feedback_clock_ms_() const {
+        const auto elapsed = std::chrono::steady_clock::now() - clock_start_;
+        return fixed_status_ms_.value_or(1000u + static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+    }
+
+    std::vector<uint8_t> status_bytes_(const tp::MotorStatus& status, bool exchange) const {
+        if (!exchange && !protected_supported_.load()) return pod_bytes(&status, sizeof(status));
+        tp::MotorStatusExt sample{};
+        std::memcpy(&sample, &status, sizeof(status));
+        if (protected_supported_.load()) {
+            sample.monitor_version = tp::MOTOR_MONITOR_VERSION;
+            sample.monitor_flags = tp::MotorMonitorFlag::StatusValid;
+            sample.status_timestamp_ms = feedback_clock_ms_();
+        }
+        return pod_bytes(&sample, tp::MOTOR_STATUS_V2_SIZE);
+    }
 
     void run_() {
         auto next_status = std::chrono::steady_clock::now();
@@ -355,6 +382,7 @@ private:
                 std::lock_guard<std::mutex> lk(mu_);
                 monitor_.monitor_version = tp::MOTOR_MONITOR_VERSION;
                 monitor_.monitor_flags = tp::MotorMonitorFlag::StatusValid;
+                if (protected_supported_.load()) monitor_.status_timestamp_ms = feedback_clock_ms_();
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&monitor_, sizeof(monitor_)));
                 return;
             }
@@ -440,8 +468,7 @@ private:
                     reply.status = *next_polled_status_word_;
                     next_polled_status_word_.reset();
                 }
-                pty_.send_response(f.seq, f.cmd,
-                                   pod_bytes(&reply, sizeof(reply)));
+                pty_.send_response(f.seq, f.cmd, status_bytes_(reply, false));
                 return;
             }
             case tp::Cmd::TimeSession: {
@@ -523,6 +550,9 @@ private:
         if (telemetry) ++telemetry_exchanges_;
         uint8_t result = tp::EXCHANGE_TARGET_RESULT_NONE;
         const bool mcu = mcu_supported_.load() && (h.flags & tp::ExchangeFlag::McuTrajectory);
+        const bool protected_req = (h.flags & tp::ExchangeFlag::ProtectedImpedance) != 0;
+        const bool protected_ack = protected_req && protected_supported_.load() &&
+                                   !(h.flags & tp::ExchangeFlag::McuTrajectory);
         if (h.target_kind != 0) {
             ++exchange_targets_;
             result = reject_next_.exchange(0);
@@ -530,7 +560,11 @@ private:
                              f.payload.size() == sizeof(h) + sizeof(tp::MotorImpedanceCtrl);
             const bool pos = h.target_kind == static_cast<uint8_t>(tp::ExchangeTarget::Position) &&
                              f.payload.size() == sizeof(h) + sizeof(tp::MotorPosCtrl);
-            if (mcu) {
+            if (protected_req) {
+                if ((!protected_ack || h.target_kind != static_cast<uint8_t>(tp::ExchangeTarget::Impedance) ||
+                     f.payload.size() != sizeof(h) + sizeof(tp::ProtectedImpedanceCtrl)) && !result)
+                    result = static_cast<uint8_t>(tp::ErrorCode::InvalidParam);
+            } else if (mcu) {
                 ++mcu_targets_;
                 if (!imp && !pos && result == 0) result = static_cast<uint8_t>(tp::ErrorCode::InvalidParam);
             } else {
@@ -538,7 +572,12 @@ private:
             }
             if (result == 0) {
                 std::lock_guard<std::mutex> lk(mu_);
-                if (imp) {
+                if (protected_ack) {
+                    tp::ProtectedImpedanceCtrl c{};
+                    std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
+                    last_protected_ = c;
+                    last_submit_ = c.impedance;
+                } else if (imp) {
                     tp::MotorImpedanceCtrl c{};
                     std::memcpy(&c, f.payload.data() + sizeof(h), sizeof(c));
                     last_submit_ = c;
@@ -563,6 +602,7 @@ private:
         tp::ExchangeResponseHeader r{};
         r.version = tp::EXCHANGE_VERSION;
         r.target_result = result;
+        if (protected_ack) r.flags |= tp::ExchangeRespFlag::ProtectedImpedance;
         if (mcu) r.flags |= tp::ExchangeRespFlag::McuTrajectory;
         std::vector<uint8_t> out(sizeof(r));
         if (telemetry) {
@@ -570,8 +610,7 @@ private:
             // freeze_stream() also starves the exchange of motor status.
             if ((stream_config_.source_mask & tp::StreamSrc::MotorStatus) && !frozen_.load()) {
                 r.flags |= tp::ExchangeRespFlag::Motor;
-                auto s = pod_bytes(&status_, sizeof(status_));
-                s.resize(tp::MOTOR_STATUS_V2_SIZE, 0);
+                auto s = status_bytes_(status_, true);
                 out.insert(out.end(), s.begin(), s.end());
             }
             if (stream_config_.source_mask & tp::StreamSrc::ImuV2) {
@@ -611,7 +650,10 @@ private:
     std::optional<std::vector<uint8_t>>      last_exchange_reply_;
     std::atomic<int> exchange_delay_ms_{0};
     std::atomic<uint8_t> reject_next_{0};
-    std::atomic<bool> mcu_supported_{false};
+    std::atomic<bool> mcu_supported_{false}, protected_supported_{false};
+    const std::chrono::steady_clock::time_point clock_start_ = std::chrono::steady_clock::now();
+    std::optional<uint32_t> fixed_status_ms_;
+    std::optional<tp::ProtectedImpedanceCtrl> last_protected_;
     std::atomic<unsigned> mcu_targets_{0}, plain_targets_{0};
     std::optional<tp::MotorPosCtrl> last_mcu_pos_;
     std::optional<tp::MotorImpedanceCtrl> last_mcu_imp_, last_plain_imp_;

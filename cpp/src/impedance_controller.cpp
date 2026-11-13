@@ -14,6 +14,8 @@ namespace xense::taccap {
 
 namespace {
 
+constexpr auto protected_validity = std::chrono::milliseconds(30);
+
 void validate_config(const ImpedanceConfig& cfg) {
     auto finite = [](float v) { return std::isfinite(v); };
     if (!finite(cfg.kp) || cfg.kp <= 0.0f) {
@@ -39,6 +41,10 @@ void validate_config(const ImpedanceConfig& cfg) {
         cfg.max_position_torque_nm > MOTOR_ABSOLUTE_TORQUE_CEILING_NM) {
         throw std::invalid_argument(
             "ImpedanceConfig.max_position_torque_nm must be in [0, 20]");
+    }
+    if (cfg.protected_pv && (cfg.mcu_stream || cfg.max_position_torque_nm < 0.005f ||
+                             cfg.max_position_torque_nm > 3.6f)) {
+        throw std::invalid_argument("protected_pv requires mcu_stream=false and a torque budget in [0.005, 3.6] Nm");
     }
     // The ceiling holds indefinitely and nothing here times it out, so it is
     // bounded by the RATED torque, not the peak.
@@ -259,7 +265,7 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::zero_(const MotorStatusSample& s) 
 
 protocol::MotorImpedanceCtrl ImpedancePolicy::step(
         const MotorStatusSample& sample,
-        std::chrono::steady_clock::time_point now) {
+        std::chrono::steady_clock::time_point now, float reference_velocity_rad_s) {
     if (const char* reason = status_fault_reason(sample, cfg_.peak_torque_nm)) fail(reason);
 
     if (state_ == ImpedanceState::Fault || state_ == ImpedanceState::Idle) {
@@ -286,16 +292,18 @@ protocol::MotorImpedanceCtrl ImpedancePolicy::step(
     float raw = map_.to_rad(effective);
     // The error clamp. Applied on every frame, under every state, which is why
     // it is not one of them.
-    if (cfg_.max_position_torque_nm > 0.0f && kp_ > 0.0f) {
+    // Protected P+V keeps both fields on their common source trajectory. The
+    // MCU applies the position and total bounds against its own fresh sample.
+    if (!cfg_.protected_pv && cfg_.max_position_torque_nm > 0.0f && kp_ > 0.0f) {
         const float limit = cfg_.max_position_torque_nm / kp_;
         raw = std::clamp(raw, sample.actual_pos - limit, sample.actual_pos + limit);
     }
     effective_ = map_.to_position(raw);
 
     const float predicted =
-        kp_ * (raw - sample.actual_pos) + kd_ * (0.0f - sample.actual_vel) + ff_;
+        kp_ * (raw - sample.actual_pos) + kd_ * (reference_velocity_rad_s - sample.actual_vel) + ff_;
     commanded_torque_nm_ = std::min(cfg_.peak_torque_nm, std::abs(predicted));
-    return {raw, kp_, kd_, ff_, 0.0f};
+    return {raw, kp_, kd_, ff_, reference_velocity_rad_s};
 }
 
 }  // namespace detail
@@ -374,6 +382,8 @@ void ImpedanceController::start_(bool recover) {
         return;
     }
     validate_config_();
+    if (cfg_.protected_pv && !g_.supports_protected_impedance())
+        throw std::logic_error("protected_pv requires start_exchange() and protected impedance capability");
     map_ = g_.position_map();
 
     const float device_limit = g_.motor().get_startup_limit_torque();
@@ -492,7 +502,7 @@ void ImpedanceController::start_(bool recover) {
         logger()->debug("ImpedanceController: envelope unavailable ({})", e.what());
     }
 
-    if (recover && !(cfg_.mcu_stream && g_.supports_mcu_trajectory()))
+    if (recover && !cfg_.protected_pv && !(cfg_.mcu_stream && g_.supports_mcu_trajectory()))
         throw std::logic_error("start_after_timeout requires the MCU trajectory exchange");
     const MotorStatusSample initial = g_.motor().read_status();
     const auto now = std::chrono::steady_clock::now();
@@ -517,6 +527,14 @@ void ImpedanceController::start_(bool recover) {
         stop_requested_ = false;
         step_requested_ = true;
         device_limit_nm_ = device_limit;
+        source_velocity_rad_s_ = 0.0f;
+        source_expires_ = {};
+        last_source_call_ = {};
+        device_clock_seen_ = {};
+        if (cfg_.protected_pv) {
+            const auto stats = g_.exchange_stats();
+            protected_failures_ = stats.protected_rejected + stats.protected_unacknowledged;
+        }
     }
 
     try {
@@ -553,8 +571,24 @@ void ImpedanceController::start_(bool recover) {
 
     bool recovered = false;
     try {
-        if (mcu_) g_.motor().prepare_watchdog_start_(recover);
+        if (mcu_ || cfg_.protected_pv) g_.motor().prepare_watchdog_start_(recover);
         recovered = recover;
+        if (cfg_.protected_pv) {
+            // A plain status read may carry the legacy prefix only. Wait for
+            // an exchange sample with the MCU's feedback clock before callers
+            // can submit their first reference.
+            std::unique_lock<std::mutex> lk(mu_);
+            if (recover) {
+                // A recovery changes drive mode and may disable twice. Samples
+                // from those intermediate phases predate the final stop fence.
+                feedback_epoch_ = std::chrono::steady_clock::now();
+            }
+            const auto ready = cv_.wait_for(lk, std::chrono::milliseconds(cfg_.status_timeout_ms), [this] {
+                return pending_status_fault_ || device_clock_seen_ >= feedback_epoch_;
+            });
+            if (!ready || pending_status_fault_)
+                throw std::runtime_error("protected_pv start requires healthy timestamped motor feedback");
+        }
         stopped_ = false;
         running_.store(true, std::memory_order_release);
         thread_ = std::thread([this] { run_(); });
@@ -583,6 +617,8 @@ void ImpedanceController::start_(bool recover) {
 }
 
 void ImpedanceController::stop() {
+    // A failed capability probe never acquired the actuator.
+    if (cfg_.protected_pv && !running() && !thread_.joinable()) return;
     if (stopped_) return;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -608,7 +644,7 @@ void ImpedanceController::stop() {
     } else {
         try {
             std::optional<protocol::MotorImpedanceCtrl> zero;
-            if (have) zero = protocol::MotorImpedanceCtrl{last.actual_pos, 0, 0, 0, 0};
+            if (have && !cfg_.protected_pv) zero = protocol::MotorImpedanceCtrl{last.actual_pos, 0, 0, 0, 0};
             g_.motor().stop_control_(zero);
         }
         catch (const std::exception& e) {
@@ -637,12 +673,22 @@ void ImpedanceController::on_status_(const MotorStatusSample& sample) {
             sample.host_time > now || sample.host_time < feedback_epoch_) return;
         if (!pending_status_fault_)
             pending_status_fault_ = status_fault_reason(sample, cfg_.peak_torque_nm);
+        if (cfg_.protected_pv && !pending_status_fault_ && (sample.fault_code || sample.latched_fault_code))
+            pending_status_fault_ = "protected impedance motor fault or latched fault";
         if (pending_status_fault_) {
             step_requested_ = true;
             cv_.notify_one();
         }
         if ((have_sample_ && sample.host_time < latest_time_) ||
             now - sample.host_time >= std::chrono::milliseconds(cfg_.status_timeout_ms)) return;
+        if (cfg_.protected_pv && sample.raw.monitor_version == protocol::MOTOR_MONITOR_VERSION &&
+            (sample.raw.monitor_flags & protocol::MotorMonitorFlag::StatusValid) &&
+            !(sample.raw.monitor_flags & protocol::MotorMonitorFlag::CommStale) &&
+            (device_clock_seen_.time_since_epoch().count() == 0 ||
+             static_cast<int32_t>(sample.raw.status_timestamp_ms - device_status_ms_) > 0)) {
+            device_status_ms_ = sample.raw.status_timestamp_ms;
+            device_clock_seen_ = sample.host_time;
+        }
         latest_ = sample;
         latest_time_ = sample.host_time;
         have_sample_ = true;
@@ -664,6 +710,10 @@ void ImpedanceController::on_status_(const MotorStatusSample& sample) {
 // A caller-thread submit lands at whatever moment that thread called in and
 // costs a telemetry frame when it overlaps the MCU's own transmission.
 void ImpedanceController::set_target(float position) {
+    if (cfg_.protected_pv) {
+        set_target(position, 0.0f);
+        return;
+    }
     std::lock_guard<std::mutex> lk(mu_);
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ImpedanceController::set_target called before start");
@@ -676,6 +726,54 @@ void ImpedanceController::set_target(float position) {
     cv_.notify_one();
     // Mcu: on the wire now; the follower stamps arrivals and interpolates.
     send_mcu_(mcu_target_());
+}
+
+void ImpedanceController::set_target(float position, float velocity_rad_s) {
+    const auto sampled = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!cfg_.protected_pv || !running() || !policy_ || !have_sample_)
+        throw std::logic_error("paired position and velocity require a running protected_pv controller");
+    if (!std::isfinite(position) || position < 0.0f || position > 1.0f || !std::isfinite(velocity_rad_s))
+        throw std::invalid_argument("paired target requires position in [0,1] and finite shaft velocity in rad/s");
+    if (policy_->state() != ImpedanceState::Tracking || pending_status_fault_)
+        throw std::logic_error("protected_pv requires healthy tracking feedback");
+    const auto now = std::chrono::steady_clock::now();
+    if (sampled < last_source_call_ || now - sampled >= protected_validity)
+        throw std::runtime_error("protected_pv source update out of order or expired before submission");
+    if (device_clock_seen_.time_since_epoch().count() == 0 ||
+        now - device_clock_seen_ >= protected_validity ||
+        latest_.raw.status_timestamp_ms != device_status_ms_ ||
+        !(latest_.raw.monitor_flags & protocol::MotorMonitorFlag::StatusValid) ||
+        (latest_.raw.monitor_flags & protocol::MotorMonitorFlag::CommStale))
+        throw std::runtime_error("protected_pv requires fresh MCU motion-status time");
+    last_source_call_ = sampled;
+    policy_->set_target(position);
+    source_velocity_rad_s_ = velocity_rad_s;
+    // A status callback can advance the anchor while this call is waiting for
+    // mu_. That transport delay cannot extend the lifetime of the older input.
+    const auto anchor = std::min(sampled, device_clock_seen_);
+    const auto margin = std::chrono::ceil<std::chrono::milliseconds>(device_clock_seen_ - anchor);
+    source_valid_until_ms_ = device_status_ms_ + static_cast<uint32_t>((protected_validity - margin).count());
+    source_expires_ = anchor + protected_validity;
+    send_protected_();
+}
+
+// Caller holds mu_. Reusing a sample (including for a gain change) preserves
+// its original MCU-clock deadline; only set_target may mint a new one.
+void ImpedanceController::send_protected_() {
+    const protocol::MotorImpedanceCtrl t{map_.to_rad(policy_->target_position()),
+        policy_->kp(), policy_->kd(), policy_->feedforward(), source_velocity_rad_s_};
+    try {
+        if (!g_.motor().submit_protected_impedance(t.target_pos, t.kp, t.kd, t.target_torque,
+                t.vel, cfg_.max_position_torque_nm, source_valid_until_ms_))
+            throw std::runtime_error("protected impedance exchange unavailable");
+    } catch (const std::exception& e) {
+        policy_->fail(e.what());
+        step_requested_ = true;
+        cv_.notify_one();
+        throw;
+    }
+    trace_submission_(t, false);
 }
 
 // The frame the host law would send, minus v = 0 (the follower supplies the
@@ -718,21 +816,24 @@ void ImpedanceController::send_mcu_(const std::optional<protocol::MotorImpedance
         if (g_.motor().submit_mcu_trajectory_(*t)) {
             mcu_engaged_ = true;
             mcu_last_ = *t;
-            if (trace_targets_) {
-                ++trace_seq_;
-                if (target_trace_.size() < target_trace_.capacity()) {
-                    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()).count();
-                    target_trace_.push_back({trace_seq_, ns, map_.to_rad(policy_->target_position()),
-                        t->target_pos, latest_.actual_pos, latest_.raw.status_timestamp_ms, feedback_refresh});
-                }
-            }
+            trace_submission_(*t, feedback_refresh);
         } else if (policy_) {
             policy_->fail("MCU stream: follower exchange stopped");
         }
     } catch (const std::exception& e) {
         if (policy_) policy_->fail(std::string("submit failed: ") + e.what());
     }
+}
+
+void ImpedanceController::trace_submission_(const protocol::MotorImpedanceCtrl& t, bool feedback_refresh) {
+    if (!trace_targets_) return;
+    ++trace_seq_;
+    if (target_trace_.size() >= target_trace_.capacity()) return;
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    target_trace_.push_back({trace_seq_, ns, map_.to_rad(policy_->target_position()), t.target_pos,
+        latest_.actual_pos, latest_.raw.status_timestamp_ms, feedback_refresh, t.vel,
+        cfg_.protected_pv ? source_valid_until_ms_ : 0U});
 }
 
 void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque) {
@@ -747,7 +848,14 @@ void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque
             "gains require kp >= 0, kd >= 0 and |feedforward| <= rated_torque_nm (" +
             std::to_string(cfg_.rated_torque_nm) + " Nm)");
     }
+    if (cfg_.protected_pv && (policy_->state() != ImpedanceState::Tracking || pending_status_fault_))
+        throw std::logic_error("protected_pv requires healthy tracking feedback");
     policy_->set_gains(kp, kd, feedforward_torque);
+    if (cfg_.protected_pv) {
+        // With no live sample the gains take effect on the next source point.
+        if (std::chrono::steady_clock::now() < source_expires_) send_protected_();
+        return;
+    }
     command_woke_ = true;
     cv_.notify_one();
     send_mcu_(mcu_target_());
@@ -755,6 +863,8 @@ void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque
 
 void ImpedanceController::reset() {
     std::lock_guard<std::mutex> lk(mu_);
+    if (cfg_.protected_pv)
+        throw std::logic_error("stop and explicitly restart the protected_pv controller after a fault");
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ImpedanceController::reset called before start");
     }
@@ -798,6 +908,7 @@ ImpedanceSnapshot ImpedanceController::snapshot() const {
 
 void ImpedanceController::run_() {
     const auto timeout = std::chrono::milliseconds(cfg_.status_timeout_ms);
+    bool disabled_on_fault = false;
     for (;;) {
         protocol::MotorImpedanceCtrl command{};
         bool send = false;
@@ -835,11 +946,36 @@ void ImpedanceController::run_() {
             // zero-torque frame step() produces in Fault, rather than being
             // swallowed with nothing on the wire.
             if (woke_by_command && stale) step_requested_ = true;
+            if (cfg_.protected_pv && policy_->state() == ImpedanceState::Fault && !disabled_on_fault)
+                step_requested_ = true;
+            if (cfg_.protected_pv && policy_->state() != ImpedanceState::Fault) {
+                const auto stats = g_.exchange_stats();
+                if (!g_.supports_protected_impedance() ||
+                    stats.protected_rejected + stats.protected_unacknowledged != protected_failures_) {
+                    policy_->fail("protected impedance target rejected or acknowledgement unavailable");
+                    step_requested_ = true;
+                }
+            }
 
             if (!step_requested_) continue;
             step_requested_ = false;
 
-            command = policy_->step(latest_, now);
+            const float v = now < source_expires_ ? source_velocity_rad_s_ : 0.0f;
+            command = policy_->step(latest_, now, v);
+            if (cfg_.protected_pv) {
+                if (policy_->state() == ImpedanceState::TorqueCapped)
+                    policy_->fail("protected impedance measured torque held above rating");
+                if (policy_->state() == ImpedanceState::Fault && !disabled_on_fault) {
+                    lk.unlock();
+                    try {
+                        g_.motor().disable();
+                        disabled_on_fault = true;
+                    } catch (const std::exception& e) {
+                        logger()->warn("protected impedance fault: disable failed: {}", e.what());
+                    }
+                }
+                continue;  // only an upstream source point submits tracking commands
+            }
             send = true;
             if (mcu_) {
                 if (policy_->state() == ImpedanceState::Tracking) {

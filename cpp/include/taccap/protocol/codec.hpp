@@ -40,6 +40,7 @@ std::vector<uint8_t> encode(const MotorPosCtrl&);
 std::vector<uint8_t> encode(const MotorVelCtrl&);
 std::vector<uint8_t> encode(const MotorTorqueCtrl&);
 std::vector<uint8_t> encode(const MotorImpedanceCtrl&);
+std::vector<uint8_t> encode(const ProtectedImpedanceCtrl&);
 std::vector<uint8_t> encode(const GripperConfig&);   // V1.7
 std::vector<uint8_t> encode(const LogConfig&);       // fw 1.1.4
 std::vector<uint8_t> encode(const GripperAutoCalConfig&);  // V1.9

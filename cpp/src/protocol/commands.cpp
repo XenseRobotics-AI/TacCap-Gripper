@@ -38,6 +38,8 @@ const char* to_string(Cmd c) noexcept {
         case Cmd::GetImu:              return "GetImu";
         case Cmd::TimeSession:         return "TimeSession";
         case Cmd::GetImuV2:            return "GetImuV2";
+        case Cmd::BrakeTrace:          return "BrakeTrace";
+        case Cmd::GetProtectedPvStatus: return "GetProtectedPvStatus";
         case Cmd::TxTrace:             return "TxTrace";
         case Cmd::GetEncoder:          return "GetEncoder";
         case Cmd::GetEskin1:           return "GetEskin1";
