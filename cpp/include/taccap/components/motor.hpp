@@ -545,7 +545,7 @@ private:
     // exchanging; controllers check supports_mcu_trajectory() first).
     void set_exchange_(std::shared_ptr<detail::FollowerExchange> exchange);
     void stop_control_(std::optional<protocol::MotorImpedanceCtrl> zero);
-    void prepare_watchdog_start_(bool recover);
+    std::optional<MotorStatusSample> prepare_watchdog_start_(bool recover, bool protected_pv = false);
     void submit_(protocol::Cmd cmd, std::vector<uint8_t> payload);
     // Controllers in ControlBackend::Mcu. False (nothing sent) when no exchange
     // router is installed -- a bare 0x40/0x43 would NOT carry the bit.

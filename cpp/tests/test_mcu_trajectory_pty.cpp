@@ -363,6 +363,8 @@ TEST(McuTrajectoryPty, ProtectedPvTransmitsTheSourcePairAndCannotRenewItsClock) 
     const auto before = fw.exchange_targets();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     EXPECT_EQ(fw.exchange_targets(), before) << "telemetry renewed the old reference";
+    c.set_gains(16.0f, 0.9f);
+    EXPECT_EQ(fw.exchange_targets(), before) << "gain change resubmitted an expired reference";
     EXPECT_THROW(c.set_target(0.4f, 2.0f), std::runtime_error)
         << "repeated cached status was treated as a fresh sample";
     fw.set_exchange_status_timestamp_ms(60);
@@ -425,6 +427,49 @@ TEST(McuTrajectoryPty, ProtectedPvWatchdogRecoveryAwaitsNewFeedbackAndPreservesT
         EXPECT_EQ(fw.enable_count(), hold ? 1u : 2u);
         c.set_target(0.30f, -3.0f);
         ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_accepted > 0; }, kSecond));
+        c.stop();
+        const auto stats = g->exchange_stats();
+        ASSERT_TRUE(wait_for([&] { return g->exchange_stats().imu_samples > stats.imu_samples + 4; }, kSecond));
+        EXPECT_GT(g->exchange_stats().motor_samples, stats.motor_samples);
+        EXPECT_EQ(fw.exchange_targets(), fw.targets_at_disable());
+        EXPECT_EQ(fw.plain_exchange_targets(), 0u);
+    }
+}
+
+TEST(McuTrajectoryPty, ProtectedPvRunningControllerRecoversWithCommandDrivenFeedback) {
+    for (bool hold : {true, false}) {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_protected_impedance_supported(true);
+        fw.set_command_driven_feedback(true);
+        fw.set_imu_v2_supported(true);
+        auto g = open_follower(pty);
+        g->start_exchange(100, 100, 500);
+        tx::ImpedanceConfig cfg;
+        cfg.protected_pv = true;
+        tx::ImpedanceController c(*g, cfg);
+        c.start();
+        g->motor().enable();
+        ASSERT_TRUE(wait_for([&] {
+            return (c.snapshot().observation.status & tp::MotorStatusBit::Enabled) != 0;
+        }, kSecond));
+        EXPECT_THROW(c.start_after_timeout(), std::logic_error);
+        EXPECT_TRUE(c.running());
+        EXPECT_EQ(fw.enable_count(), 1u);
+        c.set_target(0.3f, 1.0f);
+        ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_accepted == 1; }, kSecond));
+        fw.set_watchdog(hold);
+        c.start_after_timeout();
+        EXPECT_TRUE(c.running());
+        EXPECT_EQ(fw.enable_count(), hold ? 2u : 3u);
+        EXPECT_EQ(c.backend(), tx::ControlBackend::ProtectedPv);
+        c.set_target(0.6f, -2.0f);
+        ASSERT_TRUE(wait_for([&] { return g->exchange_stats().protected_accepted == 2; }, kSecond));
+        const auto deadline = fw.last_protected_impedance()->valid_until_ms;
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        c.set_gains(17.0f, 1.0f);
+        EXPECT_THROW(c.set_target(0.6f, -2.0f), std::runtime_error);
+        EXPECT_EQ(fw.last_protected_impedance()->valid_until_ms, deadline);
         c.stop();
         const auto stats = g->exchange_stats();
         ASSERT_TRUE(wait_for([&] { return g->exchange_stats().imu_samples > stats.imu_samples + 4; }, kSecond));

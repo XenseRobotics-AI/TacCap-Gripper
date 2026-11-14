@@ -325,6 +325,8 @@ public:
     void start();
     // Explicitly resume a timed-out MCU trajectory at the current position.
     // Re-establishes motor mode/enable before the first target is submitted.
+    // protected_pv may recover a running instance after the device confirms
+    // its host watchdog has fired. Existing controller faults require stop().
     void start_after_timeout();
     void stop();
     bool running() const noexcept { return running_.load(std::memory_order_acquire); }
@@ -350,6 +352,7 @@ public:
 
 private:
     void start_(bool recover);
+    void stop_(bool disable_motor);
     void validate_config_() const;
     void start_motor_stream_();
     void stop_motor_stream_();
@@ -390,6 +393,7 @@ private:
     uint32_t source_valid_until_ms_ = 0;
     std::chrono::steady_clock::time_point source_expires_{}, device_clock_seen_{};
     std::chrono::steady_clock::time_point last_source_call_{};
+    std::chrono::steady_clock::time_point started_at_{};
     uint32_t device_status_ms_ = 0;
     uint64_t protected_failures_ = 0;
     // Caller holds mu_.

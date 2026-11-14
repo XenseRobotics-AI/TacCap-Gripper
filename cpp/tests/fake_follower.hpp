@@ -142,6 +142,11 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         fixed_status_ms_ = timestamp;
     }
+    void set_command_driven_feedback(bool enabled) {
+        std::lock_guard<std::mutex> lk(mu_);
+        command_driven_feedback_ = enabled;
+        if (enabled) fixed_status_ms_ = 1000;
+    }
     std::optional<tp::ProtectedImpedanceCtrl> last_protected_impedance() const {
         std::lock_guard<std::mutex> lk(mu_);
         return last_protected_;
@@ -239,6 +244,12 @@ private:
         tp::MotorStatusExt sample{};
         std::memcpy(&sample, &status, sizeof(status));
         if (protected_supported_.load()) {
+            if (command_driven_feedback_) {
+                sample.monitor_reserved = monitor_.monitor_reserved;
+                sample.stop_reason = monitor_.stop_reason;
+                sample.control_mode = monitor_.control_mode;
+                sample.status = monitor_.status;
+            }
             sample.monitor_version = tp::MOTOR_MONITOR_VERSION;
             sample.monitor_flags = tp::MotorMonitorFlag::StatusValid;
             sample.status_timestamp_ms = feedback_clock_ms_();
@@ -380,6 +391,11 @@ private:
             }
             case tp::Cmd::GetMotorStatusExt: {
                 std::lock_guard<std::mutex> lk(mu_);
+                if (command_driven_feedback_) {
+                    monitor_.actual_pos = status_.actual_pos;
+                    monitor_.actual_vel = status_.actual_vel;
+                    monitor_.actual_torque = status_.actual_torque;
+                }
                 monitor_.monitor_version = tp::MOTOR_MONITOR_VERSION;
                 monitor_.monitor_flags = tp::MotorMonitorFlag::StatusValid;
                 if (protected_supported_.load()) monitor_.status_timestamp_ms = feedback_clock_ms_();
@@ -393,6 +409,7 @@ private:
                 monitor_.monitor_reserved = tp::MotorMonitorDiag::McuEnabled |
                     tp::MotorMonitorDiag::DriveMotor | tp::MotorMonitorDiag::DriveModeValid;
                 ++monitor_.status_timestamp_ms;
+                if (command_driven_feedback_) ++*fixed_status_ms_;
                 pty_.send_response(f.seq, f.cmd, {});
                 return;
             }
@@ -401,6 +418,11 @@ private:
                 monitor_.monitor_reserved = tp::MotorMonitorDiag::DriveModeValid;
                 monitor_.status &= ~tp::MotorStatusBit::Enabled;
                 ++monitor_.status_timestamp_ms;
+                if (command_driven_feedback_) {
+                    ++*fixed_status_ms_;
+                    monitor_.stop_reason = static_cast<uint8_t>(tp::MotorStopReason::Disable);
+                    monitor_.control_mode = static_cast<uint8_t>(tp::MotorMode::Idle);
+                }
                 targets_at_disable_.store(exchange_targets_.load());
                 ++disables_;
                 pty_.send_response(f.seq, f.cmd, {});
@@ -463,6 +485,8 @@ private:
             }
             case tp::Cmd::GetMotorStatus: {
                 std::lock_guard<std::mutex> lk(mu_);
+                if (command_driven_feedback_ && !(monitor_.status & tp::MotorStatusBit::Enabled))
+                    ++*fixed_status_ms_;  // disabled 0x50 elicits a fresh Reset reply
                 auto reply = status_;
                 if (next_polled_status_word_) {
                     reply.status = *next_polled_status_word_;
@@ -653,6 +677,7 @@ private:
     std::atomic<bool> mcu_supported_{false}, protected_supported_{false};
     const std::chrono::steady_clock::time_point clock_start_ = std::chrono::steady_clock::now();
     std::optional<uint32_t> fixed_status_ms_;
+    bool command_driven_feedback_ = false;
     std::optional<tp::ProtectedImpedanceCtrl> last_protected_;
     std::atomic<unsigned> mcu_targets_{0}, plain_targets_{0};
     std::optional<tp::MotorPosCtrl> last_mcu_pos_;

@@ -69,14 +69,14 @@ MotorStatusSample Motor::decode(const std::uint8_t* payload, std::size_t len) {
 
 void Motor::enable()       { send_or_throw(t_, protocol::Cmd::MotorEnable,     {}, "enable"); }
 void Motor::disable()      { stop_control_(std::nullopt); }
-void Motor::prepare_watchdog_start_(bool recover) {
+std::optional<MotorStatusSample> Motor::prepare_watchdog_start_(bool recover, bool protected_pv) {
     using namespace protocol;
     const auto before = read_status_ext();
     const bool timeout = before.stop_reason == static_cast<uint8_t>(MotorStopReason::HostTimeout)
         && before.control_mode == static_cast<uint8_t>(MotorMode::Velocity);
     if (!timeout) {
         if (recover) throw ProtocolError("controller recovery: no active host watchdog hold or disable");
-        return;
+        return std::nullopt;
     }
     if (!recover)
         throw ProtocolError("controller start: follower host watchdog active; use start_after_timeout()");
@@ -88,9 +88,13 @@ void Motor::prepare_watchdog_start_(bool recover) {
     // T1 is still applying velocity hold. Stop that scheduler before switching
     // modes. T2 is already disabled. A final disable also cancels the previous
     // exchange target and synchronizes an in-flight request in either case.
-    auto confirm = [this](uint32_t previous_ms, bool enabled) {
+    auto confirm = [this, protected_pv](uint32_t previous_ms, bool enabled,
+                                       std::chrono::steady_clock::time_point edge) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
         const auto expected = enabled ? MotorMonitorDiag::DriveMotor : 0;
+        // 0x53 reads the cache. A stopped RS00 can need a 0x50 poll (a
+        // zero-clear Reset query) to produce another actual feedback frame.
+        if (protected_pv && !enabled) read_status();
         do {
             const auto s = read_status_ext();
             if (s.fault_code || s.latched_fault_code || (s.status & MotorStatusBit::Fault))
@@ -101,31 +105,43 @@ void Motor::prepare_watchdog_start_(bool recover) {
                 !(s.monitor_flags & MotorMonitorFlag::CommStale) &&
                 bool(diag & MotorMonitorDiag::McuEnabled) == enabled &&
                 (diag & MotorMonitorDiag::DriveModeValid) &&
-                (diag & MotorMonitorDiag::DriveModeMask) == expected)
-                return s.status_timestamp_ms;
+                (diag & MotorMonitorDiag::DriveModeMask) == expected) {
+                auto sample = decode(reinterpret_cast<const uint8_t*>(&s), sizeof(s));
+                // Earliest possible arrival of feedback for this command.
+                // Reading the cache again must never renew its age.
+                sample.host_time = edge;
+                return sample;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         } while (std::chrono::steady_clock::now() < deadline);
         throw TimeoutError(enabled ? "controller recovery: fresh Motor feedback missing"
                                    : "controller recovery: fresh Reset feedback missing", ETIMEDOUT);
     };
+    const auto disable_edge = std::chrono::steady_clock::now();
     disable();
-    auto reset_ms = confirm(before.status_timestamp_ms, false);
+    auto reset_ms = confirm(before.status_timestamp_ms, false, disable_edge).raw.status_timestamp_ms;
     // RobStride accepts run-mode changes while stopped. Its firmware's own
     // speed-to-motion transition gives the drive 5 ms after disable.
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     try {
+        auto enable_edge = std::chrono::steady_clock::now();
         enable();
-        const auto motor_ms = confirm(reset_ms, true);
+        auto motor = confirm(reset_ms, true, enable_edge);
         if (!(before.monitor_reserved & MotorMonitorDiag::McuEnabled)) {
             // After a full watchdog disable, RS00 can acknowledge Motor while
             // ignoring motion frames on the first speed-to-motion transition.
             // Re-arm from a confirmed Motor -> Reset edge before any user target.
+            const auto reset_edge = std::chrono::steady_clock::now();
             disable();
-            reset_ms = confirm(motor_ms, false);
+            reset_ms = confirm(motor.raw.status_timestamp_ms, false, reset_edge).raw.status_timestamp_ms;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            enable_edge = std::chrono::steady_clock::now();
             enable();
-            confirm(reset_ms, true);
+            motor = confirm(reset_ms, true, enable_edge);
         }
+        if (protected_pv && std::chrono::steady_clock::now() - motor.host_time >= std::chrono::milliseconds(20))
+            throw TimeoutError("protected recovery: confirmed Motor feedback is too old for first execution", ETIMEDOUT);
+        return motor;
     } catch (...) {
         disable();
         throw;

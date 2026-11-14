@@ -374,7 +374,30 @@ void ImpedanceController::stop_motor_stream_() {
 
 void ImpedanceController::start() { start_(false); }
 
-void ImpedanceController::start_after_timeout() { start_(true); }
+void ImpedanceController::start_after_timeout() {
+    if (cfg_.protected_pv && running()) {
+        const auto status = g_.motor().read_status_ext();
+        if (status.stop_reason != static_cast<uint8_t>(protocol::MotorStopReason::HostTimeout) ||
+            status.control_mode != static_cast<uint8_t>(protocol::MotorMode::Velocity))
+            throw std::logic_error("protected recovery requires a confirmed device host timeout");
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (pending_status_fault_ || !policy_ || policy_->state() == ImpedanceState::Fault)
+                throw std::logic_error("clear the controller fault with an explicit stop and restart");
+        }
+        // Retire local submissions before recovery. Disabling here would
+        // replace the device's timeout evidence before prepare can verify it.
+        stop_(false);
+        try {
+            start_(true);
+        } catch (...) {
+            g_.motor().disable();
+            throw;
+        }
+        return;
+    }
+    start_(true);
+}
 
 void ImpedanceController::start_(bool recover) {
     if (running()) {
@@ -571,18 +594,30 @@ void ImpedanceController::start_(bool recover) {
 
     bool recovered = false;
     try {
-        if (mcu_ || cfg_.protected_pv) g_.motor().prepare_watchdog_start_(recover);
+        std::optional<MotorStatusSample> motor;
+        if (mcu_ || cfg_.protected_pv)
+            motor = g_.motor().prepare_watchdog_start_(recover, cfg_.protected_pv);
         recovered = recover;
         if (cfg_.protected_pv) {
+            if (motor) {
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    // The last enable can produce the only Motor reply until
+                    // our first reference. Anchor its age to that command and
+                    // retain it even if exchange has already read the cache.
+                    feedback_epoch_ = motor->host_time;
+                    latest_ = *motor;
+                    latest_time_ = motor->host_time;
+                    device_status_ms_ = motor->raw.status_timestamp_ms;
+                    device_clock_seen_ = motor->host_time;
+                    policy_->reset(*motor);
+                }
+                on_status_(*motor);
+            }
             // A plain status read may carry the legacy prefix only. Wait for
             // an exchange sample with the MCU's feedback clock before callers
             // can submit their first reference.
             std::unique_lock<std::mutex> lk(mu_);
-            if (recover) {
-                // A recovery changes drive mode and may disable twice. Samples
-                // from those intermediate phases predate the final stop fence.
-                feedback_epoch_ = std::chrono::steady_clock::now();
-            }
             const auto ready = cv_.wait_for(lk, std::chrono::milliseconds(cfg_.status_timeout_ms), [this] {
                 return pending_status_fault_ || device_clock_seen_ >= feedback_epoch_;
             });
@@ -590,7 +625,14 @@ void ImpedanceController::start_(bool recover) {
                 throw std::runtime_error("protected_pv start requires healthy timestamped motor feedback");
         }
         stopped_ = false;
-        running_.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            // A setter that sampled before this start must not carry its
+            // previous generation into the freshly enabled actuator.
+            started_at_ = std::chrono::steady_clock::now();
+            last_source_call_ = started_at_;
+            running_.store(true, std::memory_order_release);
+        }
         thread_ = std::thread([this] { run_(); });
     } catch (...) {
         running_.store(false, std::memory_order_release);
@@ -616,7 +658,9 @@ void ImpedanceController::start_(bool recover) {
         cfg_.motor_stream_hz, device_limit_nm_);
 }
 
-void ImpedanceController::stop() {
+void ImpedanceController::stop() { stop_(true); }
+
+void ImpedanceController::stop_(bool disable_motor) {
     // A failed capability probe never acquired the actuator.
     if (cfg_.protected_pv && !running() && !thread_.joinable()) return;
     if (stopped_) return;
@@ -641,7 +685,7 @@ void ImpedanceController::stop() {
     if (g_.is_closed()) {
         logger()->debug("ImpedanceController: gripper already closed; "
                         "skipping motor disable on stop");
-    } else {
+    } else if (disable_motor) {
         try {
             std::optional<protocol::MotorImpedanceCtrl> zero;
             if (have && !cfg_.protected_pv) zero = protocol::MotorImpedanceCtrl{last.actual_pos, 0, 0, 0, 0};
@@ -681,6 +725,9 @@ void ImpedanceController::on_status_(const MotorStatusSample& sample) {
         }
         if ((have_sample_ && sample.host_time < latest_time_) ||
             now - sample.host_time >= std::chrono::milliseconds(cfg_.status_timeout_ms)) return;
+        if (cfg_.protected_pv && device_clock_seen_.time_since_epoch().count() != 0 &&
+            static_cast<int32_t>(sample.raw.status_timestamp_ms - device_status_ms_) < 0)
+            return;
         if (cfg_.protected_pv && sample.raw.monitor_version == protocol::MOTOR_MONITOR_VERSION &&
             (sample.raw.monitor_flags & protocol::MotorMonitorFlag::StatusValid) &&
             !(sample.raw.monitor_flags & protocol::MotorMonitorFlag::CommStale) &&
@@ -837,6 +884,7 @@ void ImpedanceController::trace_submission_(const protocol::MotorImpedanceCtrl& 
 }
 
 void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque) {
+    const auto called_at = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(mu_);
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ImpedanceController::set_gains called before start");
@@ -850,6 +898,8 @@ void ImpedanceController::set_gains(float kp, float kd, float feedforward_torque
     }
     if (cfg_.protected_pv && (policy_->state() != ImpedanceState::Tracking || pending_status_fault_))
         throw std::logic_error("protected_pv requires healthy tracking feedback");
+    if (cfg_.protected_pv && called_at < started_at_)
+        throw std::logic_error("gain update belongs to a previous controller start");
     policy_->set_gains(kp, kd, feedforward_torque);
     if (cfg_.protected_pv) {
         // With no live sample the gains take effect on the next source point.
