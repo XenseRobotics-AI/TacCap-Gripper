@@ -48,7 +48,9 @@ BYID_DIR = "/dev/v4l/by-id"
 V4L_BYPATH_DIR = "/dev/v4l/by-path"
 SERIAL_BYPATH_DIR = "/dev/serial/by-path"
 
-TACTILE_SN_RE = re.compile(r"(GSPS01[A-Z]\d{2}[ZA]\d{4})")
+# Newer modules may append an m/s role patch in either case (GSPS01A29Z0023m);
+# xensesdk opens a sensor by its full USB serial, so the patch is kept.
+TACTILE_SN_RE = re.compile(r"(GSPS01[A-Z]\d{2}[ZA]\d{4}[msMS]?)")
 # A by-path name embeds ``usb-<bus>:<port>.<port>…:<config>``; the hub a device
 # hangs off is that port path minus the device's own (last) port.
 _USB_PORT_RE = re.compile(r"^(.*)-usb-(\d+):([\d.]+):")
@@ -80,7 +82,9 @@ class TactileSensor:
 
 
 def finger_of_serial(sn: str) -> str:
-    return "left" if int(sn[-1]) % 2 == 1 else "right"
+    """Odd last digit of the 4-digit sequence -> left finger; any m/s patch is skipped."""
+    digits = sn.rstrip("msMS")
+    return "left" if int(digits[-1]) % 2 == 1 else "right"
 
 
 def _hub_of_bypath(name: str) -> str | None:
@@ -176,7 +180,7 @@ def select_tactile(
         side = "left" if key.lower().startswith("l") else "right"
         picked = [s for s in sensors if s.side == side]
     elif TACTILE_SN_RE.fullmatch(key):
-        picked = [s for s in sensors if s.serial == key]
+        picked = [s for s in sensors if s.serial.lower() == key.lower()]
     else:
         sys.exit(
             f"error: unrecognized tactile target {target!r} — use left / right, "

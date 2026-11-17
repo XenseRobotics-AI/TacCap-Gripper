@@ -78,7 +78,23 @@ def add_arguments(parser) -> None:
         "rerun (rerun_viewer.py; gripper_console.py only with --rerun)"
     )
     g.add_argument("--no-wrist", action="store_true", help="skip the wrist camera")
-    g.add_argument("--undistort", action="store_true", help="rectify the wrist fisheye")
+    g.add_argument(
+        "--undistort",
+        action="store_true",
+        help="rectify the wrist fisheye (needs the camera at its calibrated 640x480)",
+    )
+    g.add_argument(
+        "--wrist-width",
+        type=int,
+        default=None,
+        help="wrist capture width (default: the camera's largest MJPG size)",
+    )
+    g.add_argument(
+        "--wrist-height",
+        type=int,
+        default=None,
+        help="wrist capture height (default: the camera's largest MJPG size)",
+    )
     g.add_argument(
         "--no-tactile", action="store_true", help="skip the visuotactile sensors"
     )
@@ -180,18 +196,59 @@ def open_wrist(g, role, side: str, args):
             f"{side}: no {role} XC wrist camera under /dev/v4l/by-id — skipping it"
         )
         return None
+    width, height = args.wrist_width, args.wrist_height
+    if width is None or height is None:
+        width, height = largest_mjpg_size(cams[0]["path"]) or (640, 480)
     cam = Camera(
-        cams[0]["path"], width=640, height=480, fps=30.0, color_mode=ColorMode.RGB
+        cams[0]["path"], width=width, height=height, fps=30.0, color_mode=ColorMode.RGB
     )
-    if args.undistort:
+    if args.undistort and (width, height) != (640, 480):
+        # The firmware intrinsics are calibrated at 640x480 and carry no image
+        # size; FisheyeUndistorter refuses any other size rather than guess.
+        log.warning(
+            f"{side}: wrist undistortion skipped — the calibration is for 640x480, "
+            f"the camera is at {width}x{height}"
+        )
+    elif args.undistort:
         cal, is_reference, reason = g.calibration.resolve_fisheye()
         if is_reference:
             log.warning(
                 f"{side}: wrist undistortion uses the SDK reference intrinsics ({reason})"
             )
         cam.set_undistorter(FisheyeUndistorter(cal))
-    print(f"[wrist]   {side}: {cams[0]['serial']}")
+    print(f"[wrist]   {side}: {cams[0]['serial']}  {width}x{height}")
     return cam
+
+
+def largest_mjpg_size(device: str) -> tuple[int, int] | None:
+    """The largest MJPG frame size the camera offers, from ``v4l2-ctl``.
+
+    Wrist cameras differ by batch (640x480 earlier, 1920x1080 now), and asking a
+    camera for a size it does not offer makes V4L2 pick one silently. None when
+    ``v4l2-ctl`` is missing or reports no MJPG size.
+    """
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["v4l2-ctl", "-d", device, "--list-formats-ext"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sizes, in_mjpg = [], False
+    for line in out.splitlines():
+        if "'MJPG'" in line:
+            in_mjpg = True
+        elif re.match(r"\s*\[\d+\]:", line):
+            in_mjpg = False
+        elif in_mjpg and (m := re.search(r"Size: Discrete (\d+)x(\d+)", line)):
+            sizes.append((int(m.group(1)), int(m.group(2))))
+    return max(sizes, key=lambda s: s[0] * s[1]) if sizes else None
 
 
 # ---- tactile (xensesdk) ------------------------------------------------------

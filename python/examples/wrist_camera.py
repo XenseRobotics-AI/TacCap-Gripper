@@ -148,8 +148,12 @@ def _yellow(s):
 # it rather than through /dev/videoN: the index moves with plug order, and the
 # node right next to the wrist camera is usually a visuotactile sensor.
 BYID_DIR = "/dev/v4l/by-id"
-CAMERA_SN_RE = re.compile(r"(XC[A-Z]\d{2}[ZA]\d{4}[ms])")
-TACTILE_SN_RE = re.compile(r"(GSPS01[A-Z]\d{2}[ZA]\d{4})")
+# The m/s patch is matched case-insensitively: updated follower wrist cameras
+# report XCA28Z0089S where the gripper's own firmware SN still says ...0089s.
+# The serial is kept as the device reports it (it names the /dev/v4l/by-id node);
+# role and side are read from it via .lower().
+CAMERA_SN_RE = re.compile(r"(XC[A-Z]\d{2}[ZA]\d{4}[msMS])")
+TACTILE_SN_RE = re.compile(r"(GSPS01[A-Z]\d{2}[ZA]\d{4}[msMS]?)")
 
 SIDES = ("left", "right")
 PATCH_ROLE = {"m": "leader", "s": "follower"}
@@ -157,12 +161,12 @@ PATCH_ROLE = {"m": "leader", "s": "follower"}
 
 def side_of_serial(sn: str) -> str:
     """Odd trailing sequence digit → left, even → right (odd-left / even-right rule)."""
-    seq = sn[-5:-1] if sn[-1] in PATCH_ROLE else sn[-4:]
+    seq = sn[-5:-1] if sn[-1].lower() in PATCH_ROLE else sn[-4:]
     return "left" if int(seq[-1]) % 2 == 1 else "right"
 
 
 def role_of_serial(sn: str) -> str:
-    return PATCH_ROLE.get(sn[-1], "unknown")
+    return PATCH_ROLE.get(sn[-1].lower(), "unknown")
 
 
 def scan_video_devices() -> dict[str, list[dict]]:
@@ -261,7 +265,7 @@ def resolve_wrist_camera(target: str) -> dict:
 
     if CAMERA_SN_RE.fullmatch(key):
         for d in devs["wrist"]:
-            if d["serial"] == key:
+            if d["serial"].lower() == key.lower():
                 return d
         found = ", ".join(d["serial"] for d in devs["wrist"]) or "none"
         raise SystemExit(
