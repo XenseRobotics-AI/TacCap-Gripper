@@ -4,6 +4,7 @@
 #include <taccap/error.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -82,19 +83,21 @@ std::vector<uint8_t> encode_cal_write_request(const T& body) {
 }
 
 // Read responses lead with the op byte echoed back. Validate it and hand back
-// a pointer to the body.
+// a pointer to the body. `op` is the read op that was sent — CalOp::Read, or
+// CAMERA_FISHEYE_CAL_OP_READ_SIZED for the V2.10 sized read.
 const uint8_t* cal_read_body(const uint8_t* data, std::size_t len,
-                             std::size_t full_size, const char* type_name) {
+                             std::size_t full_size, const char* type_name,
+                             uint8_t op = static_cast<uint8_t>(CalOp::Read)) {
     if (data == nullptr || len != full_size) {
         throw ProtocolError(
             std::string("decode ") + type_name + ": expected " +
             std::to_string(full_size) + " bytes, got " + std::to_string(len));
     }
-    if (data[0] != static_cast<uint8_t>(CalOp::Read)) {
-        throw ProtocolError(
-            std::string("decode ") + type_name + ": expected leading op byte " +
-            "0x00 (CalOp::Read), got 0x" +
-            std::to_string(static_cast<unsigned>(data[0])));
+    if (data[0] != op) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), ": expected leading op byte 0x%02X, got 0x%02X",
+                      static_cast<unsigned>(op), static_cast<unsigned>(data[0]));
+        throw ProtocolError(std::string("decode ") + type_name + buf);
     }
     return data + 1;
 }
@@ -107,6 +110,23 @@ std::vector<uint8_t> encode_camera_fisheye_cal_read() {
 
 std::vector<uint8_t> encode_camera_fisheye_cal_write(const CameraFisheyeCal& v) {
     return encode_cal_write_request(v);
+}
+
+std::vector<uint8_t> encode_camera_fisheye_cal_read_sized() {
+    return {CAMERA_FISHEYE_CAL_OP_READ_SIZED};
+}
+
+std::vector<uint8_t> encode_camera_fisheye_cal_write_sized(const CameraFisheyeCal& v,
+                                                           uint16_t width,
+                                                           uint16_t height) {
+    CameraFisheyeCalSized body{};
+    body.calibration = v;
+    body.width       = width;
+    body.height      = height;
+    std::vector<uint8_t> out(CAMERA_FISHEYE_CAL_SIZED_SIZE);
+    out[0] = CAMERA_FISHEYE_CAL_OP_WRITE_SIZED;
+    std::memcpy(out.data() + 1, &body, sizeof(body));
+    return out;
 }
 
 std::vector<uint8_t> encode_encoder_max_cal_read() {
@@ -203,6 +223,16 @@ CameraFisheyeCal decode_camera_fisheye_cal(const uint8_t* data, std::size_t len)
     const uint8_t* body = cal_read_body(data, len, CAMERA_FISHEYE_CAL_FULL_SIZE,
                                         "CameraFisheyeCal");
     CameraFisheyeCal out{};
+    std::memcpy(&out, body, sizeof(out));
+    return out;
+}
+
+CameraFisheyeCalSized decode_camera_fisheye_cal_sized(const uint8_t* data,
+                                                      std::size_t len) {
+    const uint8_t* body = cal_read_body(data, len, CAMERA_FISHEYE_CAL_SIZED_SIZE,
+                                        "CameraFisheyeCalSized",
+                                        CAMERA_FISHEYE_CAL_OP_READ_SIZED);
+    CameraFisheyeCalSized out{};
     std::memcpy(&out, body, sizeof(out));
     return out;
 }

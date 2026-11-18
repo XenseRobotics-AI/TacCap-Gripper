@@ -96,8 +96,9 @@ public:
         //
         // Degrades to raw frames with a warning when the firmware holds no
         // calibration or is too old to answer. Throws when the camera is not
-        // configured at the calibrated 640x480 — the firmware record stores no
-        // image size, so rescaling the intrinsics would be a guess.
+        // configured at the calibration's own resolution (recorded by V2.10
+        // firmware, inferred for an older record, 640x480 for the reference) —
+        // intrinsics are never rescaled to another resolution.
         bool        undistort_wrist     = false;
         // 0 = the calibrated focal length (natural view, matches the PC tool's
         // default); 1 = 0.70x focal length for the widest field of view, with

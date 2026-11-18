@@ -524,11 +524,13 @@ g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```python
 from xense.taccap import FisheyeUndistorter
 
-cal, is_reference, reason = g.calibration.resolve_fisheye()
+resolved = g.calibration.resolve_fisheye()
+cal, is_reference, reason = resolved          # 仍可按原来的三元组解包
 if is_reference:
     log.warning(f"用的是 SDK 参考内参,不是这一台的:{reason}")
 
-undist = FisheyeUndistorter(cal, width=640, height=480, balance=0.0)
+w, h = resolved.calibrated_size               # 相机必须正好跑在这个分辨率
+undist = FisheyeUndistorter(cal, w, h, balance=0.0, calibrated_size=(w, h))
 cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的都是矫正帧
 # 或者手动:rect = undist.apply(img)
 ```
@@ -539,11 +541,14 @@ cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的�
   不是 NACK,而是返回一条**全零**记录,它能过 `if cal is None` 检查,但
   `fx = fy = 0` 会把每个像素映射到画面外 —— 得到一张纯黑的"矫正帧",全程无报错。
   `resolve_fisheye()` 已经把这个策略(读 → 判可用 → 回退参考值)做在一处了。
-- **只支持 640×480**,即标定分辨率。固件记录里不带图像尺寸,所以缩放内参等于
-  猜,构造函数宁可抛错。要别的分辨率就得先在固件里存一份对应的标定。
+- **只支持标定时的那个分辨率。** 640×480(4:3)和 1920×1080(16:9)是传感器
+  的不同取景范围,内参不能互相缩放,尺寸不符时构造函数直接抛错。主爪 1.2.8 /
+  从爪 1.2.18 起固件随参数一起记录标定分辨率(`read_fisheye_record()` /
+  `write_fisheye_sized()`);旧记录由 `resolve_fisheye()` 按主点推断
+  (`size_inferred`)。要别的分辨率就得存一份在该分辨率下标定的参数。
 - **参考内参是近似的**。每台的镜头装配位置有差异(尤其主点),回退到
   `FISHEYE_FALLBACK_CAL` 只是比完全不矫正强,不能拿它去按像素做测量。
-  自己标定后用 `fisheye_cal.py set-fisheye --from-npz cam.npz` 写进 flash。
+  自己标定后用 `fisheye_cal.py set-fisheye --from-npz cam.npz --width W --height H` 写进 flash。
 
 `balance` 是取景口味:0 = 保持标定焦距(自然视角,和 PC 工具默认一致),
 1 = 焦距压到 0.70x 换最大视场,代价是四周更多黑边。

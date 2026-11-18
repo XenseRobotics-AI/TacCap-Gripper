@@ -118,12 +118,18 @@ CameraFisheyeCal = (
     _taccap_native.CameraFisheyeCal
 )  # V2.0 fisheye intrinsics + distortion
 FisheyeUndistorter = _taccap_native.FisheyeUndistorter  # applies them to frames
+# V2.10: the params plus the capture resolution they belong to (0/0 = unknown),
+# and resolve_fisheye()'s answer, which carries that resolution.
+FisheyeCalRecord = _taccap_native.FisheyeCalRecord
+ResolvedFisheyeCal = _taccap_native.ResolvedFisheyeCal
 # Reference intrinsics for the TC-GU-01 wrist lens, for units whose firmware was
 # never calibrated. Approximate by construction — see the C++ header — so every
 # path that uses it should say so.
 ColorMode = _taccap_native.ColorMode
 FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
+fisheye_cal_size_plausible = _taccap_native.fisheye_cal_size_plausible
+infer_fisheye_cal_size = _taccap_native.infer_fisheye_cal_size
 FirmwareVersion = _taccap_native.FirmwareVersion
 Calibration = _taccap_native.Calibration  # V2.0/V2.1 flash-persisted cal records
 GripperObservation = _taccap_native.GripperObservation  # controller latest obs
@@ -290,9 +296,13 @@ __all__ = [
     "GripperPosition",
     "CameraFisheyeCal",
     "FisheyeUndistorter",
+    "FisheyeCalRecord",
+    "ResolvedFisheyeCal",
     "ColorMode",
     "FISHEYE_FALLBACK_CAL",
     "is_usable_fisheye_cal",
+    "fisheye_cal_size_plausible",
+    "infer_fisheye_cal_size",
     "FirmwareVersion",
     "Calibration",
     "GripperObservation",

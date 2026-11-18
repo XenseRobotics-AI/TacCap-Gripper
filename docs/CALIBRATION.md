@@ -67,7 +67,7 @@ and none of them are lost on reboot:
 
 | Record | Command | Scope | Accessor |
 | --- | --- | --- | --- |
-| Fisheye camera `fx, fy, cx, cy, k1..k4` | `0x2B` | leader + follower | `read_fisheye()` / `write_fisheye()` |
+| Fisheye camera `fx, fy, cx, cy, k1..k4` (+ calibration resolution, V2.10) | `0x2B` | leader + follower | `read_fisheye_record()` / `write_fisheye_sized()` (legacy: `read_fisheye()` / `write_fisheye()`) |
 | Encoder max travel angle (rad) | `0x2C` | **leader only** | `read_encoder_max_rad()` / `write_encoder_max_rad()` |
 
 Both survive power cycles. A record that was never written normally reads back
@@ -97,13 +97,17 @@ policy, so every consumer makes the same decision instead of re-deriving it.
 **Prefer it over `read_fisheye()`** unless you specifically need to know what
 the flash holds.
 
-C++ returns a `ResolvedFisheyeCal` (`calibration`, `is_reference`, `reason`);
-Python returns the same three as a plain tuple:
+Both languages return a `ResolvedFisheyeCal` (`calibration`, `is_reference`,
+`reason`, `calibrated_size`, `size_inferred`). In Python it still unpacks as the
+`(calibration, is_reference, reason)` tuple it used to be, and
+`calibrated_size` is a `(width, height)` tuple:
 
 ```python
-cal, is_reference, reason = g.calibration.resolve_fisheye()
+resolved = g.calibration.resolve_fisheye()
+cal, is_reference, reason = resolved
 if is_reference:
     log.warning("rectifying with the SDK's reference intrinsics: %s", reason)
+w, h = resolved.calibrated_size      # open the camera at exactly this size
 ```
 
 `reason` is non-empty exactly when `is_reference` is true.
@@ -115,6 +119,7 @@ Three ways a unit fails to supply its own calibration, all of which fall back:
 | The lens was never calibrated | `read_fisheye()` → `None` (`CalNotSet`) |
 | Firmware answered with an all-zero record | `!is_usable_fisheye_cal()` — see above |
 | Firmware predates command set V2.0 | `ProtocolError` (`InvalidCmd`) on `0x2B` |
+| The record has no resolution and none can be inferred | `infer_fisheye_cal_size()` → `None` — see below |
 
 What stands in is `FISHEYE_FALLBACK_CAL`, a reference calibration measured on a
 sample TC-GU-01 and compiled into the SDK
@@ -125,8 +130,9 @@ fx 213.0303  fy 212.7928   cx 321.4000  cy 239.9500
 k1  -0.0172  k2   0.0091   k3  -0.0146  k4   0.0051
 ```
 
-Every unit carries the same lens on the same 640x480 sensor, so these shared
-numbers are much closer to correct than no rectification at all — which is why
+They are a **640x480** calibration. Every unit carries the same lens and
+sensor, so these shared numbers are much closer to correct than no
+rectification at all — which is why
 `install_wrist_undistorter()` now installs undistortion **always**, and logs
 which of the two calibrations it used.
 
@@ -161,8 +167,43 @@ measures in pixels off a rectified frame needs this unit's own calibration —
 store one with `fisheye_cal.py set-fisheye`. Every fallback path warns and says
 so.
 
+### The calibration resolution (V2.10: leader 1.2.8 / follower 1.2.18)
+
+The 8 floats hold only at the capture resolution they were measured at. The
+wrist camera's default moved from 640x480 to 1920x1080, and those are
+**different sensor crops** (4:3 vs 16:9), not one image at two scales — so
+intrinsics cannot be rescaled from one to the other, and the SDK never tries.
+
+Firmware V2.10 records the resolution next to the params (`0x2B` ops
+`0x02`/`0x03`):
+
+| Call | What it does |
+| --- | --- |
+| `supports_fisheye_size()` | Probes with the sized read: older firmware rejects it as `InvalidParam`. Cached per `Calibration`. |
+| `read_fisheye_record()` | `FisheyeCalRecord` (`calibration`, `width`, `height`, `size_known()`); `0/0` = unknown. Older firmware: the legacy read, size `0/0`. `None` when never calibrated. |
+| `write_fisheye_sized(cal, w, h)` | Checks `fisheye_cal_size_plausible()` first (the firmware's own rule: finite, `fx, fy > 0`, `1 <= w, h <= 4096`, principal point inside the frame). Older firmware: only 640x480 is accepted, through the legacy write; anything else raises and asks for a firmware upgrade. |
+
+`write_fisheye()` still works, but on V2.10 firmware it marks the size
+**unknown**. Store calibrations with `write_fisheye_sized()`:
+
+```bash
+python python/examples/fisheye_cal.py set-fisheye --from-npz cam.npz --width 1920 --height 1080
+```
+
+A record without a size (legacy write, or written by older firmware) is not
+assumed to be 640x480. `infer_fisheye_cal_size()` applies a rule shared verbatim
+with the PC calibration tools: the candidates are exactly 640x480 and
+1920x1080, a candidate `W x H` matches when the calibration is usable and
+`|cx - W/2| <= 0.10*W` and `|cy - H/2| <= 0.10*H`, and a size is returned only
+when exactly one candidate matches. `resolve_fisheye()` uses it — setting
+`size_inferred` and logging a warning — and treats a record it cannot place as
+unusable, falling back to the reference.
+
 The one case that still throws rather than falling back is a camera running at
-something other than the calibrated 640x480: the firmware record holds only the
-8 intrinsic/distortion floats and no image size, so serving another resolution
-would mean guessing a scale factor and rectifying wrongly without a trace. That
-is a caller bug to fix, not something to paper over.
+a resolution other than the calibration's: `FisheyeUndistorter(cal,
+calibrated_size, frame_size)` requires the two to be equal (Python:
+`FisheyeUndistorter(cal, w, h, calibrated_size=(cw, ch))`). The legacy
+`FisheyeUndistorter(cal, size)` form takes the params to be a 640x480
+calibration, as it always has. A mismatch is a caller bug to fix — open the
+camera at the calibrated size, or recalibrate at the capture size — not
+something to paper over.

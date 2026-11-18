@@ -133,6 +133,74 @@ TEST(CodecV21, FisheyeDecodeRejectsWrongOpByte) {
 
 // ---- Leader encoder max travel angle (Cmd 0x2C) ---------------------------
 
+// ---- V2.10: fisheye params with their calibration resolution ---------------
+// Wire bytes from firmware docs/PROTOCOL.md §6.22.1.
+
+TEST(CodecV210, SizedWireConstants) {
+    EXPECT_EQ(tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED,  0x02u);
+    EXPECT_EQ(tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED, 0x03u);
+    EXPECT_EQ(tp::CAMERA_FISHEYE_CAL_SIZED_SIZE,     37u);
+    EXPECT_EQ(sizeof(tp::CameraFisheyeCalSized),     36u);
+}
+
+TEST(CodecV210, SizedReadRequestIsOpByteOnly) {
+    auto wire = tp::encode_camera_fisheye_cal_read_sized();
+    ASSERT_EQ(wire.size(), 1u);
+    EXPECT_EQ(wire[0], 0x02u);
+}
+
+TEST(CodecV210, SizedWriteIsOpEightFloatsThenWidthHeightLittleEndian) {
+    const tp::CameraFisheyeCal cal{477.1f, 476.8f, 968.3f, 563.2f,
+                                   -0.021f, 0.0061f, -0.0042f, 0.0011f};
+    auto wire = tp::encode_camera_fisheye_cal_write_sized(cal, 1920, 1080);
+    ASSERT_EQ(wire.size(), tp::CAMERA_FISHEYE_CAL_SIZED_SIZE);
+    EXPECT_EQ(wire[0], 0x03u);
+    tp::CameraFisheyeCal params{};
+    std::memcpy(&params, wire.data() + 1, sizeof(params));
+    EXPECT_EQ(0, std::memcmp(&cal, &params, sizeof(cal)));
+    // "... [32字节 params] 80 07 38 04" — 1920 = 0x0780, 1080 = 0x0438.
+    EXPECT_EQ(wire[33], 0x80u);
+    EXPECT_EQ(wire[34], 0x07u);
+    EXPECT_EQ(wire[35], 0x38u);
+    EXPECT_EQ(wire[36], 0x04u);
+}
+
+TEST(CodecV210, SizedEncodeDecodeRoundtrip) {
+    const tp::CameraFisheyeCal cal{1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f, 7.5f, 8.5f};
+    auto wire = tp::encode_camera_fisheye_cal_write_sized(cal, 640, 480);
+    // Write request and read response share the body; only the op differs.
+    wire[0] = tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED;
+    const auto out = tp::decode_camera_fisheye_cal_sized(wire.data(), wire.size());
+    EXPECT_EQ(0, std::memcmp(&cal, &out.calibration, sizeof(cal)));
+    EXPECT_EQ(out.width,  640u);
+    EXPECT_EQ(out.height, 480u);
+}
+
+TEST(CodecV210, SizedDecodePassesUnknownSizeThrough) {
+    const tp::CameraFisheyeCal cal{213.0f, 212.8f, 321.4f, 239.95f, 0, 0, 0, 0};
+    auto wire = tp::encode_camera_fisheye_cal_write_sized(cal, 0, 0);
+    wire[0] = tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED;
+    const auto out = tp::decode_camera_fisheye_cal_sized(wire.data(), wire.size());
+    EXPECT_EQ(out.width,  0u);
+    EXPECT_EQ(out.height, 0u);
+    EXPECT_FLOAT_EQ(out.calibration.cx, 321.4f);
+}
+
+TEST(CodecV210, SizedDecodeRejectsWrongLengthAndOp) {
+    // A legacy 33-byte read response is not a sized one.
+    auto legacy = make_read_response(tp::CameraFisheyeCal{});
+    EXPECT_THROW(tp::decode_camera_fisheye_cal_sized(legacy.data(), legacy.size()),
+                 ProtocolError);
+    std::vector<uint8_t> nack{static_cast<uint8_t>(tp::ErrorCode::InvalidParam)};
+    EXPECT_THROW(tp::decode_camera_fisheye_cal_sized(nack.data(), nack.size()),
+                 ProtocolError);
+    // Right length, but the op echoed is the legacy read's.
+    auto wire = tp::encode_camera_fisheye_cal_write_sized(tp::CameraFisheyeCal{}, 1, 1);
+    wire[0] = static_cast<uint8_t>(tp::CalOp::Read);
+    EXPECT_THROW(tp::decode_camera_fisheye_cal_sized(wire.data(), wire.size()),
+                 ProtocolError);
+}
+
 TEST(CodecV21, EncoderMaxReadRequestIsOpByteOnly) {
     auto wire = tp::encode_encoder_max_cal_read();
     ASSERT_EQ(wire.size(), 1u);

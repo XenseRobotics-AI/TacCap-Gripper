@@ -32,8 +32,10 @@ namespace xense::taccap::detail {
 //   - firmware predates command set V2.0     -> ProtocolError(InvalidCmd)
 //
 // Propagates (a config bug the caller must fix, not something to paper over):
-//   - the camera is not running at the calibrated 640x480, so the intrinsics
-//     do not apply and any rectification would be quietly wrong.
+//   - the camera is not running at the calibration's own resolution (recorded
+//     by the firmware, inferred for a legacy record, 640x480 for the
+//     reference), so the intrinsics do not apply and any rectification would
+//     be quietly wrong. Intrinsics are never rescaled to fit.
 inline void install_wrist_undistorter(Calibration& cal,
                                       Camera&      cam,
                                       float        balance,
@@ -53,13 +55,17 @@ inline void install_wrist_undistorter(Calibration& cal,
     }
 
     const cv::Size size{cam.config().width, cam.config().height};
-    auto u = std::make_shared<const FisheyeUndistorter>(resolved.calibration, size,
-                                                       balance);
+    auto u = std::make_shared<const FisheyeUndistorter>(
+        resolved.calibration, resolved.calibrated_size, size, balance);
     cam.set_undistorter(u);
     logger()->info("{}: wrist fisheye undistortion on ({}x{}, balance={:.2f}, "
-                   "focal_scale={:.3f}, calibration={})", who, size.width,
-                   size.height, u->balance(), u->focal_scale(),
-                   resolved.is_reference ? "SDK reference" : "this unit");
+                   "focal_scale={:.3f}, calibration={}, calibrated at {}x{} ({}))",
+                   who, size.width, size.height, u->balance(), u->focal_scale(),
+                   resolved.is_reference ? "SDK reference" : "this unit",
+                   resolved.calibrated_size.width, resolved.calibrated_size.height,
+                   resolved.is_reference    ? "reference"
+                   : resolved.size_inferred ? "inferred"
+                                            : "recorded");
 }
 
 }  // namespace xense::taccap::detail

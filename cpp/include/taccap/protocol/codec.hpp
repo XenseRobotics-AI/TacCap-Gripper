@@ -63,6 +63,11 @@ std::vector<uint8_t> encode(const CalSetAllPayload&);
 // instead of an encode() overload (the same struct maps to two wire shapes).
 std::vector<uint8_t> encode_camera_fisheye_cal_read();                  // 1 byte
 std::vector<uint8_t> encode_camera_fisheye_cal_write(const CameraFisheyeCal&);  // 33 bytes
+// V2.10 — fisheye params together with their calibration resolution.
+std::vector<uint8_t> encode_camera_fisheye_cal_read_sized();            // 1 byte
+std::vector<uint8_t> encode_camera_fisheye_cal_write_sized(const CameraFisheyeCal&,
+                                                           uint16_t width,
+                                                           uint16_t height);  // 37 bytes
 std::vector<uint8_t> encode_encoder_max_cal_read();                     // 1 byte
 std::vector<uint8_t> encode_encoder_max_cal_write(float max_rad);       // 5 bytes
 
@@ -141,6 +146,9 @@ CalGetResponse     decode_cal_get(const uint8_t* data, std::size_t len);
 // V2.0/V2.1 — read responses lead with the CalOp byte echoed back (Read), not
 // an error byte; these decoders verify that byte and strip it.
 CameraFisheyeCal   decode_camera_fisheye_cal(const uint8_t* data, std::size_t len);
+// V2.10 — read-sized response; verifies the echoed op byte (0x02) and strips it.
+// width/height 0/0 are passed through as-is (size unknown).
+CameraFisheyeCalSized decode_camera_fisheye_cal_sized(const uint8_t* data, std::size_t len);
 float              decode_encoder_max_cal(const uint8_t* data, std::size_t len);
 // V1.6+
 SensorErrorReport  decode_sensor_error(const uint8_t* data, std::size_t len);

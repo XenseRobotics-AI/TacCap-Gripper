@@ -180,16 +180,31 @@ def open_wrist(g, role, side: str, args):
             f"{side}: no {role} XC wrist camera under /dev/v4l/by-id — skipping it"
         )
         return None
-    cam = Camera(
-        cams[0]["path"], width=640, height=480, fps=30.0, color_mode=ColorMode.RGB
-    )
+    # Rectifying needs the camera at the calibration's own resolution (the
+    # intrinsics are never rescaled), so resolve first and open at that size.
+    size = (640, 480)
+    resolved = None
     if args.undistort:
-        cal, is_reference, reason = g.calibration.resolve_fisheye()
-        if is_reference:
+        resolved = g.calibration.resolve_fisheye()
+        size = resolved.calibrated_size
+        if resolved.is_reference:
             log.warning(
-                f"{side}: wrist undistortion uses the SDK reference intrinsics ({reason})"
+                f"{side}: wrist undistortion uses the SDK reference intrinsics "
+                f"({resolved.reason})"
             )
-        cam.set_undistorter(FisheyeUndistorter(cal))
+    cam = Camera(
+        cams[0]["path"],
+        width=size[0],
+        height=size[1],
+        fps=30.0,
+        color_mode=ColorMode.RGB,
+    )
+    if resolved is not None:
+        cam.set_undistorter(
+            FisheyeUndistorter(
+                resolved.calibration, *size, calibrated_size=resolved.calibrated_size
+            )
+        )
     print(f"[wrist]   {side}: {cams[0]['serial']}")
     return cam
 
