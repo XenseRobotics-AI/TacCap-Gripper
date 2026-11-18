@@ -18,6 +18,9 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cmath>
+#include <limits>
+#include <optional>
+#include <string>
 
 namespace tp = xense::taccap::protocol;
 using xense::taccap::Error;
@@ -53,8 +56,9 @@ tp::CameraFisheyeCal undistorted_cal() {
 
 TEST(FisheyeUndistorter, RejectsAnySizeOtherThanTheCalibratedOne) {
     const auto cal = distorted_cal();
-    // The firmware record carries no image size, so a differently-sized frame
-    // cannot be served without guessing a scale factor. Refuse instead.
+    // The legacy constructor takes the params as a 640x480 calibration, and a
+    // differently-sized frame cannot be served without rescaling them, which
+    // would be wrong. Refuse instead.
     EXPECT_THROW(FisheyeUndistorter(cal, cv::Size(1280, 720)), Error);
     EXPECT_THROW(FisheyeUndistorter(cal, cv::Size(320, 240)),  Error);
     EXPECT_THROW(FisheyeUndistorter(cal, cv::Size(640, 481)),  Error);
@@ -215,4 +219,131 @@ TEST(FisheyeUndistorter, ReportsWhatItWasBuiltFor) {
     EXPECT_EQ(u.size().width,  kCalibSize.width);
     EXPECT_EQ(u.size().height, kCalibSize.height);
     EXPECT_FLOAT_EQ(u.balance(), 0.25f);
+}
+
+// ---- Calibration resolution (V2.10) ---------------------------------------
+//
+// 640x480 and 1920x1080 are different sensor crops, so the intrinsics belong to
+// exactly one resolution and the undistorter must never rescale them.
+
+namespace {
+
+// Measured 1920x1080 wrist calibration (shape of the PC tool's output).
+tp::CameraFisheyeCal hd_cal() {
+    return tp::CameraFisheyeCal{
+        /*fx=*/477.2f, /*fy=*/476.9f, /*cx=*/968.3f, /*cy=*/563.1f,
+        /*k1=*/-0.021f, /*k2=*/0.0061f, /*k3=*/-0.0042f, /*k4=*/0.0011f};
+}
+
+}  // namespace
+
+TEST(FisheyeCalSize, InferenceRecognisesTheVgaReference) {
+    // FISHEYE_FALLBACK_CAL: cx = 321.4, cy = 239.95.
+    const auto s = xense::taccap::infer_fisheye_cal_size(xense::taccap::FISHEYE_FALLBACK_CAL);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(*s, cv::Size(640, 480));
+}
+
+TEST(FisheyeCalSize, InferenceRecognisesA1080pCalibration) {
+    const auto s = xense::taccap::infer_fisheye_cal_size(hd_cal());
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(*s, cv::Size(1920, 1080));
+}
+
+TEST(FisheyeCalSize, InferenceRefusesWhenNoCandidateMatches) {
+    using xense::taccap::infer_fisheye_cal_size;
+    // Between the two centres: within 10% of neither.
+    auto c = hd_cal();
+    c.cx = 600.0f; c.cy = 400.0f;
+    EXPECT_FALSE(infer_fisheye_cal_size(c).has_value());
+    // x fits 640x480 but y fits only 1920x1080: one axis is not a match.
+    c.cx = 321.0f; c.cy = 540.0f;
+    EXPECT_FALSE(infer_fisheye_cal_size(c).has_value());
+    // Exactly on the 10% boundary still matches; just past it does not.
+    c.cx = 320.0f + 64.0f; c.cy = 240.0f;
+    EXPECT_EQ(infer_fisheye_cal_size(c), std::optional<cv::Size>(cv::Size(640, 480)));
+    c.cx = 320.0f + 64.5f;
+    EXPECT_FALSE(infer_fisheye_cal_size(c).has_value());
+}
+
+TEST(FisheyeCalSize, InferenceRefusesAnUnusableCalibration) {
+    using xense::taccap::infer_fisheye_cal_size;
+    // All-zero record: not usable, and cx = cy = 0 fits nothing anyway.
+    EXPECT_FALSE(infer_fisheye_cal_size(tp::CameraFisheyeCal{}).has_value());
+    // A centred principal point does not rescue fx = 0.
+    auto c = distorted_cal();
+    c.fx = 0.0f;
+    EXPECT_FALSE(infer_fisheye_cal_size(c).has_value());
+    c = distorted_cal();
+    c.cx = std::nanf("");
+    EXPECT_FALSE(infer_fisheye_cal_size(c).has_value());
+}
+
+TEST(FisheyeCalSize, PlausibilityMatchesTheFirmwareRule) {
+    using xense::taccap::fisheye_cal_size_plausible;
+    EXPECT_TRUE(fisheye_cal_size_plausible(distorted_cal(), 640, 480));
+    EXPECT_TRUE(fisheye_cal_size_plausible(hd_cal(), 1920, 1080));
+    // The firmware's own example: a 1080p calibration (cx ~ 968) at 640x480.
+    EXPECT_FALSE(fisheye_cal_size_plausible(hd_cal(), 640, 480));
+    EXPECT_FALSE(fisheye_cal_size_plausible(distorted_cal(), 0, 480));
+    EXPECT_FALSE(fisheye_cal_size_plausible(distorted_cal(), 640, 4097));
+    auto c = distorted_cal();
+    c.fy = -1.0f;
+    EXPECT_FALSE(fisheye_cal_size_plausible(c, 640, 480));
+    c = distorted_cal();
+    c.k3 = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(fisheye_cal_size_plausible(c, 640, 480));
+    c = distorted_cal();
+    c.cx = 640.0f;   // on the edge is outside: 0 < cx < width
+    EXPECT_FALSE(fisheye_cal_size_plausible(c, 640, 480));
+}
+
+TEST(FisheyeCalSize, RecordSizeIsKnownOnlyWhenBothDimensionsAreSet) {
+    xense::taccap::FisheyeCalRecord r;
+    EXPECT_FALSE(r.size_known());
+    r.width = 1920;
+    EXPECT_FALSE(r.size_known());
+    r.height = 1080;
+    EXPECT_TRUE(r.size_known());
+}
+
+TEST(FisheyeUndistorter, SizedConstructorAcceptsTheCalibratedResolution) {
+    const cv::Size hd(1920, 1080);
+    FisheyeUndistorter u(hd_cal(), hd, hd);
+    EXPECT_EQ(u.size(), hd);
+    cv::Mat src(hd, CV_8UC3, cv::Scalar(10, 20, 30));
+    EXPECT_EQ(u.apply(src).size(), hd);
+    // 640x480 through the sized form, too.
+    EXPECT_NO_THROW(FisheyeUndistorter(distorted_cal(), kCalibSize, kCalibSize, 0.5f));
+}
+
+TEST(FisheyeUndistorter, SizedConstructorRejectsAnyOtherFrameSize) {
+    const cv::Size hd(1920, 1080);
+    // Neither direction is a rescale the SDK will do: different sensor crops.
+    EXPECT_THROW(FisheyeUndistorter(hd_cal(), hd, kCalibSize), Error);
+    EXPECT_THROW(FisheyeUndistorter(distorted_cal(), kCalibSize, hd), Error);
+    // Same aspect ratio, half the size: still refused.
+    EXPECT_THROW(FisheyeUndistorter(hd_cal(), hd, cv::Size(960, 540)), Error);
+    // An unknown calibration size cannot be satisfied by any frame.
+    EXPECT_THROW(FisheyeUndistorter(hd_cal(), cv::Size(0, 0), cv::Size(0, 0)), Error);
+
+    try {
+        FisheyeUndistorter(hd_cal(), hd, kCalibSize);
+        FAIL() << "expected Error";
+    } catch (const Error& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("1920x1080"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("rescaled"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("recalibrate"), std::string::npos) << msg;
+    }
+}
+
+TEST(FisheyeUndistorter, LegacyConstructorStillMeans640x480) {
+    // Unchanged behaviour: (cal, size, balance) takes the params as 640x480.
+    FisheyeUndistorter legacy(distorted_cal(), kCalibSize, 0.25f);
+    FisheyeUndistorter sized(distorted_cal(), kCalibSize, kCalibSize, 0.25f);
+    EXPECT_FLOAT_EQ(legacy.balance(), sized.balance());
+    EXPECT_EQ(0, cv::norm(legacy.new_camera_matrix(), sized.new_camera_matrix(),
+                          cv::NORM_INF));
+    EXPECT_THROW(FisheyeUndistorter(hd_cal(), cv::Size(1920, 1080)), Error);
 }

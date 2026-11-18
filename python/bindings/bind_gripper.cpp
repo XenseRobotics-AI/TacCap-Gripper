@@ -243,7 +243,7 @@ void bind_gripper(py::module_& m) {
              // Wrist fisheye undistortion (needs open_cameras=True and a V2.0+
              // firmware that holds a calibration). Degrades to raw frames with
              // a warning when it does not; raises if the camera is not at the
-             // calibrated 640x480.
+             // calibration's own resolution (never rescaled).
              py::arg("undistort_wrist")     = false,
              py::arg("fisheye_balance")     = 0.0f,
              // Channel order of the wrist frames. RGB by default, unlike the

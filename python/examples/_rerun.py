@@ -196,26 +196,39 @@ def open_wrist(g, role, side: str, args):
             f"{side}: no {role} XC wrist camera under /dev/v4l/by-id — skipping it"
         )
         return None
-    width, height = args.wrist_width, args.wrist_height
-    if width is None or height is None:
-        width, height = largest_mjpg_size(cams[0]["path"]) or (640, 480)
+    # Rectifying needs the camera at the calibration's own resolution (the
+    # intrinsics are never rescaled), so resolve first and open at that size.
+    resolved = None
+    if args.undistort:
+        resolved = g.calibration.resolve_fisheye()
+        if resolved.is_reference:
+            log.warning(
+                f"{side}: wrist undistortion uses the SDK reference intrinsics "
+                f"({resolved.reason})"
+            )
+        width, height = resolved.calibrated_size
+        requested = (args.wrist_width, args.wrist_height)
+        if None not in requested and requested != (width, height):
+            log.warning(
+                f"{side}: --wrist-width/--wrist-height {requested[0]}x{requested[1]} "
+                f"ignored — undistortion needs the calibration size {width}x{height}"
+            )
+    else:
+        width, height = args.wrist_width, args.wrist_height
+        if width is None or height is None:
+            width, height = largest_mjpg_size(cams[0]["path"]) or (640, 480)
     cam = Camera(
         cams[0]["path"], width=width, height=height, fps=30.0, color_mode=ColorMode.RGB
     )
-    if args.undistort and (width, height) != (640, 480):
-        # The firmware intrinsics are calibrated at 640x480 and carry no image
-        # size; FisheyeUndistorter refuses any other size rather than guess.
-        log.warning(
-            f"{side}: wrist undistortion skipped — the calibration is for 640x480, "
-            f"the camera is at {width}x{height}"
-        )
-    elif args.undistort:
-        cal, is_reference, reason = g.calibration.resolve_fisheye()
-        if is_reference:
-            log.warning(
-                f"{side}: wrist undistortion uses the SDK reference intrinsics ({reason})"
+    if resolved is not None:
+        cam.set_undistorter(
+            FisheyeUndistorter(
+                resolved.calibration,
+                width,
+                height,
+                calibrated_size=resolved.calibrated_size,
             )
-        cam.set_undistorter(FisheyeUndistorter(cal))
+        )
     print(f"[wrist]   {side}: {cams[0]['serial']}  {width}x{height}")
     return cam
 

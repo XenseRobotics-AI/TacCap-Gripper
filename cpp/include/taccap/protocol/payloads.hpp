@@ -934,6 +934,43 @@ struct CameraFisheyeCal {
     float k4;   // params[7]
 };
 
+// ---- Fisheye calibration resolution (V2.10, leader 1.2.8 / follower 1.2.18)
+//
+// The 8 floats only hold at the capture resolution they were measured at:
+// 640x480 (4:3) and 1920x1080 (16:9) are different sensor crops, so the
+// intrinsics cannot be rescaled between them. V2.10 adds two more ops to
+// Cmd::CameraFisheyeCal that carry that resolution alongside the params:
+//
+//   read-sized  request : [op=0x02]                              (1 byte)
+//   read-sized  response: [op echo=0x02][body][width][height]    (37 bytes)
+//   write-sized request : [op=0x03][body][width][height]         (37 bytes)
+//   write-sized response: firmware's generic empty-response ACK
+//
+// width/height are u16 LE. A read answering 0/0 means "size unknown": the
+// params were written with CalOp::Write (which on V2.10 marks the size
+// unknown), by older firmware, or the size record no longer matches them.
+// The firmware rejects a write-sized unless 1 <= width, height <= 4096,
+// fx, fy > 0 and the principal point lies inside the frame.
+//
+// Firmware that predates V2.10 answers both new ops with InvalidParam, the
+// same as any unknown op. Only the READ is a safe capability probe — on V2.10
+// a write-sized InvalidParam also means "implausible values".
+//
+// These are plain constants rather than CalOp enumerators because CalOp is
+// shared with Cmd::EncoderMaxCal, which has no sized form. Mirror firmware
+// CAMERA_FISHEYE_CAL_OP_READ_SIZED / _OP_WRITE_SIZED / _SIZED_SIZE.
+constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_READ_SIZED  = 0x02;
+constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_WRITE_SIZED = 0x03;
+constexpr std::size_t CAMERA_FISHEYE_CAL_SIZED_SIZE     = 37;
+
+// Body of a read-sized response / write-sized request, after the op byte:
+// firmware camera_fisheye_cal_sized_payload_t minus its leading `op`.
+struct CameraFisheyeCalSized {
+    CameraFisheyeCal calibration;
+    uint16_t         width;    // capture width the params belong to; 0 = unknown
+    uint16_t         height;   // capture height; 0 = unknown
+};
+
 // ---- WS2812 LED control (V1.9 — Cmd::Ws2812Set 0x0A / Ws2812Effect 0x0B) --
 enum class Ws2812Mode : uint8_t {
     Off       = 0,   // all LEDs off
@@ -1264,6 +1301,9 @@ static_assert(sizeof(Ws2812Effect)       == 12);  // V1.9 ws2812_effect_t
 // the FULL_SIZE constants are one larger.
 static_assert(sizeof(CameraFisheyeCal)   == 32);  // camera_fisheye_cal_payload_t.params
 static_assert(sizeof(CameraFisheyeCal) + 1 == CAMERA_FISHEYE_CAL_FULL_SIZE);
+// V2.10 — sized fisheye ops: same 8 floats, plus width/height u16.
+static_assert(sizeof(CameraFisheyeCalSized) == 36);
+static_assert(sizeof(CameraFisheyeCalSized) + 1 == CAMERA_FISHEYE_CAL_SIZED_SIZE);
 static_assert(sizeof(float) + 1          == ENCODER_MAX_CAL_FULL_SIZE);
 static_assert(sizeof(StreamConfig)       == 12);
 static_assert(sizeof(AckPayload)         == 4);

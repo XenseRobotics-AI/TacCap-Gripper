@@ -41,11 +41,14 @@ import sys
 import _target
 from xense.taccap import FollowerGripper, LeaderGripper, log
 
-# The calibration record **does not store the image size**. The SDK always uses these
-# intrinsics at the 640x480 they were calibrated at; scaling them to another resolution
-# is a guess — so the assumption is written explicitly into the output here, rather
-# than pretending to know.
-ASSUMED_IMAGE_SIZE = [640, 480]
+# The intrinsics hold only at the resolution they were calibrated at — 640x480 and
+# 1920x1080 are different sensor crops, so they cannot be rescaled between the two.
+# `image_size` says which one, and `image_size_source` how the SDK knows:
+#   "recorded"   the firmware stored it with the params (leader 1.2.8 / follower 1.2.18+)
+#   "inferred"   the record carries no size; inferred from the principal point
+#   "reference"  the SDK reference values, which are a 640x480 calibration
+# `assumed_image_size` is kept, with the same value, for consumers written before
+# the size was recorded.
 
 
 def _enum_name(v) -> str:
@@ -83,7 +86,15 @@ def main() -> int:
     g = cls(mcu_device=ep.mcu_device)
 
     try:
-        cal, is_reference, reason = g.calibration.resolve_fisheye()
+        resolved = g.calibration.resolve_fisheye()
+        cal, is_reference, reason = resolved
+        image_size = list(resolved.calibrated_size)
+        if is_reference:
+            size_source = "reference"
+        elif resolved.size_inferred:
+            size_source = "inferred"
+        else:
+            size_source = "recorded"
 
         if is_reference:
             log.warning(
@@ -106,7 +117,9 @@ def main() -> int:
             "source": "reference" if is_reference else "device",
             "reason": reason,
             "model": "fisheye_equidistant",
-            "assumed_image_size": ASSUMED_IMAGE_SIZE,
+            "image_size": image_size,
+            "image_size_source": size_source,
+            "assumed_image_size": image_size,
             "fx": cal.fx,
             "fy": cal.fy,
             "cx": cal.cx,

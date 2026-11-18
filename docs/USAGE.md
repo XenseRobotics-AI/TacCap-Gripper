@@ -601,11 +601,13 @@ intrinsics into remap tables once, after which each frame is only resampled:
 ```python
 from xense.taccap import FisheyeUndistorter
 
-cal, is_reference, reason = g.calibration.resolve_fisheye()
+resolved = g.calibration.resolve_fisheye()
+cal, is_reference, reason = resolved          # still unpacks as before
 if is_reference:
     log.warning(f"using the SDK reference intrinsics, not this unit's: {reason}")
 
-undist = FisheyeUndistorter(cal, width=640, height=480, balance=0.0)
+w, h = resolved.calibrated_size               # the camera must run at exactly this size
+undist = FisheyeUndistorter(cal, w, h, balance=0.0, calibrated_size=(w, h))
 cam.set_undistorter(undist)      # install into the capture path: read() and callbacks both get rectified frames
 # or manually: rect = undist.apply(img)
 ```
@@ -618,15 +620,18 @@ Three constraints you must know:
   get a pure black "rectified frame", with no error raised anywhere.
   `resolve_fisheye()` already puts that policy (read → judge usable → fall back to the
   reference values) in one place.
-- **Only 640×480 is supported**, the calibration resolution. The firmware record
-  carries no image size, so scaling the intrinsics would be guessing, and the
-  constructor would rather throw. Another resolution means storing a matching
-  calibration in firmware first.
+- **Only the calibration's own resolution is supported.** 640×480 (4:3) and
+  1920×1080 (16:9) are different sensor crops, so the intrinsics cannot be
+  rescaled between them and the constructor throws on a mismatch. Firmware
+  leader 1.2.8 / follower 1.2.18 records the resolution with the params
+  (`read_fisheye_record()` / `write_fisheye_sized()`); for an older record
+  `resolve_fisheye()` infers it from the principal point (`size_inferred`).
+  Another resolution means storing a calibration measured at it.
 - **The reference intrinsics are an approximation.** Lens mounting varies from unit to
   unit (the principal point especially), so falling back to `FISHEYE_FALLBACK_CAL` is
   only better than not rectifying at all — do not take pixel-accurate measurements
   from it. Once you have calibrated your own, write it to flash with
-  `fisheye_cal.py set-fisheye --from-npz cam.npz`.
+  `fisheye_cal.py set-fisheye --from-npz cam.npz --width W --height H`.
 
 `balance` is a framing preference: 0 = keep the calibrated focal length (natural field
 of view, matching the PC tool's default), 1 = squeeze the focal length to 0.70x for

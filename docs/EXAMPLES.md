@@ -68,7 +68,7 @@ python python/examples/ota_update.py --get-status right
 | 脚本 | 对设备做什么 | 说明 |
 |---|---|---|
 | `calibrate.py` | 写 flash | 编码器零点 + 行程跨度标定;完成后归一化开口度才可用。写入前检查固件支持,写入后实时显示 `raw \| cooked \| 0..1`。见 [CALIBRATION.md](CALIBRATION.md)。|
-| `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | 读写 flash 中的标定记录:`show`、`set-fisheye`(命令行参数或含 `K`/`D` 的 OpenCV `.npz`)、`set-encoder-max`、`measure-encoder-max`(引导式行程标定)。|
+| `fisheye_cal.py` | `show` 只读,`set-*` 写 flash | 读写 flash 中的标定记录:`show`、`set-fisheye`(命令行参数或含 `K`/`D` 的 OpenCV `.npz`,并用 `--width`/`--height` 给出标定分辨率)、`set-encoder-max`、`measure-encoder-max`(引导式行程标定)。|
 | `read_intrinsics.py` | 只读 | 以 JSON 输出腕部相机内参。`source` 字段标明来自设备标定(`device`)还是 SDK 参考值(`reference`),`--require-device` 让后者直接失败。JSON 输出到 stdout,可以 `> cal.json` 或管道给 `jq`。|
 
 ### 相机与主爪

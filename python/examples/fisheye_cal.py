@@ -7,7 +7,9 @@ gripper firmware persists in its internal flash (firmware V2.0 / V2.1).
 Two independent records live behind these commands:
 
   fisheye     Cmd::CameraFisheyeCal (0x2B) — fx, fy, cx, cy, k1..k4 for the
-              middle wrist camera. Available on BOTH leader and follower.
+              middle wrist camera, plus (firmware V2.10: leader >= 1.2.8 /
+              follower >= 1.2.18) the capture resolution they were measured
+              at. Available on BOTH leader and follower.
   encoder-max Cmd::EncoderMaxCal (0x2C) — the encoder shaft angle (rad) at
               which the gripper is fully open, measured from the encoder zero
               (fully closed). LEADER ONLY.
@@ -16,6 +18,13 @@ The firmware is a dumb store for both: it persists the bytes, does no unit
 conversion and no clamping, and rejects only NaN/Inf (plus max_rad <= 0). A
 record that was never written reads back as `None` rather than zeros, so you
 can tell "never calibrated" from "calibrated to exactly 0".
+
+The fisheye params hold only at the resolution they were calibrated at:
+640x480 (4:3) and 1920x1080 (16:9) are different sensor crops, so they cannot
+be rescaled between the two. set-fisheye therefore takes --width/--height and
+stores them with the params. Older firmware has nowhere to put the size and
+accepts only a 640x480 calibration; `show` then reports the size as inferred
+from the principal point.
 
 The encoder-max value is what LeaderGripper(normalize_position=True) uses to
 turn raw encoder radians into a 0..1 opening — see
@@ -26,13 +35,14 @@ Usage:
     python python/examples/fisheye_cal.py show
     python python/examples/fisheye_cal.py show right
 
-    # Write fisheye intrinsics + distortion
-    python python/examples/fisheye_cal.py set-fisheye \\
-        --fx 320.5 --fy 321.0 --cx 319.5 --cy 240.2 \\
-        --k1 -0.031 --k2 0.0072 --k3 -0.0013 --k4 0.0002
+    # Write fisheye intrinsics + distortion, and the resolution they belong to
+    python python/examples/fisheye_cal.py set-fisheye --width 1920 --height 1080 \\
+        --fx 477.2 --fy 476.9 --cx 968.3 --cy 563.1 \\
+        --k1 -0.021 --k2 0.0061 --k3 -0.0042 --k4 0.0011
 
     # Load them from an OpenCV-style .npz holding K (3x3) and D (4,)
-    python python/examples/fisheye_cal.py set-fisheye --from-npz cam_left.npz
+    python python/examples/fisheye_cal.py set-fisheye --from-npz cam_left.npz \\
+        --width 640 --height 480
 
     # Measure the full-open angle interactively and store it
     python python/examples/fisheye_cal.py measure-encoder-max
@@ -59,6 +69,7 @@ from xense.taccap import (
     FollowerGripper,
     LeaderGripper,
     ProtocolError,
+    infer_fisheye_cal_size,
 )
 
 _TTY = sys.stdout.isatty()
@@ -96,6 +107,32 @@ def open_gripper(args):
 # ---- show -------------------------------------------------------------------
 
 
+def _print_size(record, firmware_records_size: bool) -> None:
+    """Calibration resolution: recorded by the firmware, or inferred."""
+    if record.size_known():
+        print(f"  size={record.width}x{record.height}  (recorded by the firmware)")
+        return
+    why = (
+        "written without one"
+        if firmware_records_size
+        else "this firmware cannot record it — leader 1.2.8 / follower 1.2.18 can"
+    )
+    guess = infer_fisheye_cal_size(record.calibration)
+    if guess is None:
+        print(
+            "  size="
+            + _yellow("unknown")
+            + f"  ({why}; the principal point fits neither 640x480 nor "
+            "1920x1080 — recalibrate)"
+        )
+    else:
+        print(
+            f"  size={guess[0]}x{guess[1]}  "
+            + _yellow("(inferred from the principal point")
+            + f"; {why})"
+        )
+
+
 def cmd_show(args) -> int:
     with open_gripper(args) as g:
         cal = g.calibration
@@ -108,18 +145,20 @@ def cmd_show(args) -> int:
 
         print(_bold("\nFisheye camera calibration (Cmd 0x2B)"))
         try:
-            fisheye = cal.read_fisheye()
+            record = cal.read_fisheye_record()
         except ProtocolError as e:
             # InvalidCmd here = firmware predates V2.0 (0x2B isn't in its
             # command table at all).
             print(f"  {_yellow('unavailable')} — {e}")
-            fisheye = None
+            record = None
         else:
-            if fisheye is None:
+            if record is None:
                 print(
                     "  " + _yellow("not calibrated") + " — firmware returned CalNotSet"
                 )
-        if fisheye is not None:
+        if record is not None:
+            fisheye = record.calibration
+            _print_size(record, cal.supports_fisheye_size())
             print(f"  fx={fisheye.fx:.4f}  fy={fisheye.fy:.4f}")
             print(f"  cx={fisheye.cx:.4f}  cy={fisheye.cy:.4f}")
             print(
@@ -200,12 +239,25 @@ def cmd_set_fisheye(args) -> int:
             k4=args.k4,
         )
 
-    print(f"Writing {cal}")
+    print(f"Writing {cal} at {args.width}x{args.height}")
     with open_gripper(args) as g:
-        g.calibration.write_fisheye(cal)
-        readback = g.calibration.read_fisheye()
+        # Refuses before sending when the principal point does not fit the
+        # size, and on firmware that cannot record a size refuses anything
+        # but 640x480 rather than store params that would be taken for VGA.
+        try:
+            g.calibration.write_fisheye_sized(cal, args.width, args.height)
+        except RuntimeError as e:  # host-side refusal; a NACK is ProtocolError
+            raise SystemExit(f"error: {e}") from None
+        readback = g.calibration.read_fisheye_record()
     print(_green("written to MCU flash. Read back:"))
     print(f"  {readback}")
+    if readback is not None and not readback.size_known():
+        print(
+            "  "
+            + _yellow("note:")
+            + " this firmware cannot record the size; it was stored as a "
+            "640x480 calibration through the legacy write"
+        )
     return 0
 
 
@@ -271,6 +323,18 @@ def main() -> int:
         "--from-npz",
         metavar="FILE",
         help="load K (3x3) and D (4,) from an OpenCV-style .npz",
+    )
+    sf.add_argument(
+        "--width",
+        type=int,
+        required=True,
+        help="capture width (px) the parameters were calibrated at",
+    )
+    sf.add_argument(
+        "--height",
+        type=int,
+        required=True,
+        help="capture height (px) the parameters were calibrated at",
     )
     for name in ("fx", "fy", "cx", "cy"):
         sf.add_argument(f"--{name}", type=float)

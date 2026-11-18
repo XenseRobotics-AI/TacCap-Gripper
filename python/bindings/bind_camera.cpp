@@ -22,6 +22,27 @@ void bind_camera(py::module_& m) {
           "FISHEYE_FALLBACK_CAL is the reference to fall back to, with a "
           "warning, when it returns False.");
 
+    m.def("fisheye_cal_size_plausible", &fisheye_cal_size_plausible,
+          py::arg("calibration"), py::arg("width"), py::arg("height"),
+          "True when the calibration is plausible at width x height -- the rule "
+          "the firmware applies to a sized write: every value finite, fx, fy > 0, "
+          "1 <= width, height <= 4096, and the principal point strictly inside "
+          "the frame (0 < cx < width, 0 < cy < height).");
+    m.def("infer_fisheye_cal_size",
+          [](const protocol::CameraFisheyeCal& cal) -> py::object {
+              const auto s = infer_fisheye_cal_size(cal);
+              if (!s) return py::none();
+              return py::make_tuple(s->width, s->height);
+          },
+          py::arg("calibration"),
+          "Best-effort (width, height) for a record whose size is unknown, or "
+          "None.\n\n"
+          "The rule (shared verbatim with the PC calibration tools): the "
+          "candidates are exactly 640x480 and 1920x1080; a candidate W x H "
+          "matches when is_usable_fisheye_cal(calibration) and "
+          "|cx - W/2| <= 0.10*W and |cy - H/2| <= 0.10*H. The size is returned "
+          "only when exactly one candidate matches.");
+
     // ---- FisheyeUndistorter (V2.0+ wrist fisheye intrinsics) -------------
     // Usable standalone on frames this SDK never captured — the common case,
     // since the wrist UVC device is normally owned by an external service.
@@ -36,25 +57,38 @@ void bind_camera(py::module_& m) {
         "remap tables are built once in the constructor, so build one and reuse it;\n"
         "rebuilding per frame would dominate the cost.")
         .def(py::init([](const protocol::CameraFisheyeCal& cal,
-                         int width, int height, float balance) {
+                         int width, int height, float balance,
+                         std::optional<std::pair<int, int>> calibrated_size) {
+                 const cv::Size frame(width, height);
+                 if (!calibrated_size) {
+                     return std::make_shared<FisheyeUndistorter>(cal, frame, balance);
+                 }
                  return std::make_shared<FisheyeUndistorter>(
-                     cal, cv::Size(width, height), balance);
+                     cal, cv::Size(calibrated_size->first, calibrated_size->second),
+                     frame, balance);
              }),
              py::arg("calibration"),
-             // Defaults are the only calibrated resolution; anything else
-             // raises, because the firmware record carries no image size.
+             // Defaults are the legacy calibrated resolution; anything else
+             // raises unless calibrated_size says the params belong to it.
              py::arg("width")   = FISHEYE_CALIB_WIDTH,
              py::arg("height")  = FISHEYE_CALIB_HEIGHT,
              // 0 = calibrated focal length (natural view, matches the PC tool);
              // 1 = 0.70x for the widest field of view. Clamped to [0,1].
              py::arg("balance") = 0.0f,
+             py::kw_only(),
+             py::arg("calibrated_size") = py::none(),
              "Build the remap tables for one calibration.\n\n"
-             "width/height must be the calibrated 640x480 -- the firmware record\n"
-             "carries no image size, so any other size raises RuntimeError rather\n"
-             "than guessing a rescale. balance picks the output focal length: 0\n"
-             "keeps the calibrated one, 1 shortens it to 0.70x for the widest field\n"
-             "of view at the cost of more black border. It is clamped to [0, 1]\n"
-             "rather than rejected.")
+             "width/height are the frame size. calibrated_size=(w, h) is the\n"
+             "resolution the intrinsics were measured at -- take it from\n"
+             "ResolvedFisheyeCal.calibrated_size or a FisheyeCalRecord -- and the\n"
+             "frame size must equal it: intrinsics are never rescaled to another\n"
+             "resolution or aspect ratio (640x480 and 1920x1080 are different\n"
+             "sensor crops), so a mismatch raises RuntimeError. Omitted, the\n"
+             "calibration is taken to be 640x480, as before the firmware recorded\n"
+             "a size. balance picks the output focal length: 0 keeps the\n"
+             "calibrated one, 1 shortens it to 0.70x for the widest field of view\n"
+             "at the cost of more black border. It is clamped to [0, 1] rather\n"
+             "than rejected.")
         .def("apply", [](const FisheyeUndistorter& self, const py::array& img) {
                  cv::Mat src = numpy_to_mat_bgr(img);
                  cv::Mat dst;

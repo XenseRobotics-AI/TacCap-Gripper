@@ -20,18 +20,59 @@
 #include <opencv2/core.hpp>
 
 #include <cmath>
+#include <cstdint>
+#include <optional>
 #include <string>
 
 namespace xense::taccap {
 
-// The wrist camera is calibrated at 640x480 and the firmware record carries
-// ONLY the 8 intrinsic/distortion floats — no image size. Rather than guess a
-// scale factor for a differently-sized frame (which would silently produce a
-// wrong rectification), the constructor rejects any other size outright. If a
-// second calibration resolution is ever needed, the right fix is to record the
-// size in the firmware payload, not to infer it here.
+// The 8 intrinsic/distortion floats only hold at the capture resolution they
+// were measured at. 640x480 (4:3) and 1920x1080 (16:9) are DIFFERENT sensor
+// crops, not one image at two scales, so intrinsics cannot be rescaled between
+// them — nor to any other size. Firmware V2.10 (leader 1.2.8 / follower 1.2.18)
+// therefore records the calibration resolution next to the params
+// (Calibration::read_fisheye_record / write_fisheye_sized), and the undistorter
+// refuses any frame that is not at that exact resolution.
+//
+// 640x480 remains the resolution of the SDK's reference calibration and of the
+// legacy constructor below, which predates the recorded size.
 inline constexpr int FISHEYE_CALIB_WIDTH  = 640;
 inline constexpr int FISHEYE_CALIB_HEIGHT = 480;
+
+// A fisheye record as the firmware holds it: the params plus the capture
+// resolution they belong to. width/height 0/0 means the size is UNKNOWN — the
+// record was written without one (CalOp::Write, or firmware older than V2.10)
+// — and must not be assumed to be 640x480; see infer_fisheye_cal_size().
+struct FisheyeCalRecord {
+    protocol::CameraFisheyeCal calibration{};
+    uint16_t                   width  = 0;
+    uint16_t                   height = 0;
+
+    bool size_known() const noexcept { return width != 0 && height != 0; }
+};
+
+// The plausibility rule the firmware applies to a write-sized (op 0x03), so a
+// write can be refused host-side with a useful message rather than a bare
+// InvalidParam: every value finite, fx > 0, fy > 0, 1 <= width, height <= 4096,
+// and the principal point strictly inside the frame (0 < cx < width,
+// 0 < cy < height).
+bool fisheye_cal_size_plausible(const protocol::CameraFisheyeCal& cal,
+                                int width, int height);
+
+// Best-effort calibration resolution for a record whose size is unknown.
+//
+// The rule, shared verbatim with the PC calibration tools so every consumer
+// infers the same answer:
+//   - candidates are exactly 640x480 and 1920x1080;
+//   - a candidate W x H matches when the calibration is usable
+//     (is_usable_fisheye_cal) AND |cx - W/2| <= 0.10 * W AND
+//     |cy - H/2| <= 0.10 * H, i.e. the principal point sits within 10% of the
+//     frame centre on each axis;
+//   - the size is returned only when EXACTLY one candidate matches; zero or
+//     several matches return std::nullopt.
+// A principal point far from both centres is not "probably 640x480": it means
+// the record cannot be placed, and the caller should ask for a recalibration.
+std::optional<cv::Size> infer_fisheye_cal_size(const protocol::CameraFisheyeCal& cal);
 
 // `balance` interpolates the output focal length between these two, matching
 // the PC tool's fisheye_focal_scale_for_balance()
@@ -40,10 +81,10 @@ inline constexpr int FISHEYE_CALIB_HEIGHT = 480;
 // shortens it to 0.70x for the widest field of view, at the cost of more
 // black border around the edges.
 // A reference calibration for the TC-GU-01 wrist lens, measured on a sample
-// unit. It exists so a gripper whose firmware was never calibrated can still
-// deliver an approximately rectified stream instead of raw fisheye — every unit
-// carries the same lens and the same 640x480 sensor, so the shared numbers are
-// far closer to correct than no rectification at all.
+// unit at 640x480. It exists so a gripper whose firmware was never calibrated
+// can still deliver an approximately rectified stream instead of raw fisheye —
+// every unit carries the same lens and sensor, so the shared numbers are far
+// closer to correct than no rectification at all. They hold at 640x480 ONLY.
 //
 // It is NOT a substitute for calibrating a unit. Lens placement varies between
 // assemblies, so the principal point in particular drifts per unit; anything
@@ -70,10 +111,17 @@ inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL{
 // UVC device, and callers that own the device themselves (the common case, since
 // Config::open_cameras defaults to false) get the identical answer instead of
 // re-deriving it and drifting.
+//
+// `calibrated_size` is the capture resolution `calibration` belongs to: the
+// size the firmware recorded, or — for a record written without one —
+// infer_fisheye_cal_size()'s answer, flagged by `size_inferred`. The reference
+// calibration is always 640x480 with size_inferred false.
 struct ResolvedFisheyeCal {
     protocol::CameraFisheyeCal calibration;
     bool                       is_reference;
     std::string                reason;
+    cv::Size                   calibrated_size{FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT};
+    bool                       size_inferred = false;
 };
 
 inline bool is_usable_fisheye_cal(const protocol::CameraFisheyeCal& c) {
@@ -85,9 +133,21 @@ inline constexpr double FISHEYE_WIDE_FOCAL_SCALE    = 0.70;
 
 class FisheyeUndistorter {
 public:
-    // Throws Error when `size` is not the calibrated 640x480. `balance` is
+    // `calibrated_size` is the resolution `cal` was measured at (from
+    // FisheyeCalRecord / ResolvedFisheyeCal::calibrated_size); `frame_size` is
+    // what the camera actually delivers. They must be EQUAL — throws Error
+    // otherwise, because intrinsics do not carry over to another resolution or
+    // aspect ratio; recalibrate at the capture resolution instead. `balance` is
     // clamped to [0,1] rather than rejected — it is a taste knob, not a
     // correctness one.
+    FisheyeUndistorter(const protocol::CameraFisheyeCal& cal,
+                       cv::Size calibrated_size,
+                       cv::Size frame_size,
+                       float    balance = 0.0f);
+
+    // Legacy form, from before the firmware recorded a calibration size: `cal`
+    // is taken to be a 640x480 calibration, so this throws Error unless `size`
+    // is 640x480. Prefer the form above with the record's own size.
     FisheyeUndistorter(const protocol::CameraFisheyeCal& cal,
                        cv::Size size,
                        float    balance = 0.0f);
