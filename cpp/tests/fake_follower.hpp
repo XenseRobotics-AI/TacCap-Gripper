@@ -193,7 +193,9 @@ public:
     // ---- Fisheye calibration (Cmd 0x2B) -------------------------------------
     // Modelled on the firmware's camera_fisheye_cal handler. V2.10 (follower
     // 1.2.18) by default; set_fisheye_size_supported(false) emulates older
-    // firmware, which answers the sized ops 0x02/0x03 with InvalidParam.
+    // firmware, which answers 0x02 with InvalidParam and the 37-byte 0x03 with
+    // LengthMismatch (its command table caps 0x2B at 33 bytes, measured on a
+    // 1.2.17 follower).
     void set_fisheye_size_supported(bool on) { fisheye_sized_.store(on); }
     // Pre-load the flash record; width/height 0/0 = size unknown.
     void set_fisheye_record(const tp::CameraFisheyeCal& cal,
@@ -518,7 +520,9 @@ private:
         const bool sized = op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED ||
                            op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED;
         if (sized && !fisheye_sized_.load()) {
-            fisheye_reply_err_(f, tp::ErrorCode::InvalidParam);   // unknown op
+            fisheye_reply_err_(f, op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED
+                                      ? tp::ErrorCode::LengthMismatch  // table cap
+                                      : tp::ErrorCode::InvalidParam);  // unknown op
             return;
         }
         auto params_finite = [](const tp::CameraFisheyeCal& c) {

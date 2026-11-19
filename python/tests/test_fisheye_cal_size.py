@@ -32,6 +32,7 @@ HD = t.CameraFisheyeCal(477.2, 476.9, 968.3, 563.1, -0.021, 0.0061, -0.0042, 0.0
 OP_READ, OP_WRITE, OP_READ_SIZED, OP_WRITE_SIZED = 0x00, 0x01, 0x02, 0x03
 ERR_INVALID_PARAM = int(t.ErrorCode.InvalidParam.value)
 ERR_CAL_NOT_SET = int(t.ErrorCode.CalNotSet.value)
+ERR_LENGTH_MISMATCH = int(t.ErrorCode.LengthMismatch.value)
 
 
 def _params(cal) -> bytes:
@@ -107,8 +108,11 @@ class FakeFisheyeStore:
     def handle(self, payload: bytes) -> bytes:
         op = payload[0]
         self.ops.append(op)
-        if op in (OP_READ_SIZED, OP_WRITE_SIZED) and not self.sized:
+        if op == OP_READ_SIZED and not self.sized:
             raise FakeFisheyeError(ERR_INVALID_PARAM)
+        if op == OP_WRITE_SIZED and not self.sized:
+            # Old firmware's command table caps 0x2B at 33 bytes.
+            raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
         if op in (OP_READ, OP_READ_SIZED):
             if self.params is None:
                 raise FakeFisheyeError(ERR_CAL_NOT_SET)
