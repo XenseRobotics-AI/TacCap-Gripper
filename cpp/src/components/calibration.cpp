@@ -22,6 +22,25 @@ namespace {
 // successful write is the firmware's generic empty response, [0x00].
 using bus::ack_error_code;
 
+// Firmware reports a handler error on the cmd=0 pure-ACK path (every follower
+// and leader release on hw_v1.1.0; see the response comment in
+// protocol_handler.c), which send_cmd raises as NackError before any
+// CalNotSet / InvalidParam branch below could see it. Fold it back into an
+// AckResponse so both error paths reach ack_error_code().
+bus::AckResponse send_cal_cmd(bus::Transport& t, protocol::Cmd cmd,
+                              const std::vector<uint8_t>& payload,
+                              std::chrono::milliseconds timeout) {
+    try {
+        return t.send_cmd(cmd, payload, timeout);
+    } catch (const NackError& e) {
+        bus::AckResponse r{};
+        r.cmd        = cmd;
+        r.is_nack    = true;
+        r.error_code = static_cast<protocol::ErrorCode>(e.code());
+        return r;
+    }
+}
+
 [[noreturn]] void throw_nack(const char* what, protocol::ErrorCode err) {
     throw ProtocolError(std::string("Calibration::") + what + " NACK: " +
                         protocol::to_string(err));
@@ -35,8 +54,8 @@ Calibration::Calibration(bus::Transport& transport) : t_(transport) {}
 
 std::optional<protocol::CameraFisheyeCal> Calibration::read_fisheye(
         std::chrono::milliseconds timeout) {
-    auto ack = t_.send_cmd(protocol::Cmd::CameraFisheyeCal,
-                           protocol::encode_camera_fisheye_cal_read(), timeout);
+    auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                                protocol::encode_camera_fisheye_cal_read(), timeout);
     const auto err = ack_error_code(ack);
     if (err == protocol::ErrorCode::CalNotSet) return std::nullopt;
     if (err != protocol::ErrorCode::Ok) throw_nack("read_fisheye", err);
@@ -45,8 +64,8 @@ std::optional<protocol::CameraFisheyeCal> Calibration::read_fisheye(
 
 void Calibration::write_fisheye(const protocol::CameraFisheyeCal& cal,
                                 std::chrono::milliseconds timeout) {
-    auto ack = t_.send_cmd(protocol::Cmd::CameraFisheyeCal,
-                           protocol::encode_camera_fisheye_cal_write(cal), timeout);
+    auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                                protocol::encode_camera_fisheye_cal_write(cal), timeout);
     const auto err = ack_error_code(ack);
     if (err != protocol::ErrorCode::Ok) throw_nack("write_fisheye", err);
 }
@@ -55,8 +74,8 @@ void Calibration::write_fisheye(const protocol::CameraFisheyeCal& cal,
 
 bool Calibration::read_fisheye_sized_(std::chrono::milliseconds timeout,
                                       std::optional<FisheyeCalRecord>& out) {
-    auto ack = t_.send_cmd(protocol::Cmd::CameraFisheyeCal,
-                           protocol::encode_camera_fisheye_cal_read_sized(), timeout);
+    auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                                protocol::encode_camera_fisheye_cal_read_sized(), timeout);
     const auto err = ack_error_code(ack);
     // Pre-V2.10 firmware answers any op it does not know with InvalidParam;
     // V2.10 answers the sized read with Ok or CalNotSet and nothing else, so
@@ -113,11 +132,11 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
         throw Error(buf);
     }
     if (supports_fisheye_size(timeout)) {
-        auto ack = t_.send_cmd(protocol::Cmd::CameraFisheyeCal,
-                               protocol::encode_camera_fisheye_cal_write_sized(
-                                   cal, static_cast<uint16_t>(width),
-                                   static_cast<uint16_t>(height)),
-                               timeout);
+        auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                                    protocol::encode_camera_fisheye_cal_write_sized(
+                                        cal, static_cast<uint16_t>(width),
+                                        static_cast<uint16_t>(height)),
+                                    timeout);
         const auto err = ack_error_code(ack);
         if (err != protocol::ErrorCode::Ok) throw_nack("write_fisheye_sized", err);
         return;
@@ -141,8 +160,8 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
 
 std::optional<float> Calibration::read_encoder_max_rad(
         std::chrono::milliseconds timeout) {
-    auto ack = t_.send_cmd(protocol::Cmd::EncoderMaxCal,
-                           protocol::encode_encoder_max_cal_read(), timeout);
+    auto ack = send_cal_cmd(t_, protocol::Cmd::EncoderMaxCal,
+                                protocol::encode_encoder_max_cal_read(), timeout);
     const auto err = ack_error_code(ack);
     if (err == protocol::ErrorCode::CalNotSet) return std::nullopt;
     if (err != protocol::ErrorCode::Ok) throw_nack("read_encoder_max_rad", err);
@@ -151,8 +170,8 @@ std::optional<float> Calibration::read_encoder_max_rad(
 
 void Calibration::write_encoder_max_rad(float max_rad,
                                         std::chrono::milliseconds timeout) {
-    auto ack = t_.send_cmd(protocol::Cmd::EncoderMaxCal,
-                           protocol::encode_encoder_max_cal_write(max_rad), timeout);
+    auto ack = send_cal_cmd(t_, protocol::Cmd::EncoderMaxCal,
+                                protocol::encode_encoder_max_cal_write(max_rad), timeout);
     const auto err = ack_error_code(ack);
     if (err != protocol::ErrorCode::Ok) throw_nack("write_encoder_max_rad", err);
 }

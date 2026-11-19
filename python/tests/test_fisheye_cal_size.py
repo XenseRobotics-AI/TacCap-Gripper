@@ -85,6 +85,16 @@ def test_undistorter_calibrated_size_keyword():
 # ---- Against a fake leader over a pty ----------------------------------------
 
 
+class FakeFisheyeError(Exception):
+    """A handler error. Real firmware sends it on the cmd=0 pure-ACK path
+    (protocol_handler.c), not echoed with the cmd: answering the echoed way
+    hid a probe that threw "NACK: InvalidParam" on a 1.2.17 follower."""
+
+    def __init__(self, code: int):
+        super().__init__(code)
+        self.code = code
+
+
 class FakeFisheyeStore:
     """The firmware's 0x2B handler, V2.10 or (sized=False) older."""
 
@@ -98,10 +108,10 @@ class FakeFisheyeStore:
         op = payload[0]
         self.ops.append(op)
         if op in (OP_READ_SIZED, OP_WRITE_SIZED) and not self.sized:
-            return bytes([ERR_INVALID_PARAM])
+            raise FakeFisheyeError(ERR_INVALID_PARAM)
         if op in (OP_READ, OP_READ_SIZED):
             if self.params is None:
-                return bytes([ERR_CAL_NOT_SET])
+                raise FakeFisheyeError(ERR_CAL_NOT_SET)
             tail = struct.pack("<HH", *self.size) if op == OP_READ_SIZED else b""
             return bytes([op]) + self.params + tail
         if op == OP_WRITE:
@@ -110,7 +120,7 @@ class FakeFisheyeStore:
         if op == OP_WRITE_SIZED:
             self.params, self.size = payload[1:33], struct.unpack("<HH", payload[33:37])
             return b"\x00"
-        return bytes([ERR_INVALID_PARAM])
+        raise FakeFisheyeError(ERR_INVALID_PARAM)
 
 
 @contextmanager
@@ -128,19 +138,23 @@ def fake_leader(store: FakeFisheyeStore):
                 parser.feed(os.read(master, 4096))
                 while (frame := parser.pop()) is not None:
                     payload = b"\x00"
+                    cmd = frame.cmd
                     if frame.cmd == t.Cmd.GetVersion:
                         payload = bytes([1, 2, 8, 0])
                     elif frame.cmd == t.Cmd.GetSn:
                         payload = b"TCGU01A25Z0016m\0"
                     elif frame.cmd == t.Cmd.CameraFisheyeCal:
-                        payload = store.handle(bytes(frame.payload))
+                        try:
+                            payload = store.handle(bytes(frame.payload))
+                        except FakeFisheyeError as err:
+                            cmd, payload = t.Cmd(0), bytes([err.code])
                     os.write(
                         master,
                         t.pack_frame(
                             t.Address.MCU,
                             frame.seq,
                             t.FrameType.ACK,
-                            frame.cmd,
+                            cmd,
                             payload,
                         ),
                     )

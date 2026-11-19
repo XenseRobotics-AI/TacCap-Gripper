@@ -502,8 +502,12 @@ private:
 
     // Firmware handler errors go out as protocol_send_response(seq, cmd, err,
     // NULL, 0): the command byte echoed and the bare error code as payload.
+    // Real firmware (protocol_handler.c) sends every handler error on the
+    // cmd=0 pure-ACK path, which the SDK raises as NackError. Answering with
+    // the echoed cmd instead hid exactly that path: the old-firmware probe
+    // passed here and threw "NACK: InvalidParam" on a 1.2.17 follower.
     void fisheye_reply_err_(const xense::taccap::bus::Frame& f, tp::ErrorCode err) {
-        pty_.send_response(f.seq, f.cmd, {static_cast<uint8_t>(err)});
+        pty_.send_nack(f.seq, err);
     }
 
     void handle_fisheye_(const xense::taccap::bus::Frame& f) {
