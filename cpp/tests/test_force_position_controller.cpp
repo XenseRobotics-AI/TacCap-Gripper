@@ -1772,3 +1772,362 @@ TEST(ForcePositionPolicy, RejectsNegativeBrakeOrAccel) {
     cfg.accel_radps2 = -1.0f;
     EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg), std::invalid_argument);
 }
+
+// ---------------------------------------------------------------------------
+// Grip intent (2026-11-19)
+//
+// A policy trained on leader-held objects commands the object's own width, so
+// the follower's jaw stops on the object INSIDE the arrival band. Without grip
+// the escalation never starts there and the spring alone holds the surface;
+// with grip the same target is squeezed at the budget. All closed-loop on the
+// friction plant, an object being its wall.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Closed loop with a streamed target: the caller sends (target, grip) every
+// `every` frames (3 = ~33 Hz, a policy's rate), the plant sees each command
+// one frame late as in run_loop.
+struct GripLoop {
+    ForcePositionPolicy& p;
+    FrictionPlant& plant;
+    float budget;
+    std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+    protocol_cmd_t applied{};
+    int frame = 0;
+
+    GripLoop(ForcePositionPolicy& pol, FrictionPlant& pl, float b)
+        : p(pol), plant(pl), budget(b) {
+        applied = {plant.pos, 0.0f, 0.0f, 0.0f, 0.0f};
+        p.reset(sample(plant.pos), t);
+    }
+    // Runs `seconds`; target(frame) gives the caller's target for that frame.
+    template <class TargetFn>
+    void run(float seconds, TargetFn target, bool grip, int every = 3) {
+        const int n = static_cast<int>(seconds * 100.0f);
+        for (int i = 0; i < n; ++i, ++frame) {
+            if (frame % every == 0) {
+                p.set_target(sample(plant.pos, plant.vel), target(frame), budget, t, grip);
+            }
+            const auto cmd = p.step(sample(plant.pos, plant.vel), t);
+            for (int k = 0; k < 10; ++k) plant.advance(applied, 0.001f);
+            applied = cmd;
+            t += std::chrono::milliseconds(10);
+        }
+    }
+    void hold(float seconds, float target, bool grip) {
+        run(seconds, [target](int) { return target; }, grip);
+    }
+};
+
+ForcePositionConfig grip_cfg() {
+    ForcePositionConfig cfg;
+    cfg.grasp_torque_nm = 1.0f;
+    cfg.close_speed_radps = 0.5f;
+    return cfg;
+}
+
+}  // namespace
+
+// The bug the intent exists for: object surface == commanded target. Without
+// grip the jaw rests on the surface under the spring alone; with grip the same
+// target latches at the budget. Surfaces a little short of and a little past
+// the target (inside the arrival band) both count.
+TEST(ForcePositionPolicyGrip, ATargetOnTheObjectSurfaceLatchesToTheBudget) {
+    const ForcePositionTuning tune;
+    for (const float surface_offset : {-0.006f, 0.0f, 0.006f}) {
+        SCOPED_TRACE(surface_offset);
+        ASSERT_LT(std::abs(surface_offset), tune.arrival_eps_rad);
+        const float target = 0.3f;
+        for (const bool grip : {false, true}) {
+            SCOPED_TRACE(grip ? "grip" : "no grip");
+            const auto cfg = grip_cfg();
+            ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+            FrictionPlant plant;
+            plant.pos = 0.6f;
+            plant.wall_raw = target + surface_offset;
+            GripLoop loop(p, plant, cfg.grasp_torque_nm);
+            loop.hold(3.0f, target, grip);
+            if (grip) {
+                EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+                EXPECT_TRUE(p.holding());
+                EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+                EXPECT_TRUE(p.grip());
+            } else {
+                // Unchanged behaviour: the spring alone, a fraction of the budget.
+                EXPECT_FALSE(p.holding());
+                EXPECT_LT(p.commanded_torque_nm(), 0.5f * cfg.grasp_torque_nm);
+            }
+        }
+    }
+}
+
+// Pads and objects compress: under the budget the jaw ends PAST the target.
+// Inside grip_overdrive_rad that is still the grip -- the push must not be
+// dropped as "passed the target", which would spring the object back.
+TEST(ForcePositionPolicyGrip, ACompliantObjectIsSqueezedPastTheTargetAndHeld) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;                    // 1 N*m compresses it 25 mrad
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    float min_pos = 1.0f;
+    int holding_tail = 0;
+    loop.run(2.0f, [](int) { return 0.3f; }, true);
+    for (int i = 0; i < 100; ++i) {
+        loop.hold(0.01f, 0.3f, true);
+        min_pos = std::min(min_pos, plant.pos);
+        if (p.holding()) ++holding_tail;
+    }
+    EXPECT_LT(plant.pos, 0.3f - 0.015f) << "the object is compressed past the target";
+    EXPECT_GT(min_pos, 0.3f - cfg.grip_overdrive_rad);
+    EXPECT_EQ(holding_tail, 100);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+    EXPECT_TRUE(p.grip());
+}
+
+// A ~33 Hz policy jitters its target by a few mrad while it grips, in both
+// directions. Jitter must neither unlatch the grip nor let the push sag.
+TEST(ForcePositionPolicyGrip, AJitteringStreamedGripStaysLatched) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    loop.hold(2.0f, 0.3f, true);
+    ASSERT_TRUE(p.holding());
+    uint32_t lcg = 7u;
+    auto jitter = [&lcg](int) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;
+        return 0.3f + (2.0f * u - 1.0f) * 0.008f;   // +-8 mrad, beyond arrival_eps
+    };
+    int holding = 0, frames = 0;
+    float min_cmd = 10.0f;
+    for (int i = 0; i < 300; ++i) {
+        loop.run(0.01f, jitter, true, 1);
+        ++frames;
+        if (p.holding()) ++holding;
+        min_cmd = std::min(min_cmd, p.commanded_torque_nm());
+    }
+    EXPECT_EQ(holding, frames);
+    EXPECT_GT(min_cmd, 0.9f * cfg.grasp_torque_nm);
+}
+
+// Jitter from the very start: the policy closes onto the object with its
+// target already wandering by more than the arrival band frame to frame. The
+// escalation must survive the steps and still latch, not restart every frame.
+TEST(ForcePositionPolicyGrip, AJitteringApproachStillLatches) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    uint32_t lcg = 11u;
+    auto jitter = [&lcg](int) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;
+        return 0.3f + (2.0f * u - 1.0f) * 0.008f;
+    };
+    loop.run(3.0f, jitter, true, 1);
+    EXPECT_TRUE(p.holding());
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+}
+
+// The same jitter WITHOUT grip still behaves as before: the eps rule may drop
+// and rebuild the push -- this pins that grip=false is untouched, not better.
+TEST(ForcePositionPolicyGrip, GripFalseKeepsTheOrdinaryReleaseRule) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    loop.hold(2.0f, 0.28f, false);             // short of the target: ordinary latch
+    ASSERT_TRUE(p.holding());
+    loop.hold(0.05f, 0.25f, false);            // >eps change, target still beyond the wall
+    EXPECT_FALSE(p.grip());
+    loop.hold(0.5f, 0.32f, false);             // target now open of the jaw: release
+    EXPECT_FALSE(p.holding());
+}
+
+// Opening the target ends the grip only past grip_release_rad from the
+// most-closed grip target; a smaller opening keeps it, and closing tightens it.
+TEST(ForcePositionPolicyGrip, OnlyAnOpeningBeyondTheReleaseThresholdLetsGo) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    loop.hold(2.0f, 0.3f, true);
+    ASSERT_TRUE(p.holding());
+
+    loop.hold(0.5f, 0.29f, true);              // closing: still the grip
+    EXPECT_TRUE(p.holding());
+    EXPECT_TRUE(p.grip());
+    // Opening by less than the threshold from the most-closed target (0.29).
+    loop.hold(0.5f, 0.29f + 0.7f * cfg.grip_release_rad, true);
+    EXPECT_TRUE(p.holding());
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+    EXPECT_TRUE(p.grip());
+    // Past it: released, and the jaw follows the target open.
+    const float open_target = 0.29f + 1.5f * cfg.grip_release_rad;
+    loop.hold(1.0f, open_target, true);
+    EXPECT_FALSE(p.grip());
+    EXPECT_FALSE(p.holding());
+    EXPECT_LT(p.commanded_torque_nm(), 0.5f * cfg.grasp_torque_nm);
+    // ...and it does not re-grip on the object while the target stays there.
+    loop.hold(1.0f, open_target, true);
+    EXPECT_FALSE(p.holding());
+    // Closing again by more than the threshold re-arms it.
+    loop.hold(2.0f, open_target - 1.25f * cfg.grip_release_rad, true);
+    EXPECT_TRUE(p.grip());
+    EXPECT_TRUE(p.holding());
+}
+
+// An EMPTY jaw closed onto a grip target: nothing stops it at the target, so
+// the grip probes past it, gives up within grip_overdrive_rad, and the jaw
+// settles back on the target as an ordinary arrival -- no latch, no limit cycle.
+TEST(ForcePositionPolicyGrip, AnEmptyJawGivesUpTheGripAndSettlesOnTheTarget) {
+    for (const float close_speed : {0.5f, 2.0f}) {
+        SCOPED_TRACE(close_speed);
+        auto cfg = grip_cfg();
+        cfg.close_speed_radps = close_speed;
+        ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+        FrictionPlant plant;
+        plant.pos = 0.6f;
+        GripLoop loop(p, plant, cfg.grasp_torque_nm);
+        float min_pos = 1.0f;
+        int holding_tail = 0, arrived_tail = 0;
+        for (int i = 0; i < 400; ++i) {
+            loop.hold(0.01f, 0.3f, true);
+            min_pos = std::min(min_pos, plant.pos);
+            if (i >= 300) {
+                if (p.holding()) ++holding_tail;
+                if (p.arrived()) ++arrived_tail;
+            }
+        }
+        const ForcePositionTuning tune;
+        EXPECT_GT(min_pos, 0.3f - cfg.grip_overdrive_rad - 0.01f) << "probe overshoot";
+        EXPECT_FALSE(p.grip()) << "grip given up on the empty jaw";
+        EXPECT_EQ(holding_tail, 0);
+        EXPECT_EQ(arrived_tail, 100) << "final pos " << plant.pos;
+        EXPECT_NEAR(plant.pos, 0.3f, tune.arrival_eps_rad);
+        EXPECT_EQ(p.state(), ForcePositionState::HoldingPosition);
+    }
+}
+
+// Closed endpoint with grip and nothing in the jaw: the stop is the "object".
+// Latching there squeezes the pads at the budget, the same as an ordinary
+// close to 0.0 already does -- harmless, and pinned here so it stays bounded.
+TEST(ForcePositionPolicyGrip, AGripOnTheClosedEndpointIsBoundedByTheBudget) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.4f;
+    plant.wall_raw = 0.0f;                   // the mechanical stop
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    for (int i = 0; i < 300; ++i) {
+        loop.hold(0.01f, 0.0f, true);
+        EXPECT_LE(p.commanded_torque_nm(), cfg.grasp_torque_nm + 1e-3f);
+    }
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+}
+
+// Turning grip off on the next sample returns the ordinary rules at once.
+TEST(ForcePositionPolicyGrip, DroppingTheGripFlagDisarmsIt) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    loop.hold(2.0f, 0.3f, true);
+    ASSERT_TRUE(p.grip());
+    loop.hold(0.05f, 0.3f, false);
+    EXPECT_FALSE(p.grip());
+}
+
+TEST(ForcePositionPolicyGrip, RejectsNonPositiveGripBands) {
+    ForcePositionConfig cfg;
+    cfg.grip_overdrive_rad = 0.0f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg), std::invalid_argument);
+    cfg.grip_overdrive_rad = 0.05f;
+    cfg.grip_release_rad = -0.01f;
+    EXPECT_THROW(ForcePositionPolicy(GripperPosition::from_travel(1.0f), cfg), std::invalid_argument);
+}
+
+TEST(ForcePositionPolicyGrip, ArrivalEpsIsExposed) {
+    EXPECT_FLOAT_EQ(xense::taccap::ForcePositionController::arrival_eps_rad(),
+                    ForcePositionTuning{}.arrival_eps_rad);
+}
+
+// A policy's grip flag can flicker for a sample while the object is squeezed
+// past the target. Re-armed there, the push must build CLOSED again -- the
+// target lies on the opening side of the jaw, and taking the direction from
+// it would escalate against the grip and let the object spring the jaw open.
+TEST(ForcePositionPolicyGrip, AFlickeredGripReGripsAnObjectSqueezedPastTheTarget) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    loop.hold(2.0f, 0.3f, true);
+    ASSERT_TRUE(p.holding());
+    ASSERT_LT(plant.pos, 0.3f - ForcePositionTuning{}.arrival_eps_rad);
+    loop.hold(0.03f, 0.3f, false);            // one sample without the intent
+    loop.hold(2.0f, 0.3f, true);
+    EXPECT_TRUE(p.grip());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+    EXPECT_LT(plant.pos, 0.3f - 0.015f) << "the object is squeezed again";
+}
+
+// Measured on 0016s (RS00, 2026-11-19): a compliant object with a ~30 Hz
+// target jittering +-5 mrad. The jaw creeps in as the object compresses, so it
+// never stalls, and the target never holds still -- the escalation's at-rest
+// gate was false most frames and the push took ~6 s to reach 2.9 of 3.6 N*m.
+TEST(ForcePositionPolicyGrip, ACompliantObjectUnderAJitteringStreamStillLatches) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    uint32_t lcg = 5u;
+    auto jitter = [&lcg](int) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;
+        return 0.3f + (2.0f * u - 1.0f) * 0.005f;
+    };
+    loop.run(2.5f, jitter, true, 3);
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+}
+
+// While a live grip squeezes an object past the target it is closing, and must
+// say so: deriving the label from "which side of the target" called it Opening.
+TEST(ForcePositionPolicyGrip, SqueezingPastTheTargetIsNotReportedAsOpening) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    for (int i = 0; i < 300; ++i) {
+        loop.hold(0.01f, 0.3f, true);
+        if (plant.pos < 0.3f - 0.012f) {
+            EXPECT_NE(p.state(), ForcePositionState::Opening) << "frame " << i;
+        }
+    }
+}
