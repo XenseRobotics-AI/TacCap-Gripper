@@ -15,11 +15,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace taccap_test {
@@ -188,6 +190,35 @@ public:
         return sn_;
     }
 
+    // ---- Fisheye calibration (Cmd 0x2B) -------------------------------------
+    // Modelled on the firmware's camera_fisheye_cal handler. V2.10 (follower
+    // 1.2.18) by default; set_fisheye_size_supported(false) emulates older
+    // firmware, which answers 0x02 with InvalidParam and the 37-byte 0x03 with
+    // LengthMismatch (its command table caps 0x2B at 33 bytes, measured on a
+    // 1.2.17 follower).
+    void set_fisheye_size_supported(bool on) { fisheye_sized_.store(on); }
+    // Pre-load the flash record; width/height 0/0 = size unknown.
+    void set_fisheye_record(const tp::CameraFisheyeCal& cal,
+                            uint16_t width = 0, uint16_t height = 0) {
+        std::lock_guard<std::mutex> lk(mu_);
+        fisheye_cal_ = cal;
+        fisheye_w_ = width;
+        fisheye_h_ = height;
+    }
+    std::optional<tp::CameraFisheyeCal> stored_fisheye() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return fisheye_cal_;
+    }
+    std::pair<uint16_t, uint16_t> stored_fisheye_size() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return {fisheye_w_, fisheye_h_};
+    }
+    // The op byte of every 0x2B request, in arrival order.
+    std::vector<uint8_t> fisheye_ops() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return fisheye_ops_;
+    }
+
 private:
     // Real firmware gives every frame it originates the next value of one 8-bit
     // counter (protocol_get_next_seq); the transport relies on that to drop a
@@ -238,6 +269,9 @@ private:
                 if (last_exchange_reply_) last_exchange_ = f; else last_exchange_.reset();
                 return;
             }
+            case tp::Cmd::CameraFisheyeCal:
+                handle_fisheye_(f);
+                return;
             case tp::Cmd::GetVersion: {
                 const tp::FirmwareVersion v{fw_major_, fw_minor_, fw_patch_, 0};
                 pty_.send_response(f.seq, f.cmd, pod_bytes(&v, sizeof(v)));
@@ -468,6 +502,85 @@ private:
         }
     }
 
+    // Firmware handler errors go out as protocol_send_response(seq, cmd, err,
+    // NULL, 0): the command byte echoed and the bare error code as payload.
+    // Real firmware (protocol_handler.c) sends every handler error on the
+    // cmd=0 pure-ACK path, which the SDK raises as NackError. Answering with
+    // the echoed cmd instead hid exactly that path: the old-firmware probe
+    // passed here and threw "NACK: InvalidParam" on a 1.2.17 follower.
+    void fisheye_reply_err_(const xense::taccap::bus::Frame& f, tp::ErrorCode err) {
+        pty_.send_nack(f.seq, err);
+    }
+
+    void handle_fisheye_(const xense::taccap::bus::Frame& f) {
+        if (f.payload.empty()) { fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch); return; }
+        const uint8_t op = f.payload[0];
+        std::lock_guard<std::mutex> lk(mu_);
+        fisheye_ops_.push_back(op);
+        const bool sized = op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED ||
+                           op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED;
+        if (sized && !fisheye_sized_.load()) {
+            fisheye_reply_err_(f, op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED
+                                      ? tp::ErrorCode::LengthMismatch  // table cap
+                                      : tp::ErrorCode::InvalidParam);  // unknown op
+            return;
+        }
+        auto params_finite = [](const tp::CameraFisheyeCal& c) {
+            for (float v : {c.fx, c.fy, c.cx, c.cy, c.k1, c.k2, c.k3, c.k4})
+                if (!std::isfinite(v)) return false;
+            return true;
+        };
+        if (op == static_cast<uint8_t>(tp::CalOp::Read) ||
+            op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED) {
+            if (f.payload.size() != 1) { fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch); return; }
+            if (!fisheye_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
+            std::vector<uint8_t> out{op};
+            auto body = pod_bytes(&*fisheye_cal_, sizeof(*fisheye_cal_));
+            out.insert(out.end(), body.begin(), body.end());
+            if (op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED) {
+                for (uint16_t v : {fisheye_w_, fisheye_h_}) {
+                    out.push_back(static_cast<uint8_t>(v & 0xFF));
+                    out.push_back(static_cast<uint8_t>(v >> 8));
+                }
+            }
+            pty_.send_response(f.seq, f.cmd, out);
+            return;
+        }
+        if (op == static_cast<uint8_t>(tp::CalOp::Write)) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_FULL_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            tp::CameraFisheyeCal c{};
+            std::memcpy(&c, f.payload.data() + 1, sizeof(c));
+            if (!params_finite(c)) { fisheye_reply_err_(f, tp::ErrorCode::InvalidParam); return; }
+            fisheye_cal_ = c;
+            fisheye_w_ = fisheye_h_ = 0;   // V2.10: a legacy write leaves the size unknown
+            pty_.send_ack_ok(f.seq, f.cmd);
+            return;
+        }
+        if (op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_SIZED_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            tp::CameraFisheyeCalSized b{};
+            std::memcpy(&b, f.payload.data() + 1, sizeof(b));
+            const auto& c = b.calibration;
+            const bool ok = params_finite(c) && c.fx > 0 && c.fy > 0 &&
+                            b.width >= 1 && b.width <= 4096 &&
+                            b.height >= 1 && b.height <= 4096 &&
+                            c.cx > 0 && c.cx < b.width && c.cy > 0 && c.cy < b.height;
+            if (!ok) { fisheye_reply_err_(f, tp::ErrorCode::InvalidParam); return; }
+            fisheye_cal_ = c;
+            fisheye_w_ = b.width;
+            fisheye_h_ = b.height;
+            pty_.send_ack_ok(f.seq, f.cmd);
+            return;
+        }
+        fisheye_reply_err_(f, tp::ErrorCode::InvalidParam);
+    }
+
     void handle_exchange_(const xense::taccap::bus::Frame& f) {
         tp::ExchangeRequestHeader h{};
         if (f.payload.size() < sizeof(h)) { pty_.send_nack(f.seq, tp::ErrorCode::LengthMismatch); return; }
@@ -575,6 +688,10 @@ private:
     uint8_t fw_ver_[4] = {0, 0, 0, 0};
     bool fw_ver_valid_ = false;
     uint8_t fw_ver_source_ = 0;
+    std::atomic<bool> fisheye_sized_{true};
+    std::optional<tp::CameraFisheyeCal> fisheye_cal_;   // nullopt = never written
+    uint16_t fisheye_w_ = 0, fisheye_h_ = 0;
+    std::vector<uint8_t> fisheye_ops_;
     std::atomic<bool> spec_supported_{true};
     std::atomic<bool> corrupt_sn_writes_{false};
     std::atomic<bool> model_from_flash_{true};

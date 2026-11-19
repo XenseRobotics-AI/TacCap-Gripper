@@ -9,7 +9,7 @@ catches *forgetting to mirror it at all*. That is the failure this script
 exists for — command set V2.2 landed in the firmware on 2026-07-31 and the SDK
 did not notice until someone went looking two weeks later.
 
-Two independent checks:
+Three independent checks:
 
 1. **Command / error tables** — parsed out of ``protocol_cmd.h`` and
    ``commands.hpp`` and compared *by wire value*. Zero maintenance: a new
@@ -21,6 +21,10 @@ Two independent checks:
    small ``STRUCT_MAP`` below, because the names genuinely diverge: the
    firmware's ``motor_status_t`` is the SDK's ``MotorStatusExt``, while the
    SDK's ``MotorStatus`` is ``motor_status_legacy_t``.
+
+3. **Wire constants** -- payload lengths and op codes the SDK copies as
+   ``constexpr`` (``CONSTANT_MAP`` below), evaluated by the compiler on both
+   sides the same way.
 
 Usage::
 
@@ -112,6 +116,26 @@ WIRE_SIZE_MACRO = {
     # 12; the SDK's EskinHeader carries an explicit `_reserved2` for the gap.
     "eskin_data_header_t": "ESKIN_HEADER_SIZE",
 }
+
+
+# Wire constants that are not a struct size or an enum table: payload lengths
+# and op codes the SDK hand-copies as ``constexpr``. Each row is
+# (firmware C expression, SDK C++ expression with ``tp`` = the protocol
+# namespace); both sides are evaluated by the compiler, as for STRUCT_MAP. A
+# firmware that lacks a listed macro fails the probe build, which is the point:
+# the SDK then speaks an op the firmware does not define.
+CONSTANT_MAP = [
+    # 0x2B CameraFisheyeCal -- legacy (V2.0) ops and lengths.
+    ("CAMERA_FISHEYE_CAL_OP_READ", "(unsigned)tp::CalOp::Read"),
+    ("CAMERA_FISHEYE_CAL_OP_WRITE", "(unsigned)tp::CalOp::Write"),
+    ("CAMERA_FISHEYE_CAL_FULL_SIZE", "tp::CAMERA_FISHEYE_CAL_FULL_SIZE"),
+    ("sizeof(camera_fisheye_cal_payload_t)", "tp::CAMERA_FISHEYE_CAL_FULL_SIZE"),
+    # 0x2B -- V2.10 sized ops (calibration resolution).
+    ("CAMERA_FISHEYE_CAL_OP_READ_SIZED", "tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED"),
+    ("CAMERA_FISHEYE_CAL_OP_WRITE_SIZED", "tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED"),
+    ("CAMERA_FISHEYE_CAL_SIZED_SIZE", "tp::CAMERA_FISHEYE_CAL_SIZED_SIZE"),
+    ("sizeof(camera_fisheye_cal_sized_payload_t)", "tp::CAMERA_FISHEYE_CAL_SIZED_SIZE"),
+]
 
 
 def pascal(macro_tail: str) -> str:
@@ -285,6 +309,63 @@ def check_sizes(firmware: Path, cc: str, cxx: str) -> list[str]:
     return errors
 
 
+def check_constants(firmware: Path, cc: str, cxx: str) -> list[str]:
+    """Compare every CONSTANT_MAP row's value, as the compiler sees it."""
+    c_src = "\n".join(
+        ["#include <stdio.h>", '#include "protocol_data.h"', "int main(void) {"]
+        + [
+            f'  printf("c{i}=%lu\\n", (unsigned long)({fw}));'
+            for i, (fw, _) in enumerate(CONSTANT_MAP)
+        ]
+        + ["  return 0;", "}", ""]
+    )
+    cxx_src = "\n".join(
+        [
+            "#include <cstdio>",
+            "#include <taccap/protocol/payloads.hpp>",
+            "namespace tp = xense::taccap::protocol;",
+            "int main() {",
+        ]
+        + [
+            f'  std::printf("c{i}=%lu\\n", (unsigned long)({sdk}));'
+            for i, (_, sdk) in enumerate(CONSTANT_MAP)
+        ]
+        + ["  return 0;", "}", ""]
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        fw_vals, err = _emit_sizes(
+            tmp,
+            "firmware",
+            c_src,
+            cc,
+            [
+                "-std=c11",
+                f"-I{firmware / 'App' / 'protocol'}",
+                f"-I{firmware / 'App' / 'drivers'}",
+            ],
+        )
+        if err:
+            return [err.replace("STRUCT_MAP", "CONSTANT_MAP")]
+        sdk_vals, err = _emit_sizes(
+            tmp,
+            "sdk",
+            cxx_src,
+            cxx,
+            ["-std=c++17", f"-I{REPO / 'cpp' / 'include'}"],
+        )
+        if err:
+            return [err.replace("STRUCT_MAP", "CONSTANT_MAP")]
+    errors = []
+    for i, (label, sdk) in enumerate(CONSTANT_MAP):
+        fw, have = fw_vals[f"c{i}"], sdk_vals[f"c{i}"]
+        if fw != have:
+            errors.append(
+                f"constant mismatch: firmware {label} = {fw}, SDK {sdk} = {have}"
+            )
+    return errors
+
+
 def indent(text: str, pad: str = "    ") -> str:
     return "\n".join(pad + line for line in text.splitlines())
 
@@ -382,6 +463,9 @@ def main() -> int:
         f"payloads:    {len(STRUCT_MAP)} structs size-checked ({args.cc} / {args.cxx})"
     )
     errors += check_sizes(fw_dir, args.cc, args.cxx)
+
+    print(f"constants:   {len(CONSTANT_MAP)} wire constants compared")
+    errors += check_constants(fw_dir, args.cc, args.cxx)
 
     print()
     if errors:

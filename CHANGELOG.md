@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fisheye calibration resolution (protocol V2.10)
+
+The wrist fisheye default moved from 640x480 to 1920x1080. Those are different
+sensor crops (4:3 vs 16:9), so intrinsics cannot be rescaled from one to the
+other. Leader firmware 1.2.8 / follower 1.2.18 (command set V2.10) store the
+calibration resolution next to the 8 params, via two new ops on
+`CameraFisheyeCal` (0x2B): `0x02` sized read and `0x03` sized write. Ops
+`0x00`/`0x01` are unchanged on the wire.
+
+#### Added
+
+- **`Calibration::read_fisheye_record()` / `write_fisheye_sized(cal, w, h)` /
+  `supports_fisheye_size()`**, plus a `FisheyeCalRecord` (`calibration`,
+  `width`, `height`, `size_known()`; `0/0` = unknown). The capability probe is
+  the sized read (old firmware rejects it with `InvalidParam`), and its answer
+  is cached per `Calibration`. On old firmware the record reads back with an
+  unknown size, and `write_fisheye_sized()` accepts only 640x480 (through the
+  legacy write). Any other size raises and asks for a firmware upgrade.
+  Implausible values are refused before anything is sent.
+- **`fisheye_cal_size_plausible()`** (the firmware's sized-write rule) and
+  **`infer_fisheye_cal_size()`**, which handles records without a size. The
+  candidates are exactly 640x480 and 1920x1080. A candidate matches when the
+  principal point is within 10% of its centre on each axis, and a size is
+  returned only when exactly one candidate matches. The PC calibration tools
+  use the same rule.
+- **`FisheyeUndistorter(cal, calibrated_size, frame_size, balance)`**, which
+  requires the two sizes to be equal. In Python this is the `calibrated_size=(w, h)`
+  keyword.
+- **`ResolvedFisheyeCal.calibrated_size` / `.size_inferred`**. In Python,
+  `resolve_fisheye()` now returns a `ResolvedFisheyeCal` object. It still
+  unpacks as the old `(calibration, is_reference, reason)` tuple.
+- Protocol mirror: `CAMERA_FISHEYE_CAL_OP_READ_SIZED` / `_OP_WRITE_SIZED` /
+  `_SIZED_SIZE`, `CameraFisheyeCalSized`, and
+  `encode_camera_fisheye_cal_{read,write}_sized()` /
+  `decode_camera_fisheye_cal_sized()`. `scripts/check_protocol_drift.py`
+  now also compares these wire constants (and the legacy 0x2B ones) against
+  the firmware headers.
+
+#### Changed
+
+- `resolve_fisheye()` uses the recorded size. When the record has no size, it
+  uses the inferred one and logs a warning. When the size cannot be inferred
+  either, it falls back to the reference calibration ("the calibration
+  resolution is unknown and could not be inferred"). The reference is always
+  640x480.
+- The wrist undistorter that grippers install (`undistort_wrist`) is built for
+  the calibration's own size, so it now also works on a camera configured at
+  1920x1080 with a 1080p calibration. A size mismatch still throws.
+- `fisheye_cal.py set-fisheye` takes `--width/--height` (required) and stores
+  them with `write_fisheye_sized()`. `show` prints the size and whether it was
+  recorded or inferred. `read_intrinsics.py` reports `image_size` and
+  `image_size_source` (`assumed_image_size` is kept). `wrist_camera.py` and the
+  rerun viewer open the camera at the calibration's size.
+- `write_fisheye()` is unchanged, but on V2.10 firmware it leaves the size
+  unknown, so prefer `write_fisheye_sized()`. The legacy
+  `FisheyeUndistorter(cal, size, balance)` still treats the params as a
+  640x480 calibration.
+
 ### ForcePositionController grip intent (2026-11-19)
 
 #### Added
@@ -32,8 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
 
-Requires leader firmware 1.2.8 / follower 1.2.18 (candidates; previous
-releases leader 1.2.7 / follower 1.2.17) for IMU above 100 Hz. Wire
+Requires leader firmware 1.2.9 / follower 1.2.19 (candidates; previous
+releases leader 1.2.7 / follower 1.2.17; 1.2.8 / 1.2.18 went to the fisheye
+calibration resolution above) for IMU above 100 Hz. Wire
 protocol V2.9 is unchanged: same commands, 28/44 B IMU payloads, units,
 0x5D at most 3 IMUs per reply and 0x5E records. Experimental until hardware
 acceptance.
@@ -77,7 +136,7 @@ acceptance.
   magnetic values do not prove a duplicate sample.
 - Gyro wire unit stays int16 x 0.01 dps and saturates beyond +/-327.67 dps.
 - Bundled firmware images stay the released leader 1.2.7 / follower 1.2.17;
-  candidate 1.2.8 / 1.2.18 images are not bundled before hardware acceptance.
+  candidate 1.2.9 / 1.2.19 images are not bundled before hardware acceptance.
 - Firmware widens the IMU DLPF above 100 Hz (gyro 196.6 Hz / accel 246 Hz);
   expect roughly 2x white noise versus the 51/50 Hz low-rate filter.
 

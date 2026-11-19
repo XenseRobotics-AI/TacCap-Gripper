@@ -7,22 +7,84 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace xense::taccap {
 
+namespace {
+
+std::string size_text(int w, int h) {
+    return std::to_string(w) + "x" + std::to_string(h);
+}
+
+// The two capture resolutions the wrist camera is calibrated at. Shared with
+// the PC tools' inference rule — see infer_fisheye_cal_size() in the header.
+constexpr int kInferCandidates[][2] = {{640, 480}, {1920, 1080}};
+constexpr double kInferCentreTolerance = 0.10;
+
+}  // namespace
+
+bool fisheye_cal_size_plausible(const protocol::CameraFisheyeCal& cal,
+                                int width, int height) {
+    const float v[] = {cal.fx, cal.fy, cal.cx, cal.cy,
+                       cal.k1, cal.k2, cal.k3, cal.k4};
+    for (float x : v) {
+        if (!std::isfinite(x)) return false;
+    }
+    if (!(cal.fx > 0.0f) || !(cal.fy > 0.0f)) return false;
+    if (width < 1 || width > 4096 || height < 1 || height > 4096) return false;
+    return cal.cx > 0.0f && cal.cx < static_cast<float>(width) &&
+           cal.cy > 0.0f && cal.cy < static_cast<float>(height);
+}
+
+std::optional<cv::Size> infer_fisheye_cal_size(const protocol::CameraFisheyeCal& cal) {
+    if (!is_usable_fisheye_cal(cal)) return std::nullopt;
+    std::optional<cv::Size> found;
+    int matches = 0;
+    for (const auto& c : kInferCandidates) {
+        const double w = c[0], h = c[1];
+        // NaN cx/cy compare false here, so they never match.
+        if (std::abs(cal.cx - w / 2.0) <= kInferCentreTolerance * w &&
+            std::abs(cal.cy - h / 2.0) <= kInferCentreTolerance * h) {
+            found = cv::Size(c[0], c[1]);
+            ++matches;
+        }
+    }
+    if (matches != 1) return std::nullopt;
+    return found;
+}
+
 FisheyeUndistorter::FisheyeUndistorter(const protocol::CameraFisheyeCal& cal,
                                        cv::Size size,
                                        float    balance)
-    : size_(size) {
-    if (size.width != FISHEYE_CALIB_WIDTH || size.height != FISHEYE_CALIB_HEIGHT) {
+    : FisheyeUndistorter(cal, cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT),
+                         size, balance) {}
+
+FisheyeUndistorter::FisheyeUndistorter(const protocol::CameraFisheyeCal& cal,
+                                       cv::Size calibrated_size,
+                                       cv::Size frame_size,
+                                       float    balance)
+    : size_(frame_size) {
+    if (calibrated_size.width <= 0 || calibrated_size.height <= 0) {
         throw Error(
-            "FisheyeUndistorter: the wrist fisheye intrinsics are calibrated at " +
-            std::to_string(FISHEYE_CALIB_WIDTH) + "x" +
-            std::to_string(FISHEYE_CALIB_HEIGHT) + ", got " +
-            std::to_string(size.width) + "x" + std::to_string(size.height) +
-            ". The firmware record carries no image size, so rescaling would be "
-            "a guess — configure the camera at the calibrated resolution.");
+            "FisheyeUndistorter: the calibration resolution is unknown (" +
+            size_text(calibrated_size.width, calibrated_size.height) +
+            "). Intrinsics only hold at the resolution they were measured at — "
+            "recalibrate at the capture resolution, or resolve the record with "
+            "Calibration::resolve_fisheye().");
+    }
+    if (frame_size != calibrated_size) {
+        throw Error(
+            "FisheyeUndistorter: the wrist fisheye intrinsics belong to " +
+            size_text(calibrated_size.width, calibrated_size.height) +
+            ", but the frames are " +
+            size_text(frame_size.width, frame_size.height) +
+            ". Intrinsics must not be rescaled to another resolution or aspect "
+            "ratio (640x480 and 1920x1080 are different sensor crops) — "
+            "configure the camera at " +
+            size_text(calibrated_size.width, calibrated_size.height) +
+            ", or recalibrate at the capture resolution.");
     }
 
     balance_ = std::clamp(balance, 0.0f, 1.0f);

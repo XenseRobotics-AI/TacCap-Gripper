@@ -58,10 +58,14 @@ calibration: undistortion is always installed, with the SDK's reference
 intrinsics standing in and a warning. Off-by-default is about the switch, not
 about whether a switched-on path might silently skip the remap.
 
-Note the undistorter is built for the calibrated 640x480 only: the firmware
-record carries no image size, so rescaling the intrinsics would be a guess and
-is refused rather than silently wrong. Ask for another size and undistortion
-is unavailable at that size (the script says so and stays on raw frames).
+Note the undistorter is built at the calibration's own resolution only:
+640x480 and 1920x1080 are different sensor crops, so rescaling the intrinsics
+would be silently wrong and is refused. The resolution comes from the firmware
+record (leader 1.2.8 / follower 1.2.18+ store it), is inferred from the
+principal point for an older record, or is 640x480 for the reference values.
+Without --width/--height the camera is opened at that resolution; ask for
+another size and undistortion is unavailable at that size (the script says so
+and stays on raw frames).
 
 Usage:
     # what is plugged in, and which of it this script can open
@@ -109,11 +113,13 @@ from xense.taccap import (
     ProtocolError,
     Role,
     Side,
+    infer_fisheye_cal_size,
     log,
     scan_grippers,
 )
 
-# The one resolution the firmware calibration record is defined at.
+# The resolution of the SDK reference calibration, and the capture size used
+# when nothing says otherwise.
 CALIB_W, CALIB_H = 640, 480
 
 MODE_RAW = "raw"
@@ -305,7 +311,7 @@ def cal_from_npz(path: str) -> CameraFisheyeCal:
     )
 
 
-def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str]:
+def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str, tuple[int, int]]:
     """Read the intrinsics off the MCU of the gripper on the camera's side.
 
     The wrist camera's own serial already says which side (and which role) it
@@ -345,20 +351,46 @@ def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str]:
         # resolve_fisheye() — not read_fisheye() — because an uncalibrated unit
         # answers with an all-zero record rather than a NACK, and remapping with
         # fx = fy = 0 yields a uniformly black frame with nothing raised.
-        cal, is_reference, reason = g.calibration.resolve_fisheye()
-    if is_reference:
-        return cal, f"SDK reference intrinsics ({reason})"
-    return cal, f"read from {eps.firmware_sn or eps.mcu_device}"
+        resolved = g.calibration.resolve_fisheye()
+    size = resolved.calibrated_size
+    if resolved.is_reference:
+        return (
+            resolved.calibration,
+            f"SDK reference intrinsics ({resolved.reason})",
+            size,
+        )
+    how = "size inferred" if resolved.size_inferred else "size recorded"
+    return (
+        resolved.calibration,
+        f"read from {eps.firmware_sn or eps.mcu_device} ({how})",
+        size,
+    )
 
 
-def resolve_calibration(args, cam: dict) -> tuple[CameraFisheyeCal, str, bool]:
-    """Returns (cal, provenance, is_reference)."""
+def resolve_calibration(
+    args, cam: dict
+) -> tuple[CameraFisheyeCal, str, bool, tuple[int, int]]:
+    """Returns (cal, provenance, is_reference, calibrated (width, height))."""
+    reference_size = (CALIB_W, CALIB_H)
     if args.from_npz:
-        return cal_from_npz(args.from_npz), f"loaded from {args.from_npz}", False
+        cal = cal_from_npz(args.from_npz)
+        # An .npz carries no image size either; apply the SDK's inference rule.
+        size = infer_fisheye_cal_size(cal)
+        if size is None:
+            raise SystemExit(
+                f"{args.from_npz}: cannot tell which resolution these intrinsics "
+                "belong to (the principal point fits neither 640x480 nor 1920x1080)"
+            )
+        return cal, f"loaded from {args.from_npz} (size inferred)", False, size
     if args.no_mcu:
-        return (FISHEYE_FALLBACK_CAL, "SDK reference intrinsics (--no-mcu)", True)
+        return (
+            FISHEYE_FALLBACK_CAL,
+            "SDK reference intrinsics (--no-mcu)",
+            True,
+            reference_size,
+        )
     try:
-        cal, provenance = cal_from_gripper(cam)
+        cal, provenance, size = cal_from_gripper(cam)
     except (RuntimeError, ProtocolError, OSError) as e:
         # The wrist camera is usable without the MCU link, so a failure here
         # degrades to the reference calibration rather than aborting — same
@@ -367,8 +399,13 @@ def resolve_calibration(args, cam: dict) -> tuple[CameraFisheyeCal, str, bool]:
             f"could not read the calibration from the gripper ({e}); "
             "falling back to the SDK reference intrinsics"
         )
-        return FISHEYE_FALLBACK_CAL, f"SDK reference intrinsics ({e})", True
-    return cal, provenance, provenance.startswith("SDK reference")
+        return (
+            FISHEYE_FALLBACK_CAL,
+            f"SDK reference intrinsics ({e})",
+            True,
+            reference_size,
+        )
+    return cal, provenance, provenance.startswith("SDK reference"), size
 
 
 # ---- rendering --------------------------------------------------------------
@@ -476,8 +513,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     cam = p.add_argument_group("capture")
-    cam.add_argument("--width", type=int, default=CALIB_W)
-    cam.add_argument("--height", type=int, default=CALIB_H)
+    cam.add_argument(
+        "--width",
+        type=int,
+        help="Capture width (default: the calibration's resolution, else 640).",
+    )
+    cam.add_argument(
+        "--height",
+        type=int,
+        help="Capture height (default: the calibration's resolution, else 480).",
+    )
     cam.add_argument("--fps", type=float, default=30.0)
     cam.add_argument(
         "--no-mjpg", action="store_true", help="Request YUYV instead of MJPEG."
@@ -533,33 +578,39 @@ def main(argv=None) -> int:
     device = cam_info["path"]
     color_mode = ColorMode.RGB if args.color_mode == "rgb" else ColorMode.BGR
 
-    # The remap tables are defined at the calibrated resolution only. Say so
-    # once, up front, instead of letting the constructor throw mid-stream.
-    calibrated_size = (args.width, args.height) == (CALIB_W, CALIB_H)
-    if not calibrated_size and (args.undistort or args.compare):
-        print(
-            _yellow(
-                f"undistortion needs {CALIB_W}x{CALIB_H} (the calibrated size) — "
-                f"you asked for {args.width}x{args.height}, so frames stay raw.\n"
-                "The firmware record stores no image size; rescaling the "
-                "intrinsics would be a guess."
-            )
-        )
-
     # Resolve the intrinsics up front whenever rectification is reachable — that
     # includes staying raw in the viewer, where `u` can switch to rectified at
     # any moment and an MCU round-trip mid-loop would stall the capture.
     # Headless AND raw is the one case that can never rectify, so it skips the
     # gripper entirely rather than opening a serial link for nothing.
     wants_undistort = args.undistort or args.compare
-    reachable = calibrated_size and (wants_undistort or not args.no_display)
+    reachable = wants_undistort or not args.no_display
 
     undist = None
-    cal = provenance = None
+    cal = provenance = cal_size = None
     is_reference = False
     if reachable:
-        cal, provenance, is_reference = resolve_calibration(args, cam_info)
-        undist = FisheyeUndistorter(cal, CALIB_W, CALIB_H, args.balance)
+        cal, provenance, is_reference, cal_size = resolve_calibration(args, cam_info)
+    default_size = cal_size or (CALIB_W, CALIB_H)
+    width = args.width or default_size[0]
+    height = args.height or default_size[1]
+
+    # The remap tables are defined at the calibration's own resolution only.
+    # Say so once, up front, instead of letting the constructor throw.
+    if cal_size is not None:
+        if (width, height) == tuple(cal_size):
+            undist = FisheyeUndistorter(
+                cal, width, height, args.balance, calibrated_size=cal_size
+            )
+        elif wants_undistort:
+            print(
+                _yellow(
+                    f"undistortion needs {cal_size[0]}x{cal_size[1]} (the "
+                    f"calibrated size) — you asked for {width}x{height}, so "
+                    "frames stay raw.\nIntrinsics do not carry over to another "
+                    "resolution or aspect ratio; recalibrate at that size."
+                )
+            )
 
     mode = MODE_RAW
     if undist is not None:
@@ -571,8 +622,8 @@ def main(argv=None) -> int:
 
     cam = Camera(
         device=device,
-        width=args.width,
-        height=args.height,
+        width=width,
+        height=height,
         fps=args.fps,
         use_mjpg=not args.no_mjpg,
         color_mode=color_mode,
@@ -584,7 +635,7 @@ def main(argv=None) -> int:
     )
     print(f"  device     : {device}")
     print(
-        f"  format     : {args.width}x{args.height} @ {args.fps:g} "
+        f"  format     : {width}x{height} @ {args.fps:g} "
         f"{'YUYV' if args.no_mjpg else 'MJPG'}, {args.color_mode.upper()}"
     )
     if undist is not None:
@@ -607,7 +658,7 @@ def main(argv=None) -> int:
                     "point especially),\n  so do not measure in pixels off these "
                     "frames. Calibrate with:\n"
                     "    python python/examples/fisheye_cal.py set-fisheye "
-                    "--from-npz cam.npz"
+                    "--from-npz cam.npz --width W --height H"
                 )
             )
     print(f"\n  mode       : {mode}\n")
@@ -727,7 +778,9 @@ def main(argv=None) -> int:
                 balance = min(1.0, max(0.0, undist.balance + step))
                 # The tables are built once per undistorter, so a new balance
                 # means a new one — cheap enough at human key-press rates.
-                undist = FisheyeUndistorter(cal, CALIB_W, CALIB_H, balance)
+                undist = FisheyeUndistorter(
+                    cal, width, height, balance, calibrated_size=cal_size
+                )
                 apply_mode(mode)
                 log.info(
                     f"balance: {undist.balance:.2f} "

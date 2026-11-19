@@ -5,6 +5,9 @@
 //
 //   - Fisheye camera intrinsics + distortion  (Cmd::CameraFisheyeCal 0x2B,
 //     command set >= V2.0) — supported on BOTH leader and follower.
+//     Command set V2.10 (leader 1.2.8 / follower 1.2.18) also records the
+//     capture resolution the params belong to (read_fisheye_record /
+//     write_fisheye_sized); older firmware leaves it unknown.
 //   - Leader encoder max travel angle          (Cmd::EncoderMaxCal 0x2C,
 //     command set >= V2.1, i.e. leader >= 1.2.0) — LEADER ONLY; the follower
 //     has no MT6816 encoder and NACKs with ErrorCode::InvalidCmd.
@@ -28,6 +31,7 @@
 #include <taccap/components/fisheye_undistorter.hpp>
 #include <taccap/protocol/payloads.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <optional>
 
@@ -43,9 +47,6 @@ public:
     std::optional<protocol::CameraFisheyeCal> read_fisheye(
         std::chrono::milliseconds timeout = std::chrono::milliseconds{200});
 
-    // Persists to MCU flash (survives power cycles). Throws ProtocolError if
-    // any value is NaN/Inf (firmware returns InvalidParam) or the flash write
-    // fails (SysBusy).
     // Ask for this unit's wrist calibration, falling back to the SDK's
     // reference values when it cannot supply one.
     //
@@ -57,14 +58,52 @@ public:
     // themselves get the same decision the SDK makes internally rather than
     // re-deriving it.
     //
+    // The calibration resolution comes from read_fisheye_record(). A record
+    // without one (written by write_fisheye() or by pre-V2.10 firmware) gets
+    // infer_fisheye_cal_size()'s answer, with size_inferred set and a warning
+    // logged; a record whose size cannot be inferred either is treated as
+    // unusable and the reference calibration (640x480) stands in.
+    //
     // Never throws for a missing or unusable calibration — that is a fallback,
     // reported through ResolvedFisheyeCal::reason. A transport failure still
     // propagates.
     ResolvedFisheyeCal resolve_fisheye(
         std::chrono::milliseconds timeout = std::chrono::milliseconds(200));
 
+    // Persists to MCU flash (survives power cycles). Throws ProtocolError if
+    // any value is NaN/Inf (firmware returns InvalidParam) or the flash write
+    // fails (SysBusy).
+    //
+    // Writes the 8 params only (CalOp::Write). On V2.10 firmware this marks the
+    // calibration resolution UNKNOWN; use write_fisheye_sized() to record it.
     void write_fisheye(const protocol::CameraFisheyeCal& cal,
                        std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+
+    // ---- Fisheye calibration resolution (V2.10: leader 1.2.8 / follower 1.2.18)
+    // True when the firmware stores the calibration resolution (answers the
+    // sized read, op 0x02, with Ok or CalNotSet); false when it rejects that op
+    // as InvalidParam, which is how older firmware answers an unknown op. The
+    // answer is cached for the life of this object; a transport failure
+    // propagates and is not cached, and so is any other NACK.
+    bool supports_fisheye_size(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{200});
+
+    // The params plus the resolution they belong to. Uses the sized read when
+    // the firmware supports it, else the legacy read with width/height 0/0
+    // (unknown). Returns std::nullopt when never calibrated (CalNotSet).
+    std::optional<FisheyeCalRecord> read_fisheye_record(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{200});
+
+    // Persist the params together with the capture resolution they were
+    // measured at. Throws Error before sending anything when the values fail
+    // fisheye_cal_size_plausible() (the firmware's own rule). On V2.10 firmware
+    // this is the sized write (op 0x03); a NACK throws ProtocolError, as
+    // write_fisheye() does. Older firmware cannot record a size: a 640x480
+    // calibration then falls back to the legacy write_fisheye(), and any other
+    // resolution throws Error asking for a firmware upgrade.
+    void write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
+                             int width, int height,
+                             std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
     // ---- Leader encoder max travel angle (leader only) ---------------------
     // The shaft angle (rad) at which the gripper is fully open, measured from
@@ -78,7 +117,20 @@ public:
                                std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
 private:
-    bus::Transport& t_;
+    // Sends the sized read (op 0x02). Returns false when the firmware rejects
+    // the op as InvalidParam (pre-V2.10); otherwise fills `out`, with
+    // std::nullopt for CalNotSet. Any other NACK throws ProtocolError.
+    bool read_fisheye_sized_(std::chrono::milliseconds timeout,
+                             std::optional<FisheyeCalRecord>& out);
+
+    // Records whether the firmware answered the sized read: -1 not yet asked,
+    // 0 unsupported (pre-V2.10), 1 supported. Set only from a real answer.
+    void note_fisheye_size_support_(bool supported) noexcept {
+        fisheye_size_support_.store(supported ? 1 : 0);
+    }
+
+    bus::Transport&  t_;
+    std::atomic<int> fisheye_size_support_{-1};
 };
 
 }  // namespace xense::taccap

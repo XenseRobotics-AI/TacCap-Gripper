@@ -16,9 +16,11 @@ void bind_calibration(py::module_& m) {
         "Wrist-camera intrinsics and fisheye distortion, as the firmware persists\n"
         "them (Cmd 0x2B, command set >= V2.0). k1..k4 are the OpenCV fisheye\n"
         "(equidistant) coefficients, in D order.\n\n"
-        "Eight floats in an order fixed by the firmware. The record carries no image\n"
-        "size: the wrist lens is calibrated at 640x480, and FisheyeUndistorter\n"
-        "rejects any other frame size rather than guessing a scale factor.")
+        "Eight floats in an order fixed by the firmware. They hold only at the\n"
+        "capture resolution they were measured at -- 640x480 and 1920x1080 are\n"
+        "different sensor crops, so they cannot be rescaled between the two. That\n"
+        "resolution travels separately: see FisheyeCalRecord and\n"
+        "Calibration.read_fisheye_record.")
         .def(py::init([]() { return protocol::CameraFisheyeCal{}; }),
              "All-zero record. Not usable for rectification -- fx = fy = 0 maps every\n"
              "pixel outside the source image, so the frame comes back black.")
@@ -65,6 +67,88 @@ void bind_calibration(py::module_& m) {
             return std::string(buf);
         });
 
+    // ---- FisheyeCalRecord (V2.10 — params + calibration resolution) --------
+    py::class_<FisheyeCalRecord>(m, "FisheyeCalRecord",
+        "A fisheye record as the firmware holds it: the params plus the capture\n"
+        "resolution they were measured at (Calibration.read_fisheye_record).\n\n"
+        "width/height 0/0 means the size is UNKNOWN -- the params were written\n"
+        "without one (write_fisheye, or firmware older than leader 1.2.8 /\n"
+        "follower 1.2.18). Do not assume 640x480 then; infer_fisheye_cal_size()\n"
+        "applies the shared inference rule, and resolve_fisheye() uses it.")
+        .def(py::init([](const protocol::CameraFisheyeCal& cal,
+                         uint16_t width, uint16_t height) {
+                 return FisheyeCalRecord{cal, width, height};
+             }),
+             py::arg("calibration") = protocol::CameraFisheyeCal{},
+             py::arg("width") = 0, py::arg("height") = 0,
+             "Build a record; width/height default to 0/0 (size unknown).")
+        .def_readwrite("calibration", &FisheyeCalRecord::calibration,
+                       "The 8 params, as a CameraFisheyeCal.")
+        .def_readwrite("width", &FisheyeCalRecord::width,
+                       "Capture width in px the params belong to; 0 = unknown.")
+        .def_readwrite("height", &FisheyeCalRecord::height,
+                       "Capture height in px the params belong to; 0 = unknown.")
+        .def("size_known", &FisheyeCalRecord::size_known,
+             "True when width and height are both non-zero, i.e. the firmware "
+             "recorded the calibration resolution.")
+        .def("__repr__", [](const FisheyeCalRecord& r) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "FisheyeCalRecord(fx=%.3f, fy=%.3f, cx=%.3f, cy=%.3f, size=%s)",
+                r.calibration.fx, r.calibration.fy, r.calibration.cx,
+                r.calibration.cy,
+                r.size_known()
+                    ? (std::to_string(r.width) + "x" + std::to_string(r.height)).c_str()
+                    : "unknown");
+            return std::string(buf);
+        });
+
+    // ---- ResolvedFisheyeCal (Calibration.resolve_fisheye's answer) ---------
+    // Read-only, and still unpacks as the (calibration, is_reference, reason)
+    // tuple resolve_fisheye() returned before the size fields existed, so
+    // `cal, is_reference, reason = g.calibration.resolve_fisheye()` keeps working.
+    py::class_<ResolvedFisheyeCal>(m, "ResolvedFisheyeCal",
+        "What to rectify the wrist camera with, from Calibration.resolve_fisheye().\n\n"
+        "Unpacks as (calibration, is_reference, reason) for compatibility with\n"
+        "code written before calibrated_size / size_inferred existed.")
+        .def_property_readonly("calibration",
+            [](const ResolvedFisheyeCal& r) { return r.calibration; },
+            "The CameraFisheyeCal to rectify with.")
+        .def_property_readonly("is_reference",
+            [](const ResolvedFisheyeCal& r) { return r.is_reference; },
+            "True when the SDK's shared reference values stood in.")
+        .def_property_readonly("reason",
+            [](const ResolvedFisheyeCal& r) { return r.reason; },
+            "Why the reference stood in; empty when is_reference is False.")
+        .def_property_readonly("calibrated_size",
+            [](const ResolvedFisheyeCal& r) {
+                return py::make_tuple(r.calibrated_size.width, r.calibrated_size.height);
+            },
+            "(width, height) the calibration belongs to: recorded by the firmware,\n"
+            "inferred for a record written without one (size_inferred), or\n"
+            "(640, 480) for the reference. Frames must be exactly this size.")
+        .def_property_readonly("size_inferred",
+            [](const ResolvedFisheyeCal& r) { return r.size_inferred; },
+            "True when calibrated_size was inferred from the principal point\n"
+            "because the record carries no size (see infer_fisheye_cal_size).")
+        .def("__len__", [](const ResolvedFisheyeCal&) { return 3; })
+        .def("__getitem__", [](const ResolvedFisheyeCal& r, py::ssize_t i) {
+            py::tuple t = py::make_tuple(r.calibration, r.is_reference, r.reason);
+            return py::object(t[py::int_(i < 0 ? i + 3 : i)]);
+        })
+        .def("__iter__", [](const ResolvedFisheyeCal& r) {
+            return py::iter(py::make_tuple(r.calibration, r.is_reference, r.reason));
+        })
+        .def("__repr__", [](const ResolvedFisheyeCal& r) {
+            return "ResolvedFisheyeCal(is_reference=" +
+                   std::string(r.is_reference ? "True" : "False") +
+                   ", calibrated_size=" + std::to_string(r.calibrated_size.width) +
+                   "x" + std::to_string(r.calibrated_size.height) +
+                   ", size_inferred=" + (r.size_inferred ? "True" : "False") +
+                   (r.reason.empty() ? std::string() : ", reason='" + r.reason + "'") +
+                   ")";
+        });
+
     // ---- Calibration (V2.0/V2.1 firmware-persisted calibration records) ----
     py::class_<Calibration>(m, "Calibration",
         "The calibration records the firmware keeps in MCU flash; reach it as\n"
@@ -97,10 +181,11 @@ void bind_calibration(py::module_& m) {
                      py::gil_scoped_release nogil;
                      r = self.resolve_fisheye(std::chrono::milliseconds(timeout_ms));
                  }
-                 return py::make_tuple(r.calibration, r.is_reference, r.reason);
+                 return r;
              },
              py::arg("timeout_ms") = 200,
-             "Intrinsics to rectify with, as (calibration, is_reference, reason).\n\n"
+             "Intrinsics to rectify with, as a ResolvedFisheyeCal -- which still "
+             "unpacks as (calibration, is_reference, reason).\n\n"
              "Prefer this over read_fisheye() unless you need to know what the "
              "flash actually holds. An uncalibrated unit answers a read with an "
              "all-zero record rather than a NACK, and handing that to "
@@ -110,7 +195,12 @@ void bind_calibration(py::module_& m) {
              "is_reference is True when the SDK's shared reference values stood "
              "in, and reason says why — empty otherwise. Warn when it is True: "
              "the reference intrinsics are approximate, since lens placement "
-             "varies per assembly.")
+             "varies per assembly.\n\n"
+             "calibrated_size is the (width, height) the intrinsics belong to: "
+             "the size the firmware recorded, or -- for a record written without "
+             "one -- infer_fisheye_cal_size()'s answer, with size_inferred True "
+             "and a warning logged. A record whose size cannot be inferred is "
+             "treated as unusable and the reference (640x480) stands in.")
         .def("write_fisheye",
              [](Calibration& self, const protocol::CameraFisheyeCal& cal,
                 unsigned timeout_ms) {
@@ -119,7 +209,53 @@ void bind_calibration(py::module_& m) {
              },
              py::arg("cal"), py::arg("timeout_ms") = 500,
              "Persist fisheye parameters to MCU flash (survives power cycles). "
-             "NaN/Inf values are rejected by the firmware.")
+             "NaN/Inf values are rejected by the firmware.\n\n"
+             "Writes the params only: on firmware that records the calibration "
+             "resolution (leader 1.2.8 / follower 1.2.18+) this marks it unknown. "
+             "Prefer write_fisheye_sized().")
+        .def("supports_fisheye_size",
+             [](Calibration& self, unsigned timeout_ms) {
+                 py::gil_scoped_release nogil;
+                 return self.supports_fisheye_size(std::chrono::milliseconds(timeout_ms));
+             },
+             py::arg("timeout_ms") = 200,
+             "True when the firmware records the fisheye calibration resolution "
+             "(command set V2.10: leader 1.2.8 / follower 1.2.18 or later).\n\n"
+             "Probes with the sized read: older firmware rejects it as "
+             "InvalidParam. The answer is cached on this Calibration; a transport "
+             "failure raises and is not cached.")
+        .def("read_fisheye_record",
+             [](Calibration& self, unsigned timeout_ms) -> py::object {
+                 std::optional<FisheyeCalRecord> v;
+                 {
+                     py::gil_scoped_release nogil;
+                     v = self.read_fisheye_record(std::chrono::milliseconds(timeout_ms));
+                 }
+                 if (!v) return py::none();
+                 return py::cast(*v);
+             },
+             py::arg("timeout_ms") = 200,
+             "Read the fisheye params together with the resolution they belong to, "
+             "as a FisheyeCalRecord. On firmware that cannot record a size the "
+             "params come back with width/height 0/0 (unknown). Returns None when "
+             "never calibrated (ErrorCode.CalNotSet).")
+        .def("write_fisheye_sized",
+             [](Calibration& self, const protocol::CameraFisheyeCal& cal,
+                int width, int height, unsigned timeout_ms) {
+                 py::gil_scoped_release nogil;
+                 self.write_fisheye_sized(cal, width, height,
+                                          std::chrono::milliseconds(timeout_ms));
+             },
+             py::arg("cal"), py::arg("width"), py::arg("height"),
+             py::arg("timeout_ms") = 500,
+             "Persist fisheye params together with the capture resolution they "
+             "were measured at.\n\n"
+             "Raises RuntimeError before sending anything unless "
+             "fisheye_cal_size_plausible(cal, width, height). Raises "
+             "ProtocolError when the firmware rejects the write. Firmware that "
+             "cannot record a size (older than leader 1.2.8 / follower 1.2.18) "
+             "accepts only a 640x480 calibration, through the legacy write; any "
+             "other resolution raises RuntimeError asking for an upgrade.")
         .def("read_encoder_max_rad",
              [](Calibration& self, unsigned timeout_ms) -> py::object {
                  std::optional<float> v;
