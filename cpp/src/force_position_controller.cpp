@@ -872,8 +872,15 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // spring, and the close took 3.2 s instead of 1.1 (2026-10-08; 0.4.1 and
     // this gate both 1.1 s). A steady target is what the velocity gate was
     // always for, so it keeps it.
+    //
+    // A live grip needs neither (2026-11-19): the caller has said an object is
+    // there, so there is no friction stall to tell it from, and a compliant
+    // object under a ~30 Hz jittering target keeps both false -- the jaw creeps
+    // in as the object compresses and the target never holds still. Measured on
+    // 0016s (RS00): ~6 s to reach 2.9 of 3.6 N*m, never latched. An empty jaw
+    // is bounded by grip_overdrive_rad instead.
     const bool at_rest =
-        (stalled_ || target_steady_) &&
+        (stalled_ || target_steady_ || grip_push) &&
         std::abs(sample.actual_vel) <= cfg_.close_speed_radps * kHoldingVelRatio;
     const float spring = tune_.position_kp * (target_raw - sample.actual_pos);
     // What the parked hold already pushes with, in the push direction: the
@@ -1107,8 +1114,9 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
 
     state_ = holding_            ? ForcePositionState::HoldingForce
            : arrived_            ? ForcePositionState::HoldingPosition
-           : (open_position > target_position_) ? ForcePositionState::Closing
-                                                : ForcePositionState::Opening;
+           // A live grip squeezing past the target is closing (2026-11-19).
+           : (open_position > target_position_ || grip_live_) ? ForcePositionState::Closing
+                                                              : ForcePositionState::Opening;
     return cmd;
 }
 

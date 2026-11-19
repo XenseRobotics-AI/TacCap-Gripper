@@ -2089,3 +2089,45 @@ TEST(ForcePositionPolicyGrip, AFlickeredGripReGripsAnObjectSqueezedPastTheTarget
     EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
     EXPECT_LT(plant.pos, 0.3f - 0.015f) << "the object is squeezed again";
 }
+
+// Measured on 0016s (RS00, 2026-11-19): a compliant object with a ~30 Hz
+// target jittering +-5 mrad. The jaw creeps in as the object compresses, so it
+// never stalls, and the target never holds still -- the escalation's at-rest
+// gate was false most frames and the push took ~6 s to reach 2.9 of 3.6 N*m.
+TEST(ForcePositionPolicyGrip, ACompliantObjectUnderAJitteringStreamStillLatches) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    uint32_t lcg = 5u;
+    auto jitter = [&lcg](int) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const float u = static_cast<float>(lcg >> 8) / 16777216.0f;
+        return 0.3f + (2.0f * u - 1.0f) * 0.005f;
+    };
+    loop.run(2.5f, jitter, true, 3);
+    EXPECT_TRUE(p.holding());
+    EXPECT_EQ(p.state(), ForcePositionState::HoldingForce);
+    EXPECT_NEAR(p.commanded_torque_nm(), cfg.grasp_torque_nm, 1e-3f);
+}
+
+// While a live grip squeezes an object past the target it is closing, and must
+// say so: deriving the label from "which side of the target" called it Opening.
+TEST(ForcePositionPolicyGrip, SqueezingPastTheTargetIsNotReportedAsOpening) {
+    auto cfg = grip_cfg();
+    ForcePositionPolicy p(GripperPosition::from_travel(1.0f), cfg);
+    FrictionPlant plant;
+    plant.pos = 0.6f;
+    plant.wall_raw = 0.3f;
+    plant.wall_k = 40.0f;
+    GripLoop loop(p, plant, cfg.grasp_torque_nm);
+    for (int i = 0; i < 300; ++i) {
+        loop.hold(0.01f, 0.3f, true);
+        if (plant.pos < 0.3f - 0.012f) {
+            EXPECT_NE(p.state(), ForcePositionState::Opening) << "frame " << i;
+        }
+    }
+}
