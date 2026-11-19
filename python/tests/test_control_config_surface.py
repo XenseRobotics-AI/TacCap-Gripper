@@ -38,6 +38,10 @@ FORCE_POSITION_FIELDS = {
     # is the seating torque with headroom, not a force anyone should raise
     # hoping for a tighter close. See the header for the sweep.
     "close_preload_nm": 0.25,
+    # 0 = keep the built-in defaults (20 rad/s^2 braking, no start-up limit);
+    # default behaviour is unchanged until a caller opts in.
+    "brake_decel_radps2": 0.0,
+    "accel_radps2": 0.0,
 }
 
 # Removed in the 16 -> 6 trim. The first eight are firmware-constant mirrors or
