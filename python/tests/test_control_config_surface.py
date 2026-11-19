@@ -38,6 +38,11 @@ FORCE_POSITION_FIELDS = {
     # is the seating torque with headroom, not a force anyone should raise
     # hoping for a tighter close. See the header for the sweep.
     "close_preload_nm": 0.25,
+    # Only used by set_target(..., grip=True): how far past the target the jaw
+    # may be pushed before "no object" is assumed, and how far the target must
+    # open from the grip before it releases.
+    "grip_overdrive_rad": 0.05,
+    "grip_release_rad": 0.02,
 }
 
 # Removed in the 16 -> 6 trim. The first eight are firmware-constant mirrors or
