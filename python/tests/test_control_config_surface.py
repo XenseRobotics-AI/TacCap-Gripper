@@ -43,6 +43,10 @@ FORCE_POSITION_FIELDS = {
     # open from the grip before it releases.
     "grip_overdrive_rad": 0.05,
     "grip_release_rad": 0.02,
+    # 0 = keep the built-in defaults (20 rad/s^2 braking, no start-up limit);
+    # default behaviour is unchanged until a caller opts in.
+    "brake_decel_radps2": 0.0,
+    "accel_radps2": 0.0,
 }
 
 # Removed in the 16 -> 6 trim. The first eight are firmware-constant mirrors or
