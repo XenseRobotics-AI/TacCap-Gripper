@@ -324,7 +324,7 @@ void FollowerGripper::start_streaming(unsigned motor_hz) {
 }
 
 void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
-    if (imu_hz > 100) throw IoError("Follower IMU rate must be 0..100 Hz", EINVAL);
+    if (imu_hz > detail::kImuMaxRateHz) throw IoError("Follower IMU rate must be 0..1125 Hz", EINVAL);
     if (streaming_) {
         const auto requested = detail::stream_source_mask(imu_hz, 0, motor_hz);
         if ((requested & streaming_sources_) != requested)
@@ -364,7 +364,8 @@ void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
     sc.eskin_rate   = 0;
     sc.motor_rate   = static_cast<uint16_t>(motor_hz);
     sc.output_iface = static_cast<uint8_t>(protocol::StreamInterface::Uart);
-    if (imu_hz) detail::warn_if_rate_adjusted("FollowerGripper", "IMU", imu_hz, 100);
+    if (imu_hz <= 100) detail::warn_if_rate_adjusted("FollowerGripper", "IMU", imu_hz, 100);
+    detail::warn_if_pushed_high_rate("FollowerGripper", imu_hz);
 
     auto wire = protocol::encode(sc);
     auto ack = t_.send_cmd(protocol::Cmd::StartStream, wire);
@@ -379,12 +380,14 @@ void FollowerGripper::start_streaming(unsigned motor_hz, unsigned imu_hz) {
 
 void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
                                      unsigned exchange_hz) {
-    if (imu_hz > 100) throw IoError("Follower IMU rate must be 0..100 Hz", EINVAL);
+    if (imu_hz > detail::kImuMaxRateHz) throw IoError("Follower IMU rate must be 0..1125 Hz", EINVAL);
     if (motor_hz > 100) throw IoError("Follower motor status rate must be 0..100 Hz", EINVAL);
     if (motor_hz == 0 && imu_hz == 0)
         throw IoError("FollowerGripper::start_exchange: both rates are 0", EINVAL);
-    if (exchange_hz == 0) exchange_hz = std::max({motor_hz, imu_hz, 1u});
+    if (exchange_hz == 0) exchange_hz = detail::follower_default_exchange_hz(motor_hz, imu_hz);
     if (exchange_hz > 500) throw IoError("FollowerGripper::start_exchange: exchange_hz must be <= 500", EINVAL);
+    if (imu_hz > 100 && 3u * exchange_hz < imu_hz)
+        throw IoError("FollowerGripper::start_exchange: three IMU samples per exchange cannot carry imu_hz", EINVAL);
     if (streaming_) throw IoError("FollowerGripper: stop streaming before start_exchange", EBUSY);
 
     if (imu_hz) (void)imu_.read_once(std::chrono::milliseconds{500});

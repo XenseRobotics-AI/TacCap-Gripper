@@ -65,6 +65,80 @@ calibration resolution next to the 8 params, via two new ops on
   `FisheyeUndistorter(cal, size, balance)` still treats the params as a
   640x480 calibration.
 
+### ForcePositionController grip intent (2026-11-19)
+
+#### Added
+
+- **`set_target(position, grasp_torque_nm=None, grip=False)`** (C++:
+  `set_target(position, grasp_torque_nm, grip)`). `grip=True` marks the target
+  as where the caller expects contact. A jaw at rest at the target, or up to
+  `grip_overdrive_rad` past it, is pushed up to the grasp budget and latched.
+  Without it, a jaw stopped on an object inside the arrival band (a policy
+  trained on leader-held objects commands the object's width) was held by the
+  position spring alone, about 0.2 N·m, and the object slipped. `grip=False`
+  behaves exactly as before.
+- **`ForcePositionConfig.grip_overdrive_rad`** (default 0.05) and
+  **`grip_release_rad`** (default 0.02). While armed, the grip survives target
+  jitter and closing moves, and ends only when the target opens by more than
+  `grip_release_rad` from the most-closed grip target. On an empty jaw the
+  grip probes once, up to `grip_overdrive_rad` past the target, then gives up
+  and holds the target. The grip re-arms when the target closes again by
+  `grip_release_rad`.
+- `ForcePositionSnapshot.grip`: the grip is armed. `ForcePositionController.
+  arrival_eps_rad` (static, read-only): the arrival band, so callers do not
+  copy the private constant.
+
+### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
+
+Requires leader firmware 1.2.8 / follower 1.2.18 (candidates; previous
+releases leader 1.2.7 / follower 1.2.17) for IMU above 100 Hz. Wire
+protocol V2.9 is unchanged: same commands, 28/44 B IMU payloads, units,
+0x5D at most 3 IMUs per reply and 0x5E records. Experimental until hardware
+acceptance.
+
+#### Changed
+
+- **IMU rate range 1..1125 Hz** on `LeaderGripper` and `FollowerGripper`
+  (`start_streaming` / `start_exchange`); 0 still disables. Requests <= 100 Hz
+  behave exactly as in 0.4.5. Firmware that rejects a high rate NACKs and the
+  SDK raises; it never silently lowers the rate (leader `start_exchange` does
+  not retry a high-rate NACK as a pushed stream).
+- **Follower exchange rate.** High-rate default is
+  `min(500, max(motor_hz, ceil(imu_hz*4/9)))` (500/s at 1125 Hz); an explicit
+  `exchange_hz` must satisfy `3*exchange_hz >= imu_hz` and stay <= 500.
+  Replies carrying more than 3 IMUs are rejected as malformed. Motor status
+  and controller rates stay capped at 100 Hz.
+- Leader default exchange rate stays capped at 200/s; each 0x5E reply carries
+  about ten 44 B IMUs. High-rate IMU no longer triggers the 1 kHz-divider
+  warning.
+
+#### Changed (exchange)
+
+- **Follower targets ride on the next telemetry exchange when it is within
+  3 ms.** A controller stepping on every status sample at the high-rate period
+  (2 ms) used to add a target-only exchange per target: 1000 exchanges/s
+  instead of 500 on a real follower (9s, 2026-11-13), with RTT spikes to 17 ms
+  and occasional ACK timeouts. A target further than 3 ms from the tick still
+  goes out at once, so 100 Hz latency is unchanged.
+
+#### Added
+
+- **Warning for pushed IMU above 100 Hz.** Most shipped grippers keep the
+  CH342 pull-down resistor on the control UART, so host commands overlapping
+  pushed frames corrupt them; only boards with it removed tolerate overlap.
+  The revision is not visible on the wire, so `start_streaming()` logs a
+  warning pointing to `start_exchange()`, which works on both.
+
+#### Notes
+
+- Magnetometer keeps latest-value semantics, updated at most 100 Hz; equal
+  magnetic values do not prove a duplicate sample.
+- Gyro wire unit stays int16 x 0.01 dps and saturates beyond +/-327.67 dps.
+- Bundled firmware images stay the released leader 1.2.7 / follower 1.2.17;
+  candidate 1.2.8 / 1.2.18 images are not bundled before hardware acceptance.
+- Firmware widens the IMU DLPF above 100 Hz (gyro 196.6 Hz / accel 246 Hz);
+  expect roughly 2x white noise versus the 51/50 Hz low-rate filter.
+
 ## [0.4.6] - 2026-11-12
 
 ### Fixed

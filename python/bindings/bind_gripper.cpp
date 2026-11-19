@@ -279,7 +279,7 @@ void bind_gripper(py::module_& m) {
             py::gil_scoped_release gil;
             self.start_streaming(imu_hz, enc_hz, v2);
         }, py::arg("imu_hz") = 100u, py::arg("encoder_hz") = 100u, py::arg("imu_v2_time") = true,
-           "Start the MCU sensor stream.\n\nimu_v2_time=True (default) streams IMU V2 with 64-bit capture time when the firmware supports it; False keeps the legacy 28-byte IMU frame, as SDK <= 0.4.4 did. A pushed stream loses a frame whenever a host write overlaps it and longer frames are hit more often, so with frequent queries False loses fewer IMU samples; start_exchange() avoids the overlap entirely.\n\nA rate of 0 turns that source OFF (its source_mask bit is cleared). Passing 0 used to stream the source at the firmware's 100 Hz default instead; raises IoError(EINVAL) if every rate is 0.\n\nThe firmware divides a 1 kHz tick by an integer, so only divisors of 1000 arrive at the requested rate -- 300 Hz becomes 333 Hz, 150 Hz becomes 167 Hz, and anything above 1000 Hz collapses to 100 Hz. Motor status is additionally capped at 100 Hz. None of this is NACKed by the firmware, so the SDK logs a warning when it applies.")
+           "Start the MCU sensor stream.\n\nimu_v2_time=True (default) streams IMU V2 with 64-bit capture time when the firmware supports it; False keeps the legacy 28-byte IMU frame. start_exchange() avoids host-write overlap with pushed frames.\n\nA rate of 0 turns that source OFF; raises IoError(EINVAL) if every rate is 0. IMU accepts 1..1125 Hz; above 100 requires high-rate firmware and remains experimental until hardware acceptance. A high-rate NACK is propagated without rate fallback. Measure mcu_timestamp_us intervals for actual rates. Magnetic values keep latest-value semantics (at most 100 Hz updates), and gyro units/range are unchanged. Encoder and <=100 Hz IMU retain the legacy 1 kHz integer divider and its SDK warnings.")
         .def("start_exchange", [](LeaderGripper& self, unsigned imu_hz, unsigned enc_hz,
                                   unsigned exchange_hz, bool fallback) {
             py::gil_scoped_release gil;
@@ -291,13 +291,16 @@ void bind_gripper(py::module_& m) {
            "frames; the SDK fetches them once per 1/exchange_hz s and delivers them to the\n"
            "same subscribers. The host never writes while the leader is answering, which\n"
            "removes the overlap that loses uplink bytes. exchange_hz=0 means\n"
-           "max(imu_hz, encoder_hz, 1) capped at 200 (explicit values up to 500); pass 2x the data rate (e.g. 200) to avoid a sample\n"
+           "max(imu_hz, encoder_hz, 1) capped at 200 (explicit values up to 500). The unchanged\n"
+           "0x5E batch has 504 bytes for records, enough for 1125 IMUs/s plus 100 encoders/s\n"
+           "at 200 exchanges/s. At low rates pass 2x the data rate (e.g. 200) to avoid a sample\n"
            "occasionally waiting one extra period. Samples from one reply share its arrival\n"
            "time as host_time; use mcu_timestamp_us for the sampling instant. If the host stalls\n"
            "for more than 1 s the leader returns to pushing on its own and the SDK re-enters\n"
            "the exchange afterwards. Returns True when the exchange runs; on firmware\n"
            "without 0x5E it falls back to start_streaming() and returns False, or raises\n"
-           "ProtocolError when fallback_to_streaming=False. stop_streaming() ends it.")
+           "ProtocolError when fallback_to_streaming=False. A high-rate START_STREAM NACK\n"
+           "always propagates without mode/rate fallback. stop_streaming() ends it.")
         .def_property_readonly("is_exchanging", &LeaderGripper::is_exchanging,
                                "True between a successful start_exchange() and stop_streaming().")
         .def("exchange_stats", &LeaderGripper::exchange_stats,
@@ -574,13 +577,14 @@ void bind_gripper(py::module_& m) {
             self.start_streaming(motor_hz, imu_hz);
         }, py::arg("motor_hz") = 100u, py::arg("imu_hz") = 0u,
            "Start motor status, optionally IMU (default off).\n\n"
-           "imu_hz=1..100 requires capable follower firmware; an IMU read probes\n"
+           "imu_hz=1..1125 requires capable follower firmware; an IMU read probes\n"
            "support before changing the stream. Old firmware raises ProtocolError.\n"
            "Stop streaming before changing rates. Both rates zero raises IoError(EINVAL).\n"
-           "stream. The firmware caps motor status at 100 Hz and divides a 1 kHz\n"
-           "tick by an integer, so only divisors of 1000 arrive at the requested\n"
-           "rate. It never NACKs a rate it had to adjust, so the SDK logs a\n"
-           "warning when that happens.")
+           "Motor status stays capped at 100 Hz. IMU above 100 Hz requires high-rate\n"
+           "firmware and is experimental until hardware acceptance; its NACK is propagated\n"
+           "without rate fallback. Measure actual capture-time intervals. Magnetic values\n"
+           "keep latest-value semantics (<=100 Hz updates); gyro units/range are unchanged.\n"
+           "Motor status and <=100 Hz IMU retain the legacy tick divider and its warnings.")
         .def("start_exchange", [](FollowerGripper& self, unsigned motor_hz, unsigned imu_hz,
                                   unsigned exchange_hz) {
             py::gil_scoped_release gil;
@@ -591,7 +595,10 @@ void bind_gripper(py::module_& m) {
            "1/exchange_hz s and delivers motor status / IMU to the usual\n"
            "subscribers. motor.submit_*() targets ride on the exchange. Every\n"
            "request on this link takes turns, so host and follower never transmit\n"
-           "at the same time. exchange_hz=0 means max(motor_hz, imu_hz). End it with\n"
+           "at the same time. At <=100 Hz IMU, exchange_hz=0 means max(motor_hz, imu_hz).\n"
+           "Above 100 it means min(500, max(motor_hz, ceil(imu_hz*4/9))). Explicit rates\n"
+           "must satisfy 3*exchange_hz >= imu_hz at high rates; each unchanged 0x5D batch\n"
+           "still carries at most three IMU packets. End it with\n"
            "stop_streaming(). Old firmware raises ProtocolError.")
         .def_property_readonly("is_exchanging", &FollowerGripper::is_exchanging,
                                "True between start_exchange() and stop_streaming().")

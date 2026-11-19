@@ -298,6 +298,22 @@ void bind_control(py::module_& m) {
         .def_readwrite("motor_stream_hz",      &ForcePositionConfig::motor_stream_hz,
                        "Motor-status rate the controller requests, 1..100 Hz. One command is\n"
                        "submitted per status frame.")
+        .def_readwrite("brake_decel_radps2",   &ForcePositionConfig::brake_decel_radps2,
+                       "Setpoint braking into the target, rad/s^2. 0 = default 20 (sized for a\n"
+                       "100 Hz stream). Over the high-rate follower exchange targets land every\n"
+                       "2 ms and a harder brake shortens the stroke.")
+        .def_readwrite("accel_radps2",         &ForcePositionConfig::accel_radps2,
+                       "Limit on setpoint acceleration from rest, rad/s^2. 0 = unlimited\n"
+                       "(previous behaviour).")
+        .def_readwrite("grip_overdrive_rad",   &ForcePositionConfig::grip_overdrive_rad,
+                       "set_target(..., grip=True) only. How far past the grip target the jaw may\n"
+                       "be pushed and still count as gripping (pad / object compression), rad.\n"
+                       "Also the farthest an EMPTY jaw is probed past the target before the grip\n"
+                       "is given up and the jaw returns to the target. Default 0.05.")
+        .def_readwrite("grip_release_rad",     &ForcePositionConfig::grip_release_rad,
+                       "set_target(..., grip=True) only. The grip ends once the target opens by\n"
+                       "more than this from the most-closed grip target, rad; closing or jitter\n"
+                       "keeps it. Default 0.02.")
         .def_readwrite("close_preload_nm",     &ForcePositionConfig::close_preload_nm,
                        "Feed-forward applied only while holding the CLOSED endpoint, N*m, to seat\n"
                        "the jaw against its mechanical stop and take up backlash. Measured: 0.15\n"
@@ -339,6 +355,9 @@ void bind_control(py::module_& m) {
         .def_readonly("holding",               &ForcePositionSnapshot::holding,
                       "Derived each frame from the command and the error, not a state: the jaw\n"
                       "is pressing rather than travelling.")
+        .def_readonly("grip",                  &ForcePositionSnapshot::grip,
+                      "The last target was a grip and it is still armed (not released by an\n"
+                      "opening target, not given up on an empty jaw).")
         .def_readonly("arrived",               &ForcePositionSnapshot::arrived,
                       "Derived each frame: the jaw has reached the commanded position.")
         .def_readonly("fault_reason",          &ForcePositionSnapshot::fault_reason,
@@ -397,16 +416,29 @@ void bind_control(py::module_& m) {
            "The jaw follows the same ramp at close_speed_radps as any other move; it\n"
            "does not open faster than that. Clears a latched grasp.")
         .def("set_target", [](ForcePositionController& c, float position,
-                               const std::optional<float>& grasp_torque_nm) {
+                               const std::optional<float>& grasp_torque_nm, bool grip) {
             py::gil_scoped_release g;
-            if (grasp_torque_nm) c.set_target(position, *grasp_torque_nm);
-            else                 c.set_target(position);
+            c.set_target(position,
+                         grasp_torque_nm ? *grasp_torque_nm : c.config().grasp_torque_nm,
+                         grip);
         }, py::arg("position"), py::arg("grasp_torque_nm") = std::nullopt,
+           py::arg("grip") = false,
            "Set the normalized target, 0 = closed, 1 = open, optionally overriding the\n"
            "grasp budget (N*m) for this move. The override must not exceed the motor's\n"
            "continuous stall rating (ValueError), the same bound start() applies.\n\n"
            "Non-blocking, and it only moves the setpoint: there is no motion state to\n"
-           "disturb, so streaming a target every frame is fine. Only valid while running.")
+           "disturb, so streaming a target every frame is fine. Only valid while running.\n\n"
+           "grip=True: this target is where you EXPECT CONTACT (e.g. a policy trained on\n"
+           "leader-held objects commands the object's width). A jaw stopped at the\n"
+           "target, or up to config.grip_overdrive_rad past it, is pushed up to the\n"
+           "budget and latched, instead of being held by the position spring alone.\n"
+           "Pass it on every streamed sample while gripping. The grip survives jitter\n"
+           "and closing moves and ends once the target opens by grip_release_rad; an\n"
+           "empty jaw is probed past the target by up to grip_overdrive_rad once, then\n"
+           "held at the target. grip=False is the ordinary behaviour.")
+        .def_property_readonly_static("arrival_eps_rad", [](py::object) {
+            return ForcePositionController::arrival_eps_rad();
+        }, "Within this of the target (rad) the jaw is reported arrived. Read-only.")
         .def("hold_position", [](ForcePositionController& c) {
             py::gil_scoped_release g; c.hold_position();
         }, "Cancel travel and hold the latest measured position.")
