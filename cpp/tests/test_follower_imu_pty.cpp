@@ -53,7 +53,7 @@ TEST(FollowerImu, ImuOnlyAndInvalidRates) {
     Pty pty; FakeFollower fw(pty); fw.set_imu_supported(true);
     auto g = open_follower(pty);
     EXPECT_THROW(g->start_streaming(0, 0), tx::IoError);
-    EXPECT_THROW(g->start_streaming(100, 101), tx::IoError);
+    EXPECT_THROW(g->start_streaming(100, 1126), tx::IoError);
     EXPECT_EQ(fw.imu_queries(), 0u);
     g->start_streaming(0, 25);
     EXPECT_EQ(fw.stream_config().source_mask, tp::StreamSrc::Imu);

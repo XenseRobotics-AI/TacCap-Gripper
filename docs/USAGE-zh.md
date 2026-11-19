@@ -117,8 +117,8 @@ g.start_streaming(imu_hz=100, encoder_hz=100)   # leader:两路都可单独关(0
 g.stop_streaming()
 ```
 
-follower 只有一路可流:**电机状态**。IMU/编码器在这个角色上被固件编译掉了,
-所以签名不同,`motor_hz=0` 会直接抛 `IoError(EINVAL)`,而不是开一条空流:
+follower 默认只开**电机状态**，支持的固件可显式请求 `imu_hz=1..1125`。
+`motor_hz=0` 允许 IMU-only，两路均为 0 才抛 `IoError(EINVAL)`：
 
 ```python
 f = t.FollowerGripper.open()
@@ -126,8 +126,15 @@ f.motor.on_status(lambda s: print(s.actual_pos, s.actual_torque))
 f.start_streaming(motor_hz=100)     # 固件把 1 kHz 整除,只有 1000 的因数能精确命中
 ```
 
-> 频率不是随便填的:固件用 1 kHz 整除,非因数的频率会被它悄悄调整;
-> SDK 检测到这种情况会打 warning,但不会 NACK。
+电机状态最高仍为 100 Hz；电机状态与 <=100 Hz IMU 保留旧整数分频路径。
+IMU >100 Hz 需要配套高频固件，真机验收前为 experimental；高频 NACK 直接报错，不降低频率。
+`f.start_exchange(motor_hz=100, imu_hz=1125)` 默认每秒交换 500 次；高频显式交换率须满足
+`3*exchange_hz >= imu_hz`，最高 500。磁数据保持最近值、最高 100 Hz 更新；
+实际独立加速度/陀螺仪采样率应按 MCU 时间和序号验收。
+
+> **硬件版本**：已发货的夹爪大多保留 CH342 控制串口下拉电阻，主机发命令与主动上报重叠会撞坏帧，
+> 高频（>100 Hz）请用 `start_exchange()`（主从爪都支持）。只有拆除该电阻的新硬件适合高频
+> `start_streaming()`；SDK 无法识别硬件版本，主动上报 >100 Hz 时会打印警告。
 
 ### 1.3 归一化开口度(0 = 闭合,1 = 张开)
 

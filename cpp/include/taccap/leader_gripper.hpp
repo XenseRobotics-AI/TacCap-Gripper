@@ -222,11 +222,11 @@ public:
     // 100 Hz default — we clear the bit instead. All-zero throws
     // IoError(EINVAL) rather than starting a stream that carries nothing.
     //
-    // The firmware divides a 1 kHz tick by an integer, so only divisors of
-    // 1000 are exact: 300 Hz arrives as 333 Hz, 150 Hz as 167 Hz, and
-    // anything above 1000 Hz collapses to 100 Hz. StartStream is never NACKed
-    // for a bad rate, so the SDK logs a warning whenever it has to adjust one.
-    // See cpp/src/stream_rate.hpp for the firmware model this mirrors.
+    // IMU accepts 0..1125 Hz; >100 requires high-rate firmware and remains
+    // experimental until hardware acceptance. Measure actual capture-time
+    // intervals; magnetic values retain latest-value semantics (<=100 Hz).
+    // Encoder and <=100 Hz IMU retain the legacy integer tick divider;
+    // warnings for that model do not apply to high-rate IMU.
     //
     // imu_v2_time (default true): negotiate the 64-bit time session and stream
     // GetImuV2 (44 B payload) when the firmware supports it; false always
@@ -254,9 +254,10 @@ public:
     // overlap that loses uplink bytes on the current hardware.
     //
     // is_streaming() is true and stop_streaming() ends the exchange.
-    // exchange_hz=0 means max(imu_hz, encoder_hz, 1) capped at 200 (the leader
-    // samples at 100 Hz whatever is requested); an explicit exchange_hz may be up
-    // to 500. A sample is
+    // exchange_hz=0 means max(imu_hz, encoder_hz, 1) capped at 200; unchanged
+    // 0x5E batches have 504 bytes for records, enough for 1125 IMUs/s and
+    // 100 encoders/s at 200 exchanges/s. An explicit rate may be up to 500.
+    // A sample is
     // fetched on the next exchange after it is taken, so it waits at most one
     // exchange period; at exchange_hz == data rate the two clocks drift, and a
     // sample occasionally waits one extra period (~10 ms at 100 Hz, measured
@@ -275,7 +276,9 @@ public:
     //
     // Firmware without 0x5E answers InvalidCmd. With fallback_to_streaming
     // (the default) the SDK then calls start_streaming(imu_hz, encoder_hz)
-    // and returns false; otherwise it throws ProtocolError. Returns true when
+    // and returns false; otherwise it throws ProtocolError. A high-rate
+    // START_STREAM NACK always propagates without mode/rate fallback.
+    // Returns true when
     // the exchange is running.
     bool start_exchange(unsigned imu_hz = 100, unsigned encoder_hz = 100,
                         unsigned exchange_hz = 0, bool fallback_to_streaming = true);

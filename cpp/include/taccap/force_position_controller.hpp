@@ -182,6 +182,19 @@ struct ForcePositionConfig {
     // Self-compensating, which a fixed position inset is not: however far the
     // stop drifts with wear, the force presses until the jaw is seated again.
     float close_preload_nm     = 0.25f;
+
+    // MOTION PROFILE (2026-11-13). 0 keeps the previous behaviour.
+    //
+    // brake_decel_radps2: how hard the setpoint brakes into the target. The
+    // default (ForcePositionTuning, 20 rad/s^2) was sized for a 100 Hz stream
+    // whose command lands a frame late. Over the follower exchange at the
+    // high-rate period targets land every 2 ms, and on 9s (RS00) the 20 rad/s^2
+    // brake was most of a 0.83 rad stroke at 4 rad/s (290 ms total).
+    // accel_radps2: limit on how fast the setpoint speed may grow, so a move
+    // from rest does not step the clamped PD to the whole budget on its first
+    // frame (measured 3.1 of 3.6 N*m commanded against 0.6 N*m of real load).
+    float brake_decel_radps2   = 0.0f;
+    float accel_radps2         = 0.0f;
 };
 
 struct ForcePositionSnapshot {
@@ -253,6 +266,18 @@ struct ForcePositionTuning {
     // 3 Nm/s is 0.03 Nm per 100 Hz frame: breakaway overshoots by that much,
     // and the EL05 pad-compression grip (0.5 -> 1.1 Nm) builds in ~0.2 s.
     float topup_rate_nmps     = 3.0f;
+    // BRAKING INTO THE TARGET (2026-11-12). The ramp used to run at close_speed
+    // right up to the target and stop dead, so the jaw met the end stop / the
+    // finger pads at ~70% of the commanded speed: 0096s at 4 rad/s arrived at
+    // 2.7-2.9 rad/s and the impact read 2.5 N·m (2026-11-12). The ramp speed is
+    // now capped at sqrt(2*a*distance-to-target), so the setpoint lands on the
+    // target at rest. The host steps the setpoint at 100 Hz and the command
+    // lands a frame late, so the brake must start well ahead: against the
+    // measured 0096s plant (~0.002 kg·m², ~0.1 N·m friction) 100 rad/s² still
+    // hit the stops at ~2.5 rad/s, 20 rad/s² at <=0.9 rad/s for any commanded
+    // speed, for +0.06 s on a full 1.19 rad stroke at 4 rad/s. Below ~0.6 rad/s
+    // the brake only acts on the last ~10 mrad.
+    float brake_decel_radps2  = 20.0f;
 };
 
 
@@ -335,6 +360,7 @@ private:
     // Ramp parked on the target with a grasp latched: travel_track_ has topped
     // the command up to the budget. See the definition.
     bool  blocked_short_ = false;
+    bool  topup_full_ = false;       // un-latched top-up at the budget, jaw stalled (2026-11-12)
     // Set when the jaw stays at rest short of a parked ramp under the full
     // budget; held until the target changes or the jaw passes the target (the
     // object is gone). While
@@ -348,6 +374,14 @@ private:
     bool  grasp_latched_ = false;
     float grasp_dir_ = 0.0f;         // raw direction of the latched push
     float topup_nm_ = 0.0f;
+    float topup_dir_ = 0.0f;         // raw direction the escalation pushes (2026-11-12)
+    float topup_push_total_ = 0.0f;  // hold + top-up, last frame (2026-11-12)
+    // A push handed from set_target() to the next step() (2026-11-12).
+    bool  carry_pending_ = false;
+    bool  carried_grip_ = false;     // the handed-over push is a grip (reported as holding)
+    bool  carry_was_grip_ = false;   // the push being handed over came from a grip
+    float carry_total_nm_ = 0.0f;
+    float carry_dir_ = 0.0f;
     // Target (raw) when the current escalation began. Escalation and latch are
     // both dropped once the target has moved more than arrival_eps from here IN
     // TOTAL (0.3.10). A per-frame comparison never fired for a slowly streamed
@@ -375,6 +409,7 @@ private:
     // anti-windup clamped to stay within the error limit of the jaw.
     float ramp_raw_ = 0.0f;
     bool  ramp_valid_ = false;
+    float ramp_speed_ = 0.0f;        // |setpoint speed| last frame, for accel_radps2
     // What the ramp chases (0.4.2): the caller's recent targets with their
     // timestamps, oldest first, played back lag_s_ behind the present (see
     // update_lag_ / ref_at_). One entry is a step.
