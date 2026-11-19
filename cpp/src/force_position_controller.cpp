@@ -127,6 +127,16 @@ void validate_config(const ForcePositionConfig& cfg) {
     // It existed because the travel damping gain WAS grasp/speed; the ramp now
     // regulates speed and the budget split sets the gains, so a slow close is
     // just a slow close.
+    if (!finite(cfg.grip_overdrive_rad) || cfg.grip_overdrive_rad <= 0.0f ||
+        cfg.grip_overdrive_rad > 0.3f) {
+        throw std::invalid_argument(
+            "ForcePositionConfig.grip_overdrive_rad must be in (0, 0.3]");
+    }
+    if (!finite(cfg.grip_release_rad) || cfg.grip_release_rad <= 0.0f ||
+        cfg.grip_release_rad > 0.3f) {
+        throw std::invalid_argument(
+            "ForcePositionConfig.grip_release_rad must be in (0, 0.3]");
+    }
     if (cfg.status_timeout_ms == 0 ||
         cfg.motor_stream_hz == 0 || cfg.motor_stream_hz > 100) {
         throw std::invalid_argument(
@@ -260,8 +270,15 @@ void ForcePositionPolicy::reset(const MotorStatusSample& sample,
     target_steady_valid_ = false;
     target_steady_ = false;
     frame_clock_valid_ = false;
+    clear_grip_();
     ref_step_(sample.actual_pos, now);
     fault_reason_.clear();
+}
+
+void ForcePositionPolicy::clear_grip_() {
+    grip_ = false;
+    grip_spent_ = false;
+    grip_live_ = false;
 }
 
 void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
@@ -273,6 +290,7 @@ void ForcePositionPolicy::release(std::chrono::steady_clock::time_point now) {
     topup_nm_ = 0.0f;
     carry_pending_ = false;
     carried_grip_ = false;   // an explicit release lets go
+    clear_grip_();
     // A discrete command, not a stream sample: the reference steps.
     ref_step_(map_.to_rad(1.0f), now);
 }
@@ -413,12 +431,45 @@ void ForcePositionPolicy::set_target(
         const MotorStatusSample& sample,
         float target_position,
         float grasp_torque_nm,
-        std::chrono::steady_clock::time_point now) {
+        std::chrono::steady_clock::time_point now,
+        bool grip) {
     validate_target(cfg_, target_position, grasp_torque_nm);
     if (state_ == ForcePositionState::Fault || state_ == ForcePositionState::Idle) return;
     if (std::abs(target_position - target_position_) > 1e-4f) {
         state_started_ = now;
     }
+    const float new_raw = map_.to_rad(target_position);
+    // GRIP INTENT (2026-11-19). An armed grip ends only on an OPENING move of
+    // more than grip_release_rad from the most-closed grip target: a policy
+    // streaming at ~30 Hz jitters a few mrad while it grips, and the ordinary
+    // arrival_eps rule below would drop the latch on that. A closing move
+    // tightens the grip. Disarmed (released, or given up on an empty jaw) it
+    // re-arms once the target closes again by grip_release_rad.
+    bool grip_release = false;
+    if (!grip) {
+        clear_grip_();
+    } else {
+        const float cd = close_dir_();
+        if (!grip_) {
+            grip_ = true;
+            grip_spent_ = false;
+            grip_anchor_raw_ = new_raw;
+        } else if (grip_spent_) {
+            if (cd * (new_raw - grip_spent_raw_) < 0.0f) {
+                grip_spent_raw_ = new_raw;            // follow it open
+            } else if (cd * (new_raw - grip_spent_raw_) > cfg_.grip_release_rad) {
+                grip_spent_ = false;                  // closing again: re-arm
+                grip_anchor_raw_ = new_raw;
+            }
+        } else if (cd * (new_raw - grip_anchor_raw_) > 0.0f) {
+            grip_anchor_raw_ = new_raw;               // closing further
+        } else if (cd * (grip_anchor_raw_ - new_raw) > cfg_.grip_release_rad) {
+            grip_release = true;
+            grip_spent_ = true;
+            grip_spent_raw_ = new_raw;
+        }
+    }
+    const bool grip_armed = grip_ && !grip_spent_;
     // A new target is a new approach -- but only a real one. A teleoperated
     // follower streams the leader's position at 100 Hz, and that jitters by far
     // less than the arrival band; clearing on every change would drop the latch
@@ -439,8 +490,8 @@ void ForcePositionPolicy::set_target(
     // (see travel_track_). Only a target behind the jaw -- a release -- drops
     // it outright, exactly as passing the target does.
     if ((grasp_latched_ || topup_nm_ > 0.0f || carry_pending_)) {
-        const float new_raw = map_.to_rad(target_position);
-        if (std::abs(new_raw - topup_anchor_raw_) > tune_.arrival_eps_rad) {
+        if (grip_release ||
+            (!grip_armed && std::abs(new_raw - topup_anchor_raw_) > tune_.arrival_eps_rad)) {
             const float push_dir = grasp_latched_ ? grasp_dir_ : topup_dir_;
             const float total = carry_pending_ ? carry_total_nm_
                               : grasp_latched_ ? grasp_torque_nm_
@@ -462,7 +513,7 @@ void ForcePositionPolicy::set_target(
     // `now` is the caller's own timestamp for this sample (the controller stamps
     // it in set_target() on the caller's thread), so the interval is the one
     // the caller actually took, not when the control thread got round to it.
-    ref_sample_(map_.to_rad(target_position), now);
+    ref_sample_(new_raw, now);
 }
 
 void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
@@ -474,6 +525,7 @@ void ForcePositionPolicy::hold_position(const MotorStatusSample& sample) {
     topup_nm_ = 0.0f;
     carry_pending_ = false;
     carried_grip_ = false;
+    clear_grip_();
     ref_step_(sample.actual_pos, last_step_);
 }
 
@@ -496,6 +548,7 @@ void ForcePositionPolicy::fail(std::string reason) {
     stalled_ = false;
     target_steady_valid_ = false;
     target_steady_ = false;
+    clear_grip_();
     fault_reason_ = std::move(reason);
 }
 
@@ -776,17 +829,33 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         topup_nm_ = 0.0f;
         topup_dir_ = dir;                 // a fresh push takes the current side
     }
+    // A live grip pushes closed only. A push or latch the other way -- built by
+    // the ordinary rules on a jaw squeezed past the target, e.g. while the
+    // caller's grip flag flickered off for a sample -- is spent the moment the
+    // grip is live; left on, it held the jaw open in the band and the grip
+    // never re-engaged (2026-11-19).
+    if (grip_live_ && (topup_dir_ != close_dir_() ||
+                       (grasp_latched_ && grasp_dir_ != close_dir_()))) {
+        carry_pending_ = false;
+        grasp_latched_ = false;
+        topup_nm_ = 0.0f;
+        topup_dir_ = close_dir_();
+    }
     // Short of the target in the direction the push acts (negative = past it).
     const float push_short = topup_dir_ * (target_raw - sample.actual_pos);
-    if (topup_nm_ > 0.0f && push_short < -eps) {
+    // A live grip pushes on the jaw at the target and past it, up to the
+    // overdrive band step() polices; none of the "past the target" exits apply.
+    const bool grip_push = grip_live_ && topup_dir_ == close_dir_();
+    if (topup_nm_ > 0.0f && push_short < -eps && !grip_push) {
         topup_nm_ = 0.0f;
         topup_dir_ = dir;
     }
     // "Parked" within the arrival band while a push is on: a streamed target
     // jitters by a few mrad per frame, and a ramp one frame behind it must not
     // restart the escalation from the spring every frame.
+    // A live grip's escalation likewise survives a target step beyond the band.
     const bool engaged =
-        parked || (topup_nm_ > 0.0f && ramp_gap <= eps);
+        parked || (topup_nm_ > 0.0f && (ramp_gap <= eps || grip_push));
     // AT REST: slow, and either the target has stopped moving or the jaw has
     // (0.4.2).
     //
@@ -829,7 +898,7 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
         if (!engaged) {
             topup_nm_ = 0.0f;
         } else if (at_rest) {
-            if (push_short > eps) {
+            if (push_short > eps || grip_push) {
                 if (topup_nm_ <= 0.0f) {
                     topup_anchor_raw_ = target_raw;   // escalation begins here
                 }
@@ -873,7 +942,8 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // 2026-11-12). An ordinary escalation is reported once it latches.
     if (grasp_latched_ || topup_nm_ <= 0.0f) carried_grip_ = false;
     topup_full_ = carried_grip_ && engaged && stalled_;
-    if (grasp_latched_ && short_by < -eps) {
+    if (grasp_latched_ && short_by < -eps &&
+        !(grip_live_ && grasp_dir_ == close_dir_())) {
         grasp_latched_ = false;
         topup_nm_ = 0.0f;
     }
@@ -890,7 +960,12 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::travel_track_(
     // Once latched, "parked" tolerates a ramp still catching up with a target
     // that jittered by less than the arrival band -- which is all a streamed
     // target does while the latch survives (see set_target).
-    blocked_short_ = grasp_latched_ && ramp_gap <= tune_.arrival_eps_rad;
+    // A latched LIVE GRIP is pinned whatever the ramp is doing: the caller's
+    // target is where it expects the object, and a policy's streamed target
+    // can step by more than the band between frames (2026-11-19).
+    blocked_short_ = grasp_latched_ &&
+                     (ramp_gap <= tune_.arrival_eps_rad ||
+                      (grip_live_ && grasp_dir_ == close_dir_()));
     if (blocked_short_) {
         // PIN THE SETPOINT ON THE TARGET AND DROP THE VELOCITY FEED-FORWARD.
         // Exactly the budget in the push direction, whatever the PD asks for --
@@ -931,6 +1006,21 @@ protocol::MotorImpedanceCtrl ForcePositionPolicy::step(
     const float target_raw = map_.to_rad(target_position_);
     const float to_target = target_raw - sample.actual_pos;
     const float open_position = map_.to_position(sample.actual_pos);
+
+    // GRIP INTENT (2026-11-19): live while armed and the jaw is no further than
+    // grip_overdrive_rad past the most-closed grip target. Past that, nothing
+    // held it -- an empty jaw, or the object slipped out -- so the grip is
+    // given up and the ordinary rules return the jaw to the target.
+    grip_live_ = false;
+    if (grip_ && !grip_spent_) {
+        const float past = close_dir_() * (sample.actual_pos - grip_anchor_raw_);
+        if (past > cfg_.grip_overdrive_rad) {
+            grip_spent_ = true;
+            grip_spent_raw_ = target_raw;
+        } else {
+            grip_live_ = true;
+        }
+    }
 
     hold_raw_ = sample.actual_pos;          // where the jaw actually is
     // The ramp and the streamed-target reference run on the smoothed frame
@@ -1488,6 +1578,15 @@ void ForcePositionController::enqueue_(const QueuedCommand& c) {
 // argument into a silent no-op on a background thread instead of the
 // std::invalid_argument it has always been.
 void ForcePositionController::set_target(float position, float grasp_torque_nm) {
+    set_target(position, grasp_torque_nm, false);
+}
+
+float ForcePositionController::arrival_eps_rad() noexcept {
+    return detail::ForcePositionTuning{}.arrival_eps_rad;
+}
+
+void ForcePositionController::set_target(float position, float grasp_torque_nm,
+                                         bool grip) {
     std::lock_guard<std::mutex> lk(mu_);
     if (!running() || !policy_ || !have_sample_) {
         throw std::logic_error("ForcePositionController::set_target called before start");
@@ -1504,7 +1603,7 @@ void ForcePositionController::set_target(float position, float grasp_torque_nm) 
             " Nm, which a blocked jaw holds indefinitely");
     }
     enqueue_({PendingCommand::SetTarget, position, grasp_torque_nm,
-              std::chrono::steady_clock::now()});
+              std::chrono::steady_clock::now(), grip});
     command_woke_ = true;
     cv_.notify_one();
 }
@@ -1571,6 +1670,7 @@ ForcePositionSnapshot ForcePositionController::snapshot() const {
         out.motion_torque_limit_nm = cfg_.motion_torque_limit_nm;
         out.holding = policy_->holding();
         out.arrived = policy_->arrived();
+        out.grip = policy_->grip();
         out.fault_reason = policy_->fault_reason();
     }
     return out;
@@ -1652,7 +1752,7 @@ void ForcePositionController::run_() {
                     switch (q.kind) {
                         case PendingCommand::SetTarget:
                             policy_->set_target(latest_, q.position,
-                                                q.grasp_torque_nm, q.stamp);
+                                                q.grasp_torque_nm, q.stamp, q.grip);
                             break;
                         case PendingCommand::Release:
                             policy_->release(q.stamp);

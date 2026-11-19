@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ForcePositionController grip intent (2026-11-19)
+
+#### Added
+
+- **`set_target(position, grasp_torque_nm=None, grip=False)`** (C++:
+  `set_target(position, grasp_torque_nm, grip)`). `grip=True` marks the target
+  as where the caller expects contact. A jaw at rest at the target, or up to
+  `grip_overdrive_rad` past it, is pushed up to the grasp budget and latched.
+  Without it, a jaw stopped on an object inside the arrival band (a policy
+  trained on leader-held objects commands the object's width) was held by the
+  position spring alone, about 0.2 N·m, and the object slipped. `grip=False`
+  behaves exactly as before.
+- **`ForcePositionConfig.grip_overdrive_rad`** (default 0.05) and
+  **`grip_release_rad`** (default 0.02). While armed, the grip survives target
+  jitter and closing moves, and ends only when the target opens by more than
+  `grip_release_rad` from the most-closed grip target. On an empty jaw the
+  grip probes once, up to `grip_overdrive_rad` past the target, then gives up
+  and holds the target. The grip re-arms when the target closes again by
+  `grip_release_rad`.
+- `ForcePositionSnapshot.grip`: the grip is armed. `ForcePositionController.
+  arrival_eps_rad` (static, read-only): the arrival band, so callers do not
+  copy the private constant.
+
 ### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
 
 Requires leader firmware 1.2.8 / follower 1.2.18 (candidates; previous

@@ -195,6 +195,26 @@ struct ForcePositionConfig {
     // frame (measured 3.1 of 3.6 N*m commanded against 0.6 N*m of real load).
     float brake_decel_radps2   = 0.0f;
     float accel_radps2         = 0.0f;
+
+    // GRIP INTENT (2026-11-19), used only by set_target(..., grip=true).
+    //
+    // A target the caller marks as a grip is where the caller EXPECTS CONTACT,
+    // not a place to stop: a policy trained on leader-held objects commands the
+    // object's own width, the jaw stops on the object inside the arrival band,
+    // and the ordinary rule (escalate only when stopped SHORT of the band) never
+    // fires -- the spring alone holds the surface at ~0.2 N*m and the object
+    // slips. With grip the escalation also runs on a jaw at rest at the target
+    // and up to grip_overdrive_rad PAST it, and latches at the budget.
+    //
+    // grip_overdrive_rad: how far past the grip target the jaw may be pushed and
+    // still count as gripping -- the finger pads and the object compress under
+    // the budget (pads alone ~20-36 mrad at 1 N*m on 0015s). It is also the
+    // farthest an EMPTY jaw is probed past the target before the controller
+    // concludes there is nothing there, drops the push and returns to the target.
+    // grip_release_rad: a grip ends only once the target opens by more than this
+    // from the most-closed grip target; closing or jitter keeps it.
+    float grip_overdrive_rad   = 0.05f;
+    float grip_release_rad     = 0.02f;
 };
 
 struct ForcePositionSnapshot {
@@ -211,6 +231,9 @@ struct ForcePositionSnapshot {
     // OBSERVATIONS, derived per frame -- not states the controller switches on.
     bool                holding             = false; // budget saturated, not at target
     bool                arrived             = false; // within arrival_eps_rad
+    // The last target was a grip and it is still armed: not released by an
+    // opening target, and not given up on an empty jaw (see grip_overdrive_rad).
+    bool                grip                = false;
     std::string         fault_reason;
 };
 
@@ -304,7 +327,8 @@ public:
     void set_target(const MotorStatusSample& sample,
                     float target_position,
                     float grasp_torque_nm,
-                    std::chrono::steady_clock::time_point now);
+                    std::chrono::steady_clock::time_point now,
+                    bool grip = false);
     void hold_position(const MotorStatusSample& sample);
     void fail(std::string reason);
 
@@ -320,6 +344,7 @@ public:
     // Observations, refreshed by step().
     bool holding() const noexcept { return holding_; }
     bool arrived() const noexcept { return arrived_; }
+    bool grip() const noexcept { return grip_ && !grip_spent_; }
     const std::string& fault_reason() const noexcept { return fault_reason_; }
 
 private:
@@ -421,6 +446,21 @@ private:
     std::chrono::steady_clock::time_point lag_t_{};
     bool   lag_valid_ = false;
     std::chrono::steady_clock::time_point last_step_{};
+    // GRIP INTENT (2026-11-19), see ForcePositionConfig::grip_overdrive_rad.
+    // grip_anchor_raw_ is the most-closed grip target since the grip began:
+    // the band past it is where the jaw still counts as gripping, and the
+    // release is measured from it. grip_spent_ disarms the grip -- released by
+    // an opening target, or an empty jaw probed past the band -- until the
+    // target closes again by grip_release_rad from the most-open target since
+    // (grip_spent_raw_). grip_live_ is the per-frame "armed and the jaw is
+    // within the band", set by step() for travel_track_.
+    void  clear_grip_();
+    float close_dir_() const noexcept { return -direction_open_(); }
+    bool  grip_ = false;
+    bool  grip_spent_ = false;
+    bool  grip_live_ = false;
+    float grip_anchor_raw_ = 0.0f;
+    float grip_spent_raw_ = 0.0f;
     std::string fault_reason_;
 };
 
@@ -446,12 +486,18 @@ public:
     // contact-aware grasp path; a higher target uses bounded opening motion.
     void set_target(float position);
     void set_target(float position, float grasp_torque_nm);
+    // GRIP INTENT (2026-11-19): `grip` says this target is where the caller
+    // expects contact (see ForcePositionConfig::grip_overdrive_rad). Stream it
+    // with every sample while gripping; grip=false is exactly the call above.
+    void set_target(float position, float grasp_torque_nm, bool grip);
     void hold_position();  // cancel motion/force and hold the latest position
     void reset();          // leave Fault after the caller has cleared the motor fault
 
     ForcePositionState state() const;
     ForcePositionSnapshot snapshot() const;
     const ForcePositionConfig& config() const noexcept { return cfg_; }
+    // Within this of the target the jaw counts as arrived (observation only).
+    static float arrival_eps_rad() noexcept;
 
 private:
     void validate_config_() const;
@@ -489,6 +535,7 @@ private:
         float position;
         float grasp_torque_nm;
         std::chrono::steady_clock::time_point stamp;
+        bool grip = false;
     };
     static constexpr size_t kMaxQueuedCommands = 32;
     std::vector<QueuedCommand> queue_;
