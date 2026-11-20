@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Bundles firmware **1.3.1** for both roles (tc-gu-01 `v1.3.1`, `1d98d4b`;
 protocol V2.11): leader `tc-gu-01-master-1.3.1.bin` (SHA-256 `c8f3afce…`) and
 follower `tc-gu-01-slave-1.3.1.bin` (SHA-256 `bff0683c…`), replacing 1.2.7 /
-1.2.17. Built with Ubuntu 24.04 `arm-none-eabi-gcc 13.2.1`, reproducibly;
+1.2.17. The leader image was released by the docs-only tc-gu-01 `2543940` after
+leader acceptance; the binary is the one built at the tag. Built with Ubuntu
+24.04 `arm-none-eabi-gcc 13.2.1`, reproducibly;
 verified on two RS00 followers and two leaders, EL05 not hardware-verified.
 Capabilities are probed, so this SDK still runs on 1.2.17 / 1.2.7 and on the
 1.3.0 release candidates.
