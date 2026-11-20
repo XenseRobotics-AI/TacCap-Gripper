@@ -5,7 +5,7 @@ part of this SDK.
 
 | Image | Role | Version | Protocol | Size | CRC32 |
 | --- | --- | --- | --- | --- | --- |
-| `tc-gu-01-master-1.2.7.bin` | leader (SN ends **`m`**) | **1.2.7** | V2.9 | 122,848 B | `0x19e881dd` |
+| `tc-gu-01-master-1.3.1.bin` | leader (SN ends **`m`**) | **1.3.1** | V2.11 | 132,808 B | `0xedd8341c` |
 | `tc-gu-01-slave-1.3.1.bin` | follower (SN ends **`s`**) | **1.3.1** | V2.11 | 189,828 B | `0x8b05f9a3` |
 
 The follower's RobStride motor runs its own firmware; its images are listed
@@ -19,16 +19,16 @@ Only the current release is kept here; older images are in git history.
 [`manifest.json`](manifest.json) carries the same data machine-readably —
 `ota_update.py` picks the file through it and verifies the image by CRC32.
 
-Leader and follower firmware are **versioned independently**; different numbers
-on the two halves of a pair are normal. The SDK refuses to drive a follower
+Leader and follower firmware are **versioned independently** (1.3.1 happens to be
+shared); different numbers on the two halves of a pair are normal. The SDK refuses to drive a follower
 below **1.2.5**.
 
-> **Follower 1.3.1** (tc-gu-01 `v1.3.1`, `1d98d4b`, SHA-256 `bff0683c…`) stores two fisheye
-> calibrations, 640x480 and 1920x1080 (protocol V2.11), and delivers the requested rates:
-> motor status fresh at `motor_rate`, IMU above 100 Hz exactly on the MCU clock. Built with
-> Ubuntu 24.04 `arm-none-eabi-gcc 13.2.1`, reproducibly. EL05 is not hardware-verified on
-> this release. The leader image here is still 1.2.7 (V2.9), so the leader has a single
-> fisheye calibration until leader 1.3.1 ships.
+> **1.3.1** (tc-gu-01 `v1.3.1`, `1d98d4b`; SHA-256 leader `c8f3afce…`, follower `bff0683c…`)
+> stores two fisheye calibrations, 640x480 and 1920x1080 (protocol V2.11), and delivers the
+> requested rates: follower motor status fresh at `motor_rate`, IMU above 100 Hz exactly on
+> the MCU clock. Both roles now carry the same number. Built with Ubuntu 24.04
+> `arm-none-eabi-gcc 13.2.1`, reproducibly. Verified on two RS00 followers and two leaders;
+> EL05 is not hardware-verified on this release.
 
 > **1.2.7 / 1.2.17 change the IMU/encoder `timestamp` timebase** (DWT/250, wrapping every
 > 17.18 s → TIM2 1 MHz, wrapping every 71 min 35 s). This SDK handles both; older host
@@ -65,7 +65,7 @@ To verify an image file before flashing:
 
 ```bash
 python -c "from xense.taccap import crc32_iso_hdlc
-print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.2.7.bin','rb').read())))"
+print(hex(crc32_iso_hdlc(open('firmware/tc-gu-01-master-1.3.1.bin','rb').read())))"
 # -> 0x350393b5
 ```
 

@@ -144,7 +144,8 @@ python python/examples/ota_update.py \
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.7 and the follower 1.3.1, and neither is "behind" the other. Both
+leader and follower are both 1.3.1 (1.3.1 was released for both roles together), but
+the two lines stay independent and neither is ever "behind" the other. Both
 carry the same control-UART receive fix, which lives in shared code.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24.
 
@@ -162,7 +163,7 @@ Compare versions only within one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.7.bin`). That is deliberate:
+`firmware/` carry the version (`tc-gu-01-master-1.3.1.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
 build into `firmware/`, rename it and update `firmware/manifest.json` in the
