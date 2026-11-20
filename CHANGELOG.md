@@ -86,9 +86,8 @@ op `0x04`); new op `0x05` clears one (5-byte request, empty ACK).
 - Mirror constants `CAMERA_FISHEYE_CAL_OP_READ_SLOT` (0x04),
   `CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT` (0x05), `CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE`
   (5) and `encode_camera_fisheye_cal_{read,clear}_slot()` /
-  `decode_camera_fisheye_cal_slot()`. They are not yet in
-  `scripts/check_protocol_drift.py`, because the firmware `hw_v1.1.0` branch
-  does not define them yet.
+  `decode_camera_fisheye_cal_slot()`, checked against the firmware headers by
+  `scripts/check_protocol_drift.py` (tc-gu-01 `hw_v1.1.0` from `5e51a81`).
 - Examples: `fisheye_cal.py show` lists both slots on V2.11 and gains
   `clear-fisheye --width W --height H`; `read_intrinsics.py` adds
   `dual_slot_firmware` and a per-resolution `slots` object (its top-level
