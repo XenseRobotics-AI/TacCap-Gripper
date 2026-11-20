@@ -167,7 +167,7 @@ measures in pixels off a rectified frame needs this unit's own calibration —
 store one with `fisheye_cal.py set-fisheye`. Every fallback path warns and says
 so.
 
-### The calibration resolution (V2.10: leader 1.2.8 / follower 1.2.18)
+### The calibration resolution (V2.10: firmware 1.3.1, or 1.3.0-rc1+)
 
 The 8 floats hold only at the capture resolution they were measured at. The
 wrist camera's default moved from 640x480 to 1920x1080, and those are

@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The wrist fisheye default moved from 640x480 to 1920x1080. Those are different
 sensor crops (4:3 vs 16:9), so intrinsics cannot be rescaled from one to the
-other. Leader firmware 1.2.8 / follower 1.2.18 (command set V2.10) store the
+other. Firmware 1.3.1 (both roles, command set V2.10; release candidates
+from 1.3.0-rc1, which reports 1.3.0.1, already have it) stores the
 calibration resolution next to the 8 params, via two new ops on
 `CameraFisheyeCal` (0x2B): `0x02` sized read and `0x03` sized write. Ops
 `0x00`/`0x01` are unchanged on the wire.
@@ -90,9 +91,9 @@ calibration resolution next to the 8 params, via two new ops on
 
 ### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
 
-Requires leader firmware 1.2.9 / follower 1.2.19 (candidates; previous
-releases leader 1.2.7 / follower 1.2.17; 1.2.8 / 1.2.18 went to the fisheye
-calibration resolution above) for IMU above 100 Hz. Wire
+Requires firmware 1.3.0-rc2 (both roles, reports 1.3.0.2; tc-gu-01 #30, on
+top of 1.3.0-rc1, so it also carries the fisheye calibration resolution) for
+IMU above 100 Hz. Previous releases: leader 1.2.7 / follower 1.2.17. Wire
 protocol V2.9 is unchanged: same commands, 28/44 B IMU payloads, units,
 0x5D at most 3 IMUs per reply and 0x5E records. Experimental until hardware
 acceptance.
@@ -136,7 +137,7 @@ acceptance.
   magnetic values do not prove a duplicate sample.
 - Gyro wire unit stays int16 x 0.01 dps and saturates beyond +/-327.67 dps.
 - Bundled firmware images stay the released leader 1.2.7 / follower 1.2.17;
-  candidate 1.2.9 / 1.2.19 images are not bundled before hardware acceptance.
+  high-rate candidate images are not bundled before hardware acceptance.
 - Firmware widens the IMU DLPF above 100 Hz (gyro 196.6 Hz / accel 246 Hz);
   expect roughly 2x white noise versus the 51/50 Hz low-rate filter.
 

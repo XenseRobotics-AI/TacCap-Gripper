@@ -191,8 +191,8 @@ public:
     }
 
     // ---- Fisheye calibration (Cmd 0x2B) -------------------------------------
-    // Modelled on the firmware's camera_fisheye_cal handler. V2.10 (follower
-    // 1.2.18) by default; set_fisheye_size_supported(false) emulates older
+    // Modelled on the firmware's camera_fisheye_cal handler. V2.10 (firmware
+    // 1.3.0-rc1 / 1.3.1) by default; set_fisheye_size_supported(false) emulates older
     // firmware, which answers 0x02 with InvalidParam and the 37-byte 0x03 with
     // LengthMismatch (its command table caps 0x2B at 33 bytes, measured on a
     // 1.2.17 follower).

@@ -7,8 +7,8 @@ gripper firmware persists in its internal flash (firmware V2.0 / V2.1).
 Two independent records live behind these commands:
 
   fisheye     Cmd::CameraFisheyeCal (0x2B) — fx, fy, cx, cy, k1..k4 for the
-              middle wrist camera, plus (firmware V2.10: leader >= 1.2.8 /
-              follower >= 1.2.18) the capture resolution they were measured
+              middle wrist camera, plus (firmware V2.10: 1.3.1, or 1.3.0-rc1+,
+              on either role) the capture resolution they were measured
               at. Available on BOTH leader and follower.
   encoder-max Cmd::EncoderMaxCal (0x2C) — the encoder shaft angle (rad) at
               which the gripper is fully open, measured from the encoder zero
@@ -115,7 +115,7 @@ def _print_size(record, firmware_records_size: bool) -> None:
     why = (
         "written without one"
         if firmware_records_size
-        else "this firmware cannot record it — leader 1.2.8 / follower 1.2.18 can"
+        else "this firmware cannot record it — firmware 1.3.1 (or 1.3.0-rc1+) can"
     )
     guess = infer_fisheye_cal_size(record.calibration)
     if guess is None:

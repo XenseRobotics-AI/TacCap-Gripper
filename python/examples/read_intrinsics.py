@@ -44,7 +44,7 @@ from xense.taccap import FollowerGripper, LeaderGripper, log
 # The intrinsics hold only at the resolution they were calibrated at — 640x480 and
 # 1920x1080 are different sensor crops, so they cannot be rescaled between the two.
 # `image_size` says which one, and `image_size_source` how the SDK knows:
-#   "recorded"   the firmware stored it with the params (leader 1.2.8 / follower 1.2.18+)
+#   "recorded"   the firmware stored it with the params (firmware 1.3.0-rc1+ / 1.3.1)
 #   "inferred"   the record carries no size; inferred from the principal point
 #   "reference"  the SDK reference values, which are a 640x480 calibration
 # `assumed_image_size` is kept, with the same value, for consumers written before

@@ -633,7 +633,7 @@ Three constraints you must know:
 - **Only the calibration's own resolution is supported.** 640×480 (4:3) and
   1920×1080 (16:9) are different sensor crops, so the intrinsics cannot be
   rescaled between them and the constructor throws on a mismatch. Firmware
-  leader 1.2.8 / follower 1.2.18 records the resolution with the params
+  firmware 1.3.1 (both roles; 1.3.0-rc1+ candidates too) records the resolution with the params
   (`read_fisheye_record()` / `write_fisheye_sized()`); for an older record
   `resolve_fisheye()` infers it from the principal point (`size_inferred`).
   Another resolution means storing a calibration measured at it.

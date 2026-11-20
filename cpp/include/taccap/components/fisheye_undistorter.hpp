@@ -29,7 +29,7 @@ namespace xense::taccap {
 // The 8 intrinsic/distortion floats only hold at the capture resolution they
 // were measured at. 640x480 (4:3) and 1920x1080 (16:9) are DIFFERENT sensor
 // crops, not one image at two scales, so intrinsics cannot be rescaled between
-// them — nor to any other size. Firmware V2.10 (leader 1.2.8 / follower 1.2.18)
+// them — nor to any other size. Firmware V2.10 (1.3.0-rc1 / 1.3.1)
 // therefore records the calibration resolution next to the params
 // (Calibration::read_fisheye_record / write_fisheye_sized), and the undistorter
 // refuses any frame that is not at that exact resolution.
