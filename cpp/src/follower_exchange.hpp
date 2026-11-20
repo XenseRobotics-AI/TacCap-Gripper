@@ -25,6 +25,13 @@
 // (GetMotorStatus, GetImu/GetImuV2) and injected into the transport's normal
 // dispatch, so subscribers and the controllers' control lane see the same
 // samples as in streaming mode.
+//
+// Motor status is delivered at most motor_hz, as in streaming mode. Above
+// 100 Hz IMU every reply carries the latest motor status (250/500 per second),
+// but the firmware refreshes it far less often: on a resting RS00 (0016s,
+// 1.3.0-rc2, 2026-11-20) 73% of them at 250/s and 87% at 500/s were the
+// previous record again. Passing them all on stepped controllers and loggers
+// several times on one sample. The surplus is counted in motor_skipped.
 
 #pragma once
 
@@ -43,8 +50,11 @@ namespace xense::taccap::detail {
 
 class FollowerExchange {
 public:
+    // motor_period: minimum spacing of delivered motor status (1/motor_hz);
+    // zero delivers every one.
     FollowerExchange(bus::Transport& transport, std::chrono::microseconds period,
-                     std::chrono::milliseconds timeout);
+                     std::chrono::milliseconds timeout,
+                     std::chrono::microseconds motor_period = std::chrono::microseconds{0});
     ~FollowerExchange();
 
     FollowerExchange(const FollowerExchange&)            = delete;
@@ -71,12 +81,15 @@ private:
     bus::Transport&                 t_;
     const std::chrono::microseconds period_;
     const std::chrono::milliseconds timeout_;
+    const std::chrono::microseconds motor_period_;
 
     mutable std::mutex       mu_;
     detail::MonotonicCondition cv_;   // monotonic even on old-sysroot toolchains
     std::optional<Target>    pending_;
     bool                     stop_ = false;
     ExchangeStats            stats_{};
+    // Only the worker thread touches this (handle_reply_ runs on it).
+    std::optional<std::chrono::steady_clock::time_point> next_motor_due_;
     std::thread              worker_;
 };
 

@@ -456,6 +456,7 @@ void bind_gripper(py::module_& m) {
         .def_readonly("last_target_result",  &ExchangeStats::last_target_result,
                       "Raw ErrorCode byte of the latest target reply; 0xFF before any.")
         .def_readonly("motor_samples",       &ExchangeStats::motor_samples)
+        .def_readonly("motor_skipped",       &ExchangeStats::motor_skipped)
         .def_readonly("imu_samples",         &ExchangeStats::imu_samples)
         .def_readonly("imu_dropped",         &ExchangeStats::imu_dropped,
                       "IMU samples the firmware queue overflowed before they were fetched.")

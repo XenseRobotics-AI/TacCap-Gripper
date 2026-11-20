@@ -8,7 +8,10 @@
 #include <taccap/error.hpp>
 #include <taccap/leader_gripper.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <sstream>
 #include <vector>
 
@@ -73,6 +76,34 @@ TEST(ImuHighRate, FollowerDefaultExchangeDrainsThreeSampleV2BatchesInOrder) {
         EXPECT_TRUE(samples[i].timestamp_is_64bit);
         EXPECT_NEAR(samples[i].accel_mps2[2], 9.80665f, .001f);
     }
+}
+
+TEST(ImuHighRate, FollowerHighRateExchangeCapsMotorStatusAtMotorHz) {
+    // Every 500/s reply carries a motor record, but subscribers and the
+    // control lane must see motor_hz of them, as in streaming mode.
+    Pty pty; FakeFollower fw(pty); fw.set_imu_v2_supported(true);
+    fw.set_exchange_imu_count(3);
+    auto g = open_follower(pty);
+    std::atomic<unsigned> status{0};
+    g->motor().on_status([&](const tx::MotorStatusSample&) { ++status; });
+    g->start_exchange(100, 1125);
+    ASSERT_TRUE(wait_for([&] { return g->exchange_stats().telemetry_exchanges >= 50; },
+                         std::chrono::milliseconds(1000)));
+    const auto s0 = g->exchange_stats();
+    const unsigned c0 = status.load();
+    const auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    const auto s1 = g->exchange_stats();
+    const unsigned c1 = status.load();
+    const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    g->close();
+
+    const double exchanges_hz = double(s1.telemetry_exchanges - s0.telemetry_exchanges) / dt;
+    const double delivered_hz = double(s1.motor_samples - s0.motor_samples) / dt;
+    ASSERT_GT(exchanges_hz, 250.0) << "fake did not reach the high-rate exchange grid";
+    EXPECT_NEAR(delivered_hz, 100.0, 15.0);
+    EXPECT_NEAR(double(c1 - c0) / dt, 100.0, 15.0) << "subscribers saw the surplus";
+    EXPECT_EQ(s1.motor_samples + s1.motor_skipped, s1.telemetry_exchanges);
 }
 
 TEST(ImuHighRate, LeaderBatchPreservesLegacyAndV2PayloadsAndCaptureTimes) {

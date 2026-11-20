@@ -414,7 +414,9 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
     const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
     const auto timeout = std::chrono::milliseconds(std::max<long long>(
         5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
-    exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout);
+    const auto motor_period = motor_hz ? std::chrono::microseconds(1'000'000 / motor_hz)
+                                       : std::chrono::microseconds{0};
+    exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout, motor_period);
     std::weak_ptr<detail::FollowerExchange> weak = exchange_;
     motor_.set_target_router_([weak](protocol::Cmd cmd, std::vector<uint8_t> payload) {
         if (auto ex = weak.lock()) ex->submit(cmd, std::move(payload));

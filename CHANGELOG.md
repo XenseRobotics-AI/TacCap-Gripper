@@ -110,6 +110,16 @@ acceptance.
   `exchange_hz` must satisfy `3*exchange_hz >= imu_hz` and stay <= 500.
   Replies carrying more than 3 IMUs are rejected as malformed. Motor status
   and controller rates stay capped at 100 Hz.
+- **Exchange delivers motor status at `motor_hz`, not per exchange.** Every
+  high-rate reply carries the latest motor status, and all of them used to
+  reach subscribers and the controllers' control lane: 250/s at 562 Hz IMU and
+  500/s at 1125 Hz, of which 73% / 87% repeated the previous record (RS00
+  0016s, firmware 1.3.0-rc2, 2026-11-20). Controllers and loggers stepped
+  several times on one sample. The surplus is now dropped on a schedule that
+  averages exactly `motor_hz` and counted in `ExchangeStats.motor_skipped`;
+  at the 100 Hz exchange nothing changes. Note the firmware itself refreshes a
+  resting motor's status at only ~67 Hz in any mode, so about a third of the
+  100 Hz records are repeats in streaming mode too.
 - Leader default exchange rate stays capped at 200/s; each 0x5E reply carries
   about ten 44 B IMUs. High-rate IMU no longer triggers the 1 kHz-divider
   warning.

@@ -222,14 +222,17 @@ class FollowerExchange;
 // timeouts are exchanges without a reply; a target in one is resent in the
 // next exchange unless superseded (targets_resent). targets_rejected counts
 // replies whose target_result was not Ok; last_target_result is the raw
-// ErrorCode byte of the latest target reply (0xFF before any).
+// ErrorCode byte of the latest target reply (0xFF before any). motor_samples
+// are the motor status records delivered (at most motor_hz); motor_skipped the
+// ones dropped because a reply came sooner than that, which above 100 Hz IMU
+// is most of them.
 struct ExchangeStats {
     uint64_t exchanges = 0, telemetry_exchanges = 0, target_exchanges = 0;
     uint64_t timeouts = 0, nacks = 0, malformed = 0;
     uint64_t targets_submitted = 0, targets_superseded = 0, targets_resent = 0;
     uint64_t targets_rejected = 0;
     uint8_t  last_target_result = 0xFF;
-    uint64_t motor_samples = 0, imu_samples = 0, imu_dropped = 0;
+    uint64_t motor_samples = 0, motor_skipped = 0, imu_samples = 0, imu_dropped = 0;
     uint64_t last_rtt_us = 0, max_rtt_us = 0;
 };
 
