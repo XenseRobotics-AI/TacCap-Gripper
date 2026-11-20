@@ -14,7 +14,7 @@ V2，并只发送新缓存样本；旧固件请求 1000 Hz 不代表 1000 Hz 独
 主爪原校准和从爪电机控制算法不在本轮修改范围。
 
 高频 IMU 候选 SDK（基于正式版 0.4.6 与力位控制修改，未定版本号）将现有 `imu_hz` 范围扩大至 1..1125，
->100 需要配套高频固件 1.3.0-rc2（主从同号，上报 1.3.0.2；tc-gu-01 #30，分支 `feat/imu-high-rate-1.3.0`，叠在含鱼眼标定分辨率的 1.3.0-rc1 之上），最高档位在真机验收前为 experimental。命令、28/44 B 包、
+>100 需要固件 1.3.1 或更高（主从同号；1.3.0-rc2 起的候选版也支持；1.3.1 起按 MCU 时钟精确交付请求频率），最高档位在真机验收前为 experimental。命令、28/44 B 包、
 0x5D 每批最多 3 样本、0x5E 记录、单位和时间字段不变；旧固件的高频 NACK 明确报错，
 不静默回退频率。<=100 默认行为和电机状态/控制器最高 100 Hz 不变。
 从爪高频默认交换率为 `min(500, max(motor_hz, ceil(imu_hz*4/9)))`；
@@ -144,7 +144,8 @@ python python/examples/ota_update.py \
 ```
 
 **The two roles have independent version numbers** — at the time of writing the
-leader is 1.2.7 and the follower 1.2.17, and neither is "behind" the other. Both
+leader and follower are both 1.3.1 (1.3.1 was released for both roles together), but
+the two lines stay independent and neither is ever "behind" the other. Both
 carry the same control-UART receive fix, which lives in shared code.
 The roles were briefly forced onto one number; that was dropped on 2026-09-24.
 
@@ -162,7 +163,7 @@ Compare versions only within one role.
 
 Note the build output keeps the Makefile's unversioned name
 (`build/master/tc-gu-01-master.bin`), while the images released under
-`firmware/` carry the version (`tc-gu-01-master-1.2.7.bin`). That is deliberate:
+`firmware/` carry the version (`tc-gu-01-master-1.3.1.bin`). That is deliberate:
 a build artifact is whatever you just compiled, a release is a specific version
 someone may still be holding a copy of months later. **If you promote a local
 build into `firmware/`, rename it and update `firmware/manifest.json` in the

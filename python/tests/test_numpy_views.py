@@ -16,9 +16,11 @@ Run with:  pytest python/tests
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
-from xense.taccap import CameraFisheyeCal, scan_grippers
+from xense.taccap import CameraFisheyeCal
 
 
 def assert_not_broadcast(arr: np.ndarray, what: str) -> None:
@@ -53,22 +55,26 @@ def test_fisheye_k_is_a_real_buffer():
 
 @pytest.fixture(scope="module")
 def any_gripper():
-    """A *leader*, specifically — the IMU is leader-only.
+    """A *leader*, specifically -- the IMU is leader-only -- and only the one
+    named by TACCAP_TEST_LEADER (a /dev/serial/by-id/...-if02 path).
 
-    This used to take scan_grippers()[0] on the assumption that whatever is
-    plugged in first has an IMU. It does not: a follower NACKs GetImuData
-    regardless of which class opens it (measured — opening one as either
-    LeaderGripper or FollowerGripper returns "decode ImuData: expected 28
-    bytes, got 1"), so on a bench whose first endpoint is a follower this
-    fixture failed instead of skipping. The endpoint carries its role, so ask.
+    This used to call scan_grippers() whenever a gripper was attached. That
+    opens EVERY gripper port and sends StopStream to each, so a plain
+    `pytest python/tests` on a shared bench interrupted another session's
+    leader acceptance mid-run (2026-11-20). Hardware is now opt-in and opens
+    exactly one port:
+
+        TACCAP_TEST_LEADER=/dev/serial/by-id/usb-1a86_..._-if02 pytest python/tests
     """
-    from xense.taccap import LeaderGripper, Role
+    from xense.taccap import LeaderGripper
 
-    leaders = [g for g in scan_grippers() if g.role == Role.Leader]
-    if not leaders:
-        pytest.skip("no leader gripper connected (the IMU is leader-only)")
+    dev = os.environ.get("TACCAP_TEST_LEADER")
+    if not dev:
+        pytest.skip("hardware test: set TACCAP_TEST_LEADER to a leader's by-id path")
+    if not dev.startswith("/dev/serial/by-id/"):
+        pytest.fail("TACCAP_TEST_LEADER must be a /dev/serial/by-id/ path, not ttyACMn")
 
-    g = LeaderGripper(mcu_device=leaders[0].mcu_device)
+    g = LeaderGripper(mcu_device=dev, open_cameras=False)
     yield g
     g.transport.stop()
 
