@@ -90,9 +90,9 @@ calibration resolution next to the 8 params, via two new ops on
 
 ### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
 
-Requires leader firmware 1.2.9 / follower 1.2.19 (candidates; previous
-releases leader 1.2.7 / follower 1.2.17; 1.2.8 / 1.2.18 went to the fisheye
-calibration resolution above) for IMU above 100 Hz. Wire
+Requires firmware 1.3.0-rc2 (both roles, reports 1.3.0.2; tc-gu-01 #30, on
+top of 1.3.0-rc1, so it also carries the fisheye calibration resolution) for
+IMU above 100 Hz. Previous releases: leader 1.2.7 / follower 1.2.17. Wire
 protocol V2.9 is unchanged: same commands, 28/44 B IMU payloads, units,
 0x5D at most 3 IMUs per reply and 0x5E records. Experimental until hardware
 acceptance.
@@ -136,7 +136,7 @@ acceptance.
   magnetic values do not prove a duplicate sample.
 - Gyro wire unit stays int16 x 0.01 dps and saturates beyond +/-327.67 dps.
 - Bundled firmware images stay the released leader 1.2.7 / follower 1.2.17;
-  candidate 1.2.9 / 1.2.19 images are not bundled before hardware acceptance.
+  high-rate candidate images are not bundled before hardware acceptance.
 - Firmware widens the IMU DLPF above 100 Hz (gyro 196.6 Hz / accel 246 Hz);
   expect roughly 2x white noise versus the 51/50 Hz low-rate filter.
 
