@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-20
+
+Bundled firmware is unchanged (leader 1.2.7 / follower 1.2.17). The fisheye
+calibration resolution needs firmware 1.3.0-rc1 or later (release 1.3.1) and
+high-rate IMU needs 1.3.0-rc2; those candidates are not bundled. Capabilities
+are probed, so this SDK runs on 1.2.17 unchanged.
+
 ### Fisheye calibration resolution (protocol V2.10)
 
 The wrist fisheye default moved from 640x480 to 1920x1080. Those are different
@@ -66,6 +73,20 @@ calibration resolution next to the 8 params, via two new ops on
   `FisheyeUndistorter(cal, size, balance)` still treats the params as a
   640x480 calibration.
 
+#### Fixed
+
+- **Calibration reads on real firmware no longer throw where they should
+  branch.** Firmware sends every handler error on the cmd=0 pure-ACK path,
+  which `send_cmd` raises as `NackError`, so the `CalNotSet` and
+  `InvalidParam` branches never ran on hardware. On a 1.2.17 follower
+  `supports_fisheye_size()` threw `NACK: InvalidParam`, and
+  `resolve_fisheye()` silently fell back to the reference intrinsics,
+  discarding the unit's own calibration. `read_fisheye()` and
+  `read_fisheye_record()` on a never-calibrated unit now return `None`, as
+  documented, instead of raising `ProtocolError('NACK: CalNotSet')`; other
+  NACKs read `Calibration::<method> NACK: <code>`. Both test fakes used to
+  answer errors with the command echoed and now use the firmware's path.
+
 ### ForcePositionController grip intent (2026-11-19)
 
 #### Added
@@ -89,7 +110,7 @@ calibration resolution next to the 8 params, via two new ops on
   arrival_eps_rad` (static, read-only): the arrival band, so callers do not
   copy the private constant.
 
-### High-rate IMU (candidate, not yet versioned; on top of 0.4.6)
+### High-rate IMU (needs firmware 1.3.0-rc2)
 
 Requires firmware 1.3.0-rc2 (both roles, reports 1.3.0.2; tc-gu-01 #30, on
 top of 1.3.0-rc1, so it also carries the fisheye calibration resolution) for
