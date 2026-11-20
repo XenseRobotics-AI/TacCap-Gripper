@@ -67,7 +67,7 @@ and none of them are lost on reboot:
 
 | Record | Command | Scope | Accessor |
 | --- | --- | --- | --- |
-| Fisheye camera `fx, fy, cx, cy, k1..k4` (+ calibration resolution, V2.10) | `0x2B` | leader + follower | `read_fisheye_record()` / `write_fisheye_sized()` (legacy: `read_fisheye()` / `write_fisheye()`) |
+| Fisheye camera `fx, fy, cx, cy, k1..k4` (+ calibration resolution, V2.10; one per resolution, V2.11) | `0x2B` | leader + follower | `read_fisheye_slot()` / `read_fisheye_record()` / `write_fisheye_sized()` / `clear_fisheye_slot()` (legacy: `read_fisheye()` / `write_fisheye()`) |
 | Encoder max travel angle (rad) | `0x2C` | **leader only** | `read_encoder_max_rad()` / `write_encoder_max_rad()` |
 
 Both survive power cycles. A record that was never written normally reads back
@@ -199,11 +199,70 @@ when exactly one candidate matches. `resolve_fisheye()` uses it — setting
 `size_inferred` and logging a warning — and treats a record it cannot place as
 unusable, falling back to the reference.
 
-The one case that still throws rather than falling back is a camera running at
-a resolution other than the calibration's: `FisheyeUndistorter(cal,
+The undistorter itself never rescales:  `FisheyeUndistorter(cal,
 calibrated_size, frame_size)` requires the two to be equal (Python:
 `FisheyeUndistorter(cal, w, h, calibrated_size=(cw, ch))`). The legacy
 `FisheyeUndistorter(cal, size)` form takes the params to be a 640x480
 calibration, as it always has. A mismatch is a caller bug to fix — open the
 camera at the calibrated size, or recalibrate at the capture size — not
 something to paper over.
+
+### Dual calibration slots (V2.11: firmware 1.3.1, or 1.3.0-rc4+)
+
+V2.10 still had **one** record: storing a 1920x1080 calibration replaced the
+640x480 one. V2.11 keeps two fixed slots, VGA (640x480) and HD (1920x1080), so a
+unit can carry both and a camera at either resolution rectifies with its own
+intrinsics.
+
+| Call | What it does |
+| --- | --- |
+| `supports_fisheye_slots()` | Probes with the slot read (op `0x04`) at 640x480: firmware without slots rejects it as `InvalidParam`. Cached per `Calibration`; answered without a round trip once `supports_fisheye_size()` is known to be false. |
+| `read_fisheye_slot(w, h)` | The record for 640x480 or 1920x1080 (anything else raises `RuntimeError` before sending), or `None`. V2.11: op `0x04`; the VGA slot may report size `0/0` when its params were written without one, HD always reports 1920x1080. V2.10: the single record if its recorded size matches. Older firmware: the legacy record, for 640x480 only. |
+| `write_fisheye_sized(cal, w, h)` | Unchanged API. On V2.11 op `0x03` routes by size: 640x480 writes VGA (params + size, as on V2.10), 1920x1080 writes HD only; neither touches the other slot. |
+| `clear_fisheye_slot(w, h)` | Erases one slot (op `0x05`); it then reads `None`. Clearing VGA drops its size record too; clearing an empty slot succeeds. Raises `RuntimeError` without sending on firmware without slots. |
+| `resolve_fisheye_for(w, h)` | `resolve_fisheye()` for a camera at `w x h`. Reads that slot on V2.11; otherwise uses the single record only when its size (recorded or inferred) equals `w x h`. Anything else falls back to the reference, with `reason` saying why. |
+
+**A record with no size counts as the VGA slot**, on every generation. That is
+V2.11's own definition — ops `0x00`/`0x01`, the only way to write params without
+a size, address the VGA slot, and op `0x02` reports it with `0/0` — so
+`read_fisheye_slot(640, 480)` returns the same flash content the same way
+whether the firmware is V2.11, V2.10 or older. The `0/0` keeps the size visibly
+unconfirmed; `resolve_fisheye_for()` checks it against the principal point
+(`infer_fisheye_cal_size()`) before trusting it.
+
+**The 0.4.7 calls address the VGA slot on V2.11.** `read_fisheye()`,
+`read_fisheye_record()` and the no-argument `resolve_fisheye()` all read VGA.
+So after storing only an HD calibration, `read_fisheye_record()` returns `None`
+(and with a VGA one stored, it returns that, not the HD record just written).
+Confusing, but nothing is lost — read the HD slot with
+`read_fisheye_slot(1920, 1080)`.
+
+**Tighter plausibility.** V2.11 accepts a sized write only for 640x480 or
+1920x1080, with every value finite, `fx, fy > 0`, and the principal point within
+15% of the frame centre, inclusive: `|cx - w/2| <= 0.15*w`,
+`|cy - h/2| <= 0.15*h` (640x480: cx 224..416, cy 168..312; 1920x1080: cx
+672..1248, cy 378..702). `fisheye_cal_slot_plausible()` is that rule. The SDK
+applies it host-side to **every** 640x480 / 1920x1080 sized write, whatever the
+firmware, so the typical mistake — VGA params labelled 1920x1080, which V2.10's
+"inside the frame" rule lets through — is refused with a message before
+anything is sent. Other sizes are refused host-side on V2.11 only; V2.10 keeps
+its looser rule (any plausible size up to 4096).
+
+**Wrist undistortion picks the slot by camera size.** `install_wrist_undistorter()`
+(`undistort_wrist=True`) now calls `resolve_fisheye_for()` with the camera's
+configured width/height, so a 1080p camera gets the HD slot on V2.11. A behaviour
+change that applies to every firmware: a calibration stored for the *other*
+resolution now falls back to the reference with a warning instead of raising.
+A 1920x1080 camera with no HD calibration still raises — the reference is a
+640x480 calibration and is never rescaled.
+
+```bash
+python python/examples/fisheye_cal.py show                                   # lists both slots on V2.11
+python python/examples/fisheye_cal.py clear-fisheye --width 1920 --height 1080
+python python/examples/read_intrinsics.py left | jq .slots                   # per-slot JSON
+```
+
+Older-firmware facts the probes rely on: firmware up to 1.2.17 answers op
+`0x02` with `InvalidParam` and a 37-byte op `0x03` with `LengthMismatch` (its
+command table caps `0x2B` at 33 bytes); V2.10 (1.3.0-rc1..rc3) answers ops
+`0x04`/`0x05` with `InvalidParam` (unknown op).

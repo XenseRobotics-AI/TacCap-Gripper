@@ -611,7 +611,9 @@ intrinsics into remap tables once, after which each frame is only resampled:
 ```python
 from xense.taccap import FisheyeUndistorter
 
-resolved = g.calibration.resolve_fisheye()
+# The calibration for the resolution the camera runs at (1920x1080 here).
+# resolve_fisheye() without a size still works and reads the 640x480 record.
+resolved = g.calibration.resolve_fisheye_for(1920, 1080)
 cal, is_reference, reason = resolved          # still unpacks as before
 if is_reference:
     log.warning(f"using the SDK reference intrinsics, not this unit's: {reason}")
@@ -622,9 +624,9 @@ cam.set_undistorter(undist)      # install into the capture path: read() and cal
 # or manually: rect = undist.apply(img)
 ```
 
-Three constraints you must know:
+Four constraints you must know:
 
-- **Read intrinsics with `resolve_fisheye()`, not `read_fisheye()`.** An uncalibrated
+- **Read intrinsics with `resolve_fisheye_for()` / `resolve_fisheye()`, not `read_fisheye()`.** An uncalibrated
   unit does not NACK; it returns an **all-zero** record, which passes an
   `if cal is None` check, but `fx = fy = 0` maps every pixel outside the frame — you
   get a pure black "rectified frame", with no error raised anywhere.
@@ -637,6 +639,15 @@ Three constraints you must know:
   (`read_fisheye_record()` / `write_fisheye_sized()`); for an older record
   `resolve_fisheye()` infers it from the principal point (`size_inferred`).
   Another resolution means storing a calibration measured at it.
+- **Firmware 1.3.1 (1.3.0-rc4+, protocol V2.11) keeps one calibration per
+  resolution** — a 640×480 slot and a 1920×1080 slot; storing one never
+  overwrites the other. `resolve_fisheye_for(w, h)` picks the slot for the camera
+  (and `undistort_wrist=True` does so with the camera's configured size);
+  `read_fisheye_slot(w, h)` / `clear_fisheye_slot(w, h)` read and erase one. The
+  0.4.7 calls (`read_fisheye_record()`, no-argument `resolve_fisheye()`) read the
+  640×480 slot. A 640×480 / 1920×1080 write must have its principal point within
+  15% of the frame centre (`fisheye_cal_slot_plausible()`), checked before
+  sending. See [CALIBRATION.md](CALIBRATION.md#dual-calibration-slots-v211-firmware-131-or-130-rc4).
 - **The reference intrinsics are an approximation.** Lens mounting varies from unit to
   unit (the principal point especially), so falling back to `FISHEYE_FALLBACK_CAL` is
   only better than not rectifying at all — do not take pixel-accurate measurements

@@ -524,7 +524,9 @@ g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```python
 from xense.taccap import FisheyeUndistorter
 
-resolved = g.calibration.resolve_fisheye()
+# 取相机实际分辨率(这里是 1920x1080)对应的标定。
+# 不带尺寸的 resolve_fisheye() 照旧可用,读的是 640x480 那份。
+resolved = g.calibration.resolve_fisheye_for(1920, 1080)
 cal, is_reference, reason = resolved          # 仍可按原来的三元组解包
 if is_reference:
     log.warning(f"用的是 SDK 参考内参,不是这一台的:{reason}")
@@ -535,9 +537,9 @@ cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的�
 # 或者手动:rect = undist.apply(img)
 ```
 
-三个必须知道的约束:
+四个必须知道的约束:
 
-- **读内参用 `resolve_fisheye()`,不要用 `read_fisheye()`。** 没标定过的机器
+- **读内参用 `resolve_fisheye_for()` / `resolve_fisheye()`,不要用 `read_fisheye()`。** 没标定过的机器
   不是 NACK,而是返回一条**全零**记录,它能过 `if cal is None` 检查,但
   `fx = fy = 0` 会把每个像素映射到画面外 —— 得到一张纯黑的"矫正帧",全程无报错。
   `resolve_fisheye()` 已经把这个策略(读 → 判可用 → 回退参考值)做在一处了。
@@ -546,6 +548,14 @@ cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的�
   1.3.0-rc1 起的候选版也支持)起随参数一起记录标定分辨率(`read_fisheye_record()` /
   `write_fisheye_sized()`);旧记录由 `resolve_fisheye()` 按主点推断
   (`size_inferred`)。要别的分辨率就得存一份在该分辨率下标定的参数。
+- **固件 1.3.1(1.3.0-rc4 起,协议 V2.11)每个分辨率各存一份标定** —— 640×480
+  一个槽、1920×1080 一个槽,写其中一份不会覆盖另一份。`resolve_fisheye_for(w, h)`
+  按相机分辨率选槽(`undistort_wrist=True` 会用相机配置的尺寸这么做);
+  `read_fisheye_slot(w, h)` / `clear_fisheye_slot(w, h)` 读取、清除某一个槽。0.4.7
+  的调用(`read_fisheye_record()`、不带尺寸的 `resolve_fisheye()`)读的是 640×480
+  那个槽。写 640×480 / 1920×1080 时主点必须落在画面中心 15% 以内
+  (`fisheye_cal_slot_plausible()`),发送前就会检查。详见
+  [CALIBRATION.md](CALIBRATION.md#dual-calibration-slots-v211-firmware-131-or-130-rc4)。
 - **参考内参是近似的**。每台的镜头装配位置有差异(尤其主点),回退到
   `FISHEYE_FALLBACK_CAL` 只是比完全不矫正强,不能拿它去按像素做测量。
   自己标定后用 `fisheye_cal.py set-fisheye --from-npz cam.npz --width W --height H` 写进 flash。
