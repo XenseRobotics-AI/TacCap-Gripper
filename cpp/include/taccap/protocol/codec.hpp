@@ -68,6 +68,12 @@ std::vector<uint8_t> encode_camera_fisheye_cal_read_sized();            // 1 byt
 std::vector<uint8_t> encode_camera_fisheye_cal_write_sized(const CameraFisheyeCal&,
                                                            uint16_t width,
                                                            uint16_t height);  // 37 bytes
+// V2.11 — read one calibration slot by its size (640x480 or 1920x1080).
+std::vector<uint8_t> encode_camera_fisheye_cal_read_slot(uint16_t width,
+                                                         uint16_t height);   // 5 bytes
+// V2.11 — clear one calibration slot (same layout as the slot read).
+std::vector<uint8_t> encode_camera_fisheye_cal_clear_slot(uint16_t width,
+                                                          uint16_t height);  // 5 bytes
 std::vector<uint8_t> encode_encoder_max_cal_read();                     // 1 byte
 std::vector<uint8_t> encode_encoder_max_cal_write(float max_rad);       // 5 bytes
 
@@ -149,6 +155,8 @@ CameraFisheyeCal   decode_camera_fisheye_cal(const uint8_t* data, std::size_t le
 // V2.10 — read-sized response; verifies the echoed op byte (0x02) and strips it.
 // width/height 0/0 are passed through as-is (size unknown).
 CameraFisheyeCalSized decode_camera_fisheye_cal_sized(const uint8_t* data, std::size_t len);
+// V2.11 — read-slot response: the read-sized layout with op byte 0x04.
+CameraFisheyeCalSized decode_camera_fisheye_cal_slot(const uint8_t* data, std::size_t len);
 float              decode_encoder_max_cal(const uint8_t* data, std::size_t len);
 // V1.6+
 SensorErrorReport  decode_sensor_error(const uint8_t* data, std::size_t len);

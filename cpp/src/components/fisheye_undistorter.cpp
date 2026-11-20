@@ -22,6 +22,8 @@ std::string size_text(int w, int h) {
 // the PC tools' inference rule — see infer_fisheye_cal_size() in the header.
 constexpr int kInferCandidates[][2] = {{640, 480}, {1920, 1080}};
 constexpr double kInferCentreTolerance = 0.10;
+// V2.11 firmware's write-sized plausibility window (fisheye_cal_slot_plausible).
+constexpr double kSlotCentreTolerance = 0.15;
 
 }  // namespace
 
@@ -36,6 +38,19 @@ bool fisheye_cal_size_plausible(const protocol::CameraFisheyeCal& cal,
     if (width < 1 || width > 4096 || height < 1 || height > 4096) return false;
     return cal.cx > 0.0f && cal.cx < static_cast<float>(width) &&
            cal.cy > 0.0f && cal.cy < static_cast<float>(height);
+}
+
+bool fisheye_cal_slot_plausible(const protocol::CameraFisheyeCal& cal,
+                                int width, int height) {
+    if (!is_fisheye_cal_slot_size(width, height)) return false;
+    // Finite params and fx, fy > 0; the frame bounds it also checks are implied
+    // by the centre window below.
+    if (!fisheye_cal_size_plausible(cal, width, height)) return false;
+    // Inclusive, in double so the boundary values (e.g. cx = 224 at 640) pass.
+    return std::abs(static_cast<double>(cal.cx) - width / 2.0) <=
+               kSlotCentreTolerance * width &&
+           std::abs(static_cast<double>(cal.cy) - height / 2.0) <=
+               kSlotCentreTolerance * height;
 }
 
 std::optional<cv::Size> infer_fisheye_cal_size(const protocol::CameraFisheyeCal& cal) {

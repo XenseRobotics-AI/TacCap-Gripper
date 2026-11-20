@@ -30,12 +30,14 @@ namespace xense::taccap::detail {
 //   - firmware has no fisheye record yet     -> read_fisheye() == nullopt
 //   - firmware answers with an empty record  -> !is_usable_fisheye_cal()
 //   - firmware predates command set V2.0     -> ProtocolError(InvalidCmd)
+//   - the calibration stored for this unit belongs to another resolution
+//     than the camera runs at (resolve_fisheye_for)
 //
 // Propagates (a config bug the caller must fix, not something to paper over):
-//   - the camera is not running at the calibration's own resolution (recorded
-//     by the firmware, inferred for a legacy record, 640x480 for the
-//     reference), so the intrinsics do not apply and any rectification would
-//     be quietly wrong. Intrinsics are never rescaled to fit.
+//   - the camera runs at a resolution with no calibration AND the reference
+//     does not apply either (it exists at 640x480 only) -- e.g. a 1920x1080
+//     camera on a unit with no HD calibration. Any rectification would be
+//     quietly wrong; intrinsics are never rescaled to fit.
 inline void install_wrist_undistorter(Calibration& cal,
                                       Camera&      cam,
                                       float        balance,
@@ -45,7 +47,12 @@ inline void install_wrist_undistorter(Calibration& cal,
     // same decision. It used to be spelled out here, and a second copy grew in a
     // downstream consumer — with the two already disagreeing about why a read
     // fails.
-    const auto resolved = cal.resolve_fisheye();
+    //
+    // Resolved for the camera's configured size, so a 1080p camera gets the HD
+    // slot on V2.11 firmware, and a calibration stored for the other resolution
+    // falls back to the reference with a warning instead of being refused.
+    const cv::Size size{cam.config().width, cam.config().height};
+    const auto resolved = cal.resolve_fisheye_for(size.width, size.height);
     if (resolved.is_reference) {
         logger()->warn("{}: wrist fisheye undistortion is using the SDK's REFERENCE "
                        "intrinsics because {}. Rectification will be approximate — "
@@ -54,7 +61,6 @@ inline void install_wrist_undistorter(Calibration& cal,
                        "store this unit's own calibration.", who, resolved.reason);
     }
 
-    const cv::Size size{cam.config().width, cam.config().height};
     auto u = std::make_shared<const FisheyeUndistorter>(
         resolved.calibration, resolved.calibrated_size, size, balance);
     cam.set_undistorter(u);

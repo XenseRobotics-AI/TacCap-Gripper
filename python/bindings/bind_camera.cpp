@@ -28,6 +28,18 @@ void bind_camera(py::module_& m) {
           "the firmware applies to a sized write: every value finite, fx, fy > 0, "
           "1 <= width, height <= 4096, and the principal point strictly inside "
           "the frame (0 < cx < width, 0 < cy < height).");
+    m.def("fisheye_cal_slot_plausible", &fisheye_cal_slot_plausible,
+          py::arg("calibration"), py::arg("width"), py::arg("height"),
+          "True when the calibration is plausible for a dual-slot sized write -- "
+          "the tighter rule firmware V2.11 applies: width x height is 640x480 or "
+          "1920x1080, every value finite, fx, fy > 0, and the principal point "
+          "within 15% of the frame centre, inclusive (|cx - width/2| <= "
+          "0.15*width, |cy - height/2| <= 0.15*height). "
+          "Calibration.write_fisheye_sized checks it before writing either size.");
+    m.def("is_fisheye_cal_slot_size", &is_fisheye_cal_slot_size,
+          py::arg("width"), py::arg("height"),
+          "True for exactly 640x480 and 1920x1080, the resolutions dual-slot "
+          "firmware (V2.11) keeps a calibration for.");
     m.def("infer_fisheye_cal_size",
           [](const protocol::CameraFisheyeCal& cal) -> py::object {
               const auto s = infer_fisheye_cal_size(cal);
@@ -50,7 +62,7 @@ void bind_camera(py::module_& m) {
             m, "FisheyeUndistorter",
         "Rectifies wrist-camera frames using the fisheye intrinsics the firmware\n"
         "persists in flash (read them with Calibration.read_fisheye or, preferring\n"
-        "a usable answer over the literal one, Calibration.resolve_fisheye).\n\n"
+        "a usable answer over the literal one, Calibration.resolve_fisheye_for).\n\n"
         "Protocol-free: it takes a plain CameraFisheyeCal and never touches a\n"
         "transport, so it works on frames this SDK never captured -- the common\n"
         "case, since the wrist UVC device is usually owned by another service. The\n"

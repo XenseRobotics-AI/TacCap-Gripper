@@ -84,7 +84,8 @@ std::vector<uint8_t> encode_cal_write_request(const T& body) {
 
 // Read responses lead with the op byte echoed back. Validate it and hand back
 // a pointer to the body. `op` is the read op that was sent — CalOp::Read, or
-// CAMERA_FISHEYE_CAL_OP_READ_SIZED for the V2.10 sized read.
+// CAMERA_FISHEYE_CAL_OP_READ_SIZED for the V2.10 sized read, or
+// CAMERA_FISHEYE_CAL_OP_READ_SLOT for the V2.11 slot read.
 const uint8_t* cal_read_body(const uint8_t* data, std::size_t len,
                              std::size_t full_size, const char* type_name,
                              uint8_t op = static_cast<uint8_t>(CalOp::Read)) {
@@ -127,6 +128,24 @@ std::vector<uint8_t> encode_camera_fisheye_cal_write_sized(const CameraFisheyeCa
     out[0] = CAMERA_FISHEYE_CAL_OP_WRITE_SIZED;
     std::memcpy(out.data() + 1, &body, sizeof(body));
     return out;
+}
+
+namespace {
+std::vector<uint8_t> encode_slot_request(uint8_t op, uint16_t width, uint16_t height) {
+    return {op,
+            static_cast<uint8_t>(width & 0xFF), static_cast<uint8_t>(width >> 8),
+            static_cast<uint8_t>(height & 0xFF), static_cast<uint8_t>(height >> 8)};
+}
+}  // namespace
+
+std::vector<uint8_t> encode_camera_fisheye_cal_read_slot(uint16_t width,
+                                                         uint16_t height) {
+    return encode_slot_request(CAMERA_FISHEYE_CAL_OP_READ_SLOT, width, height);
+}
+
+std::vector<uint8_t> encode_camera_fisheye_cal_clear_slot(uint16_t width,
+                                                          uint16_t height) {
+    return encode_slot_request(CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT, width, height);
 }
 
 std::vector<uint8_t> encode_encoder_max_cal_read() {
@@ -232,6 +251,16 @@ CameraFisheyeCalSized decode_camera_fisheye_cal_sized(const uint8_t* data,
     const uint8_t* body = cal_read_body(data, len, CAMERA_FISHEYE_CAL_SIZED_SIZE,
                                         "CameraFisheyeCalSized",
                                         CAMERA_FISHEYE_CAL_OP_READ_SIZED);
+    CameraFisheyeCalSized out{};
+    std::memcpy(&out, body, sizeof(out));
+    return out;
+}
+
+CameraFisheyeCalSized decode_camera_fisheye_cal_slot(const uint8_t* data,
+                                                     std::size_t len) {
+    const uint8_t* body = cal_read_body(data, len, CAMERA_FISHEYE_CAL_SIZED_SIZE,
+                                        "CameraFisheyeCalSlot",
+                                        CAMERA_FISHEYE_CAL_OP_READ_SLOT);
     CameraFisheyeCalSized out{};
     std::memcpy(&out, body, sizeof(out));
     return out;

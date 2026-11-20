@@ -39,6 +39,20 @@ namespace xense::taccap {
 inline constexpr int FISHEYE_CALIB_WIDTH  = 640;
 inline constexpr int FISHEYE_CALIB_HEIGHT = 480;
 
+// The second capture resolution the wrist camera is calibrated at. Firmware
+// V2.11 (1.3.0-rc4 / 1.3.1) keeps one calibration slot per resolution: VGA
+// (FISHEYE_CALIB_WIDTH x FISHEYE_CALIB_HEIGHT) and HD (this). See
+// Calibration::read_fisheye_slot().
+inline constexpr int FISHEYE_HD_CALIB_WIDTH  = 1920;
+inline constexpr int FISHEYE_HD_CALIB_HEIGHT = 1080;
+
+// True for exactly 640x480 and 1920x1080 -- the sizes V2.11 firmware has a
+// calibration slot for.
+inline bool is_fisheye_cal_slot_size(int width, int height) noexcept {
+    return (width == FISHEYE_CALIB_WIDTH && height == FISHEYE_CALIB_HEIGHT) ||
+           (width == FISHEYE_HD_CALIB_WIDTH && height == FISHEYE_HD_CALIB_HEIGHT);
+}
+
 // A fisheye record as the firmware holds it: the params plus the capture
 // resolution they belong to. width/height 0/0 means the size is UNKNOWN — the
 // record was written without one (CalOp::Write, or firmware older than V2.10)
@@ -57,6 +71,16 @@ struct FisheyeCalRecord {
 // and the principal point strictly inside the frame (0 < cx < width,
 // 0 < cy < height).
 bool fisheye_cal_size_plausible(const protocol::CameraFisheyeCal& cal,
+                                int width, int height);
+
+// The tighter rule V2.11 firmware applies to a write-sized (op 0x03): the size
+// is one of the two slot sizes (is_fisheye_cal_slot_size), every value finite,
+// fx > 0, fy > 0, and the principal point within 15% of the frame centre,
+// inclusive: |cx - width/2| <= 0.15 * width and |cy - height/2| <= 0.15 * height
+// (640x480: cx 224..416, cy 168..312; 1920x1080: cx 672..1248, cy 378..702).
+// Calibration::write_fisheye_sized() applies it host-side to every 640x480 /
+// 1920x1080 write, whatever the firmware generation.
+bool fisheye_cal_slot_plausible(const protocol::CameraFisheyeCal& cal,
                                 int width, int height);
 
 // Best-effort calibration resolution for a record whose size is unknown.

@@ -118,6 +118,107 @@ std::optional<FisheyeCalRecord> Calibration::read_fisheye_record(
     return FisheyeCalRecord{*cal, 0, 0};
 }
 
+// ---- Dual calibration slots (V2.11) ---------------------------------------
+
+bool Calibration::read_fisheye_slot_(int width, int height,
+                                     std::chrono::milliseconds timeout,
+                                     std::optional<FisheyeCalRecord>& out) {
+    auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                            protocol::encode_camera_fisheye_cal_read_slot(
+                                static_cast<uint16_t>(width),
+                                static_cast<uint16_t>(height)),
+                            timeout);
+    const auto err = ack_error_code(ack);
+    // Firmware without slots answers op 0x04 as an unknown op (InvalidParam).
+    // V2.11 answers InvalidParam only for a size that has no slot, which the
+    // callers never send, and LengthMismatch only for a malformed request; a
+    // LengthMismatch here can therefore only be a pre-V2.11 table check.
+    if (err == protocol::ErrorCode::InvalidParam ||
+        err == protocol::ErrorCode::LengthMismatch) {
+        fisheye_slot_support_.store(0);
+        return false;
+    }
+    if (err == protocol::ErrorCode::CalNotSet) {
+        fisheye_slot_support_.store(1);
+        note_fisheye_size_support_(true);   // V2.11 implies the sized ops
+        out.reset();
+        return true;
+    }
+    if (err != protocol::ErrorCode::Ok) throw_nack("read_fisheye_slot", err);
+    fisheye_slot_support_.store(1);
+    note_fisheye_size_support_(true);
+    const auto sized =
+        protocol::decode_camera_fisheye_cal_slot(ack.data.data(), ack.data.size());
+    if ((sized.width != 0 || sized.height != 0) &&
+        (sized.width != width || sized.height != height)) {
+        throw ProtocolError(
+            "Calibration::read_fisheye_slot: asked for the " +
+            std::to_string(width) + "x" + std::to_string(height) +
+            " slot, the firmware answered with a " + std::to_string(sized.width) +
+            "x" + std::to_string(sized.height) + " record");
+    }
+    out = FisheyeCalRecord{sized.calibration, sized.width, sized.height};
+    return true;
+}
+
+bool Calibration::supports_fisheye_slots(std::chrono::milliseconds timeout) {
+    const int cached = fisheye_slot_support_.load();
+    if (cached >= 0) return cached == 1;
+    // Firmware that cannot even record a size has no slots either.
+    if (fisheye_size_support_.load() == 0) {
+        fisheye_slot_support_.store(0);
+        return false;
+    }
+    std::optional<FisheyeCalRecord> ignored;
+    return read_fisheye_slot_(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT, timeout,
+                              ignored);
+}
+
+std::optional<FisheyeCalRecord> Calibration::read_fisheye_slot(
+        int width, int height, std::chrono::milliseconds timeout) {
+    if (!is_fisheye_cal_slot_size(width, height)) {
+        throw Error("Calibration::read_fisheye_slot: there is no calibration slot "
+                    "for " + std::to_string(width) + "x" + std::to_string(height) +
+                    " -- only 640x480 and 1920x1080.");
+    }
+    if (fisheye_slot_support_.load() != 0 && fisheye_size_support_.load() != 0) {
+        std::optional<FisheyeCalRecord> record;
+        if (read_fisheye_slot_(width, height, timeout, record)) return record;
+    }
+    // Single-record firmware (V2.10 or older).
+    auto record = read_fisheye_record(timeout);
+    if (!record) return std::nullopt;
+    if (record->size_known()) {
+        if (record->width == width && record->height == height) return record;
+        return std::nullopt;
+    }
+    // No size recorded: that is the VGA slot, as on V2.11 (see the header).
+    if (width == FISHEYE_CALIB_WIDTH && height == FISHEYE_CALIB_HEIGHT) return record;
+    return std::nullopt;
+}
+
+void Calibration::clear_fisheye_slot(int width, int height,
+                                     std::chrono::milliseconds timeout) {
+    if (!is_fisheye_cal_slot_size(width, height)) {
+        throw Error("Calibration::clear_fisheye_slot: there is no calibration slot "
+                    "for " + std::to_string(width) + "x" + std::to_string(height) +
+                    " -- only 640x480 and 1920x1080.");
+    }
+    if (!supports_fisheye_slots(timeout)) {
+        throw Error(
+            "Calibration::clear_fisheye_slot: this firmware keeps a single fisheye "
+            "record, not per-resolution slots, and cannot clear one. Upgrade the "
+            "firmware to 1.3.1 or later (or 1.3.0-rc4+; command set V2.11).");
+    }
+    auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
+                            protocol::encode_camera_fisheye_cal_clear_slot(
+                                static_cast<uint16_t>(width),
+                                static_cast<uint16_t>(height)),
+                            timeout);
+    const auto err = ack_error_code(ack);
+    if (err != protocol::ErrorCode::Ok) throw_nack("clear_fisheye_slot", err);
+}
+
 void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
                                       int width, int height,
                                       std::chrono::milliseconds timeout) {
@@ -131,7 +232,32 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
             width, height, cal.fx, cal.fy, cal.cx, cal.cy);
         throw Error(buf);
     }
+    const bool slot_size = is_fisheye_cal_slot_size(width, height);
+    if (slot_size && !fisheye_cal_slot_plausible(cal, width, height)) {
+        // V2.11's rule, applied whatever the firmware: a principal point this
+        // far from the centre means the params belong to another resolution
+        // (typically a 640x480 set labelled 1920x1080, or the reverse).
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+            "Calibration::write_fisheye_sized: the calibration is not plausible "
+            "for %dx%d (fx=%g, fy=%g, cx=%g, cy=%g). At %dx%d the principal "
+            "point must lie within 15%% of the frame centre "
+            "(%g <= cx <= %g, %g <= cy <= %g) -- the params look like they "
+            "belong to another resolution.",
+            width, height, cal.fx, cal.fy, cal.cx, cal.cy, width, height,
+            width / 2.0 - 0.15 * width, width / 2.0 + 0.15 * width,
+            height / 2.0 - 0.15 * height, height / 2.0 + 0.15 * height);
+        throw Error(buf);
+    }
     if (supports_fisheye_size(timeout)) {
+        if (!slot_size && supports_fisheye_slots(timeout)) {
+            throw Error(
+                "Calibration::write_fisheye_sized: this firmware keeps a "
+                "calibration for 640x480 and for 1920x1080 only (command set "
+                "V2.11), so a " + std::to_string(width) + "x" +
+                std::to_string(height) + " calibration cannot be stored. "
+                "Calibrate at one of those two resolutions.");
+        }
         auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
                                     protocol::encode_camera_fisheye_cal_write_sized(
                                         cal, static_cast<uint16_t>(width),
@@ -189,6 +315,46 @@ ResolvedFisheyeCal Calibration::resolve_fisheye(std::chrono::milliseconds timeou
         reason = std::string("the firmware would not answer the fisheye read (")
                + e.what() + ")";
     }
+    return resolve_record_(record, std::move(reason));
+}
+
+ResolvedFisheyeCal Calibration::resolve_fisheye_for(int width, int height,
+                                                    std::chrono::milliseconds timeout) {
+    const std::string want = std::to_string(width) + "x" + std::to_string(height);
+    std::optional<FisheyeCalRecord> record;
+    std::string reason;
+    bool from_slot = false;
+    try {
+        if (is_fisheye_cal_slot_size(width, height) && supports_fisheye_slots(timeout)) {
+            from_slot = true;
+            record    = read_fisheye_slot(width, height, timeout);
+        } else {
+            record = read_fisheye_record(timeout);
+        }
+    } catch (const ProtocolError& e) {
+        reason = std::string("the firmware would not answer the fisheye read (")
+               + e.what() + ")";
+    }
+    if (reason.empty() && !record && from_slot) {
+        reason = "the wrist lens has never been calibrated at " + want +
+                 " (that calibration slot is empty)";
+    }
+    auto resolved = resolve_record_(record, std::move(reason));
+    if (!resolved.is_reference &&
+        resolved.calibrated_size != cv::Size(width, height)) {
+        const std::string have = std::to_string(resolved.calibrated_size.width) + "x" +
+                                 std::to_string(resolved.calibrated_size.height);
+        return {FISHEYE_FALLBACK_CAL, true,
+                "this unit's wrist calibration belongs to " + have +
+                    (resolved.size_inferred ? " (inferred)" : "") + ", not " + want +
+                    " -- calibrate at " + want + " to store one",
+                cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false};
+    }
+    return resolved;
+}
+
+ResolvedFisheyeCal Calibration::resolve_record_(
+        const std::optional<FisheyeCalRecord>& record, std::string reason) {
     if (reason.empty() && !record) {
         reason = "the wrist lens has never been calibrated";
     }

@@ -17,6 +17,7 @@ add_executable(taccap_unit_tests
     test_fisheye_undistort.cpp
     test_calibration_pty.cpp
     test_fisheye_cal_size_pty.cpp
+    test_fisheye_dual_slot_pty.cpp
     test_ota_retry_pty.cpp
     test_python_compat.cpp
     test_stuff.cpp
