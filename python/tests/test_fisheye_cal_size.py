@@ -2,8 +2,8 @@
 """The fisheye calibration resolution, as the Python surface exposes it.
 
 640x480 and 1920x1080 are different sensor crops, so the 8 fisheye params only
-hold at the resolution they were measured at. Firmware V2.10 (leader 1.2.8 /
-follower 1.2.18) records that resolution; older firmware does not, and the SDK
+hold at the resolution they were measured at. Firmware V2.10 (1.3.0, both
+roles) records that resolution; older firmware does not, and the SDK
 infers it with a rule shared verbatim with the PC calibration tools. These
 tests pin the names and shapes those tools code against: tuples for sizes,
 None for "no answer", and resolve_fisheye() still unpacking as the 3-tuple it
@@ -214,7 +214,7 @@ def test_old_firmware_infers_the_size_and_refuses_a_1080p_write():
         resolved = cal.resolve_fisheye()
         assert resolved.calibrated_size == (640, 480)
         assert resolved.size_inferred is True
-        with pytest.raises(RuntimeError, match="1.2.8"):
+        with pytest.raises(RuntimeError, match="1.3.0"):
             cal.write_fisheye_sized(HD, 1920, 1080)
         cal.write_fisheye_sized(VGA, 640, 480)  # legacy fallback
     assert OP_WRITE in store.ops and OP_WRITE_SIZED not in store.ops

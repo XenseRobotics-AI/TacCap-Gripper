@@ -934,7 +934,7 @@ struct CameraFisheyeCal {
     float k4;   // params[7]
 };
 
-// ---- Fisheye calibration resolution (V2.10, leader 1.2.8 / follower 1.2.18)
+// ---- Fisheye calibration resolution (V2.10, firmware 1.3.0)
 //
 // The 8 floats only hold at the capture resolution they were measured at:
 // 640x480 (4:3) and 1920x1080 (16:9) are different sensor crops, so the

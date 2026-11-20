@@ -5,7 +5,7 @@
 //
 //   - Fisheye camera intrinsics + distortion  (Cmd::CameraFisheyeCal 0x2B,
 //     command set >= V2.0) — supported on BOTH leader and follower.
-//     Command set V2.10 (leader 1.2.8 / follower 1.2.18) also records the
+//     Command set V2.10 (firmware 1.3.0, both roles) also records the
 //     capture resolution the params belong to (read_fisheye_record /
 //     write_fisheye_sized); older firmware leaves it unknown.
 //   - Leader encoder max travel angle          (Cmd::EncoderMaxCal 0x2C,
@@ -79,7 +79,7 @@ public:
     void write_fisheye(const protocol::CameraFisheyeCal& cal,
                        std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
-    // ---- Fisheye calibration resolution (V2.10: leader 1.2.8 / follower 1.2.18)
+    // ---- Fisheye calibration resolution (V2.10: firmware 1.3.0)
     // True when the firmware stores the calibration resolution (answers the
     // sized read, op 0x02, with Ok or CalNotSet); false when it rejects that op
     // as InvalidParam, which is how older firmware answers an unknown op. The
