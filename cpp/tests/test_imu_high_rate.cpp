@@ -78,6 +78,35 @@ TEST(ImuHighRate, FollowerDefaultExchangeDrainsThreeSampleV2BatchesInOrder) {
     }
 }
 
+TEST(ImuHighRate, ExactGridStepsAreNeitherDiscontinuitiesNorDrops) {
+    // From 1.3.0-rc3 the firmware publishes exactly the requested rate on the
+    // MCU clock and skips the chip's surplus samples, so 1125 Hz steps are
+    // mostly 875 us with an occasional 1750 us. Those are real capture times:
+    // the SDK must pass every sample through with its timestamp untouched.
+    Pty pty; FakeFollower fw(pty); fw.set_imu_v2_supported(true);
+    fw.set_exchange_imu_count(3);
+    fw.set_imu_exact_grid_steps(true);
+    auto g = open_follower(pty);
+    std::mutex mu;
+    std::vector<tx::ImuSample> samples;
+    g->imu().on_data([&](const tx::ImuSample& s) { std::lock_guard<std::mutex> lock(mu); samples.push_back(s); });
+    g->start_exchange(100, 1125);
+    EXPECT_TRUE(wait_for([&] { return g->exchange_stats().imu_samples >= 200; }, std::chrono::milliseconds(2000)));
+    g->close();
+    std::lock_guard<std::mutex> lock(mu);
+    ASSERT_GE(samples.size(), 200u);
+    unsigned long_steps = 0;
+    for (std::size_t i = 1; i < samples.size(); ++i) {
+        EXPECT_EQ(static_cast<uint16_t>(samples[i].seq - samples[i - 1].seq), 1u) << "sample " << i;
+        const auto step = samples[i].mcu_timestamp_us - samples[i - 1].mcu_timestamp_us;
+        EXPECT_TRUE(step == 875u || step == 1750u) << "step " << step << " at " << i;
+        long_steps += step == 1750u;
+        EXPECT_TRUE(samples[i].timestamp_valid) << i;
+        EXPECT_FALSE(samples[i].timestamp_discontinuity) << i;
+    }
+    EXPECT_GE(long_steps, 2u) << "fixture did not exercise the skipped-sample step";
+}
+
 TEST(ImuHighRate, FollowerHighRateExchangeCapsMotorStatusAtMotorHz) {
     // Every 500/s reply carries a motor record, but subscribers and the
     // control lane must see motor_hz of them, as in streaming mode.

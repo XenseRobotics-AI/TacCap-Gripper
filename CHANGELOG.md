@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Firmware 1.3.0-rc3: requested rates are delivered rates
+
+Nothing in the SDK's wire handling changes; this records what to expect.
+
+- **Motor status is fresh at the requested rate.** Firmware 1.3.0-rc3
+  (tc-gu-01 #32) maps `motor_rate` to the RS00's real report period, which is
+  10 + 5 x EPScan ms rather than the manual's 10 x EPScan: 100 Hz -> 10 ms,
+  50 -> 20, 40 -> 25, 33 -> 30, 20 -> 50. A resting motor at 100 Hz now gives
+  ~100 fresh records/s (0016s: 99.9), not the ~67 the 0.4.7 notes describe for
+  older firmware. A record is repeated only when the motor itself misses a
+  whole period. Rates are still integer-ms divisors (30 Hz -> 30.3 Hz).
+- **High-rate IMU is exactly the requested rate on the MCU clock.** The
+  firmware picks real samples on an exact grid and skips the chip's surplus
+  (~1.5%), never duplicating one. Timestamps stay the true capture times, so
+  1125 Hz steps are mostly 875 us with an occasional ~1750 us; the mean is
+  exact (0016s: 1124.97 Hz, no gaps or regressions). The SDK flags a
+  discontinuity only on a boot-session change or a backwards timestamp, so
+  these uneven steps pass through untouched (new test
+  `ImuHighRate.ExactGridStepsAreNeitherDiscontinuitiesNorDrops`).
+
 ## [0.4.7] - 2026-11-20
 
 Bundled firmware is unchanged (leader 1.2.7 / follower 1.2.17). The fisheye

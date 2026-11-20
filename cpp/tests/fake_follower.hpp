@@ -100,6 +100,10 @@ public:
     void set_imu_v2_supported(bool on) { imu_v2_supported_.store(on); imu_supported_.store(on); }
     void set_max_imu_rate(unsigned hz) { max_imu_rate_.store(hz); }
     void set_exchange_imu_count(unsigned count) { exchange_imu_count_.store(count); }
+    // IMU V2 timestamps as 1.3.0-rc3 publishes 1125 Hz from a +1.6% chip on
+    // the MCU-time grid: 875 us steps with one skipped chip sample (1750 us)
+    // every 64th. Default is a uniform 10 ms step.
+    void set_imu_exact_grid_steps(bool on) { imu_grid_steps_.store(on); }
     unsigned stream_start_attempts() const { return stream_start_attempts_.load(); }
     unsigned imu_queries() const { return imu_queries_.load(); }
     unsigned stream_stops() const { return stream_stops_.load(); }
@@ -671,8 +675,9 @@ private:
     std::atomic<unsigned> max_imu_rate_{1125}, exchange_imu_count_{1}, stream_start_attempts_{0};
     uint64_t imu_session_{0}, imu_time_{UINT64_C(0x200000000)};
     uint16_t imu_seq_{0};
+    std::atomic<bool> imu_grid_steps_{false};
     std::vector<uint8_t> imu_v2_packet_() {
-        imu_time_+=10000;
+        imu_time_ += imu_grid_steps_.load() ? (imu_seq_ % 64 == 63 ? 1750 : 875) : 10000;
         tp::ImuData raw{};raw.accel_z=1000;raw.timestamp_us=uint32_t(imu_time_);raw.seq=imu_seq_++;
         auto p=pod_bytes(&raw,sizeof(raw));
         for(auto value:{imu_time_,imu_session_})
