@@ -81,6 +81,9 @@ def _intrinsics(resolved) -> dict:
         "reason": reason,
         "image_size": list(resolved.calibrated_size),
         "image_size_source": size_source,
+        # The unit's own record IS the reference values: the factory stored
+        # FISHEYE_FALLBACK_CAL instead of calibrating it.
+        "matches_reference": resolved.matches_reference,
         "fx": cal.fx,
         "fy": cal.fy,
         "cx": cal.cx,
@@ -136,6 +139,16 @@ def main() -> int:
         _cal, is_reference, reason = resolved
         top = _intrinsics(resolved)
 
+        if resolved.matches_reference:
+            log.warning(
+                "this unit's stored fisheye calibration IS the SDK reference values "
+                "(FISHEYE_FALLBACK_CAL) — the factory did not calibrate it"
+            )
+            if args.require_device:
+                sys.exit(
+                    "error: --require-device requires the unit's own calibration, but "
+                    "the stored one is the SDK reference values"
+                )
         if is_reference:
             log.warning(
                 f"intrinsics fell back to the SDK reference values ({reason}) — this "

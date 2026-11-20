@@ -318,3 +318,65 @@ TEST(FisheyeCalSizePty, ResolveReferenceFallbackIs640x480) {
     EXPECT_EQ(r.calibrated_size, cv::Size(640, 480));
     EXPECT_FALSE(r.size_inferred);
 }
+
+// ---- Reference values stored as a unit's calibration -----------------------
+// Leader TCGU01A28Z0096m (2026-11-20) carried FISHEYE_FALLBACK_CAL bit-for-bit
+// in flash: the factory had written the reference instead of calibrating it.
+
+namespace {
+// 0016s's own 640x480 calibration, read from flash.
+const tp::CameraFisheyeCal kOwnVga{213.207f, 213.594f, 319.828f, 245.048f,
+                                   -0.017411f, -0.016309f, 0.020412f, -0.008667f};
+}  // namespace
+
+TEST(FisheyeReferenceMatch, RecognisesTheReferenceAndCopiesOfIt) {
+    EXPECT_TRUE(tx::matches_fisheye_fallback_cal(tx::FISHEYE_FALLBACK_CAL));
+    // As printed with 3 decimals and parsed back.
+    const tp::CameraFisheyeCal printed{213.030f, 212.793f, 321.400f, 239.950f,
+                                       -0.0172f, 0.0091f, -0.0146f, 0.0051f};
+    EXPECT_TRUE(tx::matches_fisheye_fallback_cal(printed));
+    EXPECT_FALSE(tx::matches_fisheye_fallback_cal(kOwnVga));
+    auto off = tx::FISHEYE_FALLBACK_CAL;
+    off.cx += 1.0f;   // one pixel is far more than any copy's rounding
+    EXPECT_FALSE(tx::matches_fisheye_fallback_cal(off));
+    auto nan = tx::FISHEYE_FALLBACK_CAL;
+    nan.k4 = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(tx::matches_fisheye_fallback_cal(nan));
+}
+
+TEST(FisheyeReferenceMatch, ResolveFlagsAUnitThatStoresTheReference) {
+    for (bool sized : {true, false}) {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_size_supported(sized);
+        fw.set_fisheye_record(tx::FISHEYE_FALLBACK_CAL, sized ? 640 : 0, sized ? 480 : 0);
+        auto g = open_follower(pty);
+        const auto r = g->calibration().resolve_fisheye();
+        EXPECT_FALSE(r.is_reference) << "the unit's own record was used";
+        EXPECT_TRUE(r.matches_reference);
+        EXPECT_EQ(r.calibrated_size, cv::Size(640, 480));
+        const auto rf = g->calibration().resolve_fisheye_for(640, 480);
+        EXPECT_TRUE(rf.matches_reference);
+    }
+}
+
+TEST(FisheyeReferenceMatch, ResolveDoesNotFlagAUnitsOwnCalibration) {
+    Pty pty;
+    FakeFollower fw(pty);
+    fw.set_fisheye_record(kOwnVga, 640, 480);
+    auto g = open_follower(pty);
+    const auto r = g->calibration().resolve_fisheye();
+    EXPECT_FALSE(r.is_reference);
+    EXPECT_FALSE(r.matches_reference);
+}
+
+TEST(FisheyeReferenceMatch, TheFallbackItselfIsNotFlagged) {
+    // When the SDK substitutes the reference (unit never calibrated), that is
+    // is_reference, not a unit storing the reference.
+    Pty pty;
+    FakeFollower fw(pty);
+    auto g = open_follower(pty);
+    const auto r = g->calibration().resolve_fisheye();
+    EXPECT_TRUE(r.is_reference);
+    EXPECT_FALSE(r.matches_reference);
+}

@@ -140,6 +140,12 @@ void bind_calibration(py::module_& m) {
             "because this unit's own calibration belongs to another resolution, that\n"
             "(width, height); None otherwise. The SDK's wrist undistortion raises in\n"
             "that case rather than use the reference.")
+        .def_property_readonly("matches_reference",
+            [](const ResolvedFisheyeCal& r) { return r.matches_reference; },
+            "True when this unit's own record was used (is_reference False) but it\n"
+            "IS the reference values (matches_fisheye_fallback_cal): the factory\n"
+            "flashed the reference instead of calibrating the unit. A warning is\n"
+            "logged too. Recalibrate the unit.")
         .def("__len__", [](const ResolvedFisheyeCal&) { return 3; })
         .def("__getitem__", [](const ResolvedFisheyeCal& r, py::ssize_t i) {
             py::tuple t = py::make_tuple(r.calibration, r.is_reference, r.reason);
@@ -154,6 +160,7 @@ void bind_calibration(py::module_& m) {
                    ", calibrated_size=" + std::to_string(r.calibrated_size.width) +
                    "x" + std::to_string(r.calibrated_size.height) +
                    ", size_inferred=" + (r.size_inferred ? "True" : "False") +
+                   (r.matches_reference ? std::string(", matches_reference=True") : std::string()) +
                    (r.reason.empty() ? std::string() : ", reason='" + r.reason + "'") +
                    ")";
         });

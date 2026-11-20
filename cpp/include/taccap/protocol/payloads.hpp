@@ -1002,9 +1002,8 @@ constexpr std::size_t CAMERA_FISHEYE_CAL_SIZED_SIZE     = 37;
 // InvalidParam (unknown op), V2.11 never does (data or CalNotSet).
 //
 // Mirror firmware CAMERA_FISHEYE_CAL_OP_READ_SLOT / _OP_CLEAR_SLOT /
-// _REQ_SLOT_SIZE (names as
-// given by the firmware owner for tc-gu-01 branch feat/fisheye-dual-slot;
-// not yet on hw_v1.1.0, so scripts/check_protocol_drift.py does not map them).
+// _REQ_SLOT_SIZE (tc-gu-01 protocol_data.h, hw_v1.1.0 from 5e51a81); compared
+// by scripts/check_protocol_drift.py.
 constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_READ_SLOT  = 0x04;
 constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT = 0x05;
 constexpr std::size_t CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE = 5;

@@ -78,6 +78,7 @@ from xense.taccap import (
     LeaderGripper,
     ProtocolError,
     infer_fisheye_cal_size,
+    matches_fisheye_fallback_cal,
 )
 
 # The resolutions dual-slot firmware (V2.11) keeps a calibration for.
@@ -157,6 +158,13 @@ def _print_record(record, firmware_records_size: bool) -> None:
     for row in fisheye.K:
         print("    [" + "  ".join(f"{v:10.4f}" for v in row) + "]")
     print("  OpenCV D: [" + "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
+    if matches_fisheye_fallback_cal(fisheye):
+        print(
+            "  "
+            + _yellow("these ARE the SDK reference values")
+            + " — the factory stored FISHEYE_FALLBACK_CAL, not this unit's own "
+            "calibration; recalibrate it"
+        )
 
 
 def _show_slots(cal) -> None:

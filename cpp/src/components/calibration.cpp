@@ -41,6 +41,17 @@ bus::AckResponse send_cal_cmd(bus::Transport& t, protocol::Cmd cmd,
     }
 }
 
+// A write of the reference values stores them as this unit's calibration, and
+// every later read takes them for one. Allowed (a stopgap can be deliberate),
+// but never silently.
+void warn_if_reference_(const protocol::CameraFisheyeCal& cal, const char* what) {
+    if (!matches_fisheye_fallback_cal(cal)) return;
+    logger()->warn("Calibration::{}: writing the SDK's REFERENCE fisheye intrinsics "
+                   "(FISHEYE_FALLBACK_CAL) as this unit's calibration. Every read "
+                   "will take them for a real calibration of this unit; calibrate "
+                   "the unit and store its own values instead.", what);
+}
+
 [[noreturn]] void throw_nack(const char* what, protocol::ErrorCode err) {
     throw ProtocolError(std::string("Calibration::") + what + " NACK: " +
                         protocol::to_string(err));
@@ -64,6 +75,7 @@ std::optional<protocol::CameraFisheyeCal> Calibration::read_fisheye(
 
 void Calibration::write_fisheye(const protocol::CameraFisheyeCal& cal,
                                 std::chrono::milliseconds timeout) {
+    warn_if_reference_(cal, "write_fisheye");
     auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
                                 protocol::encode_camera_fisheye_cal_write(cal), timeout);
     const auto err = ack_error_code(ack);
@@ -258,6 +270,7 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
                 std::to_string(height) + " calibration cannot be stored. "
                 "Calibrate at one of those two resolutions.");
         }
+        warn_if_reference_(cal, "write_fisheye_sized");
         auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
                                     protocol::encode_camera_fisheye_cal_write_sized(
                                         cal, static_cast<uint16_t>(width),
@@ -404,7 +417,16 @@ ResolvedFisheyeCal Calibration::resolve_record_(
         return {FISHEYE_FALLBACK_CAL, true, reason,
                 cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false};
     }
-    return {record->calibration, false, {}, size, inferred};
+    ResolvedFisheyeCal resolved{record->calibration, false, {}, size, inferred};
+    if (matches_fisheye_fallback_cal(record->calibration)) {
+        resolved.matches_reference = true;
+        logger()->warn("wrist fisheye calibration stored on this unit IS the SDK's "
+                       "reference intrinsics (FISHEYE_FALLBACK_CAL), not a calibration "
+                       "of this unit -- the factory flashed the reference. "
+                       "Rectification is only approximate; recalibrate the unit and "
+                       "store its own values with write_fisheye_sized().");
+    }
+    return resolved;
 }
 
 }  // namespace xense::taccap

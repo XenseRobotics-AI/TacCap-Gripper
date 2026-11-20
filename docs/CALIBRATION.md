@@ -112,6 +112,11 @@ w, h = resolved.calibrated_size      # open the camera at exactly this size
 
 `reason` is non-empty exactly when `is_reference` is true.
 
+`matches_reference` is the opposite case: the unit's own record was used, but it
+**is** the reference values (`matches_fisheye_fallback_cal()`), i.e. the factory
+stored `FISHEYE_FALLBACK_CAL` instead of calibrating the unit (seen on leader
+TCGU01A28Z0096m, 2026-11-20). A warning is logged; recalibrate such a unit.
+
 Three ways a unit fails to supply its own calibration, all of which fall back:
 
 | What happened | How it is detected |
