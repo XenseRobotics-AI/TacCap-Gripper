@@ -12,6 +12,7 @@
 // V2.11, and resolve_fisheye_for() picking the slot for the camera's size.
 
 #include "fake_follower.hpp"
+#include "wrist_fisheye.hpp"
 
 #include <gtest/gtest.h>
 #include <taccap/components/calibration.hpp>
@@ -572,4 +573,190 @@ TEST(FisheyeDualSlotPty, ClearRefusesASizeWithNoSlot) {
     EXPECT_EQ(raw_cal(*g, {kClearSlot, 0x80, 0x02, 0xE0}), tp::ErrorCode::LengthMismatch);
     EXPECT_EQ(tp::encode_camera_fisheye_cal_clear_slot(640, 480),
               (std::vector<uint8_t>{0x05, 0x80, 0x02, 0xE0, 0x01}));
+}
+
+// ---- Wrist undistortion decision (install_wrist_undistorter) -----------------
+// detail::resolve_wrist_fisheye() is the camera-free half of
+// install_wrist_undistorter(): own calibration at the camera size -> use it;
+// none at all -> reference; own calibration only at the other size -> throw.
+
+namespace {
+
+void expect_other_size_refusal(tx::Calibration& cal, cv::Size camera,
+                               const std::string& want, const std::string& have) {
+    try {
+        (void)tx::detail::resolve_wrist_fisheye(cal, camera, "TestGripper");
+        FAIL() << "expected Error";
+    } catch (const tx::ProtocolError& e) {
+        FAIL() << "a host-side refusal, not a firmware NACK: " << e.what();
+    } catch (const tx::Error& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("runs at " + want), std::string::npos) << msg;
+        EXPECT_NE(msg.find("calibration is for " + have), std::string::npos) << msg;
+        EXPECT_NE(msg.find("calibrate this unit at " + want +
+                           ", or run the camera at " + have),
+                  std::string::npos) << msg;
+    }
+}
+
+}  // namespace
+
+TEST(WristFisheyeDecisionPty, UsesTheCalibrationForTheCameraSize) {
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_11);
+        fw.set_fisheye_record(kVga, 640, 480);
+        fw.set_fisheye_hd_record(kHd);
+        auto g = open_follower(pty);
+        auto& cal = g->calibration();
+        const auto hd = tx::detail::resolve_wrist_fisheye(cal, {1920, 1080}, "T");
+        EXPECT_FALSE(hd.is_reference);
+        EXPECT_TRUE(same(hd.calibration, kHd));
+        const auto vga = tx::detail::resolve_wrist_fisheye(cal, {640, 480}, "T");
+        EXPECT_FALSE(vga.is_reference);
+        EXPECT_TRUE(same(vga.calibration, kVga));
+    }
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_10);
+        fw.set_fisheye_record(kHd, 1920, 1080);
+        auto g = open_follower(pty);
+        const auto hd =
+            tx::detail::resolve_wrist_fisheye(g->calibration(), {1920, 1080}, "T");
+        EXPECT_FALSE(hd.is_reference);
+        EXPECT_TRUE(same(hd.calibration, kHd));
+        EXPECT_NO_THROW(tx::FisheyeUndistorter(hd.calibration, hd.calibrated_size,
+                                               cv::Size(1920, 1080)));
+    }
+}
+
+TEST(WristFisheyeDecisionPty, NoCalibrationAnywhereFallsBackToTheReference) {
+    for (Fw gen : {Fw::V2_11, Fw::V2_10}) {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(gen);
+        auto g = open_follower(pty);
+        auto& cal = g->calibration();
+        const auto vga = tx::detail::resolve_wrist_fisheye(cal, {640, 480}, "T");
+        EXPECT_TRUE(vga.is_reference);
+        EXPECT_TRUE(same(vga.calibration, tx::FISHEYE_FALLBACK_CAL));
+        EXPECT_NO_THROW(tx::FisheyeUndistorter(vga.calibration, vga.calibrated_size,
+                                               cv::Size(640, 480)));
+        // A 1080p camera gets the reference too, which the undistorter refuses:
+        // the reference is a 640x480 calibration and is never rescaled.
+        const auto hd = tx::detail::resolve_wrist_fisheye(cal, {1920, 1080}, "T");
+        EXPECT_TRUE(hd.is_reference);
+        EXPECT_THROW(tx::FisheyeUndistorter(hd.calibration, hd.calibrated_size,
+                                            cv::Size(1920, 1080)),
+                     tx::Error);
+    }
+}
+
+TEST(WristFisheyeDecisionPty, CalibrationOnlyAtTheOtherSizeThrowsOnV211) {
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_11);
+        fw.set_fisheye_record(kVga, 640, 480);   // VGA only
+        auto g = open_follower(pty);
+        expect_other_size_refusal(g->calibration(), {1920, 1080}, "1920x1080",
+                                  "640x480");
+    }
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_11);
+        fw.set_fisheye_hd_record(kHd);           // HD only
+        auto g = open_follower(pty);
+        expect_other_size_refusal(g->calibration(), {640, 480}, "640x480",
+                                  "1920x1080");
+    }
+}
+
+TEST(WristFisheyeDecisionPty, CalibrationOnlyAtTheOtherSizeThrowsOnV210) {
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_10);
+        fw.set_fisheye_record(kHd, 1920, 1080);
+        auto g = open_follower(pty);
+        expect_other_size_refusal(g->calibration(), {640, 480}, "640x480",
+                                  "1920x1080");
+    }
+    {
+        Pty pty;
+        FakeFollower fw(pty);
+        fw.set_fisheye_firmware(Fw::V2_10);
+        fw.set_fisheye_record(kVga, 640, 480);
+        auto g = open_follower(pty);
+        expect_other_size_refusal(g->calibration(), {1920, 1080}, "1920x1080",
+                                  "640x480");
+    }
+}
+
+// ---- Firmware facts confirmed against tc-gu-01 #34 (247671f) -----------------
+
+TEST(FisheyeDualSlotPty, CentreWindowBoundaryMatchesTheFirmwareHostTests) {
+    // The firmware's own host tests: 320 + 96 accepted, 320 + 97 refused.
+    auto hi = kVga;
+    hi.cx = 416.0f;
+    auto over = kVga;
+    over.cx = 417.0f;
+    EXPECT_TRUE(tx::fisheye_cal_slot_plausible(hi, 640, 480));
+    EXPECT_FALSE(tx::fisheye_cal_slot_plausible(over, 640, 480));
+    auto hd_lo = kHd;
+    hd_lo.cy = 378.0f;   // 540 - 0.15 * 1080
+    auto hd_under = kHd;
+    hd_under.cy = 377.0f;
+    EXPECT_TRUE(tx::fisheye_cal_slot_plausible(hd_lo, 1920, 1080));
+    EXPECT_FALSE(tx::fisheye_cal_slot_plausible(hd_under, 1920, 1080));
+
+    Pty pty;
+    FakeFollower fw(pty);
+    fw.set_fisheye_firmware(Fw::V2_11);
+    auto g = open_follower(pty);
+    EXPECT_NO_THROW(g->calibration().write_fisheye_sized(hi, 640, 480));
+    EXPECT_THROW(g->calibration().write_fisheye_sized(over, 640, 480), tx::Error);
+    EXPECT_EQ(raw_cal(*g, tp::encode_camera_fisheye_cal_write_sized(over, 640, 480)),
+              tp::ErrorCode::InvalidParam);
+    EXPECT_NO_THROW(g->calibration().write_fisheye_sized(hd_lo, 1920, 1080));
+    EXPECT_EQ(raw_cal(*g, tp::encode_camera_fisheye_cal_write_sized(hd_under, 1920, 1080)),
+              tp::ErrorCode::InvalidParam);
+    EXPECT_TRUE(same(*fw.stored_fisheye(), hi));
+    EXPECT_TRUE(same(*fw.stored_fisheye_hd(), hd_lo));
+}
+
+TEST(FisheyeDualSlotPty, MigratedV210RecordStaysInTheVgaSlotWithAnUnknownSize) {
+    // A 1920x1080 record written by V2.10 rc1..rc3 is left in the VGA slot by
+    // the upgrade (never moved to HD) and reports 0/0 on 0x02 and 0x04.
+    Pty pty;
+    FakeFollower fw(pty);
+    fw.set_fisheye_firmware(Fw::V2_11);
+    fw.set_fisheye_record(kHd, 1920, 1080);
+    auto g = open_follower(pty);
+    auto& cal = g->calibration();
+    const auto vga = cal.read_fisheye_slot(640, 480);
+    ASSERT_TRUE(vga.has_value());
+    EXPECT_TRUE(same(vga->calibration, kHd));
+    EXPECT_FALSE(vga->size_known());
+    EXPECT_FALSE(cal.read_fisheye_slot(1920, 1080).has_value());
+    const auto rec = cal.read_fisheye_record();   // op 0x02
+    ASSERT_TRUE(rec.has_value());
+    EXPECT_FALSE(rec->size_known());
+
+    // Inferred from cx ~ 968 as 1920x1080, so not usable at 640x480 ...
+    const auto r = cal.resolve_fisheye_for(640, 480);
+    EXPECT_TRUE(r.is_reference);
+    EXPECT_EQ(r.mismatched_size, cv::Size(1920, 1080));
+    EXPECT_NE(r.reason.find("belongs to 1920x1080 (inferred), not 640x480"),
+              std::string::npos) << r.reason;
+    // ... and the wrist undistortion refuses rather than use the reference.
+    expect_other_size_refusal(cal, {640, 480}, "640x480", "1920x1080");
+    // A 1080p camera has no HD slot calibration either: the VGA slot record is
+    // not promoted to HD, so this also refuses (unit calibrated, other slot).
+    const auto hd = cal.resolve_fisheye_for(1920, 1080);
+    EXPECT_TRUE(hd.is_reference);
+    EXPECT_TRUE(hd.mismatched_size.empty());
 }

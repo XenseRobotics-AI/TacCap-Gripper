@@ -250,11 +250,26 @@ its looser rule (any plausible size up to 4096).
 
 **Wrist undistortion picks the slot by camera size.** `install_wrist_undistorter()`
 (`undistort_wrist=True`) now calls `resolve_fisheye_for()` with the camera's
-configured width/height, so a 1080p camera gets the HD slot on V2.11. A behaviour
-change that applies to every firmware: a calibration stored for the *other*
-resolution now falls back to the reference with a warning instead of raising.
-A 1920x1080 camera with no HD calibration still raises — the reference is a
-640x480 calibration and is never rescaled.
+configured width/height, so a 1080p camera gets the HD slot on V2.11. If the
+unit has a usable calibration only for the *other* resolution, opening raises,
+naming both sizes, rather than silently swapping in the approximate reference
+(calibrate at the camera's size, or run the camera at the calibrated one). The
+reference fallback with a warning is kept only for a unit with no usable
+calibration at all, and only works on a 640x480 camera. A 1920x1080 camera on
+such a unit still raises, because the reference is never rescaled.
+`resolve_fisheye_for()` itself only reports a mismatch: it returns the reference
+with a "belongs to AxB" `reason` and `mismatched_size = (A, B)`.
+
+**Upgrading from V2.10 (rc1..rc3).** The single V2.10 record stays in the VGA
+slot; it is never moved to HD. The VGA slot reports its size only when the size
+record is exactly 640x480, so a 1920x1080 record written by rc1..rc3 reads with
+size `0/0` (op `0x02` and `0x04` at 640x480). `read_fisheye_slot(1920, 1080)` is
+then `None`, and `resolve_fisheye_for(640, 480)` infers 1920x1080 from the
+principal point and reports it as `mismatched_size`. Wrist undistortion raises
+on either camera size until the unit is recalibrated: on a 640x480 camera because
+the calibration is for 1920x1080, and on a 1920x1080 camera because the HD slot
+is empty. Store the calibration again with
+`write_fisheye_sized(cal, 1920, 1080)` to put it in the HD slot.
 
 ```bash
 python python/examples/fisheye_cal.py show                                   # lists both slots on V2.11

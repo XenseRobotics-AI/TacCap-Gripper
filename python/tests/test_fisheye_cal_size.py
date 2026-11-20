@@ -145,12 +145,14 @@ class FakeFisheyeStore:
         raise FakeFisheyeError(ERR_INVALID_PARAM)
 
     def _handle_v2_11(self, op: int, payload: bytes) -> bytes:
+        # The VGA slot reports its size only when it is exactly 640x480.
+        vga_size = self.size if tuple(self.size) == VGA_SIZE else (0, 0)
         if op in (OP_READ, OP_READ_SIZED):
             if len(payload) != 1:
                 raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
             if self.params is None:
                 raise FakeFisheyeError(ERR_CAL_NOT_SET)
-            tail = struct.pack("<HH", *self.size) if op == OP_READ_SIZED else b""
+            tail = struct.pack("<HH", *vga_size) if op == OP_READ_SIZED else b""
             return bytes([op]) + self.params + tail
         if op in (OP_READ_SLOT, OP_CLEAR_SLOT):
             if len(payload) != 5:
@@ -167,7 +169,7 @@ class FakeFisheyeStore:
             if size == VGA_SIZE:
                 if self.params is None:
                     raise FakeFisheyeError(ERR_CAL_NOT_SET)
-                return bytes([op]) + self.params + struct.pack("<HH", *self.size)
+                return bytes([op]) + self.params + struct.pack("<HH", *vga_size)
             if self.hd is None:
                 raise FakeFisheyeError(ERR_CAL_NOT_SET)
             return bytes([op]) + self.hd + struct.pack("<HH", *HD_SIZE)
@@ -393,3 +395,18 @@ def test_single_record_firmware_has_no_slots(sized):
         r = cal.resolve_fisheye_for(640, 480)
         assert r.is_reference is True and "not 640x480" in r.reason
     assert OP_CLEAR_SLOT not in store.ops
+
+
+def test_v2_11_migrated_1080p_record_stays_in_the_vga_slot():
+    # A 1920x1080 record written by V2.10 rc1..rc3 stays in the VGA slot after
+    # the upgrade and reads with size (0, 0).
+    store = FakeFisheyeStore(sized=True, slots=True, cal=HD, width=1920, height=1080)
+    with fake_leader(store) as g:
+        cal = g.calibration
+        rec = cal.read_fisheye_slot(640, 480)
+        assert (rec.width, rec.height) == (0, 0)
+        assert cal.read_fisheye_slot(1920, 1080) is None
+        r = cal.resolve_fisheye_for(640, 480)
+        assert r.is_reference is True
+        assert r.mismatched_size == (1920, 1080)
+        assert cal.resolve_fisheye_for(1920, 1080).mismatched_size is None

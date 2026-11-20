@@ -52,10 +52,22 @@ Behaviour changes:
 
 - **Wrist undistortion picks the slot by camera size.** `undistort_wrist=True`
   now resolves with the camera's configured width/height, so a 1080p camera
-  gets the HD slot. On every firmware, a calibration stored for the *other*
-  resolution now falls back to the reference with a warning, where it used to
-  raise. A 1920x1080 camera with no HD calibration still raises, because the
-  reference is a 640x480 calibration.
+  gets the HD slot. When the unit has a usable calibration only for the
+  *other* resolution (a 1080p camera with only VGA, a 640x480 camera with only
+  HD, or a single V2.10 record sized for the other resolution), opening raises
+  `Error` naming both sizes ("calibrate this unit at WxH, or run the camera at
+  AxB"). It does not fall back to the reference: that would silently replace
+  the unit's own calibration with an approximate one. The reference fallback
+  with a warning remains only for a unit with no usable calibration at all,
+  which works only on a 640x480 camera. A 1920x1080 camera on such a unit
+  still raises. `resolve_fisheye_for()` itself only reports the mismatch,
+  returning the reference with a "belongs to AxB" `reason` and the new
+  `ResolvedFisheyeCal.mismatched_size` field.
+- **Upgrading from V2.10 rc1..rc3:** the single record stays in the VGA slot
+  (it is not moved to HD) and reports size 0/0 unless it is exactly 640x480.
+  So a 1080p calibration stored by an rc reads as an unsized VGA-slot record:
+  `resolve_fisheye_for(640, 480)` infers 1920x1080, and the HD slot is empty.
+  Re-store it with `write_fisheye_sized(cal, 1920, 1080)`.
 - The 0.4.7 calls (`read_fisheye()`, `read_fisheye_record()`, no-argument
   `resolve_fisheye()`) read the VGA slot on V2.11, and 0.4.7 itself behaves
   the same way. So 0.4.7 (or this SDK's legacy calls), after writing an HD

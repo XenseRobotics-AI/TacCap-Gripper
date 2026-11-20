@@ -348,7 +348,8 @@ ResolvedFisheyeCal Calibration::resolve_fisheye_for(int width, int height,
                 "this unit's wrist calibration belongs to " + have +
                     (resolved.size_inferred ? " (inferred)" : "") + ", not " + want +
                     " -- calibrate at " + want + " to store one",
-                cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false};
+                cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false,
+                resolved.calibrated_size};
     }
     return resolved;
 }

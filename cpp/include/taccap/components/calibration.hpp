@@ -84,7 +84,9 @@ public:
     // uses it only when that size equals width x height.
     //
     // When nothing matches, the reference calibration stands in, reported
-    // through `reason` as resolve_fisheye() does. The reference exists at
+    // through `reason` as resolve_fisheye() does. When that is only because
+    // this unit's own usable calibration belongs to another resolution, that
+    // resolution is in ResolvedFisheyeCal::mismatched_size. The reference exists at
     // 640x480 ONLY: for any other requested size its calibrated_size still
     // reads 640x480, so a FisheyeUndistorter built for the camera refuses it
     // rather than rectifying with wrong intrinsics.

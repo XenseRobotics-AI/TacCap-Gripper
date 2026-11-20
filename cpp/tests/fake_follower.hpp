@@ -209,7 +209,10 @@ public:
     // slot by size: 5-byte request else LengthMismatch, slot size else
     // InvalidParam, empty slot CalNotSet; the reply is the 37-byte sized layout
     // with op 0x04 (VGA: 640x480 or 0/0 like op 0x02; HD: always 1920x1080).
-    // Ops 0x00 / 0x01 / 0x02 address the VGA slot only. Op 0x05 clears a slot
+    // Ops 0x00 / 0x01 / 0x02 address the VGA slot only; it reports w/h only
+    // when its size record is exactly 640x480, else 0/0 (pre-load a
+    // non-640x480 size with set_fisheye_record to emulate a V2.10-era record
+    // left in the VGA slot by the upgrade; tc-gu-01 #34 247671f). Op 0x05 clears a slot
     // (same request checks as 0x04; VGA also drops its size record; an empty
     // slot is Ok; generic empty ACK).
     enum class FisheyeFirmware { Legacy, V2_10, V2_11 };
@@ -633,12 +636,18 @@ private:
             }
             pty_.send_response(f.seq, f.cmd, out);
         };
+        // The VGA slot reports its size only when the size record is exactly
+        // 640x480; anything else (e.g. a 1920x1080 record a V2.10 rc wrote
+        // before the upgrade, which stays in the VGA slot) reads as 0/0.
+        const auto vga_size = is_vga(fisheye_w_, fisheye_h_)
+                                  ? std::make_pair(fisheye_w_, fisheye_h_)
+                                  : std::make_pair(uint16_t{0}, uint16_t{0});
         if (op == static_cast<uint8_t>(tp::CalOp::Read) ||
             op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED) {
             if (f.payload.size() != 1) { fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch); return; }
             if (!fisheye_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
             if (op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED)
-                reply_record(op, *fisheye_cal_, std::make_pair(fisheye_w_, fisheye_h_));
+                reply_record(op, *fisheye_cal_, vga_size);
             else
                 reply_record(op, *fisheye_cal_, std::nullopt);
             return;
@@ -652,7 +661,7 @@ private:
             const unsigned h = f.payload[3] | (f.payload[4] << 8);
             if (is_vga(w, h)) {
                 if (!fisheye_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
-                reply_record(op, *fisheye_cal_, std::make_pair(fisheye_w_, fisheye_h_));
+                reply_record(op, *fisheye_cal_, vga_size);
                 return;
             }
             if (is_hd(w, h)) {

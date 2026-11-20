@@ -131,6 +131,15 @@ void bind_calibration(py::module_& m) {
             [](const ResolvedFisheyeCal& r) { return r.size_inferred; },
             "True when calibrated_size was inferred from the principal point\n"
             "because the record carries no size (see infer_fisheye_cal_size).")
+        .def_property_readonly("mismatched_size",
+            [](const ResolvedFisheyeCal& r) -> py::object {
+                if (r.mismatched_size.empty()) return py::none();
+                return py::make_tuple(r.mismatched_size.width, r.mismatched_size.height);
+            },
+            "Set only by resolve_fisheye_for(): when the reference stands in solely\n"
+            "because this unit's own calibration belongs to another resolution, that\n"
+            "(width, height); None otherwise. The SDK's wrist undistortion raises in\n"
+            "that case rather than use the reference.")
         .def("__len__", [](const ResolvedFisheyeCal&) { return 3; })
         .def("__getitem__", [](const ResolvedFisheyeCal& r, py::ssize_t i) {
             py::tuple t = py::make_tuple(r.calibration, r.is_reference, r.reason);

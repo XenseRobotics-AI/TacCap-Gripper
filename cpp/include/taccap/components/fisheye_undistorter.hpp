@@ -146,6 +146,10 @@ struct ResolvedFisheyeCal {
     std::string                reason;
     cv::Size                   calibrated_size{FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT};
     bool                       size_inferred = false;
+    // Set only by Calibration::resolve_fisheye_for(): when the reference stands
+    // in solely because this unit's own (usable) calibration belongs to another
+    // resolution, that resolution (recorded or inferred); empty (0x0) otherwise.
+    cv::Size                   mismatched_size{};
 };
 
 inline bool is_usable_fisheye_cal(const protocol::CameraFisheyeCal& c) {

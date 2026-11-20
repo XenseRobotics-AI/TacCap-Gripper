@@ -642,7 +642,8 @@ Four constraints you must know:
 - **Firmware 1.3.1 (1.3.0-rc4+, protocol V2.11) keeps one calibration per
   resolution** — a 640×480 slot and a 1920×1080 slot; storing one never
   overwrites the other. `resolve_fisheye_for(w, h)` picks the slot for the camera
-  (and `undistort_wrist=True` does so with the camera's configured size);
+  (and `undistort_wrist=True` does so with the camera's configured size, raising
+  when the unit is calibrated only at the other resolution);
   `read_fisheye_slot(w, h)` / `clear_fisheye_slot(w, h)` read and erase one. The
   0.4.7 calls (`read_fisheye_record()`, no-argument `resolve_fisheye()`) read the
   640×480 slot. A 640×480 / 1920×1080 write must have its principal point within

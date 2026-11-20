@@ -550,7 +550,8 @@ cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的�
   (`size_inferred`)。要别的分辨率就得存一份在该分辨率下标定的参数。
 - **固件 1.3.1(1.3.0-rc4 起,协议 V2.11)每个分辨率各存一份标定** —— 640×480
   一个槽、1920×1080 一个槽,写其中一份不会覆盖另一份。`resolve_fisheye_for(w, h)`
-  按相机分辨率选槽(`undistort_wrist=True` 会用相机配置的尺寸这么做);
+  按相机分辨率选槽(`undistort_wrist=True` 会用相机配置的尺寸这么做,
+  这台只标定过另一个分辨率时直接抛错);
   `read_fisheye_slot(w, h)` / `clear_fisheye_slot(w, h)` 读取、清除某一个槽。0.4.7
   的调用(`read_fisheye_record()`、不带尺寸的 `resolve_fisheye()`)读的是 640×480
   那个槽。写 640×480 / 1920×1080 时主点必须落在画面中心 15% 以内
