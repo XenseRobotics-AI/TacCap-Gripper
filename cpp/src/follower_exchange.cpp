@@ -41,8 +41,9 @@ std::size_t imu_size(uint8_t cmd) {
 
 FollowerExchange::FollowerExchange(bus::Transport& transport,
                                    std::chrono::microseconds period,
-                                   std::chrono::milliseconds timeout)
-    : t_(transport), period_(period), timeout_(timeout) {
+                                   std::chrono::milliseconds timeout,
+                                   std::chrono::microseconds motor_period)
+    : t_(transport), period_(period), timeout_(timeout), motor_period_(motor_period) {
     worker_ = std::thread([this] { run_(); });
 }
 
@@ -155,6 +156,23 @@ void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_t
     if (ok && h.imu_count && !imu) ok = false;
     if (ok && d.size() != pos + motor + std::size_t(h.imu_count) * imu) ok = false;
 
+    // Deliver a motor record only once it is due. The due time advances by
+    // whole motor periods, so the average is exactly motor_hz whatever the
+    // exchange grid; half an exchange period of slack keeps reply jitter from
+    // pushing a record into the next exchange. At the 100 Hz exchange every
+    // record is due, as before.
+    bool deliver_motor = motor != 0;
+    if (deliver_motor && motor_period_.count() > 0) {
+        const auto now = ack.receive_time;
+        if (next_motor_due_ && now + period_ / 2 < *next_motor_due_) {
+            deliver_motor = false;
+        } else {
+            next_motor_due_ = next_motor_due_ ? *next_motor_due_ + motor_period_
+                                              : now + motor_period_;
+            if (*next_motor_due_ <= now) *next_motor_due_ = now + motor_period_;
+        }
+    }
+
     std::vector<bus::Frame> frames;
     if (ok) {
         auto frame = [&](protocol::Cmd cmd, std::size_t n) {
@@ -169,7 +187,8 @@ void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_t
             pos += n;
             frames.push_back(std::move(f));
         };
-        if (motor) frame(protocol::Cmd::GetMotorStatus, motor);
+        if (deliver_motor) frame(protocol::Cmd::GetMotorStatus, motor);
+        else pos += motor;
         for (unsigned i = 0; i < h.imu_count; ++i) frame(static_cast<protocol::Cmd>(h.imu_cmd), imu);
     }
     for (auto& f : frames) t_.inject_data(std::move(f));
@@ -177,7 +196,8 @@ void FollowerExchange::handle_reply_(const bus::AckResponse& ack, bool carried_t
     std::lock_guard<std::mutex> lk(mu_);
     if (ack.is_nack) { ++stats_.nacks; return; }
     if (!ok) { ++stats_.malformed; return; }
-    if (motor) ++stats_.motor_samples;
+    if (deliver_motor) ++stats_.motor_samples;
+    else if (motor) ++stats_.motor_skipped;
     stats_.imu_samples += h.imu_count;
     stats_.imu_dropped += h.imu_dropped;
     if (carried_target) {

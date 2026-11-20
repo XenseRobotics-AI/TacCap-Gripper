@@ -286,6 +286,8 @@ TEST(FollowerExchangePty, WaitingForTheLinkCountsAgainstTheRequestTimeout) {
 // next telemetry exchange instead of adding a target-only one. Measured on a
 // real follower (9s, 2026-11-13) the old behaviour ran 1000 exchanges/s --
 // 500 telemetry + 500 target-only -- doubling half-duplex line occupancy.
+// Since motor status is capped at motor_hz in exchange mode, such a controller
+// steps ~100 times a second, and each of those targets must still ride.
 TEST(FollowerExchangePty, TargetsRideOnTheNextTelemetryExchangeAtHighRate) {
     Pty pty;
     ASSERT_GE(pty.master(), 0);
@@ -305,8 +307,10 @@ TEST(FollowerExchangePty, TargetsRideOnTheNextTelemetryExchangeAtHighRate) {
     const auto telem = s1.telemetry_exchanges - s0.telemetry_exchanges;
     const auto all = s1.exchanges - s0.exchanges;
     const auto with_target = s1.target_exchanges - s0.target_exchanges;
+    const auto delivered = s1.motor_samples - s0.motor_samples;
     ASSERT_GT(telem, 50u);
     EXPECT_LE(all, telem + telem / 10) << "targets went out as extra target-only exchanges";
-    EXPECT_GE(with_target, telem * 8 / 10) << "targets were not carried on telemetry exchanges";
+    EXPECT_LE(delivered, telem / 3) << "motor status not capped at motor_hz";
+    EXPECT_GE(with_target, delivered * 8 / 10) << "targets were not carried on telemetry exchanges";
     EXPECT_EQ(s1.targets_rejected, 0u);
 }
