@@ -152,8 +152,9 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
         "Calibration::write_fisheye_sized: this firmware cannot record the "
         "calibration resolution, so a " + std::to_string(width) + "x" +
         std::to_string(height) + " calibration cannot be stored safely — it "
-        "would be taken for 640x480. Upgrade the firmware to 1.3.0 or later "
-        "(leader and follower, command set V2.10), or calibrate at 640x480.");
+        "would be taken for 640x480. Upgrade the firmware to 1.3.1 or later (or "
+        "a 1.3.0 release candidate; leader and follower, command set V2.10), or "
+        "calibrate at 640x480.");
 }
 
 // ---- Leader encoder max travel angle ---------------------------------------

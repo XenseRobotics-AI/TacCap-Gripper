@@ -2,7 +2,7 @@
 //
 // End-to-end tests for the V2.10 fisheye calibration resolution (Cmd 0x2B ops
 // 0x02 / 0x03), against the fake follower in both of its firmware personas:
-// V2.10 (firmware 1.3.0), which records the size, and older firmware, which
+// V2.10 (firmware 1.3.0-rc1 / 1.3.1), which records the size, and older firmware, which
 // answers op=0x02 with InvalidParam.
 //
 // What matters here is the seam between the two: the capability probe, the
@@ -209,7 +209,7 @@ TEST(FisheyeCalSizePty, WriteSizedOnOldFirmwareRefuses1080p) {
     } catch (const tx::Error& e) {
         const std::string msg = e.what();
         EXPECT_NE(msg.find("cannot record the calibration resolution"), std::string::npos) << msg;
-        EXPECT_NE(msg.find("1.3.0"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("1.3.1"), std::string::npos) << msg;
     }
     // Nothing was written: only the probe went out.
     EXPECT_FALSE(fw.stored_fisheye().has_value());

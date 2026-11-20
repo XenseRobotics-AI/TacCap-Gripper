@@ -61,7 +61,7 @@ about whether a switched-on path might silently skip the remap.
 Note the undistorter is built at the calibration's own resolution only:
 640x480 and 1920x1080 are different sensor crops, so rescaling the intrinsics
 would be silently wrong and is refused. The resolution comes from the firmware
-record (firmware 1.3.0+ stores it), is inferred from the
+record (firmware 1.3.0-rc1+ / 1.3.1 stores it), is inferred from the
 principal point for an older record, or is 640x480 for the reference values.
 Without --width/--height the camera is opened at that resolution; ask for
 another size and undistortion is unavailable at that size (the script says so

@@ -72,7 +72,7 @@ void bind_calibration(py::module_& m) {
         "A fisheye record as the firmware holds it: the params plus the capture\n"
         "resolution they were measured at (Calibration.read_fisheye_record).\n\n"
         "width/height 0/0 means the size is UNKNOWN -- the params were written\n"
-        "without one (write_fisheye, or firmware older than 1.3.0).\n"
+        "without one (write_fisheye, or firmware older than 1.3.0-rc1).\n"
         "Do not assume 640x480 then; infer_fisheye_cal_size()\n"
         "applies the shared inference rule, and resolve_fisheye() uses it.")
         .def(py::init([](const protocol::CameraFisheyeCal& cal,
@@ -211,7 +211,7 @@ void bind_calibration(py::module_& m) {
              "Persist fisheye parameters to MCU flash (survives power cycles). "
              "NaN/Inf values are rejected by the firmware.\n\n"
              "Writes the params only: on firmware that records the calibration "
-             "resolution (firmware 1.3.0+) this marks it unknown. "
+             "resolution (firmware 1.3.0-rc1+ / 1.3.1) this marks it unknown. "
              "Prefer write_fisheye_sized().")
         .def("supports_fisheye_size",
              [](Calibration& self, unsigned timeout_ms) {
@@ -220,7 +220,7 @@ void bind_calibration(py::module_& m) {
              },
              py::arg("timeout_ms") = 200,
              "True when the firmware records the fisheye calibration resolution "
-             "(command set V2.10: firmware 1.3.0 or later).\n\n"
+             "(command set V2.10: firmware 1.3.1 or later, or 1.3.0-rc1+).\n\n"
              "Probes with the sized read: older firmware rejects it as "
              "InvalidParam. The answer is cached on this Calibration; a transport "
              "failure raises and is not cached.")
@@ -253,7 +253,7 @@ void bind_calibration(py::module_& m) {
              "Raises RuntimeError before sending anything unless "
              "fisheye_cal_size_plausible(cal, width, height). Raises "
              "ProtocolError when the firmware rejects the write. Firmware that "
-             "cannot record a size (older than firmware 1.3.0) "
+             "cannot record a size (older than firmware 1.3.0-rc1) "
              "accepts only a 640x480 calibration, through the legacy write; any "
              "other resolution raises RuntimeError asking for an upgrade.")
         .def("read_encoder_max_rad",

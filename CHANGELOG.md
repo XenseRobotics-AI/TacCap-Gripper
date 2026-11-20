@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The wrist fisheye default moved from 640x480 to 1920x1080. Those are different
 sensor crops (4:3 vs 16:9), so intrinsics cannot be rescaled from one to the
-other. Firmware 1.3.0 (both roles, command set V2.10) stores the
+other. Firmware 1.3.1 (both roles, command set V2.10; release candidates
+from 1.3.0-rc1, which reports 1.3.0.1, already have it) stores the
 calibration resolution next to the 8 params, via two new ops on
 `CameraFisheyeCal` (0x2B): `0x02` sized read and `0x03` sized write. Ops
 `0x00`/`0x01` are unchanged on the wire.
