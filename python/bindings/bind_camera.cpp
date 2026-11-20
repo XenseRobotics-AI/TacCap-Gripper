@@ -21,6 +21,15 @@ void bind_camera(py::module_& m) {
           "frame. Use this to tell a real calibration from an empty one; "
           "FISHEYE_FALLBACK_CAL is the reference to fall back to, with a "
           "warning, when it returns False.");
+    m.def("matches_fisheye_fallback_cal", &matches_fisheye_fallback_cal,
+          py::arg("calibration"),
+          "True when a CameraFisheyeCal is the SDK's reference values\n"
+          "(FISHEYE_FALLBACK_CAL), each of the 8 params within 1e-3 (relative for\n"
+          "the focal lengths and principal point).\n\n"
+          "A unit's own calibration never lands that close on all eight, so a\n"
+          "match read from flash means the factory stored the reference instead\n"
+          "of calibrating the unit. resolve_fisheye() flags it as\n"
+          "ResolvedFisheyeCal.matches_reference and logs a warning.");
 
     m.def("fisheye_cal_size_plausible", &fisheye_cal_size_plausible,
           py::arg("calibration"), py::arg("width"), py::arg("height"),

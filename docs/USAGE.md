@@ -632,10 +632,15 @@ Four constraints you must know:
   get a pure black "rectified frame", with no error raised anywhere.
   `resolve_fisheye()` already puts that policy (read → judge usable → fall back to the
   reference values) in one place.
+- **A stored calibration can be the reference values themselves.** If the
+  factory flashed `FISHEYE_FALLBACK_CAL` instead of calibrating the unit, a read
+  returns it as the unit's own record (`is_reference` false). `resolve_fisheye()`
+  sets `matches_reference` and logs a warning; check it before trusting pixel
+  measurements, and recalibrate such a unit.
 - **Only the calibration's own resolution is supported.** 640×480 (4:3) and
   1920×1080 (16:9) are different sensor crops, so the intrinsics cannot be
   rescaled between them and the constructor throws on a mismatch. Firmware
-  firmware 1.3.1 (both roles; 1.3.0-rc1+ candidates too) records the resolution with the params
+  1.3.1 (both roles; 1.3.0-rc1+ candidates too) records the resolution with the params
   (`read_fisheye_record()` / `write_fisheye_sized()`); for an older record
   `resolve_fisheye()` infers it from the principal point (`size_inferred`).
   Another resolution means storing a calibration measured at it.

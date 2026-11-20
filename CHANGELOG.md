@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Warn when a unit stores the reference fisheye intrinsics
+
+Leader TCGU01A28Z0096m carried `FISHEYE_FALLBACK_CAL` bit-for-bit in flash:
+the factory had written the SDK's reference values instead of calibrating the
+unit, and nothing could tell, because a read returns them as the unit's own
+record. Rectification on such a unit is only as good as the reference.
+
+- **`matches_fisheye_fallback_cal(cal)`** (C++ / Python): true when all 8
+  params are within 1e-3 of the reference (relative for the focal lengths and
+  principal point), so a copy that went through printed text still matches. A
+  unit's own calibration never lands that close: the principal point alone
+  moves by pixels between assemblies.
+- **`ResolvedFisheyeCal.matches_reference`**: set when `resolve_fisheye()` /
+  `resolve_fisheye_for()` use the unit's own record and that record is the
+  reference; a warning is logged. `is_reference` keeps meaning "the SDK
+  substituted the reference" and stays false here.
+- `write_fisheye()` / `write_fisheye_sized()` log a warning when asked to store
+  the reference values (allowed, not refused).
+- `read_intrinsics.py` reports `matches_reference`, and `--require-device`
+  rejects such a unit; `fisheye_cal.py show` flags the values.
+
 ## [0.4.8] - 2026-11-20
 
 Bundles firmware **1.3.1** for both roles (tc-gu-01 `v1.3.1`, `1d98d4b`;

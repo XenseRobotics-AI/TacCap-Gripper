@@ -410,3 +410,33 @@ def test_v2_11_migrated_1080p_record_stays_in_the_vga_slot():
         assert r.is_reference is True
         assert r.mismatched_size == (1920, 1080)
         assert cal.resolve_fisheye_for(1920, 1080).mismatched_size is None
+
+
+def test_reference_values_are_recognised():
+    """Leader TCGU01A28Z0096m stored FISHEYE_FALLBACK_CAL bit-for-bit
+    (2026-11-20): the factory flashed the reference, not its calibration."""
+    assert t.matches_fisheye_fallback_cal(t.FISHEYE_FALLBACK_CAL)
+    own = t.CameraFisheyeCal()
+    for k, v in dict(
+        fx=213.207,
+        fy=213.594,
+        cx=319.828,
+        cy=245.048,
+        k1=-0.017411,
+        k2=-0.016309,
+        k3=0.020412,
+        k4=-0.008667,
+    ).items():
+        setattr(own, k, v)
+    assert not t.matches_fisheye_fallback_cal(own)
+
+
+def test_resolve_flags_a_unit_that_stores_the_reference():
+    store = FakeFisheyeStore(
+        sized=True, cal=t.FISHEYE_FALLBACK_CAL, width=640, height=480
+    )
+    with fake_leader(store) as g:
+        resolved = g.calibration.resolve_fisheye()
+    assert resolved.is_reference is False
+    assert resolved.matches_reference is True
+    assert "matches_reference=True" in repr(resolved)

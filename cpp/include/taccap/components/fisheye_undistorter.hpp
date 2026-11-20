@@ -19,6 +19,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -121,6 +122,25 @@ inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL{
     /* k3 */ -0.0146f,  /* k4 */ 0.0051f,
 };
 
+// True when `c` is FISHEYE_FALLBACK_CAL, give or take the rounding of a copy
+// that went through printed text (each of the 8 params within 1e-3, relative
+// for the focal lengths and principal point). A unit's own calibration never
+// lands that close on all eight -- the principal point alone moves by pixels
+// between assemblies -- so a match means the reference was written to flash
+// as if it were this unit's calibration. Measured on leader TCGU01A28Z0096m
+// (2026-11-20): all eight params bit-for-bit the reference.
+inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c) {
+    const float got[8]  = {c.fx, c.fy, c.cx, c.cy, c.k1, c.k2, c.k3, c.k4};
+    const auto& r       = FISHEYE_FALLBACK_CAL;
+    const float want[8] = {r.fx, r.fy, r.cx, r.cy, r.k1, r.k2, r.k3, r.k4};
+    for (int i = 0; i < 8; ++i) {
+        if (!std::isfinite(got[i])) return false;
+        const float tol = 1e-3f * std::max(1.0f, std::fabs(want[i]));
+        if (std::fabs(got[i] - want[i]) > tol) return false;
+    }
+    return true;
+}
+
 // A record read back from flash can be present but empty: an uncalibrated unit
 // answers with all-zero params rather than a NACK, and building remap tables
 // from fx = fy = 0 maps every pixel outside the source image, so the "rectified"
@@ -150,6 +170,11 @@ struct ResolvedFisheyeCal {
     // in solely because this unit's own (usable) calibration belongs to another
     // resolution, that resolution (recorded or inferred); empty (0x0) otherwise.
     cv::Size                   mismatched_size{};
+    // The unit's own record was used (is_reference false), but it is the
+    // reference values themselves (matches_fisheye_fallback_cal): the factory
+    // flashed the reference instead of calibrating this unit. Rectification is
+    // only as good as the reference; recalibrate the unit.
+    bool                       matches_reference = false;
 };
 
 inline bool is_usable_fisheye_cal(const protocol::CameraFisheyeCal& c) {

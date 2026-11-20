@@ -128,6 +128,7 @@ ResolvedFisheyeCal = _taccap_native.ResolvedFisheyeCal
 ColorMode = _taccap_native.ColorMode
 FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
+matches_fisheye_fallback_cal = _taccap_native.matches_fisheye_fallback_cal
 fisheye_cal_size_plausible = _taccap_native.fisheye_cal_size_plausible
 fisheye_cal_slot_plausible = _taccap_native.fisheye_cal_slot_plausible
 is_fisheye_cal_slot_size = _taccap_native.is_fisheye_cal_slot_size
@@ -303,6 +304,7 @@ __all__ = [
     "ColorMode",
     "FISHEYE_FALLBACK_CAL",
     "is_usable_fisheye_cal",
+    "matches_fisheye_fallback_cal",
     "fisheye_cal_size_plausible",
     "fisheye_cal_slot_plausible",
     "is_fisheye_cal_slot_size",
