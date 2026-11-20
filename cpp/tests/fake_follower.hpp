@@ -200,7 +200,38 @@ public:
     // firmware, which answers 0x02 with InvalidParam and the 37-byte 0x03 with
     // LengthMismatch (its command table caps 0x2B at 33 bytes, measured on a
     // 1.2.17 follower).
-    void set_fisheye_size_supported(bool on) { fisheye_sized_.store(on); }
+    //
+    // FisheyeFirmware::V2_11 (firmware 1.3.0-rc4 / 1.3.1) adds the dual slots:
+    // the record above is the VGA slot, plus an HD slot (set_fisheye_hd_record).
+    // Op 0x03 routes by size (640x480 -> VGA + its size record, 1920x1080 -> HD
+    // only, else InvalidParam) under the tightened rule (all finite, fx, fy > 0,
+    // |cx - w/2| <= 0.15*w and |cy - h/2| <= 0.15*h, inclusive). Op 0x04 reads a
+    // slot by size: 5-byte request else LengthMismatch, slot size else
+    // InvalidParam, empty slot CalNotSet; the reply is the 37-byte sized layout
+    // with op 0x04 (VGA: 640x480 or 0/0 like op 0x02; HD: always 1920x1080).
+    // Ops 0x00 / 0x01 / 0x02 address the VGA slot only; it reports w/h only
+    // when its size record is exactly 640x480, else 0/0 (pre-load a
+    // non-640x480 size with set_fisheye_record to emulate a V2.10-era record
+    // left in the VGA slot by the upgrade; tc-gu-01 #34 247671f). Op 0x05 clears a slot
+    // (same request checks as 0x04; VGA also drops its size record; an empty
+    // slot is Ok; generic empty ACK).
+    enum class FisheyeFirmware { Legacy, V2_10, V2_11 };
+    void set_fisheye_firmware(FisheyeFirmware fw) {
+        fisheye_sized_.store(fw != FisheyeFirmware::Legacy);
+        fisheye_slots_.store(fw == FisheyeFirmware::V2_11);
+    }
+    void set_fisheye_size_supported(bool on) {
+        set_fisheye_firmware(on ? FisheyeFirmware::V2_10 : FisheyeFirmware::Legacy);
+    }
+    // Pre-load the V2.11 HD slot (meaningful only for FisheyeFirmware::V2_11).
+    void set_fisheye_hd_record(const tp::CameraFisheyeCal& cal) {
+        std::lock_guard<std::mutex> lk(mu_);
+        fisheye_hd_cal_ = cal;
+    }
+    std::optional<tp::CameraFisheyeCal> stored_fisheye_hd() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return fisheye_hd_cal_;
+    }
     // Pre-load the flash record; width/height 0/0 = size unknown.
     void set_fisheye_record(const tp::CameraFisheyeCal& cal,
                             uint16_t width = 0, uint16_t height = 0) {
@@ -534,6 +565,7 @@ private:
                 if (!std::isfinite(v)) return false;
             return true;
         };
+        if (fisheye_slots_.load()) { handle_fisheye_v2_11_(f, op, params_finite); return; }
         if (op == static_cast<uint8_t>(tp::CalOp::Read) ||
             op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED) {
             if (f.payload.size() != 1) { fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch); return; }
@@ -579,6 +611,121 @@ private:
             fisheye_cal_ = c;
             fisheye_w_ = b.width;
             fisheye_h_ = b.height;
+            pty_.send_ack_ok(f.seq, f.cmd);
+            return;
+        }
+        fisheye_reply_err_(f, tp::ErrorCode::InvalidParam);
+    }
+
+    // V2.11 dual-slot handler; called with mu_ held.
+    template <class Finite>
+    void handle_fisheye_v2_11_(const xense::taccap::bus::Frame& f, uint8_t op,
+                               const Finite& params_finite) {
+        auto is_vga = [](unsigned w, unsigned h) { return w == 640 && h == 480; };
+        auto is_hd  = [](unsigned w, unsigned h) { return w == 1920 && h == 1080; };
+        auto reply_record = [&](uint8_t echo, const tp::CameraFisheyeCal& c,
+                                std::optional<std::pair<uint16_t, uint16_t>> size) {
+            std::vector<uint8_t> out{echo};
+            auto body = pod_bytes(&c, sizeof(c));
+            out.insert(out.end(), body.begin(), body.end());
+            if (size) {
+                for (uint16_t v : {size->first, size->second}) {
+                    out.push_back(static_cast<uint8_t>(v & 0xFF));
+                    out.push_back(static_cast<uint8_t>(v >> 8));
+                }
+            }
+            pty_.send_response(f.seq, f.cmd, out);
+        };
+        // The VGA slot reports its size only when the size record is exactly
+        // 640x480; anything else (e.g. a 1920x1080 record a V2.10 rc wrote
+        // before the upgrade, which stays in the VGA slot) reads as 0/0.
+        const auto vga_size = is_vga(fisheye_w_, fisheye_h_)
+                                  ? std::make_pair(fisheye_w_, fisheye_h_)
+                                  : std::make_pair(uint16_t{0}, uint16_t{0});
+        if (op == static_cast<uint8_t>(tp::CalOp::Read) ||
+            op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED) {
+            if (f.payload.size() != 1) { fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch); return; }
+            if (!fisheye_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
+            if (op == tp::CAMERA_FISHEYE_CAL_OP_READ_SIZED)
+                reply_record(op, *fisheye_cal_, vga_size);
+            else
+                reply_record(op, *fisheye_cal_, std::nullopt);
+            return;
+        }
+        if (op == tp::CAMERA_FISHEYE_CAL_OP_READ_SLOT) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            const unsigned w = f.payload[1] | (f.payload[2] << 8);
+            const unsigned h = f.payload[3] | (f.payload[4] << 8);
+            if (is_vga(w, h)) {
+                if (!fisheye_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
+                reply_record(op, *fisheye_cal_, vga_size);
+                return;
+            }
+            if (is_hd(w, h)) {
+                if (!fisheye_hd_cal_) { fisheye_reply_err_(f, tp::ErrorCode::CalNotSet); return; }
+                reply_record(op, *fisheye_hd_cal_,
+                             std::make_pair(uint16_t{1920}, uint16_t{1080}));
+                return;
+            }
+            fisheye_reply_err_(f, tp::ErrorCode::InvalidParam);
+            return;
+        }
+        if (op == tp::CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            const unsigned w = f.payload[1] | (f.payload[2] << 8);
+            const unsigned h = f.payload[3] | (f.payload[4] << 8);
+            if (is_vga(w, h)) {
+                fisheye_cal_.reset();
+                fisheye_w_ = fisheye_h_ = 0;
+            } else if (is_hd(w, h)) {
+                fisheye_hd_cal_.reset();
+            } else {
+                fisheye_reply_err_(f, tp::ErrorCode::InvalidParam);
+                return;
+            }
+            pty_.send_ack_ok(f.seq, f.cmd);
+            return;
+        }
+        if (op == static_cast<uint8_t>(tp::CalOp::Write)) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_FULL_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            tp::CameraFisheyeCal c{};
+            std::memcpy(&c, f.payload.data() + 1, sizeof(c));
+            if (!params_finite(c)) { fisheye_reply_err_(f, tp::ErrorCode::InvalidParam); return; }
+            fisheye_cal_ = c;              // the VGA slot
+            fisheye_w_ = fisheye_h_ = 0;   // size unknown
+            pty_.send_ack_ok(f.seq, f.cmd);
+            return;
+        }
+        if (op == tp::CAMERA_FISHEYE_CAL_OP_WRITE_SIZED) {
+            if (f.payload.size() != tp::CAMERA_FISHEYE_CAL_SIZED_SIZE) {
+                fisheye_reply_err_(f, tp::ErrorCode::LengthMismatch);
+                return;
+            }
+            tp::CameraFisheyeCalSized b{};
+            std::memcpy(&b, f.payload.data() + 1, sizeof(b));
+            const auto& c = b.calibration;
+            const double w = b.width, h = b.height;
+            const bool ok = (is_vga(b.width, b.height) || is_hd(b.width, b.height)) &&
+                            params_finite(c) && c.fx > 0 && c.fy > 0 &&
+                            std::abs(c.cx - w / 2.0) <= 0.15 * w &&
+                            std::abs(c.cy - h / 2.0) <= 0.15 * h;
+            if (!ok) { fisheye_reply_err_(f, tp::ErrorCode::InvalidParam); return; }
+            if (is_vga(b.width, b.height)) {
+                fisheye_cal_ = c;
+                fisheye_w_ = b.width;
+                fisheye_h_ = b.height;
+            } else {
+                fisheye_hd_cal_ = c;       // never touches the VGA slot
+            }
             pty_.send_ack_ok(f.seq, f.cmd);
             return;
         }
@@ -694,6 +841,8 @@ private:
     bool fw_ver_valid_ = false;
     uint8_t fw_ver_source_ = 0;
     std::atomic<bool> fisheye_sized_{true};
+    std::atomic<bool> fisheye_slots_{false};
+    std::optional<tp::CameraFisheyeCal> fisheye_hd_cal_;   // V2.11 HD slot
     std::optional<tp::CameraFisheyeCal> fisheye_cal_;   // nullopt = never written
     uint16_t fisheye_w_ = 0, fisheye_h_ = 0;
     std::vector<uint8_t> fisheye_ops_;

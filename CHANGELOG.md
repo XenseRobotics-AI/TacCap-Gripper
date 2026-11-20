@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Dual fisheye calibration slots (protocol V2.11)
+
+Firmware 1.3.0-rc4 (release 1.3.1, both roles) keeps two fixed fisheye
+calibration records instead of one: a VGA slot (640x480) and an HD slot
+(1920x1080). On V2.10 (1.3.0-rc1..rc3) storing a 1080p calibration replaced the
+640x480 one; now a unit can carry both. Capabilities are probed, so this SDK
+still runs on V2.10 and on 1.2.17.
+
+Wire changes on `CameraFisheyeCal` (0x2B): ops `0x00`/`0x01`/`0x02` address the
+VGA slot; `0x03` routes by its size (640x480 -> VGA, 1920x1080 -> HD, anything
+else `InvalidParam`) and requires the principal point within 15% of the frame
+centre; new op `0x04` reads a slot by size (5-byte request, 37-byte reply with
+op `0x04`); new op `0x05` clears one (5-byte request, empty ACK).
+
+- **`Calibration::supports_fisheye_slots()`** probes with op `0x04` at
+  640x480 (`InvalidParam` = no slots), cached like `supports_fisheye_size()`.
+- **`read_fisheye_slot(w, h)`** returns the record for 640x480 or 1920x1080,
+  or `None`. On single-record firmware it emulates the slots: the V2.10 record
+  when its recorded size matches, and a record with no size (legacy write or
+  pre-V2.10 firmware) counts as the 640x480 slot, as it does on V2.11.
+- **`clear_fisheye_slot(w, h)`** erases one slot (V2.11 only; refused
+  host-side with `RuntimeError` on older firmware).
+- **`resolve_fisheye_for(w, h)`**: `resolve_fisheye()` for a camera at that
+  size. It picks the slot on V2.11, or uses the single record only when its
+  size matches, and otherwise falls back to the reference with a `reason`.
+- **`fisheye_cal_slot_plausible()`** (V2.11's sized-write rule) and
+  **`is_fisheye_cal_slot_size()`**. `write_fisheye_sized()` now applies the 15%
+  centre rule to every 640x480 / 1920x1080 write on all firmware, so a VGA
+  set labelled 1920x1080 (which V2.10's "inside the frame" rule accepted) is
+  refused before sending. Other sizes are refused host-side on V2.11 only.
+- Mirror constants `CAMERA_FISHEYE_CAL_OP_READ_SLOT` (0x04),
+  `CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT` (0x05), `CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE`
+  (5) and `encode_camera_fisheye_cal_{read,clear}_slot()` /
+  `decode_camera_fisheye_cal_slot()`. They are not yet in
+  `scripts/check_protocol_drift.py`, because the firmware `hw_v1.1.0` branch
+  does not define them yet.
+- Examples: `fisheye_cal.py show` lists both slots on V2.11 and gains
+  `clear-fisheye --width W --height H`; `read_intrinsics.py` adds
+  `dual_slot_firmware` and a per-resolution `slots` object (its top-level
+  fields are unchanged).
+
+Behaviour changes:
+
+- **Wrist undistortion picks the slot by camera size.** `undistort_wrist=True`
+  now resolves with the camera's configured width/height, so a 1080p camera
+  gets the HD slot. When the unit has a usable calibration only for the
+  *other* resolution (a 1080p camera with only VGA, a 640x480 camera with only
+  HD, or a single V2.10 record sized for the other resolution), opening raises
+  `Error` naming both sizes ("calibrate this unit at WxH, or run the camera at
+  AxB"). It does not fall back to the reference: that would silently replace
+  the unit's own calibration with an approximate one. The reference fallback
+  with a warning remains only for a unit with no usable calibration at all,
+  which works only on a 640x480 camera. A 1920x1080 camera on such a unit
+  still raises. `resolve_fisheye_for()` itself only reports the mismatch,
+  returning the reference with a "belongs to AxB" `reason` and the new
+  `ResolvedFisheyeCal.mismatched_size` field.
+- **Upgrading from V2.10 rc1..rc3:** the single record stays in the VGA slot
+  (it is not moved to HD) and reports size 0/0 unless it is exactly 640x480.
+  So a 1080p calibration stored by an rc reads as an unsized VGA-slot record:
+  `resolve_fisheye_for(640, 480)` infers 1920x1080, and the HD slot is empty.
+  Re-store it with `write_fisheye_sized(cal, 1920, 1080)`.
+- The 0.4.7 calls (`read_fisheye()`, `read_fisheye_record()`, no-argument
+  `resolve_fisheye()`) read the VGA slot on V2.11, and 0.4.7 itself behaves
+  the same way. So 0.4.7 (or this SDK's legacy calls), after writing an HD
+  calibration, reads back the VGA slot via `0x02`: `None` if VGA is empty,
+  otherwise the VGA record and not the HD record just written. That is
+  confusing but loses nothing. The HD record is in its slot; read it with
+  `read_fisheye_slot(1920, 1080)`.
+
 ### Firmware 1.3.0-rc3: requested rates are delivered rates
 
 Nothing in the SDK's wire handling changes; this records what to expect.

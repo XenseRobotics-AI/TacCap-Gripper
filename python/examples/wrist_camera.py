@@ -63,9 +63,11 @@ Note the undistorter is built at the calibration's own resolution only:
 would be silently wrong and is refused. The resolution comes from the firmware
 record (firmware 1.3.0-rc1+ / 1.3.1 stores it), is inferred from the
 principal point for an older record, or is 640x480 for the reference values.
-Without --width/--height the camera is opened at that resolution; ask for
-another size and undistortion is unavailable at that size (the script says so
-and stays on raw frames).
+Without --width/--height the camera is opened at that resolution. With them,
+the script asks for the calibration at that size (Calibration.resolve_fisheye_for;
+firmware 1.3.0-rc4+ / 1.3.1 keeps a separate 640x480 and 1920x1080 calibration);
+if the unit has none for it, undistortion is unavailable at that size (the
+script says so and stays on raw frames).
 
 Usage:
     # what is plugged in, and which of it this script can open
@@ -311,7 +313,9 @@ def cal_from_npz(path: str) -> CameraFisheyeCal:
     )
 
 
-def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str, tuple[int, int]]:
+def cal_from_gripper(
+    cam: dict, size: tuple[int, int] | None = None
+) -> tuple[CameraFisheyeCal, str, tuple[int, int]]:
     """Read the intrinsics off the MCU of the gripper on the camera's side.
 
     The wrist camera's own serial already says which side (and which role) it
@@ -351,7 +355,14 @@ def cal_from_gripper(cam: dict) -> tuple[CameraFisheyeCal, str, tuple[int, int]]
         # resolve_fisheye() — not read_fisheye() — because an uncalibrated unit
         # answers with an all-zero record rather than a NACK, and remapping with
         # fx = fy = 0 yields a uniformly black frame with nothing raised.
-        resolved = g.calibration.resolve_fisheye()
+        #
+        # With --width/--height, ask for the calibration AT that size: dual-slot
+        # firmware (1.3.0-rc4+ / 1.3.1) keeps one per resolution, so a 1080p
+        # request gets the 1920x1080 slot.
+        if size is not None:
+            resolved = g.calibration.resolve_fisheye_for(*size)
+        else:
+            resolved = g.calibration.resolve_fisheye()
     size = resolved.calibrated_size
     if resolved.is_reference:
         return (
@@ -390,7 +401,8 @@ def resolve_calibration(
             reference_size,
         )
     try:
-        cal, provenance, size = cal_from_gripper(cam)
+        wanted = (args.width, args.height) if args.width and args.height else None
+        cal, provenance, size = cal_from_gripper(cam, wanted)
     except (RuntimeError, ProtocolError, OSError) as e:
         # The wrist camera is usable without the MCU link, so a failure here
         # degrades to the reference calibration rather than aborting — same

@@ -129,6 +129,8 @@ ColorMode = _taccap_native.ColorMode
 FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
 fisheye_cal_size_plausible = _taccap_native.fisheye_cal_size_plausible
+fisheye_cal_slot_plausible = _taccap_native.fisheye_cal_slot_plausible
+is_fisheye_cal_slot_size = _taccap_native.is_fisheye_cal_slot_size
 infer_fisheye_cal_size = _taccap_native.infer_fisheye_cal_size
 FirmwareVersion = _taccap_native.FirmwareVersion
 Calibration = _taccap_native.Calibration  # V2.0/V2.1 flash-persisted cal records
@@ -302,6 +304,8 @@ __all__ = [
     "FISHEYE_FALLBACK_CAL",
     "is_usable_fisheye_cal",
     "fisheye_cal_size_plausible",
+    "fisheye_cal_slot_plausible",
+    "is_fisheye_cal_slot_size",
     "infer_fisheye_cal_size",
     "FirmwareVersion",
     "Calibration",

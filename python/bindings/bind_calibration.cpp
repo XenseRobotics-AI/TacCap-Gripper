@@ -131,6 +131,15 @@ void bind_calibration(py::module_& m) {
             [](const ResolvedFisheyeCal& r) { return r.size_inferred; },
             "True when calibrated_size was inferred from the principal point\n"
             "because the record carries no size (see infer_fisheye_cal_size).")
+        .def_property_readonly("mismatched_size",
+            [](const ResolvedFisheyeCal& r) -> py::object {
+                if (r.mismatched_size.empty()) return py::none();
+                return py::make_tuple(r.mismatched_size.width, r.mismatched_size.height);
+            },
+            "Set only by resolve_fisheye_for(): when the reference stands in solely\n"
+            "because this unit's own calibration belongs to another resolution, that\n"
+            "(width, height); None otherwise. The SDK's wrist undistortion raises in\n"
+            "that case rather than use the reference.")
         .def("__len__", [](const ResolvedFisheyeCal&) { return 3; })
         .def("__getitem__", [](const ResolvedFisheyeCal& r, py::ssize_t i) {
             py::tuple t = py::make_tuple(r.calibration, r.is_reference, r.reason);
@@ -201,6 +210,28 @@ void bind_calibration(py::module_& m) {
              "one -- infer_fisheye_cal_size()'s answer, with size_inferred True "
              "and a warning logged. A record whose size cannot be inferred is "
              "treated as unusable and the reference (640x480) stands in.")
+        .def("resolve_fisheye_for",
+             [](Calibration& self, int width, int height, unsigned timeout_ms) {
+                 ResolvedFisheyeCal r;
+                 {
+                     py::gil_scoped_release nogil;
+                     r = self.resolve_fisheye_for(width, height,
+                                                  std::chrono::milliseconds(timeout_ms));
+                 }
+                 return r;
+             },
+             py::arg("width"), py::arg("height"), py::arg("timeout_ms") = 200,
+             "resolve_fisheye() for a camera running at width x height: this "
+             "unit's calibration for THAT resolution, as a ResolvedFisheyeCal.\n\n"
+             "On firmware with dual calibration slots (1.3.0-rc4+ / 1.3.1, "
+             "command set V2.11) this reads the 640x480 or 1920x1080 slot. On "
+             "older firmware it reads the single record and uses it only when "
+             "its size -- recorded, or inferred as resolve_fisheye() does -- "
+             "equals width x height.\n\n"
+             "Otherwise the reference values stand in (is_reference True, reason "
+             "says why). The reference exists at 640x480 only, so for any other "
+             "size its calibrated_size still reads (640, 480) and a "
+             "FisheyeUndistorter built for the camera refuses it.")
         .def("write_fisheye",
              [](Calibration& self, const protocol::CameraFisheyeCal& cal,
                 unsigned timeout_ms) {
@@ -251,11 +282,64 @@ void bind_calibration(py::module_& m) {
              "Persist fisheye params together with the capture resolution they "
              "were measured at.\n\n"
              "Raises RuntimeError before sending anything unless "
-             "fisheye_cal_size_plausible(cal, width, height). Raises "
-             "ProtocolError when the firmware rejects the write. Firmware that "
+             "fisheye_cal_size_plausible(cal, width, height) and, for 640x480 "
+             "and 1920x1080, fisheye_cal_slot_plausible(cal, width, height) "
+             "(principal point within 15% of the frame centre). Raises "
+             "ProtocolError when the firmware rejects the write.\n\n"
+             "Dual-slot firmware (V2.11) stores it in the slot for its size and "
+             "leaves the other slot alone; any other size raises RuntimeError "
+             "there. Firmware that "
              "cannot record a size (older than firmware 1.3.0-rc1) "
              "accepts only a 640x480 calibration, through the legacy write; any "
              "other resolution raises RuntimeError asking for an upgrade.")
+        .def("supports_fisheye_slots",
+             [](Calibration& self, unsigned timeout_ms) {
+                 py::gil_scoped_release nogil;
+                 return self.supports_fisheye_slots(std::chrono::milliseconds(timeout_ms));
+             },
+             py::arg("timeout_ms") = 200,
+             "True when the firmware keeps a separate fisheye calibration for "
+             "640x480 and for 1920x1080 (command set V2.11: firmware 1.3.1, or "
+             "1.3.0-rc4+).\n\n"
+             "Probes with the slot read at 640x480: older firmware rejects it as "
+             "InvalidParam. Firmware already known not to record a size answers "
+             "False without a round trip. Cached on this Calibration; a "
+             "transport failure raises and is not cached.")
+        .def("read_fisheye_slot",
+             [](Calibration& self, int width, int height,
+                unsigned timeout_ms) -> py::object {
+                 std::optional<FisheyeCalRecord> v;
+                 {
+                     py::gil_scoped_release nogil;
+                     v = self.read_fisheye_slot(width, height,
+                                                std::chrono::milliseconds(timeout_ms));
+                 }
+                 if (!v) return py::none();
+                 return py::cast(*v);
+             },
+             py::arg("width"), py::arg("height"), py::arg("timeout_ms") = 200,
+             "The calibration for one capture resolution, as a FisheyeCalRecord, "
+             "or None when there is none. width x height must be 640x480 or "
+             "1920x1080 (RuntimeError otherwise, before anything is sent).\n\n"
+             "Dual-slot firmware (V2.11) reads that slot; the 640x480 slot comes "
+             "back with size (0, 0) when its params were written without a size. "
+             "Single-record firmware returns its record when the recorded size "
+             "matches; a record with no size counts as the 640x480 one, as it "
+             "does on V2.11.")
+        .def("clear_fisheye_slot",
+             [](Calibration& self, int width, int height, unsigned timeout_ms) {
+                 py::gil_scoped_release nogil;
+                 self.clear_fisheye_slot(width, height,
+                                         std::chrono::milliseconds(timeout_ms));
+             },
+             py::arg("width"), py::arg("height"), py::arg("timeout_ms") = 500,
+             "Erase the fisheye calibration for 640x480 or 1920x1080 (dual-slot "
+             "firmware, V2.11, only); that slot then reads None. Clearing "
+             "640x480 also drops its size record; clearing an empty slot "
+             "succeeds; the other slot is never touched.\n\n"
+             "Raises RuntimeError before sending anything for any other size, or "
+             "on firmware without slots. Raises ProtocolError when the firmware "
+             "rejects the clear.")
         .def("read_encoder_max_rad",
              [](Calibration& self, unsigned timeout_ms) -> py::object {
                  std::optional<float> v;

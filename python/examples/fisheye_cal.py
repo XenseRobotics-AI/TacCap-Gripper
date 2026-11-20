@@ -26,6 +26,11 @@ stores them with the params. Older firmware has nowhere to put the size and
 accepts only a 640x480 calibration; `show` then reports the size as inferred
 from the principal point.
 
+Firmware 1.3.1 (or 1.3.0-rc4+, command set V2.11) keeps one calibration per
+resolution -- a 640x480 slot and a 1920x1080 slot -- so storing one never
+overwrites the other. `show` then lists both slots, and `clear-fisheye` erases
+one of them. Firmware 1.3.0-rc1..rc3 (V2.10) still has a single record.
+
 The encoder-max value is what LeaderGripper(normalize_position=True) uses to
 turn raw encoder radians into a 0..1 opening — see
 `leader_normalized_position.py`.
@@ -43,6 +48,9 @@ Usage:
     # Load them from an OpenCV-style .npz holding K (3x3) and D (4,)
     python python/examples/fisheye_cal.py set-fisheye --from-npz cam_left.npz \\
         --width 640 --height 480
+
+    # Erase the 1920x1080 calibration (dual-slot firmware only)
+    python python/examples/fisheye_cal.py clear-fisheye --width 1920 --height 1080
 
     # Measure the full-open angle interactively and store it
     python python/examples/fisheye_cal.py measure-encoder-max
@@ -71,6 +79,9 @@ from xense.taccap import (
     ProtocolError,
     infer_fisheye_cal_size,
 )
+
+# The resolutions dual-slot firmware (V2.11) keeps a calibration for.
+SLOT_SIZES = ((640, 480), (1920, 1080))
 
 _TTY = sys.stdout.isatty()
 
@@ -133,6 +144,32 @@ def _print_size(record, firmware_records_size: bool) -> None:
         )
 
 
+def _print_record(record, firmware_records_size: bool) -> None:
+    fisheye = record.calibration
+    _print_size(record, firmware_records_size)
+    print(f"  fx={fisheye.fx:.4f}  fy={fisheye.fy:.4f}")
+    print(f"  cx={fisheye.cx:.4f}  cy={fisheye.cy:.4f}")
+    print(
+        f"  k1={fisheye.k1:.6f}  k2={fisheye.k2:.6f}  "
+        f"k3={fisheye.k3:.6f}  k4={fisheye.k4:.6f}"
+    )
+    print("  OpenCV K:")
+    for row in fisheye.K:
+        print("    [" + "  ".join(f"{v:10.4f}" for v in row) + "]")
+    print("  OpenCV D: [" + "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
+
+
+def _show_slots(cal) -> None:
+    """Dual-slot firmware: one calibration per resolution."""
+    for w, h in SLOT_SIZES:
+        print(f"  [{w}x{h} slot]")
+        record = cal.read_fisheye_slot(w, h)
+        if record is None:
+            print("  " + _yellow("not calibrated") + " — firmware returned CalNotSet")
+            continue
+        _print_record(record, True)
+
+
 def cmd_show(args) -> int:
     with open_gripper(args) as g:
         cal = g.calibration
@@ -145,30 +182,26 @@ def cmd_show(args) -> int:
 
         print(_bold("\nFisheye camera calibration (Cmd 0x2B)"))
         try:
-            record = cal.read_fisheye_record()
+            slots = cal.supports_fisheye_slots()
+        except ProtocolError:
+            slots = False  # the read below reports why
+        if slots:
+            print("  (dual-slot firmware: one calibration per resolution)")
+            _show_slots(cal)
+        try:
+            record = None if slots else cal.read_fisheye_record()
         except ProtocolError as e:
             # InvalidCmd here = firmware predates V2.0 (0x2B isn't in its
             # command table at all).
             print(f"  {_yellow('unavailable')} — {e}")
             record = None
         else:
-            if record is None:
+            if record is None and not slots:
                 print(
                     "  " + _yellow("not calibrated") + " — firmware returned CalNotSet"
                 )
         if record is not None:
-            fisheye = record.calibration
-            _print_size(record, cal.supports_fisheye_size())
-            print(f"  fx={fisheye.fx:.4f}  fy={fisheye.fy:.4f}")
-            print(f"  cx={fisheye.cx:.4f}  cy={fisheye.cy:.4f}")
-            print(
-                f"  k1={fisheye.k1:.6f}  k2={fisheye.k2:.6f}  "
-                f"k3={fisheye.k3:.6f}  k4={fisheye.k4:.6f}"
-            )
-            print("  OpenCV K:")
-            for row in fisheye.K:
-                print("    [" + "  ".join(f"{v:10.4f}" for v in row) + "]")
-            print("  OpenCV D: [" + "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
+            _print_record(record, cal.supports_fisheye_size())
 
         print(_bold("\nEncoder max travel angle (Cmd 0x2C, leader only)"))
         try:
@@ -248,7 +281,10 @@ def cmd_set_fisheye(args) -> int:
             g.calibration.write_fisheye_sized(cal, args.width, args.height)
         except RuntimeError as e:  # host-side refusal; a NACK is ProtocolError
             raise SystemExit(f"error: {e}") from None
-        readback = g.calibration.read_fisheye_record()
+        if g.calibration.supports_fisheye_slots():
+            readback = g.calibration.read_fisheye_slot(args.width, args.height)
+        else:
+            readback = g.calibration.read_fisheye_record()
     print(_green("written to MCU flash. Read back:"))
     print(f"  {readback}")
     if readback is not None and not readback.size_known():
@@ -258,6 +294,26 @@ def cmd_set_fisheye(args) -> int:
             + " this firmware cannot record the size; it was stored as a "
             "640x480 calibration through the legacy write"
         )
+    return 0
+
+
+# ---- clear-fisheye ----------------------------------------------------------
+
+
+def cmd_clear_fisheye(args) -> int:
+    size = f"{args.width}x{args.height}"
+    if not args.yes:
+        answer = input(f"Erase the {size} fisheye calibration from MCU flash? [y/N] ")
+        if answer.strip().lower() not in ("y", "yes"):
+            print("aborted")
+            return 1
+    with open_gripper(args) as g:
+        try:
+            g.calibration.clear_fisheye_slot(args.width, args.height)
+        except RuntimeError as e:  # host-side refusal; a NACK is ProtocolError
+            raise SystemExit(f"error: {e}") from None
+        left = g.calibration.read_fisheye_slot(args.width, args.height)
+    print(_green(f"cleared the {size} slot") + f" (reads back: {left})")
     return 0
 
 
@@ -341,6 +397,18 @@ def main() -> int:
     for name in ("k1", "k2", "k3", "k4"):
         sf.add_argument(f"--{name}", type=float, default=0.0)
     sf.set_defaults(func=cmd_set_fisheye)
+
+    cf = sub.add_parser(
+        "clear-fisheye",
+        parents=[common],
+        help="erase the fisheye calibration for one resolution (dual-slot firmware)",
+    )
+    cf.add_argument("--width", type=int, required=True, help="640 or 1920")
+    cf.add_argument("--height", type=int, required=True, help="480 or 1080")
+    cf.add_argument(
+        "-y", "--yes", action="store_true", help="erase without the confirmation prompt"
+    )
+    cf.set_defaults(func=cmd_clear_fisheye)
 
     se = sub.add_parser(
         "set-encoder-max", parents=[common], help="write a known full-open angle (rad)"

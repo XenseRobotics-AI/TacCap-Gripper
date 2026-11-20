@@ -963,6 +963,52 @@ constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_READ_SIZED  = 0x02;
 constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_WRITE_SIZED = 0x03;
 constexpr std::size_t CAMERA_FISHEYE_CAL_SIZED_SIZE     = 37;
 
+// ---- Dual fisheye calibration slots (V2.11, firmware 1.3.0-rc4 / 1.3.1)
+//
+// V2.11 keeps two fixed records instead of one: a VGA slot (640x480) and an
+// HD slot (1920x1080). The existing ops keep their wire layout:
+//
+//   op 0x00 / 0x01 : read / write the VGA slot (0x01 leaves its size unknown)
+//   op 0x02        : read the VGA slot; w/h = 640x480, or 0/0 when the VGA
+//                    params were written without a size (0x01 / older firmware)
+//   op 0x03        : routed by the size in the request -- 640x480 writes the
+//                    VGA slot (params + size record, as on V2.10), 1920x1080
+//                    writes the HD slot only; any other size -> InvalidParam.
+//                    The plausibility rule is tightened to the principal point
+//                    within 15% of the frame centre (|cx - w/2| <= 0.15*w,
+//                    |cy - h/2| <= 0.15*h, inclusive), fx, fy > 0, all finite.
+//
+// and one op is new:
+//
+//   read-slot request : [op=0x04][width][height]                (5 bytes)
+//   read-slot response: [op echo=0x04][body][width][height]     (37 bytes,
+//                       camera_fisheye_cal_sized_payload_t with op 0x04)
+//
+// The HD slot always answers 1920x1080; the VGA slot answers like op 0x02.
+// Errors: empty slot -> CalNotSet; a size other than 640x480 / 1920x1080 ->
+// InvalidParam; wrong request length -> LengthMismatch. An empty VGA slot
+// also makes ops 0x00 / 0x02 answer CalNotSet, even with the HD slot set.
+//
+// and a second new op clears one slot (tc-gu-01 #34):
+//
+//   clear-slot request : [op=0x05][width][height]               (5 bytes)
+//   clear-slot response: firmware's generic empty-response ACK
+//
+// Afterwards that slot reads CalNotSet (ops 0x00 / 0x02 / 0x04 for VGA, 0x04
+// for HD); clearing VGA also clears its size record; clearing an empty slot is
+// Ok; the other slot is never touched. Errors as for op 0x04.
+//
+// Op 0x04 at 640x480 is the capability probe: V2.10 and older answer it with
+// InvalidParam (unknown op), V2.11 never does (data or CalNotSet).
+//
+// Mirror firmware CAMERA_FISHEYE_CAL_OP_READ_SLOT / _OP_CLEAR_SLOT /
+// _REQ_SLOT_SIZE (names as
+// given by the firmware owner for tc-gu-01 branch feat/fisheye-dual-slot;
+// not yet on hw_v1.1.0, so scripts/check_protocol_drift.py does not map them).
+constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_READ_SLOT  = 0x04;
+constexpr uint8_t     CAMERA_FISHEYE_CAL_OP_CLEAR_SLOT = 0x05;
+constexpr std::size_t CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE = 5;
+
 // Body of a read-sized response / write-sized request, after the op byte:
 // firmware camera_fisheye_cal_sized_payload_t minus its leading `op`.
 struct CameraFisheyeCalSized {
@@ -1304,6 +1350,8 @@ static_assert(sizeof(CameraFisheyeCal) + 1 == CAMERA_FISHEYE_CAL_FULL_SIZE);
 // V2.10 — sized fisheye ops: same 8 floats, plus width/height u16.
 static_assert(sizeof(CameraFisheyeCalSized) == 36);
 static_assert(sizeof(CameraFisheyeCalSized) + 1 == CAMERA_FISHEYE_CAL_SIZED_SIZE);
+// V2.11 read-slot request: op + width u16 + height u16.
+static_assert(1 + 2 * sizeof(uint16_t) == CAMERA_FISHEYE_CAL_REQ_SLOT_SIZE);
 static_assert(sizeof(float) + 1          == ENCODER_MAX_CAL_FULL_SIZE);
 static_assert(sizeof(StreamConfig)       == 12);
 static_assert(sizeof(AckPayload)         == 4);

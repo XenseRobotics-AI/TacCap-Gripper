@@ -30,6 +30,8 @@ VGA = t.CameraFisheyeCal(
 HD = t.CameraFisheyeCal(477.2, 476.9, 968.3, 563.1, -0.021, 0.0061, -0.0042, 0.0011)
 
 OP_READ, OP_WRITE, OP_READ_SIZED, OP_WRITE_SIZED = 0x00, 0x01, 0x02, 0x03
+OP_READ_SLOT, OP_CLEAR_SLOT = 0x04, 0x05  # V2.11 (dual slots)
+VGA_SIZE, HD_SIZE = (640, 480), (1920, 1080)
 ERR_INVALID_PARAM = int(t.ErrorCode.InvalidParam.value)
 ERR_CAL_NOT_SET = int(t.ErrorCode.CalNotSet.value)
 ERR_LENGTH_MISMATCH = int(t.ErrorCode.LengthMismatch.value)
@@ -97,17 +99,33 @@ class FakeFisheyeError(Exception):
 
 
 class FakeFisheyeStore:
-    """The firmware's 0x2B handler, V2.10 or (sized=False) older."""
+    """The firmware's 0x2B handler: V2.10, (sized=False) older, or
+    (slots=True) V2.11 with a VGA and an HD slot.
 
-    def __init__(self, sized: bool, cal=None, width: int = 0, height: int = 0):
-        self.sized = sized
+    In the V2.11 persona `params`/`size` are the VGA slot and `hd` the HD slot.
+    """
+
+    def __init__(
+        self,
+        sized: bool,
+        cal=None,
+        width: int = 0,
+        height: int = 0,
+        slots: bool = False,
+        hd=None,
+    ):
+        self.sized = sized or slots
+        self.slots = slots
         self.params = _params(cal) if cal is not None else None
         self.size = (width, height)
+        self.hd = _params(hd) if hd is not None else None
         self.ops: list[int] = []
 
     def handle(self, payload: bytes) -> bytes:
         op = payload[0]
         self.ops.append(op)
+        if self.slots:
+            return self._handle_v2_11(op, payload)
         if op == OP_READ_SIZED and not self.sized:
             raise FakeFisheyeError(ERR_INVALID_PARAM)
         if op == OP_WRITE_SIZED and not self.sized:
@@ -123,6 +141,61 @@ class FakeFisheyeStore:
             return b"\x00"
         if op == OP_WRITE_SIZED:
             self.params, self.size = payload[1:33], struct.unpack("<HH", payload[33:37])
+            return b"\x00"
+        raise FakeFisheyeError(ERR_INVALID_PARAM)
+
+    def _handle_v2_11(self, op: int, payload: bytes) -> bytes:
+        # The VGA slot reports its size only when it is exactly 640x480.
+        vga_size = self.size if tuple(self.size) == VGA_SIZE else (0, 0)
+        if op in (OP_READ, OP_READ_SIZED):
+            if len(payload) != 1:
+                raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
+            if self.params is None:
+                raise FakeFisheyeError(ERR_CAL_NOT_SET)
+            tail = struct.pack("<HH", *vga_size) if op == OP_READ_SIZED else b""
+            return bytes([op]) + self.params + tail
+        if op in (OP_READ_SLOT, OP_CLEAR_SLOT):
+            if len(payload) != 5:
+                raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
+            size = struct.unpack("<HH", payload[1:5])
+            if size not in (VGA_SIZE, HD_SIZE):
+                raise FakeFisheyeError(ERR_INVALID_PARAM)
+            if op == OP_CLEAR_SLOT:
+                if size == VGA_SIZE:
+                    self.params, self.size = None, (0, 0)
+                else:
+                    self.hd = None
+                return b"\x00"
+            if size == VGA_SIZE:
+                if self.params is None:
+                    raise FakeFisheyeError(ERR_CAL_NOT_SET)
+                return bytes([op]) + self.params + struct.pack("<HH", *vga_size)
+            if self.hd is None:
+                raise FakeFisheyeError(ERR_CAL_NOT_SET)
+            return bytes([op]) + self.hd + struct.pack("<HH", *HD_SIZE)
+        if op == OP_WRITE:
+            if len(payload) != 33:
+                raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
+            self.params, self.size = payload[1:33], (0, 0)
+            return b"\x00"
+        if op == OP_WRITE_SIZED:
+            if len(payload) != 37:
+                raise FakeFisheyeError(ERR_LENGTH_MISMATCH)
+            fx, fy, cx, cy, *_ = struct.unpack("<8f", payload[1:33])
+            w, h = struct.unpack("<HH", payload[33:37])
+            ok = (
+                (w, h) in (VGA_SIZE, HD_SIZE)
+                and fx > 0
+                and fy > 0
+                and abs(cx - w / 2) <= 0.15 * w
+                and abs(cy - h / 2) <= 0.15 * h
+            )
+            if not ok:
+                raise FakeFisheyeError(ERR_INVALID_PARAM)
+            if (w, h) == VGA_SIZE:
+                self.params, self.size = payload[1:33], (w, h)
+            else:
+                self.hd = payload[1:33]
             return b"\x00"
         raise FakeFisheyeError(ERR_INVALID_PARAM)
 
@@ -226,3 +299,114 @@ def test_implausible_write_is_refused_before_it_is_sent():
         with pytest.raises(RuntimeError, match="not plausible"):
             g.calibration.write_fisheye_sized(HD, 640, 480)
     assert store.ops == []
+
+
+# ---- Dual calibration slots (V2.11) ------------------------------------------
+
+
+def test_slot_plausibility_is_the_v2_11_rule():
+    assert t.is_fisheye_cal_slot_size(640, 480)
+    assert t.is_fisheye_cal_slot_size(1920, 1080)
+    assert not t.is_fisheye_cal_slot_size(1280, 720)
+    assert t.fisheye_cal_slot_plausible(VGA, 640, 480)
+    assert t.fisheye_cal_slot_plausible(HD, 1920, 1080)
+    # V2.10's rule accepts a VGA set labelled 1080p; V2.11's does not.
+    assert t.fisheye_cal_size_plausible(VGA, 1920, 1080)
+    assert not t.fisheye_cal_slot_plausible(VGA, 1920, 1080)
+    # Inclusive window: cx = 320 - 0.15 * 640.
+    assert t.fisheye_cal_slot_plausible(
+        t.CameraFisheyeCal(213, 213, 224, 240), 640, 480
+    )
+    assert not t.fisheye_cal_slot_plausible(
+        t.CameraFisheyeCal(213, 213, 223.5, 240), 640, 480
+    )
+
+
+def test_v2_11_keeps_one_calibration_per_resolution():
+    store = FakeFisheyeStore(sized=True, slots=True, cal=VGA, width=640, height=480)
+    with fake_leader(store) as g:
+        cal = g.calibration
+        assert cal.supports_fisheye_slots() is True
+        assert cal.read_fisheye_slot(1920, 1080) is None
+        cal.write_fisheye_sized(HD, 1920, 1080)
+        hd = cal.read_fisheye_slot(1920, 1080)
+        assert (hd.width, hd.height) == (1920, 1080)
+        assert hd.calibration.cx == pytest.approx(968.3, abs=1e-3)
+        vga = cal.read_fisheye_slot(640, 480)
+        assert (vga.width, vga.height) == (640, 480)
+        assert vga.calibration.cx == pytest.approx(321.4, abs=1e-3)
+        # 0.4.7's read still answers with the VGA slot.
+        assert (cal.read_fisheye_record().width, cal.read_fisheye_record().height) == (
+            640,
+            480,
+        )
+        r = cal.resolve_fisheye_for(1920, 1080)
+        assert isinstance(r, t.ResolvedFisheyeCal)
+        assert r.is_reference is False
+        assert r.calibrated_size == (1920, 1080)
+        assert cal.resolve_fisheye_for(640, 480).calibrated_size == (640, 480)
+        with pytest.raises(RuntimeError, match="only 640x480 and 1920x1080"):
+            cal.read_fisheye_slot(1280, 720)
+    assert store.size == (640, 480)
+
+
+def test_v2_11_clear_slot():
+    store = FakeFisheyeStore(
+        sized=True, slots=True, cal=VGA, width=640, height=480, hd=HD
+    )
+    with fake_leader(store) as g:
+        cal = g.calibration
+        cal.clear_fisheye_slot(640, 480)
+        assert cal.read_fisheye_slot(640, 480) is None
+        assert cal.read_fisheye() is None
+        assert cal.read_fisheye_slot(1920, 1080) is not None
+        cal.clear_fisheye_slot(640, 480)  # already empty: still Ok
+        r = cal.resolve_fisheye_for(640, 480)
+        assert r.is_reference is True and "640x480" in r.reason
+    assert store.params is None and store.size == (0, 0) and store.hd is not None
+
+
+def test_v2_11_host_refuses_a_vga_set_labelled_1080p():
+    store = FakeFisheyeStore(sized=True, slots=True)
+    with fake_leader(store) as g:
+        with pytest.raises(RuntimeError, match="within 15% of the frame centre"):
+            g.calibration.write_fisheye_sized(VGA, 1920, 1080)
+        with pytest.raises(RuntimeError, match="640x480 and for 1920x1080 only"):
+            g.calibration.write_fisheye_sized(
+                t.CameraFisheyeCal(320, 320, 641, 359), 1280, 720
+            )
+    assert OP_WRITE_SIZED not in store.ops
+
+
+@pytest.mark.parametrize("sized", [True, False])
+def test_single_record_firmware_has_no_slots(sized):
+    store = FakeFisheyeStore(sized=sized, cal=HD, width=1920, height=1080)
+    if not sized:
+        store.size = (0, 0)
+    with fake_leader(store) as g:
+        cal = g.calibration
+        assert cal.supports_fisheye_slots() is False
+        with pytest.raises(RuntimeError, match="cannot clear one"):
+            cal.clear_fisheye_slot(1920, 1080)
+        if sized:
+            assert cal.read_fisheye_slot(1920, 1080) is not None
+            assert cal.read_fisheye_slot(640, 480) is None
+            assert cal.resolve_fisheye_for(1920, 1080).is_reference is False
+        r = cal.resolve_fisheye_for(640, 480)
+        assert r.is_reference is True and "not 640x480" in r.reason
+    assert OP_CLEAR_SLOT not in store.ops
+
+
+def test_v2_11_migrated_1080p_record_stays_in_the_vga_slot():
+    # A 1920x1080 record written by V2.10 rc1..rc3 stays in the VGA slot after
+    # the upgrade and reads with size (0, 0).
+    store = FakeFisheyeStore(sized=True, slots=True, cal=HD, width=1920, height=1080)
+    with fake_leader(store) as g:
+        cal = g.calibration
+        rec = cal.read_fisheye_slot(640, 480)
+        assert (rec.width, rec.height) == (0, 0)
+        assert cal.read_fisheye_slot(1920, 1080) is None
+        r = cal.resolve_fisheye_for(640, 480)
+        assert r.is_reference is True
+        assert r.mismatched_size == (1920, 1080)
+        assert cal.resolve_fisheye_for(1920, 1080).mismatched_size is None
