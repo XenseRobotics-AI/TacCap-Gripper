@@ -8,7 +8,12 @@
 // that path or claim a measured hardware rate from the requested value.
 //
 // Mirrored from third_party/firmware/tc-gu-01,
-// App/tasks/task_data_stream.c (hw_v1.1.0 @ bf0a06e):
+// App/tasks/task_data_stream.c (hw_v1.1.0 @ bf0a06e; re-checked against
+// 1.3.0-rc3, tc-gu-01 #32: the four rules below are unchanged). What rc3 did
+// change is not modelled here: a motor slot that finds no fresh status waits
+// for one on the next 1 ms ticks (one frame per slot either way), whole
+// missed periods after a stall are dropped instead of burst out, and COMBINED
+// mode no longer carries motor status -- the SDK only uses SEPARATE:
 //
 //   - The scheduler runs on a 1 ms tick (STREAM_CYCLE_MS) and divides it by an
 //     integer, so only exact divisors of 1000 come out at the requested rate.
