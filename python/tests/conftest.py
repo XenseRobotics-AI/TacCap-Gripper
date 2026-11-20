@@ -76,3 +76,21 @@ assert _native is not None and (
     f"_taccap_native came from {getattr(_native, '__file__', None)}, not this "
     "checkout — rebuild with `uv pip install -e . --no-build-isolation`."
 )
+
+
+# No test may discover hardware on its own. scan_grippers() opens EVERY gripper
+# port and sends StopStream to each, so on a bench shared with other sessions a
+# plain `pytest python/tests` interrupted a leader acceptance run (2026-11-20).
+# Hardware tests name their one device by by-id path (see TACCAP_TEST_LEADER in
+# test_numpy_views.py); tests that need discovery inject a fake.
+def _no_discovery(*_args, **_kwargs):
+    raise RuntimeError(
+        "python/tests must not discover hardware (scan_grippers / find_*): it "
+        "opens every gripper port. Pass a by-id path explicitly instead."
+    )
+
+
+for _name in ("scan_grippers", "find_follower", "find_leader"):
+    for _mod in (_t, _native):
+        if hasattr(_mod, _name):
+            setattr(_mod, _name, _no_discovery)
