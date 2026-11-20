@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-11-20
+
+Bundles firmware **1.3.1** for both roles (tc-gu-01 `v1.3.1`, `1d98d4b`;
+protocol V2.11): leader `tc-gu-01-master-1.3.1.bin` (SHA-256 `c8f3afce…`) and
+follower `tc-gu-01-slave-1.3.1.bin` (SHA-256 `bff0683c…`), replacing 1.2.7 /
+1.2.17. Built with Ubuntu 24.04 `arm-none-eabi-gcc 13.2.1`, reproducibly;
+verified on two RS00 followers and two leaders, EL05 not hardware-verified.
+Capabilities are probed, so this SDK still runs on 1.2.17 / 1.2.7 and on the
+1.3.0 release candidates.
+
+### Tests no longer discover hardware
+
+- `pytest python/tests` used to open a leader whenever one was attached, via
+  `scan_grippers()`, which opens every gripper port and sends StopStream to
+  each; on a shared bench it interrupted another session's run. The leader
+  IMU cases now run only with `TACCAP_TEST_LEADER=<by-id path>` and open that
+  port alone, and `conftest.py` makes `scan_grippers` / `find_follower` /
+  `find_leader` raise inside tests.
+
 ### Dual fisheye calibration slots (protocol V2.11)
 
-Firmware 1.3.0-rc4 (release 1.3.1, both roles) keeps two fixed fisheye
+Firmware 1.3.1 (both roles; candidate 1.3.0-rc4) keeps two fixed fisheye
 calibration records instead of one: a VGA slot (640x480) and an HD slot
 (1920x1080). On V2.10 (1.3.0-rc1..rc3) storing a 1080p calibration replaced the
 640x480 one; now a unit can carry both. Capabilities are probed, so this SDK
@@ -76,7 +95,7 @@ Behaviour changes:
   confusing but loses nothing. The HD record is in its slot; read it with
   `read_fisheye_slot(1920, 1080)`.
 
-### Firmware 1.3.0-rc3: requested rates are delivered rates
+### Firmware 1.3.1: requested rates are delivered rates (from 1.3.0-rc3)
 
 Nothing in the SDK's wire handling changes; this records what to expect.
 
