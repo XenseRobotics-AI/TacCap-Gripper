@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documented
+
+- `ForcePositionController` at the closed end: the final state comes ~0.45 s
+  after a streamed target reaches 0.0, because the jaw first stops on the
+  fingertip pads 17–20 mrad short (`CLOSING`) until the make-up term presses
+  them (measured on RS00 0016s, firmware 1.3.1; open end settles at once).
+  Callers that judge sooner should use a position tolerance. Behaviour
+  unchanged. See USAGE §1.4.
+
 ## [0.4.8] - 2026-11-20
 
 Bundles firmware **1.3.1** for both roles (tc-gu-01 `v1.3.1`, `1d98d4b`;

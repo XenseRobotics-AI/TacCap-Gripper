@@ -372,6 +372,20 @@ The velocity threshold in `holding` uses the firmware's own
 `TASK_CANMOTOR_STALL_VEL_RATIO = 0.25` — deliberately the same number, so that host
 and MCU describe the same physical event the same way.
 
+**At the closed end the final state comes about 0.45 s after the target gets
+there.** The fingertip pads touch before the calibrated zero and need about 1 N·m
+to compress, so a jaw closing to 0.0 first stops on them roughly 17–20 mrad short,
+still `CLOSING`; the make-up term then builds the torque (0.4 → 1.3 N·m) and presses
+the pads to about 10 mrad, and only then does the state turn `HOLDING_POSITION`.
+Measured on 0016s (RS00, firmware 1.3.1, 2026-11-21) with the target streamed at
+100 Hz along a 2.5 s full-stroke ramp: 10/10 closings reached `HOLDING_POSITION`
+0.43–0.46 s after the ramp ended, at 7.9–8.6 mrad; the open end, with no pads,
+settles the moment the ramp ends. While the ramp runs, the jaw trails a streamed
+target by about 19 mrad. This is the intended behaviour, not a stuck controller:
+a caller that judges "closed" sooner must use a position tolerance rather than
+wait for the state (the production config tool accepts RS00's closed end within
+3% of travel and saw `CLOSING` at 17–18 mrad on 4 of 10 cycles, all correct).
+
 **The criterion is not "does the command use up the budget".** That one is true the
 instant the target changes: the setpoint jumps, the command saturates, and the jaw has
 not had time to move. Measured, the consequence was that every "grasp" step completed
