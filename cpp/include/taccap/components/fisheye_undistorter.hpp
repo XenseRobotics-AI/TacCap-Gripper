@@ -122,16 +122,35 @@ inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL{
     /* k3 */ -0.0146f,  /* k4 */ 0.0051f,
 };
 
-// True when `c` is FISHEYE_FALLBACK_CAL, give or take the rounding of a copy
-// that went through printed text (each of the 8 params within 1e-3, relative
-// for the focal lengths and principal point). A unit's own calibration never
-// lands that close on all eight -- the principal point alone moves by pixels
-// between assemblies -- so a match means the reference was written to flash
-// as if it were this unit's calibration. Measured on leader TCGU01A28Z0096m
-// (2026-11-20): all eight params bit-for-bit the reference.
-inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c) {
+// The same reference at 1920x1080, which is a different sensor crop (16:9) and
+// so cannot be derived from the 640x480 one. Taken from leader TCGU01A28Z0116m
+// (camera XCA28Z0116m, firmware 1.3.1): checkerboard, 16 views, RMS 0.145 px,
+// 2026-11-22, read back from its 1920x1080 flash slot as stored (float32).
+// Like the 640x480 reference it stands in only when a unit has no calibration
+// at this resolution; every unit should still be calibrated itself.
+inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL_HD{
+    /* fx */ 478.68341064453125f, /* fy */ 477.91790771484375f,
+    /* cx */ 951.7321166992188f,  /* cy */ 501.4850158691406f,
+    /* k1 */ -0.01882108487188816f, /* k2 */ -0.010065662674605846f,
+    /* k3 */ 0.004266931209713221f, /* k4 */ 0.004780873190611601f,
+};
+inline constexpr const char* FISHEYE_FALLBACK_CAL_HD_SOURCE = "TCGU01A28Z0116m";
+
+// The reference for a capture size: FISHEYE_FALLBACK_CAL_HD at 1920x1080,
+// FISHEYE_FALLBACK_CAL at anything else (it only holds at 640x480, which the
+// undistorter enforces).
+inline const protocol::CameraFisheyeCal& fisheye_fallback_cal_for(int width, int height) {
+    return (width == FISHEYE_HD_CALIB_WIDTH && height == FISHEYE_HD_CALIB_HEIGHT)
+               ? FISHEYE_FALLBACK_CAL_HD
+               : FISHEYE_FALLBACK_CAL;
+}
+
+namespace detail {
+// Each of the 8 params within 1e-3 of `ref` (relative for the focal lengths and
+// principal point), so a copy that went through printed text still matches.
+inline bool fisheye_cal_near(const protocol::CameraFisheyeCal& c,
+                             const protocol::CameraFisheyeCal& r) {
     const float got[8]  = {c.fx, c.fy, c.cx, c.cy, c.k1, c.k2, c.k3, c.k4};
-    const auto& r       = FISHEYE_FALLBACK_CAL;
     const float want[8] = {r.fx, r.fy, r.cx, r.cy, r.k1, r.k2, r.k3, r.k4};
     for (int i = 0; i < 8; ++i) {
         if (!std::isfinite(got[i])) return false;
@@ -139,6 +158,26 @@ inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c) {
         if (std::fabs(got[i] - want[i]) > tol) return false;
     }
     return true;
+}
+}  // namespace detail
+
+// True when `c` is FISHEYE_FALLBACK_CAL (the 640x480 reference), give or take
+// the rounding of a copy that went through printed text. A unit's own
+// calibration never lands that close on all eight -- the principal point alone
+// moves by pixels between assemblies -- so a match means the reference was
+// written to flash as if it were this unit's calibration. Measured on leader
+// TCGU01A28Z0096m (2026-11-20): all eight params bit-for-bit the reference.
+inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c) {
+    return detail::fisheye_cal_near(c, FISHEYE_FALLBACK_CAL);
+}
+
+// Size-aware: compares against the reference for that capture size
+// (FISHEYE_FALLBACK_CAL_HD at 1920x1080). Note the HD reference IS the
+// calibration of its source unit (FISHEYE_FALLBACK_CAL_HD_SOURCE), which
+// therefore matches too.
+inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c,
+                                         int width, int height) {
+    return detail::fisheye_cal_near(c, fisheye_fallback_cal_for(width, height));
 }
 
 // A record read back from flash can be present but empty: an uncalibrated unit

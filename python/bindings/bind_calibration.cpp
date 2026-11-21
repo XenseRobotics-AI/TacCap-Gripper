@@ -235,10 +235,11 @@ void bind_calibration(py::module_& m) {
              "older firmware it reads the single record and uses it only when "
              "its size -- recorded, or inferred as resolve_fisheye() does -- "
              "equals width x height.\n\n"
-             "Otherwise the reference values stand in (is_reference True, reason "
-             "says why). The reference exists at 640x480 only, so for any other "
-             "size its calibrated_size still reads (640, 480) and a "
-             "FisheyeUndistorter built for the camera refuses it.")
+             "Otherwise the reference for that size stands in (is_reference True, "
+             "reason says why): FISHEYE_FALLBACK_CAL_HD at 1920x1080, "
+             "FISHEYE_FALLBACK_CAL otherwise. Only 640x480 and 1920x1080 have a "
+             "reference, so for any other size calibrated_size reads (640, 480) "
+             "and a FisheyeUndistorter built for the camera refuses it.")
         .def("write_fisheye",
              [](Calibration& self, const protocol::CameraFisheyeCal& cal,
                 unsigned timeout_ms) {

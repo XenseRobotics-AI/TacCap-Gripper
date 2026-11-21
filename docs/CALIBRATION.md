@@ -141,6 +141,23 @@ rectification at all — which is why
 `install_wrist_undistorter()` now installs undistortion **always**, and logs
 which of the two calibrations it used.
 
+At **1920x1080** (a different sensor crop, so the 640x480 numbers cannot be
+rescaled to it) the reference is `FISHEYE_FALLBACK_CAL_HD`, measured on leader
+`TCGU01A28Z0116m` (camera XCA28Z0116m, firmware 1.3.1, checkerboard, 16 views,
+RMS 0.145 px, 2026-11-22) and stored as read back from its flash:
+
+```text
+fx 478.6834  fy 477.9179   cx 951.7321  cy 501.4850
+k1 -0.018821 k2 -0.010066  k3  0.004267 k4  0.004781
+```
+
+`resolve_fisheye_for(1920, 1080)` falls back to it when a unit has no 1080p
+calibration, and `fisheye_fallback_cal_for(w, h)` returns the reference for a
+size. Both references are stand-ins: every unit should be calibrated at the
+resolution it captures at. `matches_fisheye_fallback_cal(cal, w, h)` compares
+against the reference for that size; note that the HD reference **is** 0116m's
+own calibration, so that one unit is flagged as matching by construction.
+
 > **Watch out: the optical axis is not necessarily at the image centre.**
 >
 > A rectified frame can look off-centre, or subtly tilted, **while the

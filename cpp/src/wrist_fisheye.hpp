@@ -94,10 +94,10 @@ inline ResolvedFisheyeCal resolve_wrist_fisheye(Calibration& cal, cv::Size camer
 //   - the unit has a usable calibration, but only for another resolution than
 //     the camera runs at (e.g. a 1920x1080 camera with only a VGA calibration,
 //     or a single V2.10 record sized for the other resolution);
-//   - the camera runs at a resolution with no calibration AND the reference
-//     does not apply either (it exists at 640x480 only) -- e.g. a 1920x1080
-//     camera on an uncalibrated unit. Any rectification would be quietly
-//     wrong; intrinsics are never rescaled to fit.
+//   - the camera runs at a resolution with no calibration AND there is no
+//     reference for it either (references exist at 640x480 and 1920x1080
+//     only; FISHEYE_FALLBACK_CAL / FISHEYE_FALLBACK_CAL_HD). Any rectification
+//     would be quietly wrong; intrinsics are never rescaled to fit.
 inline void install_wrist_undistorter(Calibration& cal,
                                       Camera&      cam,
                                       float        balance,

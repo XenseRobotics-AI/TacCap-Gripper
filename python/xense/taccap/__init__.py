@@ -127,6 +127,9 @@ ResolvedFisheyeCal = _taccap_native.ResolvedFisheyeCal
 # path that uses it should say so.
 ColorMode = _taccap_native.ColorMode
 FISHEYE_FALLBACK_CAL = _taccap_native.FISHEYE_FALLBACK_CAL
+FISHEYE_FALLBACK_CAL_HD = _taccap_native.FISHEYE_FALLBACK_CAL_HD
+FISHEYE_FALLBACK_CAL_HD_SOURCE = _taccap_native.FISHEYE_FALLBACK_CAL_HD_SOURCE
+fisheye_fallback_cal_for = _taccap_native.fisheye_fallback_cal_for
 is_usable_fisheye_cal = _taccap_native.is_usable_fisheye_cal
 matches_fisheye_fallback_cal = _taccap_native.matches_fisheye_fallback_cal
 fisheye_cal_size_plausible = _taccap_native.fisheye_cal_size_plausible
@@ -303,6 +306,9 @@ __all__ = [
     "ResolvedFisheyeCal",
     "ColorMode",
     "FISHEYE_FALLBACK_CAL",
+    "FISHEYE_FALLBACK_CAL_HD",
+    "FISHEYE_FALLBACK_CAL_HD_SOURCE",
+    "fisheye_fallback_cal_for",
     "is_usable_fisheye_cal",
     "matches_fisheye_fallback_cal",
     "fisheye_cal_size_plausible",

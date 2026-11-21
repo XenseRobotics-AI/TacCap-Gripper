@@ -158,12 +158,13 @@ def _print_record(record, firmware_records_size: bool) -> None:
     for row in fisheye.K:
         print("    [" + "  ".join(f"{v:10.4f}" for v in row) + "]")
     print("  OpenCV D: [" + "  ".join(f"{v:.6f}" for v in fisheye.D) + "]")
-    if matches_fisheye_fallback_cal(fisheye):
+    w, h = (record.width, record.height) if record.size_known() else (640, 480)
+    if matches_fisheye_fallback_cal(fisheye, w, h):
         print(
             "  "
             + _yellow("these ARE the SDK reference values")
-            + " — the factory stored FISHEYE_FALLBACK_CAL, not this unit's own "
-            "calibration; recalibrate it"
+            + f" for {w}x{h} — the factory stored the reference, not this unit's "
+            "own calibration; recalibrate it"
         )
 
 

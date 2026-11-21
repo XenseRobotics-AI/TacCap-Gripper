@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 1920x1080 reference fisheye intrinsics
+
+- **`FISHEYE_FALLBACK_CAL_HD`** (C++ / Python): the reference for 1920x1080,
+  measured on leader TCGU01A28Z0116m (camera XCA28Z0116m, firmware 1.3.1,
+  checkerboard 16 views, RMS 0.145 px, 2026-11-22) and stored as read back from
+  its flash; `FISHEYE_FALLBACK_CAL_HD_SOURCE` names that unit.
+  `fisheye_fallback_cal_for(w, h)` returns the reference for a size.
+- `resolve_fisheye_for(1920, 1080)` falls back to the HD reference (sized
+  1920x1080) instead of the 640x480 one, which the undistorter refused at that
+  size. So a 1080p wrist camera on a unit with **no** calibration at all now
+  rectifies with the HD reference and a warning, where it used to raise. A unit
+  that has a calibration only at the other resolution still raises.
+- `matches_fisheye_fallback_cal(cal, w, h)` compares against the reference for
+  that size, and `matches_reference` / the write warnings use it. The HD
+  reference is 0116m's own calibration, so that unit matches by construction
+  (the warning says so). The 1-argument form is unchanged (640x480).
+
 ### Documented
 
 - `ForcePositionController` at the closed end: the final state comes ~0.45 s
