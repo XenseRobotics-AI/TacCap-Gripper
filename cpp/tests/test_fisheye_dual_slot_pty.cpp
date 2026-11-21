@@ -312,11 +312,11 @@ TEST(FisheyeDualSlotPty, ResolveForAnEmptySlotFallsBackToTheReference) {
     auto g = open_follower(pty);
     const auto r = g->calibration().resolve_fisheye_for(1920, 1080);
     EXPECT_TRUE(r.is_reference);
-    EXPECT_TRUE(same(r.calibration, tx::FISHEYE_FALLBACK_CAL));
+    // The 1920x1080 reference, not the 640x480 one (a different sensor crop).
+    EXPECT_TRUE(same(r.calibration, tx::FISHEYE_FALLBACK_CAL_HD));
     EXPECT_NE(r.reason.find("never been calibrated at 1920x1080"), std::string::npos)
         << r.reason;
-    // The reference exists at 640x480 only.
-    EXPECT_EQ(r.calibrated_size, cv::Size(640, 480));
+    EXPECT_EQ(r.calibrated_size, cv::Size(1920, 1080));
 }
 
 TEST(FisheyeDualSlotPty, ResolveForInfersAnUnsizedVgaSlot) {
@@ -644,13 +644,14 @@ TEST(WristFisheyeDecisionPty, NoCalibrationAnywhereFallsBackToTheReference) {
         EXPECT_TRUE(same(vga.calibration, tx::FISHEYE_FALLBACK_CAL));
         EXPECT_NO_THROW(tx::FisheyeUndistorter(vga.calibration, vga.calibrated_size,
                                                cv::Size(640, 480)));
-        // A 1080p camera gets the reference too, which the undistorter refuses:
-        // the reference is a 640x480 calibration and is never rescaled.
+        // A 1080p camera gets the 1920x1080 reference, which the undistorter
+        // accepts at that size (it was measured there; nothing is rescaled).
         const auto hd = tx::detail::resolve_wrist_fisheye(cal, {1920, 1080}, "T");
         EXPECT_TRUE(hd.is_reference);
-        EXPECT_THROW(tx::FisheyeUndistorter(hd.calibration, hd.calibrated_size,
-                                            cv::Size(1920, 1080)),
-                     tx::Error);
+        EXPECT_TRUE(same(hd.calibration, tx::FISHEYE_FALLBACK_CAL_HD));
+        EXPECT_EQ(hd.calibrated_size, cv::Size(1920, 1080));
+        EXPECT_NO_THROW(tx::FisheyeUndistorter(hd.calibration, hd.calibrated_size,
+                                               cv::Size(1920, 1080)));
     }
 }
 

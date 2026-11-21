@@ -380,3 +380,28 @@ TEST(FisheyeReferenceMatch, TheFallbackItselfIsNotFlagged) {
     EXPECT_TRUE(r.is_reference);
     EXPECT_FALSE(r.matches_reference);
 }
+
+// ---- 1920x1080 reference ---------------------------------------------------
+
+TEST(FisheyeReferenceMatch, TheHdReferenceIsMatchedBySize) {
+    EXPECT_TRUE(tx::matches_fisheye_fallback_cal(tx::FISHEYE_FALLBACK_CAL_HD, 1920, 1080));
+    EXPECT_FALSE(tx::matches_fisheye_fallback_cal(tx::FISHEYE_FALLBACK_CAL_HD, 640, 480));
+    EXPECT_FALSE(tx::matches_fisheye_fallback_cal(tx::FISHEYE_FALLBACK_CAL_HD));
+    EXPECT_TRUE(tx::matches_fisheye_fallback_cal(tx::FISHEYE_FALLBACK_CAL, 640, 480));
+    // The HD reference is a plausible 1920x1080 slot calibration.
+    EXPECT_TRUE(tx::fisheye_cal_slot_plausible(tx::FISHEYE_FALLBACK_CAL_HD, 1920, 1080));
+    EXPECT_TRUE(same(tx::fisheye_fallback_cal_for(1920, 1080), tx::FISHEYE_FALLBACK_CAL_HD));
+    EXPECT_TRUE(same(tx::fisheye_fallback_cal_for(640, 480), tx::FISHEYE_FALLBACK_CAL));
+}
+
+TEST(FisheyeReferenceMatch, AnHdSlotHoldingTheHdReferenceIsFlagged) {
+    Pty pty;
+    FakeFollower fw(pty);
+    fw.set_fisheye_firmware(FakeFollower::FisheyeFirmware::V2_11);
+    fw.set_fisheye_hd_record(tx::FISHEYE_FALLBACK_CAL_HD);
+    auto g = open_follower(pty);
+    const auto r = g->calibration().resolve_fisheye_for(1920, 1080);
+    EXPECT_FALSE(r.is_reference);
+    EXPECT_TRUE(r.matches_reference);
+    EXPECT_EQ(r.calibrated_size, cv::Size(1920, 1080));
+}

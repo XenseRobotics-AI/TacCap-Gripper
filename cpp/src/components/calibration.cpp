@@ -44,12 +44,13 @@ bus::AckResponse send_cal_cmd(bus::Transport& t, protocol::Cmd cmd,
 // A write of the reference values stores them as this unit's calibration, and
 // every later read takes them for one. Allowed (a stopgap can be deliberate),
 // but never silently.
-void warn_if_reference_(const protocol::CameraFisheyeCal& cal, const char* what) {
-    if (!matches_fisheye_fallback_cal(cal)) return;
+void warn_if_reference_(const protocol::CameraFisheyeCal& cal, int width, int height,
+                        const char* what) {
+    if (!matches_fisheye_fallback_cal(cal, width, height)) return;
     logger()->warn("Calibration::{}: writing the SDK's REFERENCE fisheye intrinsics "
-                   "(FISHEYE_FALLBACK_CAL) as this unit's calibration. Every read "
-                   "will take them for a real calibration of this unit; calibrate "
-                   "the unit and store its own values instead.", what);
+                   "for {}x{} as this unit's calibration. Every read will take them "
+                   "for a real calibration of this unit; calibrate the unit and store "
+                   "its own values instead.", what, width, height);
 }
 
 [[noreturn]] void throw_nack(const char* what, protocol::ErrorCode err) {
@@ -75,7 +76,7 @@ std::optional<protocol::CameraFisheyeCal> Calibration::read_fisheye(
 
 void Calibration::write_fisheye(const protocol::CameraFisheyeCal& cal,
                                 std::chrono::milliseconds timeout) {
-    warn_if_reference_(cal, "write_fisheye");
+    warn_if_reference_(cal, FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT, "write_fisheye");
     auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
                                 protocol::encode_camera_fisheye_cal_write(cal), timeout);
     const auto err = ack_error_code(ack);
@@ -270,7 +271,7 @@ void Calibration::write_fisheye_sized(const protocol::CameraFisheyeCal& cal,
                 std::to_string(height) + " calibration cannot be stored. "
                 "Calibrate at one of those two resolutions.");
         }
-        warn_if_reference_(cal, "write_fisheye_sized");
+        warn_if_reference_(cal, width, height, "write_fisheye_sized");
         auto ack = send_cal_cmd(t_, protocol::Cmd::CameraFisheyeCal,
                                     protocol::encode_camera_fisheye_cal_write_sized(
                                         cal, static_cast<uint16_t>(width),
@@ -352,17 +353,26 @@ ResolvedFisheyeCal Calibration::resolve_fisheye_for(int width, int height,
         reason = "the wrist lens has never been calibrated at " + want +
                  " (that calibration slot is empty)";
     }
+    // The reference that stands in is the one for the requested size: the HD
+    // reference at 1920x1080 (a different sensor crop, so the 640x480 one
+    // would be refused by the undistorter there), the 640x480 one otherwise.
+    const bool hd = width == FISHEYE_HD_CALIB_WIDTH && height == FISHEYE_HD_CALIB_HEIGHT;
+    const cv::Size ref_size = hd ? cv::Size(width, height)
+                                 : cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT);
     auto resolved = resolve_record_(record, std::move(reason));
     if (!resolved.is_reference &&
         resolved.calibrated_size != cv::Size(width, height)) {
         const std::string have = std::to_string(resolved.calibrated_size.width) + "x" +
                                  std::to_string(resolved.calibrated_size.height);
-        return {FISHEYE_FALLBACK_CAL, true,
+        return {fisheye_fallback_cal_for(width, height), true,
                 "this unit's wrist calibration belongs to " + have +
                     (resolved.size_inferred ? " (inferred)" : "") + ", not " + want +
                     " -- calibrate at " + want + " to store one",
-                cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false,
-                resolved.calibrated_size};
+                ref_size, false, resolved.calibrated_size};
+    }
+    if (resolved.is_reference && hd) {
+        resolved.calibration     = FISHEYE_FALLBACK_CAL_HD;
+        resolved.calibrated_size = ref_size;
     }
     return resolved;
 }
@@ -418,13 +428,19 @@ ResolvedFisheyeCal Calibration::resolve_record_(
                 cv::Size(FISHEYE_CALIB_WIDTH, FISHEYE_CALIB_HEIGHT), false};
     }
     ResolvedFisheyeCal resolved{record->calibration, false, {}, size, inferred};
-    if (matches_fisheye_fallback_cal(record->calibration)) {
+    if (matches_fisheye_fallback_cal(record->calibration, size.width, size.height)) {
         resolved.matches_reference = true;
-        logger()->warn("wrist fisheye calibration stored on this unit IS the SDK's "
-                       "reference intrinsics (FISHEYE_FALLBACK_CAL), not a calibration "
-                       "of this unit -- the factory flashed the reference. "
-                       "Rectification is only approximate; recalibrate the unit and "
-                       "store its own values with write_fisheye_sized().");
+        const bool hd = size == cv::Size(FISHEYE_HD_CALIB_WIDTH, FISHEYE_HD_CALIB_HEIGHT);
+        logger()->warn("wrist fisheye calibration stored on this unit for {}x{} IS the "
+                       "SDK's reference intrinsics{}{}, not a calibration of this unit "
+                       "-- the factory flashed the reference. Rectification is only "
+                       "approximate; recalibrate the unit and store its own values with "
+                       "write_fisheye_sized().",
+                       size.width, size.height,
+                       hd ? " (FISHEYE_FALLBACK_CAL_HD, measured on " : " (FISHEYE_FALLBACK_CAL)",
+                       hd ? std::string(FISHEYE_FALLBACK_CAL_HD_SOURCE) +
+                                "; that unit itself matches by construction)"
+                          : std::string());
     }
     return resolved;
 }

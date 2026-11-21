@@ -440,3 +440,16 @@ def test_resolve_flags_a_unit_that_stores_the_reference():
     assert resolved.is_reference is False
     assert resolved.matches_reference is True
     assert "matches_reference=True" in repr(resolved)
+
+
+def test_hd_reference_is_exported_and_matched_by_size():
+    hd = t.FISHEYE_FALLBACK_CAL_HD
+    assert t.FISHEYE_FALLBACK_CAL_HD_SOURCE == "TCGU01A28Z0116m"
+    assert (
+        abs(hd.fx - 478.68341064453125) < 1e-4 and abs(hd.cy - 501.4850158691406) < 1e-4
+    )
+    assert t.matches_fisheye_fallback_cal(hd, 1920, 1080)
+    assert not t.matches_fisheye_fallback_cal(hd)  # the 1-arg form is the 640x480 one
+    assert t.fisheye_cal_slot_plausible(hd, 1920, 1080)
+    assert t.fisheye_fallback_cal_for(1920, 1080).fx == hd.fx
+    assert t.fisheye_fallback_cal_for(640, 480).fx == t.FISHEYE_FALLBACK_CAL.fx

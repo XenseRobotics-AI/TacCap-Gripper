@@ -571,7 +571,8 @@ cam.set_undistorter(undist)      # 装进采集路径:read() 和回调拿到的�
   (`fisheye_cal_slot_plausible()`),发送前就会检查。详见
   [CALIBRATION.md](CALIBRATION.md#dual-calibration-slots-v211-firmware-131-or-130-rc4)。
 - **参考内参是近似的**。每台的镜头装配位置有差异(尤其主点),回退到
-  `FISHEYE_FALLBACK_CAL` 只是比完全不矫正强,不能拿它去按像素做测量。
+  `FISHEYE_FALLBACK_CAL`(640×480)或 `FISHEYE_FALLBACK_CAL_HD`(1920×1080,取自主爪
+  TCGU01A28Z0116m)只是比完全不矫正强,不能拿它去按像素做测量。
   自己标定后用 `fisheye_cal.py set-fisheye --from-npz cam.npz --width W --height H` 写进 flash。
 
 `balance` 是取景口味:0 = 保持标定焦距(自然视角,和 PC 工具默认一致),
