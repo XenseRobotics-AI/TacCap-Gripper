@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-11-22
+
+Adds the 1920x1080 reference fisheye intrinsics and documents the closed-end
+settling of `ForcePositionController`. Bundled firmware is unchanged (1.3.1 for
+both roles).
+
 ### 1920x1080 reference fisheye intrinsics
 
 - **`FISHEYE_FALLBACK_CAL_HD`** (C++ / Python): the reference for 1920x1080,
