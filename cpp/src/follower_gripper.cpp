@@ -301,9 +301,11 @@ void FollowerGripper::close() noexcept {
     if (t_.is_running()) {
         try { stop_streaming(); } catch (...) {}
     }
-    if (wrist_) {
-        try { wrist_->stop(); } catch (...) {}
-    }
+    // Release the device, not just the capture thread: a stopped
+    // cv::VideoCapture keeps /dev/video* open, so reopening right after
+    // close() (another gripper object, another size) failed with EIO until
+    // this object was destroyed.
+    if (wrist_) wrist_->release();
     t_.close();
     logger()->info("FollowerGripper: closed {}", cfg_.mcu_device);
 }

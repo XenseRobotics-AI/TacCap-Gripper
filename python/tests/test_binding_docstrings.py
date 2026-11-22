@@ -106,3 +106,20 @@ def test_exports_are_unique_and_resolvable():
     assert len(t.__all__) == len(set(t.__all__)), "duplicate names in __all__"
     missing = [n for n in t.__all__ if not hasattr(t, n)]
     assert not missing, f"__all__ names nothing exports: {missing}"
+
+
+def test_gripper_constructors_take_the_wrist_capture_size():
+    """The wrist camera used to open at 640x480 only from Python
+    (Config::wrist_cam_extra was not bound), so undistort_wrist could not be
+    used with the 1920x1080 calibration slot. Defaults stay 640x480 @ 30."""
+    from xense.taccap import FollowerGripper, LeaderGripper
+
+    for cls in (FollowerGripper, LeaderGripper):
+        doc = cls.__init__.__doc__
+        for frag in (
+            "wrist_width: typing.SupportsInt",
+            "wrist_height: typing.SupportsInt",
+            "wrist_fps: typing.SupportsFloat",
+        ):
+            assert frag.split(":")[0] in doc, (cls.__name__, frag)
+        assert "wrist_width" in doc and "= 640" in doc and "= 480" in doc

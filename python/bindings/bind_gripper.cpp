@@ -210,7 +210,8 @@ void bind_gripper(py::module_& m) {
                          bool open_cameras, bool normalize_position,
                          float encoder_max_rad,
                          bool undistort_wrist, float fisheye_balance,
-                         ColorMode wrist_color_mode) {
+                         ColorMode wrist_color_mode,
+                         int wrist_width, int wrist_height, double wrist_fps) {
                 LeaderGripper::Config cfg;
                 cfg.mcu_device           = mcu;
                 cfg.wrist_video          = wrist;
@@ -223,6 +224,9 @@ void bind_gripper(py::module_& m) {
                 cfg.undistort_wrist      = undistort_wrist;
                 cfg.fisheye_balance      = fisheye_balance;
                 cfg.wrist_color_mode     = wrist_color_mode;
+                cfg.wrist_cam_extra.width  = wrist_width;
+                cfg.wrist_cam_extra.height = wrist_height;
+                cfg.wrist_cam_extra.fps    = wrist_fps;
                 py::gil_scoped_release gil;
                 return std::make_unique<LeaderGripper>(cfg);
              }),
@@ -251,6 +255,13 @@ void bind_gripper(py::module_& m) {
              // pipelines, which all want RGB. Pass ColorMode.BGR for code that
              // hands frames straight to cv2.imshow/imwrite.
              py::arg("wrist_color_mode")    = ColorMode::Rgb,
+             // Wrist capture size and rate (open_cameras=True). The wrist
+             // module delivers 640x480 and 1920x1080 MJPG; undistort_wrist picks
+             // the calibration for this size (the 1920x1080 slot on V2.11
+             // firmware) and never rescales one.
+             py::arg("wrist_width")         = 640,
+             py::arg("wrist_height")        = 480,
+             py::arg("wrist_fps")           = 30.0,
              "Open a leader by explicit device path -- mcu_device is the\n"
              "/dev/serial/by-id/ path from discovery.\n\n"
              "Blocks: the firmware version and SN are read once here, and a device\n"
@@ -498,7 +509,8 @@ void bind_gripper(py::module_& m) {
                          bool open_cameras,
                          bool undistort_wrist, float fisheye_balance,
                          ColorMode wrist_color_mode,
-                         bool allow_outdated_firmware) {
+                         bool allow_outdated_firmware,
+                         int wrist_width, int wrist_height, double wrist_fps) {
                 FollowerGripper::Config cfg;
                 cfg.mcu_device           = mcu;
                 cfg.wrist_video          = wrist;
@@ -510,6 +522,9 @@ void bind_gripper(py::module_& m) {
                 cfg.fisheye_balance      = fisheye_balance;
                 cfg.wrist_color_mode     = wrist_color_mode;
                 cfg.allow_outdated_firmware = allow_outdated_firmware;
+                cfg.wrist_cam_extra.width   = wrist_width;
+                cfg.wrist_cam_extra.height  = wrist_height;
+                cfg.wrist_cam_extra.fps     = wrist_fps;
                 py::gil_scoped_release gil;
                 return std::make_unique<FollowerGripper>(cfg);
              }),
@@ -541,6 +556,10 @@ void bind_gripper(py::module_& m) {
              // The single source of truth for the threshold is
              // FollowerGripper::kMinFirmware*; do not hard-code it here.
              py::arg("allow_outdated_firmware") = false,
+             // Wrist capture size and rate, as for LeaderGripper.
+             py::arg("wrist_width")         = 640,
+             py::arg("wrist_height")        = 480,
+             py::arg("wrist_fps")           = 30.0,
              "Open a follower by explicit device path -- mcu_device is the\n"
              "/dev/serial/by-id/ path from discovery.\n\n"
              "Blocks: the firmware version and SN are read once here, then the\n"

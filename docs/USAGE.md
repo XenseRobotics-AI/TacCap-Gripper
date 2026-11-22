@@ -607,9 +607,15 @@ Prefer a stable device path such as `/dev/v4l/by-id/...-video-index0`; the numbe
 
 ```python
 g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True,
-                    undistort_wrist=True)     # frames come out already rectified
+                    undistort_wrist=True,     # frames come out already rectified
+                    wrist_width=1920, wrist_height=1080)   # default 640x480 @ 30
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
+
+`wrist_width` / `wrist_height` / `wrist_fps` (SDK 0.5.0+) set the capture size;
+`undistort_wrist` then uses this unit's calibration for that size (the 1920x1080
+slot on firmware 1.3.1). `close()` releases the camera device, so the same camera
+can be reopened at once, at another size or by another gripper object.
 
 > **There is a deliberate inconsistency in channel order**: a bare `Camera` defaults to
 > **BGR** (OpenCV's native order, so `imshow` / `imwrite` are correct as-is), while the

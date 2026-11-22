@@ -230,6 +230,14 @@ void bind_camera(py::module_& m) {
            "None. Idempotent, and that cuts the other way: calling start() on a\n"
            "camera that is already streaming does nothing and drops the new callback\n"
            "on the floor.")
+        .def("release", [](Camera& self) {
+            py::gil_scoped_release gil;
+            self.release();
+        }, "Stop streaming and close the video device; the object stays valid but\n"
+           "read() returns None and start() does nothing. Idempotent. The grippers'\n"
+           "close() calls this, so the camera can be reopened right away.")
+        .def_property_readonly("is_open", &Camera::is_open,
+            "False once release() (or the owning gripper's close()) ran.")
         .def("stop", [](Camera& self) {
             py::gil_scoped_release gil;
             self.stop();

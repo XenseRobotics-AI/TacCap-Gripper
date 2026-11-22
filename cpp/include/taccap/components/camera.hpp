@@ -82,6 +82,14 @@ public:
     // invocation is serialised on the capture thread).
     void start(Callback cb);
     void stop();
+
+    // Stops streaming and closes the video device, keeping this object alive:
+    // afterwards read() returns false and start() does nothing. The grippers'
+    // close() calls it, so the device can be reopened at once (a new gripper,
+    // another size) while Python may still hold a reference to this Camera.
+    // Idempotent; the destructor does the same.
+    void release() noexcept;
+    bool is_open() const noexcept;
     bool is_streaming() const noexcept { return running_.load(); }
 
     // ---- Optional fisheye undistortion -------------------------------------
@@ -126,7 +134,7 @@ private:
     std::atomic<uint64_t> total_{0};
     std::atomic<uint64_t> dropped_{0};
     std::atomic<double>   last_fps_{0.0};
-    std::mutex            cap_mu_;       // guards reads when start() inactive
+    mutable std::mutex    cap_mu_;       // guards impl_ and reads when start() inactive
     mutable std::mutex    undist_mu_;    // guards undist_ against the capture thread
     std::shared_ptr<const FisheyeUndistorter> undist_;
 };

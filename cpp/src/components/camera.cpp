@@ -42,13 +42,21 @@ Camera::Camera(const Config& cfg) : cfg_(cfg) {
     }
 }
 
-Camera::~Camera() {
-    stop();
+Camera::~Camera() { release(); }
+
+void Camera::release() noexcept {
+    try { stop(); } catch (...) {}
+    std::lock_guard<std::mutex> lk(cap_mu_);
     if (impl_) {
-        as_cap(impl_)->release();
+        try { as_cap(impl_)->release(); } catch (...) {}
         delete as_cap(impl_);
         impl_ = nullptr;
     }
+}
+
+bool Camera::is_open() const noexcept {
+    std::lock_guard<std::mutex> lk(cap_mu_);
+    return impl_ != nullptr;
 }
 
 void Camera::set_undistorter(std::shared_ptr<const FisheyeUndistorter> u) {
@@ -88,13 +96,13 @@ void Camera::maybe_convert_colour_(cv::Mat& image) const {
 }
 
 bool Camera::read(CameraFrame& out) {
-    if (!impl_) return false;
     if (running_.load()) {
         // While streaming, the worker thread owns the device — disallow
         // concurrent direct reads to keep the contract simple.
         return false;
     }
     std::lock_guard<std::mutex> lk(cap_mu_);
+    if (!impl_) return false;   // released
     cv::Mat frame;
     if (!as_cap(impl_)->read(frame) || frame.empty()) {
         ++dropped_;
@@ -109,6 +117,7 @@ bool Camera::read(CameraFrame& out) {
 }
 
 void Camera::start(Callback cb) {
+    if (!is_open()) return;                // released
     if (running_.exchange(true)) return;   // idempotent
     worker_ = std::thread([this, cb = std::move(cb)]() { capture_loop_(cb); });
 }
