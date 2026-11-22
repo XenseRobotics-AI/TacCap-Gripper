@@ -612,7 +612,7 @@ g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True,
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
 
-`wrist_width` / `wrist_height` / `wrist_fps` (SDK 0.4.10+) set the capture size;
+`wrist_width` / `wrist_height` / `wrist_fps` (SDK 0.5.0+) set the capture size;
 `undistort_wrist` then uses this unit's calibration for that size (the 1920x1080
 slot on firmware 1.3.1). `close()` releases the camera device, so the same camera
 can be reopened at once, at another size or by another gripper object.

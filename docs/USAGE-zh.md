@@ -523,7 +523,7 @@ g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True,
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
 
-`wrist_width` / `wrist_height` / `wrist_fps`(SDK 0.4.10 起)设置采集尺寸;`undistort_wrist`
+`wrist_width` / `wrist_height` / `wrist_fps`(SDK 0.5.0 起)设置采集尺寸;`undistort_wrist`
 随之使用本机该尺寸的标定(固件 1.3.1 上即 1920x1080 槽)。`close()` 会释放相机设备,
 同一台相机可以马上以另一尺寸、或由另一个夹爪对象重新打开。
 
