@@ -518,9 +518,14 @@ cam.stop()
 
 ```python
 g = t.LeaderGripper(mcu_device, wrist_video="/dev/video2", open_cameras=True,
-                    undistort_wrist=True)     # 帧出来就是矫正过的
+                    undistort_wrist=True,     # 帧出来就是矫正过的
+                    wrist_width=1920, wrist_height=1080)   # 默认 640x480 @ 30
 g.wrist_camera.start(lambda f: print("wrist", f.frame_index))
 ```
+
+`wrist_width` / `wrist_height` / `wrist_fps`(SDK 0.4.10 起)设置采集尺寸;`undistort_wrist`
+随之使用本机该尺寸的标定(固件 1.3.1 上即 1920x1080 槽)。`close()` 会释放相机设备,
+同一台相机可以马上以另一尺寸、或由另一个夹爪对象重新打开。
 
 > **通道顺序有个刻意的不一致**:裸 `Camera` 默认 **BGR**(OpenCV 原生,`imshow`/
 > `imwrite` 直接对);夹爪的 `wrist_camera` 默认 **RGB**(喂视觉/学习管线,

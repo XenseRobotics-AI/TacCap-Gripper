@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-11-22
+
+### Added
+
+- **Wrist capture size from Python**: `FollowerGripper(...)` and
+  `LeaderGripper(...)` take `wrist_width`, `wrist_height`, `wrist_fps`
+  (defaults 640x480 @ 30, unchanged). `Config::wrist_cam_extra` was never bound,
+  so from Python the wrist only opened at 640x480 and `undistort_wrist` could
+  not use the 1920x1080 calibration slot. Verified on 0016s and 0095m: at
+  1920x1080 the gripper installs this unit's 1920x1080 calibration.
+- `Camera.release()` / `Camera.is_open`.
+
+### Fixed
+
+- **`close()` releases the wrist camera device.** It only stopped the capture
+  thread, so reopening the same camera right after (another gripper object,
+  another size) failed with `IoError: ... Input/output error` until the old
+  object was garbage-collected. A Python reference to `wrist_camera` that
+  outlives `close()` stays safe: `read()` returns `None`.
+
+### Documented
+
+- The closed-end settling of `ForcePositionController` is unit-dependent,
+  ~0.45–0.6 s (0016s 0.43–0.46 s, left-hand 0017s 0.56–0.58 s); the 0.4.9
+  notes said ~0.45 s.
+
 ## [0.4.9] - 2026-11-22
 
 Adds the 1920x1080 reference fisheye intrinsics and documents the closed-end
