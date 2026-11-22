@@ -13,12 +13,30 @@ Adds the 1920x1080 reference fisheye intrinsics and documents the closed-end
 settling of `ForcePositionController`. Bundled firmware is unchanged (1.3.1 for
 both roles).
 
+The `v0.4.9` tag was moved after release to take the averaged HD reference
+below; the version number is unchanged. It first pointed at `2d59e62`, which
+carries leader TCGU01A28Z0116m's values. Pin 0.4.9 by commit, and run
+`git fetch --tags --force` in any clone that fetched the earlier tag.
+
+### Changed
+
+- **`FISHEYE_FALLBACK_CAL_HD` is now the mean of two follower calibrations**
+  at 1920x1080 (TCGU01A45A0016s, 31 views, RMS 0.139 px; TCGU01A45A0017s, 22
+  views, RMS 0.141 px; 2026-11-22, firmware 1.3.1), instead of leader
+  TCGU01A28Z0116m's: that unit's lens sits off-centre (cy ≈ 501 against ≈ 550
+  on other units), so it was not representative. New values fx 475.625034,
+  fy 474.884377, cx 949.723195, cy 552.115953, k1 -0.016049, k2 -0.004148,
+  k3 0.000200, k4 0.000574. `FISHEYE_FALLBACK_CAL_HD_SOURCE` is now the marker
+  `avg:TCGU01A45A0016s+0017s`, not an SN, so no unit matches the HD reference
+  by construction any more (0116m no longer does).
+
 ### 1920x1080 reference fisheye intrinsics
 
-- **`FISHEYE_FALLBACK_CAL_HD`** (C++ / Python): the reference for 1920x1080,
-  measured on leader TCGU01A28Z0116m (camera XCA28Z0116m, firmware 1.3.1,
-  checkerboard 16 views, RMS 0.145 px, 2026-11-22) and stored as read back from
-  its flash; `FISHEYE_FALLBACK_CAL_HD_SOURCE` names that unit.
+- **`FISHEYE_FALLBACK_CAL_HD`** (C++ / Python): the reference for 1920x1080.
+  First taken from leader TCGU01A28Z0116m (camera XCA28Z0116m, firmware 1.3.1,
+  checkerboard 16 views, RMS 0.145 px, 2026-11-22, as read back from its
+  flash); replaced by the two-follower mean above before the tag was moved.
+  `FISHEYE_FALLBACK_CAL_HD_SOURCE` says where it came from.
   `fisheye_fallback_cal_for(w, h)` returns the reference for a size.
 - `resolve_fisheye_for(1920, 1080)` falls back to the HD reference (sized
   1920x1080) instead of the 640x480 one, which the undistorter refused at that
@@ -26,9 +44,8 @@ both roles).
   rectifies with the HD reference and a warning, where it used to raise. A unit
   that has a calibration only at the other resolution still raises.
 - `matches_fisheye_fallback_cal(cal, w, h)` compares against the reference for
-  that size, and `matches_reference` / the write warnings use it. The HD
-  reference is 0116m's own calibration, so that unit matches by construction
-  (the warning says so). The 1-argument form is unchanged (640x480).
+  that size, and `matches_reference` / the write warnings use it. The
+  1-argument form is unchanged (640x480).
 
 ### Documented
 

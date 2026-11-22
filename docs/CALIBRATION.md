@@ -142,21 +142,25 @@ rectification at all — which is why
 which of the two calibrations it used.
 
 At **1920x1080** (a different sensor crop, so the 640x480 numbers cannot be
-rescaled to it) the reference is `FISHEYE_FALLBACK_CAL_HD`, measured on leader
-`TCGU01A28Z0116m` (camera XCA28Z0116m, firmware 1.3.1, checkerboard, 16 views,
-RMS 0.145 px, 2026-11-22) and stored as read back from its flash:
+rescaled to it) the reference is `FISHEYE_FALLBACK_CAL_HD`: the element-wise
+mean of followers `TCGU01A45A0016s` (31 views, RMS 0.139 px) and
+`TCGU01A45A0017s` (22 views, RMS 0.141 px), both calibrated at 1920x1080 on
+2026-11-22 (firmware 1.3.1). It replaced the first HD reference (SDK 0.4.9),
+leader `TCGU01A28Z0116m`, whose lens sits off-centre (cy ≈ 501 against ≈ 550
+elsewhere):
 
 ```text
-fx 478.6834  fy 477.9179   cx 951.7321  cy 501.4850
-k1 -0.018821 k2 -0.010066  k3  0.004267 k4  0.004781
+fx 475.6250  fy 474.8844   cx 949.7232  cy 552.1160
+k1 -0.016049 k2 -0.004148  k3  0.000200 k4  0.000574
 ```
 
 `resolve_fisheye_for(1920, 1080)` falls back to it when a unit has no 1080p
 calibration, and `fisheye_fallback_cal_for(w, h)` returns the reference for a
 size. Both references are stand-ins: every unit should be calibrated at the
 resolution it captures at. `matches_fisheye_fallback_cal(cal, w, h)` compares
-against the reference for that size; note that the HD reference **is** 0116m's
-own calibration, so that one unit is flagged as matching by construction.
+against the reference for that size. Being an average, the HD reference is no
+single unit's calibration (`FISHEYE_FALLBACK_CAL_HD_SOURCE` is the marker
+`avg:TCGU01A45A0016s+0017s`, not an SN).
 
 > **Watch out: the optical axis is not necessarily at the image centre.**
 >

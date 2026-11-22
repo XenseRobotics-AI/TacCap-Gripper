@@ -19,7 +19,7 @@ void bind_camera(py::module_& m) {
     m.def("fisheye_fallback_cal_for", &fisheye_fallback_cal_for,
           py::arg("width"), py::arg("height"),
           "The SDK reference for a capture size: FISHEYE_FALLBACK_CAL_HD at "
-          "1920x1080 (measured on FISHEYE_FALLBACK_CAL_HD_SOURCE), "
+          "1920x1080 (see FISHEYE_FALLBACK_CAL_HD_SOURCE), "
           "FISHEYE_FALLBACK_CAL otherwise (valid at 640x480 only).");
     m.def("is_usable_fisheye_cal", &is_usable_fisheye_cal, py::arg("calibration"),
           "True when a CameraFisheyeCal carries usable intrinsics.\n\n"
@@ -43,9 +43,7 @@ void bind_camera(py::module_& m) {
               &matches_fisheye_fallback_cal),
           py::arg("calibration"), py::arg("width"), py::arg("height"),
           "Size-aware: compares against the reference for width x height\n"
-          "(fisheye_fallback_cal_for). FISHEYE_FALLBACK_CAL_HD is the calibration\n"
-          "of its source unit (FISHEYE_FALLBACK_CAL_HD_SOURCE), which therefore\n"
-          "matches too.");
+          "(fisheye_fallback_cal_for).");
 
     m.def("fisheye_cal_size_plausible", &fisheye_cal_size_plausible,
           py::arg("calibration"), py::arg("width"), py::arg("height"),

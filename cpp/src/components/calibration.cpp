@@ -437,10 +437,8 @@ ResolvedFisheyeCal Calibration::resolve_record_(
                        "approximate; recalibrate the unit and store its own values with "
                        "write_fisheye_sized().",
                        size.width, size.height,
-                       hd ? " (FISHEYE_FALLBACK_CAL_HD, measured on " : " (FISHEYE_FALLBACK_CAL)",
-                       hd ? std::string(FISHEYE_FALLBACK_CAL_HD_SOURCE) +
-                                "; that unit itself matches by construction)"
-                          : std::string());
+                       hd ? " (FISHEYE_FALLBACK_CAL_HD, " : " (FISHEYE_FALLBACK_CAL)",
+                       hd ? std::string(FISHEYE_FALLBACK_CAL_HD_SOURCE) + ")" : std::string());
     }
     return resolved;
 }
