@@ -49,8 +49,9 @@ carries leader TCGU01A28Z0116m's values. Pin 0.4.9 by commit, and run
 
 ### Documented
 
-- `ForcePositionController` at the closed end: the final state comes ~0.45 s
-  after a streamed target reaches 0.0, because the jaw first stops on the
+- `ForcePositionController` at the closed end: the final state comes ~0.45–0.6 s
+  (unit-dependent: 0016s 0.43–0.46 s, 0017s 0.56–0.58 s) after a streamed
+  target reaches 0.0, because the jaw first stops on the
   fingertip pads 17–20 mrad short (`CLOSING`) until the make-up term presses
   them (measured on RS00 0016s, firmware 1.3.1; open end settles at once).
   Callers that judge sooner should use a position tolerance. Behaviour
