@@ -670,8 +670,8 @@ Four constraints you must know:
   sending. See [CALIBRATION.md](CALIBRATION.md#dual-calibration-slots-v211-firmware-131-or-130-rc4).
 - **The reference intrinsics are an approximation.** Lens mounting varies from unit to
   unit (the principal point especially), so falling back to `FISHEYE_FALLBACK_CAL`
-  (640x480) or `FISHEYE_FALLBACK_CAL_HD` (1920x1080, measured on leader
-  TCGU01A28Z0116m) is only better than not rectifying at all — do not take
+  (640x480) or `FISHEYE_FALLBACK_CAL_HD` (1920x1080, the mean of two follower
+  calibrations) is only better than not rectifying at all — do not take
   pixel-accurate measurements from it. Once you have calibrated your own, write it to flash with
   `fisheye_cal.py set-fisheye --from-npz cam.npz --width W --height H`.
 

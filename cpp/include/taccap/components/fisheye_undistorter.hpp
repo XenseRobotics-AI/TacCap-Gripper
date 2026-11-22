@@ -123,18 +123,23 @@ inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL{
 };
 
 // The same reference at 1920x1080, which is a different sensor crop (16:9) and
-// so cannot be derived from the 640x480 one. Taken from leader TCGU01A28Z0116m
-// (camera XCA28Z0116m, firmware 1.3.1): checkerboard, 16 views, RMS 0.145 px,
-// 2026-11-22, read back from its 1920x1080 flash slot as stored (float32).
+// so cannot be derived from the 640x480 one. The element-wise mean of two
+// followers calibrated at 1920x1080 on 2026-11-22 (checkerboard; firmware
+// 1.3.1): TCGU01A45A0016s (31 views, RMS 0.139 px) and TCGU01A45A0017s (22
+// views, RMS 0.141 px), rounded to 6 decimals. It replaced leader
+// TCGU01A28Z0116m's calibration (the first HD reference, SDK 0.4.9), whose
+// lens sits off-centre (cy 501 against ~550 on other units).
 // Like the 640x480 reference it stands in only when a unit has no calibration
 // at this resolution; every unit should still be calibrated itself.
 inline constexpr protocol::CameraFisheyeCal FISHEYE_FALLBACK_CAL_HD{
-    /* fx */ 478.68341064453125f, /* fy */ 477.91790771484375f,
-    /* cx */ 951.7321166992188f,  /* cy */ 501.4850158691406f,
-    /* k1 */ -0.01882108487188816f, /* k2 */ -0.010065662674605846f,
-    /* k3 */ 0.004266931209713221f, /* k4 */ 0.004780873190611601f,
+    /* fx */ 475.625034f, /* fy */ 474.884377f,
+    /* cx */ 949.723195f, /* cy */ 552.115953f,
+    /* k1 */ -0.016049f,  /* k2 */ -0.004148f,
+    /* k3 */ 0.000200f,   /* k4 */ 0.000574f,
 };
-inline constexpr const char* FISHEYE_FALLBACK_CAL_HD_SOURCE = "TCGU01A28Z0116m";
+// Where the HD reference came from. Deliberately not a gripper SN: it is an
+// average, so no unit is the reference by construction.
+inline constexpr const char* FISHEYE_FALLBACK_CAL_HD_SOURCE = "avg:TCGU01A45A0016s+0017s";
 
 // The reference for a capture size: FISHEYE_FALLBACK_CAL_HD at 1920x1080,
 // FISHEYE_FALLBACK_CAL at anything else (it only holds at 640x480, which the
@@ -172,9 +177,7 @@ inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c) {
 }
 
 // Size-aware: compares against the reference for that capture size
-// (FISHEYE_FALLBACK_CAL_HD at 1920x1080). Note the HD reference IS the
-// calibration of its source unit (FISHEYE_FALLBACK_CAL_HD_SOURCE), which
-// therefore matches too.
+// (FISHEYE_FALLBACK_CAL_HD at 1920x1080).
 inline bool matches_fisheye_fallback_cal(const protocol::CameraFisheyeCal& c,
                                          int width, int height) {
     return detail::fisheye_cal_near(c, fisheye_fallback_cal_for(width, height));
