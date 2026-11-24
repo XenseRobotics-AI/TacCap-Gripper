@@ -29,8 +29,8 @@ The API in three calls (what this script does for every sensor):
     sensor.release()
 
 Before showing an image anywhere but OpenCV, flip it to RGB (`img[..., ::-1]`);
-the LeRobot integration also transposes it to (400, 700), and so do these
-viewers, so a frame looks the same here as in a recorded dataset.
+the LeRobot integration also rotates it 90° clockwise to (400, 700), and so do
+these viewers, so a frame looks the same here as in a recorded dataset.
 
 selectSensorInfo() blocks until the next processed frame, so its call rate
 is the sensor rate — 120 fps on the GSPS01, a little less per sensor when one
@@ -64,7 +64,7 @@ Usage:
 
 The window shows each sensor as one column, outputs stacked, in the
 orientation the LeRobot integration records: the SDK's portrait (700, 400)
-image transposed to (400, 700).
+image rotated 90° clockwise to (400, 700).
 
 Keys (viewer window):
     q / ESC   quit        c   take the no-contact reference again
@@ -93,7 +93,7 @@ DEFAULT_DEPTH_MAX_MM = 2.0
 def render(cv2, name: str, data, size: tuple[int, int], args) -> np.ndarray:
     """One output -> a BGR tile of ``size`` (w, h), in the LeRobot orientation.
 
-    Images stay BGR (that is what OpenCV wants); everything is transposed to
+    Images stay BGR (that is what OpenCV wants); everything is rotated to
     landscape the way the dataset stores it — see _tactile.py.
     """
     w, h = size
@@ -275,7 +275,7 @@ def view_column(cv2, args, info, frame: dict) -> np.ndarray:
     )
     gh, gw = ref.shape[:2] if ref is not None else (700, 400)  # portrait
     w = args.tile_width
-    size = (w, max(1, int(round(w * gw / gh))))  # landscape after the transpose
+    size = (w, max(1, int(round(w * gw / gh))))  # landscape after the rotation
     tiles = [
         t for n, d in frame.items() if (t := render(cv2, n, d, size, args)) is not None
     ]
