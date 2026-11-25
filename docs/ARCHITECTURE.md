@@ -424,7 +424,8 @@ scan_grippers():
 API:
    scan_grippers()       -> list of GripperEndpoints
    find_one()            -> single gripper, throws if 0 or >1
-   find_left()  / find_right()    -> by side  (odd/even seq digit)
+   find_left(role=None) / find_right(role=None) -> by side (odd/even seq digit),
+                                    optionally also by role
    find_leader()/ find_follower() -> by role  (SN patch suffix m/s)
    parse_serial(sn)      -> ParsedSerial{product,batch,line,sequence,side,role,valid}
 ```

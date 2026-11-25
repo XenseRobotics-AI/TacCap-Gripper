@@ -130,3 +130,75 @@ TEST(Discovery, GripperEndpointsDefaultSideIsUnknown) {
     EXPECT_EQ(e.side, Side::Unknown);
     EXPECT_EQ(e.role, Role::Unknown);
 }
+
+// ---- select_side: the pick find_left()/find_right() make from a scan -------
+//
+// The bench that motivated the role filter: one host with a left follower, a
+// left leader and a right follower. Scan order follows the CH343 serial, so
+// a role-less find_left() got the follower only because its serial sorted
+// first.
+
+namespace {
+d::GripperEndpoints ep(const char* sn, const char* dev) {
+    d::GripperEndpoints e{};
+    const auto p = d::parse_serial(sn);
+    e.side = p.side ? *p.side : Side::Unknown;
+    e.role = p.role;
+    e.firmware_sn = sn;
+    e.mcu_device = dev;
+    return e;
+}
+}  // namespace
+
+TEST(SelectSide, RoleFilterSkipsLeaderScannedFirst) {
+    const std::vector<d::GripperEndpoints> scan = {
+        ep("TCGU01A28Z0095m", "/dev/a"),   // left leader, scans first
+        ep("TCGU01A45A0017s", "/dev/b"),   // left follower
+        ep("TCGU01A45A0016s", "/dev/c"),   // right follower
+    };
+    bool amb = false;
+    auto f = d::select_side(scan, Side::Left, Role::Follower, &amb);
+    ASSERT_TRUE(f.has_value());
+    EXPECT_EQ(f->firmware_sn, "TCGU01A45A0017s");
+    EXPECT_FALSE(amb);
+
+    auto l = d::select_side(scan, Side::Left, Role::Leader, &amb);
+    ASSERT_TRUE(l.has_value());
+    EXPECT_EQ(l->firmware_sn, "TCGU01A28Z0095m");
+
+    auto r = d::select_side(scan, Side::Right, Role::Follower, &amb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->firmware_sn, "TCGU01A45A0016s");
+    EXPECT_FALSE(amb);
+}
+
+TEST(SelectSide, NoRoleKeepsFirstOnSideAndFlagsAmbiguity) {
+    const std::vector<d::GripperEndpoints> scan = {
+        ep("TCGU01A28Z0095m", "/dev/a"),
+        ep("TCGU01A45A0017s", "/dev/b"),
+        ep("TCGU01A45A0016s", "/dev/c"),
+    };
+    bool amb = false;
+    auto l = d::select_side(scan, Side::Left, std::nullopt, &amb);
+    ASSERT_TRUE(l.has_value());
+    EXPECT_EQ(l->firmware_sn, "TCGU01A28Z0095m");  // unchanged behaviour: first on side
+    EXPECT_TRUE(amb);
+
+    auto r = d::select_side(scan, Side::Right, std::nullopt, &amb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(amb);                              // one unit on the right: no warning
+}
+
+TEST(SelectSide, NoMatchForRoleOrSide) {
+    const std::vector<d::GripperEndpoints> scan = {ep("TCGU01A28Z0095m", "/dev/a")};
+    EXPECT_FALSE(d::select_side(scan, Side::Left, Role::Follower).has_value());
+    EXPECT_FALSE(d::select_side(scan, Side::Right, std::nullopt).has_value());
+    EXPECT_FALSE(d::select_side({}, Side::Left, std::nullopt).has_value());
+}
+
+TEST(SelectSide, UnknownRoleNeverMatchesARoleFilter) {
+    // Legacy SN: side recovered, role Unknown. A role filter must not take it.
+    const std::vector<d::GripperEndpoints> scan = {ep("TCGU01A24Z0003", "/dev/a")};
+    EXPECT_FALSE(d::select_side(scan, Side::Left, Role::Follower).has_value());
+    EXPECT_TRUE(d::select_side(scan, Side::Left, std::nullopt).has_value());
+}

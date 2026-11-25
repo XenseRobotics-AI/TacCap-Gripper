@@ -3,6 +3,7 @@
 #include <taccap/discovery.hpp>
 #include <taccap/bus/transport.hpp>
 #include <taccap/error.hpp>
+#include <taccap/log.hpp>
 #include <taccap/protocol/codec.hpp>
 #include <taccap/protocol/commands.hpp>
 #include <taccap/protocol/payloads.hpp>
@@ -223,23 +224,47 @@ GripperEndpoints find_one() {
     return v.front();
 }
 
-GripperEndpoints find_left() {
-    for (const auto& g : scan_all()) {
-        if (g.side == Side::Left) return g;
+std::optional<GripperEndpoints> select_side(const std::vector<GripperEndpoints>& scanned,
+                                            Side side, std::optional<Role> role,
+                                            bool* ambiguous) {
+    std::optional<GripperEndpoints> hit;
+    int on_side = 0;
+    for (const auto& g : scanned) {
+        if (g.side != side) continue;
+        ++on_side;
+        if (role && g.role != *role) continue;
+        if (!hit) hit = g;
     }
-    throw IoError("discovery::find_left: no left-side gripper detected "
-                  "(side comes from GetDevType / the SN sequence; check the "
-                  "device's burned DEV_TYPE)", ENODEV);
+    if (ambiguous) *ambiguous = !role && on_side > 1;
+    return hit;
 }
 
-GripperEndpoints find_right() {
-    for (const auto& g : scan_all()) {
-        if (g.side == Side::Right) return g;
+namespace {
+
+GripperEndpoints find_side(Side side, std::optional<Role> role) {
+    bool ambiguous = false;
+    auto hit = select_side(scan_all(), side, role, &ambiguous);
+    const char* name = side == Side::Left ? "left" : "right";
+    if (!hit) {
+        throw IoError(std::string("discovery::find_") + name + ": no " + name + "-side " +
+                      (role ? std::string(to_string(*role)) + " " : std::string()) +
+                      "gripper detected (side comes from GetDevType / the SN sequence, "
+                      "role from the SN patch suffix m/s; check the device's burned SN)",
+                      ENODEV);
     }
-    throw IoError("discovery::find_right: no right-side gripper detected "
-                  "(side comes from GetDevType / the SN sequence; check the "
-                  "device's burned DEV_TYPE)", ENODEV);
+    if (ambiguous) {
+        logger()->warn("discovery::find_{}: more than one gripper on the {} side; returning {} ({}). "
+                       "Pass a role (find_{}(Role::Follower) / role=Role.Follower) to choose.",
+                       name, name, hit->firmware_sn, to_string(hit->role), name);
+    }
+    return *hit;
 }
+
+}  // namespace
+
+GripperEndpoints find_left(std::optional<Role> role) { return find_side(Side::Left, role); }
+
+GripperEndpoints find_right(std::optional<Role> role) { return find_side(Side::Right, role); }
 
 GripperEndpoints find_leader() {
     for (const auto& g : scan_all()) {

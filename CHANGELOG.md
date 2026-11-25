@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`find_left()` / `find_right()` take a role**: `find_left(role=Role.Follower)`
+  (C++ `find_left(Role::Follower)`). Without it they still return the first unit
+  on that side whatever its role. With a leader and a follower of the same side
+  on one host, that is whichever scans first -- the order follows the CH343
+  serial, so a follower-only consumer could open the leader. Seen on the bench:
+  left leader 0095m and left follower 0017s together; lerobot-xense's discovery
+  picked the follower only because its serial sorted first.
+  A role-less call that finds more than one unit on the side now logs a warning.
+  `discovery::select_side()` exposes the pick for testing.
+
+### Tests
+
+- `python/tests/conftest.py` also blocks `find_one` / `find_left` /
+  `find_right` (it blocked only `scan_grippers` / `find_leader` /
+  `find_follower`; the side lookups scan every port too).
+
 ## [0.5.0] - 2026-11-22
 
 ### Added

@@ -115,10 +115,24 @@ std::vector<GripperEndpoints> scan_all();
 
 // Convenience accessors. Throw IoError if the requested gripper isn't found.
 GripperEndpoints find_one();       // exactly one gripper plugged in (any side)
-GripperEndpoints find_left();      // gripper whose firmware SN ends in an odd digit
-GripperEndpoints find_right();     // gripper whose firmware SN ends in an even digit
+//
+// find_left() / find_right() take an optional role. Without it they return
+// the first unit on that side whatever its role -- with a leader and a
+// follower of the same side on one host that is whichever scans first (CH343
+// serial order), so a follower-only consumer must pass Role::Follower. A
+// role-less call that sees more than one unit on the side logs a warning.
+GripperEndpoints find_left(std::optional<Role> role = std::nullopt);   // odd SN digit
+GripperEndpoints find_right(std::optional<Role> role = std::nullopt);  // even SN digit
 GripperEndpoints find_leader();    // gripper whose SN patch suffix is 'm' (Master)
 GripperEndpoints find_follower();  // gripper whose SN patch suffix is 's' (Slave)
+
+// The selection find_left()/find_right() apply to a scan, split out so it can
+// be tested without hardware. Returns the first entry matching `side` (and
+// `role`, when given); std::nullopt when none does. `ambiguous` (optional) is
+// set when no role was given and the side holds more than one unit.
+std::optional<GripperEndpoints> select_side(const std::vector<GripperEndpoints>& scanned,
+                                            Side side, std::optional<Role> role,
+                                            bool* ambiguous = nullptr);
 
 // Parse the last numeric digit out of a serial-like string. Returns Left
 // for odd / Right for even. If the string contains no digits, returns

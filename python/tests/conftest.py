@@ -19,6 +19,7 @@ So: drop the finder, put this checkout first, and assert we got it.
 
 from __future__ import annotations
 
+import functools
 import importlib.machinery
 import importlib.util
 import os
@@ -90,7 +91,24 @@ def _no_discovery(*_args, **_kwargs):
     )
 
 
-for _name in ("scan_grippers", "find_follower", "find_leader"):
+def _blocked(orig):
+    # Keep the native docstring (it carries the pybind11 signature) so tests
+    # can still check an API's shape without calling it.
+    @functools.wraps(orig)
+    def blocked(*args, **kwargs):
+        return _no_discovery(*args, **kwargs)
+
+    return blocked
+
+
+for _name in (
+    "scan_grippers",
+    "find_one",
+    "find_left",
+    "find_right",
+    "find_follower",
+    "find_leader",
+):
     for _mod in (_t, _native):
         if hasattr(_mod, _name):
-            setattr(_mod, _name, _no_discovery)
+            setattr(_mod, _name, _blocked(getattr(_mod, _name)))

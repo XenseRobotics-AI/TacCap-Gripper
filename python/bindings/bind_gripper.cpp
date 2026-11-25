@@ -139,14 +139,30 @@ void bind_gripper(py::module_& m) {
           "The single attached gripper, whatever its side or role.\n\n"
           "Raises IoError when none is attached, and again when more than one is --\n"
           "pick with find_left()/find_right() or find_leader()/find_follower().");
-    m.def("find_left",      &discovery::find_left,
+    m.def("find_left",
+          [](std::optional<discovery::Role> role) { return discovery::find_left(role); },
+          py::arg("role") = py::none(),
           py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Left.\n\n"
+          "``role`` (Role.Leader / Role.Follower) restricts the match to that role.\n"
+          "Without it the first unit on the side is returned whatever its role --\n"
+          "with a leader and a follower of the same side on one host that is\n"
+          "whichever scans first, so a follower-only caller should pass\n"
+          "role=Role.Follower. A role-less call that sees more than one unit on the\n"
+          "side logs a warning.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
-    m.def("find_right",     &discovery::find_right,
+    m.def("find_right",
+          [](std::optional<discovery::Role> role) { return discovery::find_right(role); },
+          py::arg("role") = py::none(),
           py::call_guard<py::gil_scoped_release>(),
           "The attached gripper whose firmware reports side Right.\n\n"
+          "``role`` (Role.Leader / Role.Follower) restricts the match to that role.\n"
+          "Without it the first unit on the side is returned whatever its role --\n"
+          "with a leader and a follower of the same side on one host that is\n"
+          "whichever scans first, so a follower-only caller should pass\n"
+          "role=Role.Follower. A role-less call that sees more than one unit on the\n"
+          "side logs a warning.\n\n"
           "Raises IoError when none matches; a unit whose firmware answered neither\n"
           "GetSn nor GetDevType has side Unknown and never matches.");
     m.def("find_leader",    &discovery::find_leader,
