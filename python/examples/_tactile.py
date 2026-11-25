@@ -301,17 +301,22 @@ def open_sensor(Sensor, serial: str, *, disable_infer: bool):
 # What the viewers show is what the LeRobot integration records, so a frame
 # looks the same live and in the dataset (lerobot/cameras/xense/camera_xense.py):
 #
-#   orientation   the SDK's portrait (700, 400) is transposed to (400, 700) —
-#                 a transpose, i.e. a mirror about the diagonal, not a rotation
+#   orientation   the SDK's portrait (700, 400) is rotated 90° clockwise to
+#                 (400, 700) — the same as the backpack collector (taccap-core
+#                 RECTIFY_ROTATE_DEG = 270). It used to be a transpose, which is
+#                 that rotation plus a left-right flip: every view was mirrored.
 #   channels      BGR -> RGB for anything but OpenCV
 #
 # Marker flow is drawn by the SDK (Sensor.drawMarkerMove) onto the portrait
-# image before the transpose, so the arrows move with it.
+# image before the rotation, so the arrows move with it.
 
 
 def to_display(arr: np.ndarray) -> np.ndarray:
-    """Swap the first two axes: (700, 400[, C]) -> (400, 700[, C])."""
-    return np.ascontiguousarray(np.swapaxes(arr, 0, 1))
+    """Rotate 90° clockwise: (700, 400[, C]) -> (400, 700[, C]).
+
+    Not a transpose — a transpose mirrors the image (see the conventions above).
+    """
+    return np.ascontiguousarray(np.rot90(arr, k=-1, axes=(0, 1)))
 
 
 def to_rgb(bgr: np.ndarray) -> np.ndarray:
