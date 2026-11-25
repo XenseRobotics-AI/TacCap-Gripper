@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-25
+
+Bundled firmware unchanged (leader / follower 1.3.1). Backward compatible:
+code that does not pass a role behaves as in 0.5.0, plus one warning.
+
 ### Added
 
 - **`find_left()` / `find_right()` take a role**: `find_left(role=Role.Follower)`
@@ -18,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picked the follower only because its serial sorted first.
   A role-less call that finds more than one unit on the side now logs a warning.
   `discovery::select_side()` exposes the pick for testing.
+  Covered by unit tests replaying that three-unit bench; not re-run on
+  hardware for this release (the grippers were unplugged).
+
+### Fixed
+
+- **Example tactile viewers showed the gel mirrored.** `python/examples/_tactile.py`
+  turned the portrait (700, 400) image landscape with a transpose, which is a
+  90-degree rotation plus a left-right flip. It now rotates 90 degrees
+  clockwise, matching the backpack collector and the LeRobot drivers. Examples
+  only; the SDK itself is unchanged.
 
 ### Tests
 
