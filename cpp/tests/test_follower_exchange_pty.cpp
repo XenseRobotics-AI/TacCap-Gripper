@@ -182,6 +182,52 @@ TEST(FollowerExchangePty, LostReplyIsReplayedBySameSeqRetryNotLost) {
     g->stop_streaming();
 }
 
+// 0096s, 2026-11-27: exchange seq 84 timed out, the force controller's start-up
+// commands reached the firmware before the SameSeq retry, the firmware's
+// one-entry reply cache was gone, the retry ran as a new exchange and the IMU
+// samples of the first reply were lost although they were on the wire. A
+// SameSeq retry must keep the half-duplex turn so nothing can come between.
+TEST(FollowerExchangePty, SameSeqRetryIsNotOvertakenByOtherCommands) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    FakeFollower fw(pty);
+    fw.set_imu_v2_supported(true);
+    auto g = open_follower(pty);
+    std::mutex m; std::vector<uint16_t> seqs;
+    g->imu().on_data([&](const tx::ImuSample& s) { std::lock_guard<std::mutex> lk(m); seqs.push_back(s.seq); });
+    g->start_exchange(100, 100, 50);
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(m); return seqs.size() >= 10; }, kSecond));
+
+    std::atomic<bool> stop{false};
+    std::thread chatter([&] {      // another thread keeps asking for the link
+        while (!stop) {
+            try { g->device().heartbeat(std::chrono::milliseconds(300)); } catch (...) {}
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+        }
+    });
+    const unsigned replays_before = fw.exchange_replays();
+    for (int i = 0; i < 5; ++i) {
+        fw.lose_exchange_replies(1);
+        ASSERT_TRUE(wait_for([&] { return fw.exchange_replays() >= replays_before + i + 1; }, kSecond))
+            << "retry " << i << " ran as a new request: another command got in first";
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    }
+    std::size_t at;
+    { std::lock_guard<std::mutex> lk(m); at = seqs.size(); }
+    ASSERT_TRUE(wait_for([&] { std::lock_guard<std::mutex> lk(m); return seqs.size() >= at + 20; }, kSecond));
+    stop = true;
+    chatter.join();
+    EXPECT_EQ(g->exchange_stats().timeouts, 0u);
+    std::lock_guard<std::mutex> lk(m);
+    unsigned missing = 0;
+    for (std::size_t i = 1; i < seqs.size(); ++i) {
+        const uint16_t d = static_cast<uint16_t>(seqs[i] - seqs[i - 1]);
+        if (d != 1) missing += d == 0 ? 1u : d - 1u;
+    }
+    EXPECT_EQ(missing, 0u) << "IMU samples of a lost reply were lost";
+    g->stop_streaming();
+}
+
 TEST(FollowerExchangePty, RejectedTargetIsCountedAndTelemetryContinues) {
     Pty pty;
     ASSERT_GE(pty.master(), 0);

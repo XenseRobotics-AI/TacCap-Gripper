@@ -330,6 +330,7 @@ private:
     // Never held by the reader or dispatcher, so callbacks may still send.
     // Waiting for the turn counts against the request's own timeout: a long
     // command (IMU calibration, 15 s) must not stretch a 100 ms query.
+    // A SameSeq request keeps the turn across its retries (see send_cmd).
     struct Turn {                       // RAII, like std::unique_lock
         detail::MonotonicTimedLock* lock = nullptr;
         bool owns_lock() const noexcept { return lock != nullptr; }
@@ -337,7 +338,10 @@ private:
         Turn() = default;
         explicit Turn(detail::MonotonicTimedLock* l) : lock(l) {}
         Turn(Turn&& o) noexcept : lock(o.lock) { o.lock = nullptr; }
-        Turn& operator=(Turn&&) = delete;
+        Turn& operator=(Turn&& o) noexcept {
+            if (this != &o) { unlock(); lock = o.lock; o.lock = nullptr; }
+            return *this;
+        }
         ~Turn() { unlock(); }
     };
     Turn half_duplex_turn_(std::chrono::milliseconds wait,
