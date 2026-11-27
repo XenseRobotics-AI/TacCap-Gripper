@@ -412,10 +412,17 @@ void FollowerGripper::start_exchange(unsigned motor_hz, unsigned imu_hz,
     }
 
     t_.set_half_duplex(true);
-    // A stuck reply must not hold the link longer than a couple of periods.
+    // Reply budget. It also covers waiting for the half-duplex link behind other
+    // commands, and some of those take the firmware milliseconds (0x50 waits for
+    // a fresh CAN status, ~3.5 ms; enable 0x30 ~2.8 ms). 5 ms was spent by one
+    // such wait on 0096s (2026-11-27) and the exchange timed out with its reply
+    // 0.2 ms away. A late reply costs a SameSeq retry (the turn is held, so the
+    // firmware replays it), never data -- but each retry also costs the
+    // retry_interval, so do not make timeouts routine. The firmware queue holds
+    // 512 IMU samples (~450 ms at 1125 Hz), far beyond this.
     const auto period = std::chrono::microseconds(1'000'000 / exchange_hz);
     const auto timeout = std::chrono::milliseconds(std::max<long long>(
-        5, std::chrono::duration_cast<std::chrono::milliseconds>(2 * period).count()));
+        15, std::chrono::duration_cast<std::chrono::milliseconds>(4 * period).count()));
     const auto motor_period = motor_hz ? std::chrono::microseconds(1'000'000 / motor_hz)
                                        : std::chrono::microseconds{0};
     exchange_ = std::make_shared<detail::FollowerExchange>(t_, period, timeout, motor_period);

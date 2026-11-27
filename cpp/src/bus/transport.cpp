@@ -76,6 +76,18 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
         reserved = false;
     };
     const unsigned max_retries = retry == RetryMode::Once ? 0u : cfg_.max_retries;
+    // A SameSeq retry is only safe if nothing else reaches the device between
+    // the attempts: the firmware keeps ONE cached reply (for the last frame it
+    // received) and replays it for a byte-identical repeat. Let another command
+    // in and the repeat runs as a NEW request -- for 0x5D that means the reply
+    // the first attempt produced (and the IMU samples the firmware committed to
+    // it) is lost. Measured: 0096s, 2026-11-27, exchange seq 84 timed out while
+    // the force controller's start-up commands (0x56/0x67/0x50) held the link;
+    // ForcePositionController enable (0x30) and a status read (0x50) went out
+    // before the retry, and IMU 5423-5425 were gone although the wire carried
+    // them. So in half-duplex mode a SameSeq request keeps the turn across its
+    // retries.
+    Turn held;
     try {
         for (unsigned attempt = 0; attempt <= max_retries; ++attempt) {
             if (reserved && retry == RetryMode::NewSeq) release();
@@ -95,14 +107,14 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
                 pending_acks_[seq] = pending;
             }
             const auto attempt_start = std::chrono::steady_clock::now();
-            auto turn = half_duplex_turn_(t, cmd);
+            Turn turn;
+            if (!held.owns_lock()) turn = half_duplex_turn_(t, cmd);
             write_frame_(pack_frame(cfg_.peer, seq,
                          protocol::FrameType::CMD_NEED_ACK, cmd, payload), cmd);
             const auto left = t - std::chrono::duration_cast<std::chrono::milliseconds>(
                                       std::chrono::steady_clock::now() - attempt_start);
             const bool answered =
                 fut.wait_for(std::max(left, std::chrono::milliseconds(1))) == std::future_status::ready;
-            if (turn.owns_lock()) turn.unlock();
             if (answered) {
                 auto ack = fut.get();
                 release();
@@ -114,7 +126,11 @@ AckResponse Transport::send_cmd(protocol::Cmd cmd,
                 if (it != pending_acks_.end() && it->second == pending)
                     pending_acks_.erase(it);
             }
-            // SameSeq owns its slot throughout retry delays (OTA deduplication).
+            // SameSeq owns its slot throughout retry delays (OTA deduplication),
+            // and in half-duplex mode the link turn as well (see above).
+            if (retry == RetryMode::SameSeq && turn.owns_lock() && attempt < max_retries)
+                held.lock = std::exchange(turn.lock, nullptr);
+            if (turn.owns_lock()) turn.unlock();
             stat_ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
             if (attempt < max_retries) {
                 stat_retries_.fetch_add(1, std::memory_order_relaxed);

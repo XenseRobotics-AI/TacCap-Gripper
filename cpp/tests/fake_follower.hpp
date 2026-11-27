@@ -287,6 +287,10 @@ private:
 
     void handle_(const xense::taccap::bus::Frame& f) {
         if (polled_.load() && f.cmd != tp::Cmd::SlaveExchange) ++other_while_polled_;
+        // Like the firmware (protocol_handler.c, g_last_rx_*): ONE cached frame.
+        // Any other command replaces it, so a later same-seq exchange repeat
+        // runs as a new request instead of replaying.
+        if (f.cmd != tp::Cmd::SlaveExchange) last_exchange_.reset();
         switch (f.cmd) {
             case tp::Cmd::SlaveExchange: {
                 // Firmware command layer: a byte-identical repeat (same seq, cmd,
