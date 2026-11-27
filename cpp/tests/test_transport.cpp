@@ -442,9 +442,38 @@ TEST(Transport, SlowSubscriberDoesNotStallReader) {
     sub.release();
     EXPECT_TRUE(poll_until(
         [&] { return sub.snapshot().size() == kFrames; }, 2000));
-    EXPECT_EQ(host.stats().queue_dropped, 0u)   // 50 frames, 256-deep queue
+    EXPECT_EQ(host.stats().queue_dropped, 0u)   // 50 frames, 4096-deep queue
         << "burst fit in the queue and must not have been evicted";
     EXPECT_GE(host.stats().queue_high_water, 1u);
+}
+
+// The default queue must ride out a ~200 ms callback stall at the fastest
+// gripper stream (1125 Hz IMU + 100 Hz motor, ~1230 frames/s): 0096s lost 33
+// IMU samples to exactly this with the old 256-frame default (2026-11-27).
+TEST(Transport, DefaultQueueAbsorbsA200msStallAt1125Hz) {
+    Pty pty;
+    ASSERT_GE(pty.master(), 0);
+    tb::Transport::Config cfg = base_config(pty.slave_path());
+    cfg.dispatch_queue_frames = tb::Transport::Config{}.dispatch_queue_frames;
+    tb::Transport host(cfg);
+
+    BlockingSubscriber sub;
+    host.subscribe(tp::Cmd::GetEncoder, std::ref(sub));
+
+    constexpr int kFrames = 246;   // 200 ms x 1230 frames/s
+    for (int i = 1; i <= kFrames; ++i) {
+        pty.send_data(static_cast<uint8_t>(i), tp::Cmd::GetEncoder,
+                      std::vector<uint8_t>(44, 0));
+    }
+    sub.wait_entered();
+    ASSERT_TRUE(poll_until(
+        [&] { return host.stats().frames_received >= kFrames; }, 3000));
+    sub.release();
+    EXPECT_TRUE(poll_until(
+        [&] { return sub.snapshot().size() == kFrames; }, 3000));
+    EXPECT_EQ(host.stats().queue_dropped, 0u);
+    EXPECT_GE(tb::Transport::Config{}.dispatch_queue_frames, 2u * 1230u)
+        << "default must hold at least ~2 s of the 1125 Hz stream";
 }
 
 // send_cmd() must not queue behind subscriber work. handle_ack_ deliberately

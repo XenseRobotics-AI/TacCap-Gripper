@@ -142,15 +142,19 @@ public:
         std::size_t               rx_chunk_bytes  = 4096;
         std::size_t               parser_max_buf  = 64 * 1024;
         // Depth of the reader -> dispatcher queue, in frames. Sized to absorb
-        // a scheduler/GC hiccup without loss: 256 frames is ~400ms at the
-        // 600 frames/s of a 200Hz three-source stream.
+        // a scheduler/GC hiccup without loss. 4096 frames hold ~3.5 s of the
+        // fastest stream the grippers produce (1125 Hz IMU + 100 Hz motor or
+        // encoder, ~1230 frames/s). The old 256 held only ~0.2 s of it, and a
+        // single 189 ms callback stall while a follower came up dropped 33 IMU
+        // samples (0096s, 2026-11-27) with the serial link itself loss-free.
+        // A frame is ~100 B, so this costs well under 1 MB when full.
         //
         // It is a burst absorber, not a backlog. A consumer that is
         // *persistently* slower than the stream keeps the queue full, which
         // costs depth/rate of added staleness (and shows up as a rising
         // queue_dropped) — lower this when latency matters more than
         // surviving hiccups. Clamped to >= 1.
-        std::size_t               dispatch_queue_frames = 256;
+        std::size_t               dispatch_queue_frames = 4096;
         // Private motor-control lane, independent of all user callbacks.
         // Overflow latches the lane closed until transport recreation: a
         // dropped fault cannot be replaced silently with a healthy sample.
